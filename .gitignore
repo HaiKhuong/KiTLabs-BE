@@ -1,0 +1,30 @@
+# Node / Nest
+node_modules/
+dist/
+coverage/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# OS / Editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Uploads and runtime artifacts
+uploads/
+tmp/
+temp/
+
+# Python pipeline artifacts
+tools/video-pipeline/.venv/
+tools/video-pipeline/workspace/
+tools/video-pipeline/**/*.log

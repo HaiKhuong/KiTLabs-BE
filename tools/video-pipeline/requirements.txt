@@ -1,0 +1,8 @@
+faster-whisper==1.2.1
+google-genai
+ctranslate2>=4.0,<5
+torch
+torchvision
+torchaudio
+edge-tts
+tqdm
