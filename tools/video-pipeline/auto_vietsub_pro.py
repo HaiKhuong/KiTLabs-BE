@@ -305,6 +305,29 @@ def write_ffmpeg_concat_list(paths, out_list_path):
             f.write(f"file '{p.as_posix()}'\n")
 
 
+def get_zh_srt_path():
+    return SUBTITLE_DIR / f"{WORK_NAME}.zh.srt"
+
+
+def get_vi_srt_path():
+    return SUBTITLE_DIR / f"{WORK_NAME}.vi.srt"
+
+
+def cleanup_step6_intermediate_files():
+    targets = [
+        LOG_DIR / "step1_input.wav",
+        VIDEO_DIR / f"{WORK_NAME}_tm.mp4",
+        VIDEO_DIR / f"{WORK_NAME}_voice.wav",
+    ]
+    for target in targets:
+        try:
+            if target.exists():
+                target.unlink()
+                log(f"Cleanup: removed {target}")
+        except Exception as e:
+            log(f"Cleanup warning: failed to remove {target}: {e}")
+
+
 def build_subtitle_filter(ass_path):
     filter_path = to_ffmpeg_ass_filter_path(ass_path)
     return (
@@ -403,7 +426,7 @@ def update_ass_default_style(ass_path):
 
 # ==============================
 # STEP 1
-# Whisper -> zh.srt
+# Whisper -> <work_name>.zh.srt
 # ==============================
 
 def step1_transcribe(video_path):
@@ -476,7 +499,7 @@ def step1_transcribe(video_path):
                     )
         return count, last_end_ms
 
-    srt_path = SUBTITLE_DIR / "zh.srt"
+    srt_path = get_zh_srt_path()
 
     try:
         log("Whisper using CUDA.")
@@ -575,7 +598,7 @@ def step2_translate_srt(srt_path):
                 {"index": b["index"], "time": b["time"], "text": translated_text}
             )
 
-    out_path = SUBTITLE_DIR / "vi.srt"
+    out_path = get_vi_srt_path()
     write_srt(translated_blocks, out_path)
     return out_path
 
@@ -602,11 +625,11 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
     with open(srt_path, encoding="utf8") as f:
         blocks = parse_srt(f.read())
     if not blocks:
-        raise ValueError("vi.srt has no valid subtitle blocks.")
+        raise ValueError("Vietnamese subtitle file has no valid subtitle blocks.")
 
     has_text = any(b["text"].strip() for b in blocks)
     if not has_text:
-        raise ValueError("vi.srt has no text content for TTS.")
+        raise ValueError("Vietnamese subtitle file has no text content for TTS.")
 
     chunk_dir = LOG_DIR / "tts_chunks"
     chunk_dir.mkdir(parents=True, exist_ok=True)
@@ -1114,8 +1137,8 @@ def run_pipeline(video, step_arg=None):
     def step_enabled(step_no):
         return start_step <= step_no <= end_step
 
-    zh_srt = SUBTITLE_DIR / "zh.srt"
-    vi_srt = SUBTITLE_DIR / "vi.srt"
+    zh_srt = get_zh_srt_path()
+    vi_srt = get_vi_srt_path()
     voice = VIDEO_DIR / f"{WORK_NAME}_voice.wav"
     tm_video = VIDEO_DIR / f"{WORK_NAME}_tm.mp4"
     ass = SUBTITLE_DIR / "sub.ass"
@@ -1127,7 +1150,7 @@ def run_pipeline(video, step_arg=None):
         last_output = zh_srt
 
     if step_enabled(2):
-        require_ready(zh_srt, "Step2 input zh.srt")
+        require_ready(zh_srt, "Step2 input zh subtitle")
         vi_srt = get_or_run(vi_srt, "Step2", step2_translate_srt, zh_srt)
         last_output = vi_srt
 
@@ -1136,7 +1159,7 @@ def run_pipeline(video, step_arg=None):
             log("Skip voice steps enabled: Step3/Step4 are skipped.")
     else:
         if step_enabled(3):
-            require_ready(vi_srt, "Step3 input vi.srt")
+            require_ready(vi_srt, "Step3 input vi subtitle")
             voice = get_or_run(
                 voice,
                 "Step3",
@@ -1151,7 +1174,7 @@ def run_pipeline(video, step_arg=None):
             last_output = tm_video
 
     if step_enabled(5):
-        require_ready(vi_srt, "Step5 input vi.srt")
+        require_ready(vi_srt, "Step5 input vi subtitle")
         ass = get_or_run(ass, "Step5", step5_convert_ass, vi_srt)
         last_output = ass
 
@@ -1167,6 +1190,7 @@ def run_pipeline(video, step_arg=None):
         final = step7_apply_speed(final)
         if not file_ready(final):
             raise RuntimeError("Final video render failed.")
+        cleanup_step6_intermediate_files()
         log(f"DONE: {final}")
         last_output = final
     else:

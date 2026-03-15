@@ -39,6 +39,9 @@ export class TranslateHistory extends BaseEntity {
   @Column({ type: "varchar", name: "result_path", nullable: true })
   resultPath!: string | null;
 
+  @Column({ type: "varchar", name: "result_file_name", nullable: true })
+  resultFileName!: string | null;
+
   @Column({ name: "error_message", type: "text", nullable: true })
   errorMessage!: string | null;
 

@@ -21,12 +21,12 @@ const OPTION_MAPPINGS: Array<{
   },
   {
     cliFlag: "--subtitle-primary-colour",
-    keys: ["subtitlePrimaryColour", "subtitle_primary_colour"],
+    keys: ["subtitlePrimaryColor", "subtitle_primary_colour"],
     allowedTypes: ["string"],
   },
   {
     cliFlag: "--subtitle-outline-colour",
-    keys: ["subtitleOutlineColour", "subtitle_outline_colour"],
+    keys: ["subtitleOutlineColor", "subtitle_outline_colour"],
     allowedTypes: ["string"],
   },
   {
@@ -244,7 +244,7 @@ export class TranslateProcessor extends WorkerHost {
     }
 
     // Fallback by script's deterministic output convention.
-    return join(scriptDir, "workspace", workName);
+    return this.resolveFallbackOutputPath(scriptDir, workName, input.stepNbr);
   }
 
   private resolveVideoInputPath(engineConfig: Record<string, unknown>): string {
@@ -283,7 +283,12 @@ export class TranslateProcessor extends WorkerHost {
       if (!value) {
         continue;
       }
-      args.push(mapping.cliFlag, value);
+      if (value.startsWith("-")) {
+        // argparse can treat values like "-20%" as another option token.
+        args.push(`${mapping.cliFlag}=${value}`);
+      } else {
+        args.push(mapping.cliFlag, value);
+      }
     }
   }
 
@@ -297,6 +302,22 @@ export class TranslateProcessor extends WorkerHost {
       return;
     }
     args.push("--step", `${uniqueSorted[0]},${uniqueSorted[uniqueSorted.length - 1]}`);
+  }
+
+  private resolveFallbackOutputPath(scriptDir: string, workName: string, stepNbr: number[]): string {
+    const workspaceDir = join(scriptDir, "workspace", workName);
+    const uniqueSorted = Array.isArray(stepNbr) ? [...new Set(stepNbr)].sort((a, b) => a - b) : [];
+    const lastStep = uniqueSorted.length > 0 ? uniqueSorted[uniqueSorted.length - 1] : null;
+
+    if (lastStep === 1) {
+      return join(workspaceDir, "subtitles", `${workName}.zh.srt`);
+    }
+
+    if (lastStep !== null && lastStep <= 3) {
+      return join(workspaceDir, "subtitles", `${workName}.vi.srt`);
+    }
+
+    return join(workspaceDir, "videos", `${workName}_vs_tm.mp4`);
   }
 
   private pickConfigValue(engineConfig: Record<string, unknown>, keys: string[]): unknown {

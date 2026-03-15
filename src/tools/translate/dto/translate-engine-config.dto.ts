@@ -34,7 +34,7 @@ export class TranslateEngineConfigDto {
 
   @IsOptional()
   @IsString()
-  subtitlePrimaryColour?: string;
+  subtitlePrimaryColor?: string;
 
   @IsOptional()
   @IsString()
@@ -42,7 +42,7 @@ export class TranslateEngineConfigDto {
 
   @IsOptional()
   @IsString()
-  subtitleOutlineColour?: string;
+  subtitleOutlineColor?: string;
 
   @IsOptional()
   @IsString()

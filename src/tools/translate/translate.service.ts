@@ -67,6 +67,7 @@ export class TranslateService {
       cost: estimatedCost.toFixed(2),
       queueJobId: null,
       resultPath: null,
+      resultFileName: null,
       errorMessage: null,
     });
     const created = await this.translateRepository.save(history);
@@ -108,6 +109,7 @@ export class TranslateService {
 
     history.status = QueueJobStatus.COMPLETED;
     history.resultPath = resultPath;
+    history.resultFileName = basename(resultPath);
     history.errorMessage = null;
     await this.translateRepository.save(history);
 
@@ -174,7 +176,9 @@ export class TranslateService {
     let contentType = "video/mp4";
 
     if (type === "zh" || type === "vi") {
-      absolutePath = join(workspaceDir, "subtitles", `${type}.srt`);
+      const preferredSubtitlePath = join(workspaceDir, "subtitles", `${workName}.${type}.srt`);
+      const legacySubtitlePath = join(workspaceDir, "subtitles", `${type}.srt`);
+      absolutePath = existsSync(preferredSubtitlePath) ? preferredSubtitlePath : legacySubtitlePath;
       contentType = "text/plain; charset=utf-8";
     } else if (type === "audio") {
       absolutePath = join(workspaceDir, "videos", `${workName}_voice.wav`);
