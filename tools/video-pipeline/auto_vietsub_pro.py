@@ -17,6 +17,7 @@ from tqdm import tqdm
 # ==============================
 
 WHISPER_MODEL = "large-v3"
+WHISPER_LANGUAGE = "zh"
 GEMINI_MODEL_NAME = "gemini-2.5-flash"
 EDGE_TTS_VOICE = "vi-VN-HoaiMyNeural"
 EDGE_TTS_RATE = "+60%"
@@ -60,8 +61,16 @@ LOGO_OPACITY = 0.5
 ORIGINAL_AUDIO_VOLUME = 0.1
 NARRATION_AUDIO_VOLUME = 1.0
 SPEED_VIDEO = 1.0
+STEP1_VAD_FILTER = True
+STEP1_VAD_THRESHOLD = 0.45
+STEP1_MIN_SILENCE_MS = 500
+STEP1_MIN_SPEECH_MS = 180
+STEP1_SPEECH_PAD_MS = 120
+STEP1_NO_SPEECH_THRESHOLD = 0.7
+STEP1_LOGPROB_THRESHOLD = -1.0
+STEP1_CONDITION_ON_PREVIOUS_TEXT = False
 
-API_KEY = "AIzaSyAnXjFjxoG3SMtw1I0PRTZ3elvvNJqmkUw"
+API_KEY = "AIzaSyC1W6ml6VlzqmQ6kLrgR6Tw2AGVeCv_MDc"
 if API_KEY:
     GEMINI_CLIENT = genai.Client(api_key=API_KEY)
 else:
@@ -425,10 +434,32 @@ def step1_transcribe(video_path):
     if source_duration_ms:
         log(f"Step1 audio duration: {source_duration_ms / 1000:.3f}s")
     min_expected_ms = int(source_duration_ms * 0.40) if source_duration_ms else None
+    log(
+        "Step1 config: "
+        f"language={WHISPER_LANGUAGE}, vad_filter={STEP1_VAD_FILTER}, "
+        f"vad_threshold={STEP1_VAD_THRESHOLD}, min_silence_ms={STEP1_MIN_SILENCE_MS}, "
+        f"no_speech_threshold={STEP1_NO_SPEECH_THRESHOLD}, "
+        f"condition_on_previous_text={STEP1_CONDITION_ON_PREVIOUS_TEXT}"
+    )
 
     def _transcribe_with_device(device_name, out_path):
         whisper_model = WhisperModel(WHISPER_MODEL, device=device_name)
-        segments, _info = whisper_model.transcribe(str(step1_audio), vad_filter=False)
+        transcribe_kwargs = {
+            "language": WHISPER_LANGUAGE,
+            "vad_filter": STEP1_VAD_FILTER,
+            "no_speech_threshold": float(STEP1_NO_SPEECH_THRESHOLD),
+            "log_prob_threshold": float(STEP1_LOGPROB_THRESHOLD),
+            "condition_on_previous_text": bool(STEP1_CONDITION_ON_PREVIOUS_TEXT),
+            "temperature": 0.0,
+        }
+        if STEP1_VAD_FILTER:
+            transcribe_kwargs["vad_parameters"] = {
+                "threshold": float(STEP1_VAD_THRESHOLD),
+                "min_silence_duration_ms": int(STEP1_MIN_SILENCE_MS),
+                "min_speech_duration_ms": int(STEP1_MIN_SPEECH_MS),
+                "speech_pad_ms": int(STEP1_SPEECH_PAD_MS),
+            }
+        segments, _info = whisper_model.transcribe(str(step1_audio), **transcribe_kwargs)
         count = 0
         last_end_ms = 0
         with open(out_path, "w", encoding="utf8") as f:
@@ -898,6 +929,34 @@ def parse_cli_args():
     parser.add_argument("--original-volume", type=float, default=ORIGINAL_AUDIO_VOLUME)
     parser.add_argument("--narration-volume", type=float, default=NARRATION_AUDIO_VOLUME)
     parser.add_argument("--speed-video", type=float, default=SPEED_VIDEO)
+    parser.add_argument(
+        "--whisper-language",
+        default=WHISPER_LANGUAGE,
+        help="Whisper language code. Example: zh, en, vi.",
+    )
+    parser.add_argument(
+        "--step1-vad",
+        choices=["on", "off"],
+        default="on" if STEP1_VAD_FILTER else "off",
+        help="Enable/disable VAD filter in Step1 to reduce music/noise transcription.",
+    )
+    parser.add_argument("--step1-vad-threshold", type=float, default=STEP1_VAD_THRESHOLD)
+    parser.add_argument("--step1-min-silence-ms", type=int, default=STEP1_MIN_SILENCE_MS)
+    parser.add_argument("--step1-min-speech-ms", type=int, default=STEP1_MIN_SPEECH_MS)
+    parser.add_argument("--step1-speech-pad-ms", type=int, default=STEP1_SPEECH_PAD_MS)
+    parser.add_argument(
+        "--step1-no-speech-threshold",
+        type=float,
+        default=STEP1_NO_SPEECH_THRESHOLD,
+        help="Higher values skip non-speech more aggressively.",
+    )
+    parser.add_argument("--step1-logprob-threshold", type=float, default=STEP1_LOGPROB_THRESHOLD)
+    parser.add_argument(
+        "--step1-condition-on-previous-text",
+        choices=["on", "off"],
+        default="on" if STEP1_CONDITION_ON_PREVIOUS_TEXT else "off",
+        help="Use previous text as context; off can reduce hallucination around music.",
+    )
     parser.add_argument("--edge-tts-voice", default=EDGE_TTS_VOICE)
     parser.add_argument("--edge-tts-rate", default=EDGE_TTS_RATE)
     parser.add_argument("--edge-tts-volume", default=EDGE_TTS_VOLUME)
@@ -912,6 +971,7 @@ def parse_cli_args():
 
 
 def apply_cli_config(args):
+    global WHISPER_LANGUAGE
     global SUBTITLE_FONT
     global SUBTITLE_FONTSIZE
     global SUBTITLE_PRIMARY_COLOUR
@@ -935,7 +995,16 @@ def apply_cli_config(args):
     global ORIGINAL_AUDIO_VOLUME
     global NARRATION_AUDIO_VOLUME
     global SPEED_VIDEO
+    global STEP1_VAD_FILTER
+    global STEP1_VAD_THRESHOLD
+    global STEP1_MIN_SILENCE_MS
+    global STEP1_MIN_SPEECH_MS
+    global STEP1_SPEECH_PAD_MS
+    global STEP1_NO_SPEECH_THRESHOLD
+    global STEP1_LOGPROB_THRESHOLD
+    global STEP1_CONDITION_ON_PREVIOUS_TEXT
     global EDGE_TTS_VOICE
+    WHISPER_LANGUAGE = str(args.whisper_language).strip() or None
     global EDGE_TTS_RATE
     global EDGE_TTS_VOLUME
     global EDGE_TTS_PITCH
@@ -963,6 +1032,14 @@ def apply_cli_config(args):
     ORIGINAL_AUDIO_VOLUME = args.original_volume
     NARRATION_AUDIO_VOLUME = args.narration_volume
     SPEED_VIDEO = args.speed_video
+    STEP1_VAD_FILTER = args.step1_vad == "on"
+    STEP1_VAD_THRESHOLD = args.step1_vad_threshold
+    STEP1_MIN_SILENCE_MS = args.step1_min_silence_ms
+    STEP1_MIN_SPEECH_MS = args.step1_min_speech_ms
+    STEP1_SPEECH_PAD_MS = args.step1_speech_pad_ms
+    STEP1_NO_SPEECH_THRESHOLD = args.step1_no_speech_threshold
+    STEP1_LOGPROB_THRESHOLD = args.step1_logprob_threshold
+    STEP1_CONDITION_ON_PREVIOUS_TEXT = args.step1_condition_on_previous_text == "on"
     EDGE_TTS_VOICE = args.edge_tts_voice
     EDGE_TTS_RATE = args.edge_tts_rate
     EDGE_TTS_VOLUME = args.edge_tts_volume

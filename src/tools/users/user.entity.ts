@@ -6,15 +6,24 @@ import { DownloadHistory } from "../downloads/download-history.entity";
 import { UserActionLog } from "../logs/user-action-log.entity";
 import { Notification } from "../notifications/notification.entity";
 import { TranslateHistory } from "../translate/translate-history.entity";
+import { UserSettingProfile } from "../settings/user-setting-profile.entity";
 import { UserSetting } from "../settings/user-setting.entity";
+
+export enum UserAuthType {
+  ACCOUNT = "account",
+  GUEST = "guest",
+}
 
 @Entity("users")
 export class User extends BaseEntity {
-  @Column({ name: "user_name", unique: true, length: 100 })
-  userName!: string;
+  @Column({ name: "auth_type", type: "enum", enum: UserAuthType, default: UserAuthType.ACCOUNT })
+  authType!: UserAuthType;
 
-  @Column({ name: "password_hash", length: 255 })
-  passwordHash!: string;
+  @Column({ type: "varchar", name: "user_name", unique: true, length: 100, nullable: true })
+  userName!: string | null;
+
+  @Column({ type: "varchar", name: "password_hash", length: 255, nullable: true })
+  passwordHash!: string | null;
 
   @Column({ type: "varchar", name: "refresh_token_hash", length: 255, nullable: true })
   refreshTokenHash!: string | null;
@@ -51,4 +60,7 @@ export class User extends BaseEntity {
 
   @OneToMany(() => UserSetting, (setting) => setting.user)
   userSettings!: UserSetting[];
+
+  @OneToMany(() => UserSettingProfile, (profile) => profile.user)
+  userSettingProfiles!: UserSettingProfile[];
 }

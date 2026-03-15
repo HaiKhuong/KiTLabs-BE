@@ -1,7 +1,8 @@
-import { Body, Controller, Get, Post, UnauthorizedException } from "@nestjs/common";
-import { ApiBearerAuth, ApiBody, ApiOperation, ApiTags } from "@nestjs/swagger";
+import { BadRequestException, Body, Controller, Get, Post, Query, Res } from "@nestjs/common";
+import { ApiBearerAuth, ApiBody, ApiOperation, ApiQuery, ApiTags } from "@nestjs/swagger";
+import { Response } from "express";
 
-import { CurrentUser } from "../../common/decorators/current-user.decorator";
+import { Public } from "../../common/decorators/public.decorator";
 import { CreateTranslateJobDto } from "./dto/create-translate-job.dto";
 import { TranslateService } from "./translate.service";
 
@@ -13,21 +14,45 @@ export class TranslateController {
 
   @ApiOperation({ summary: "Create translate queue job" })
   @ApiBody({ type: CreateTranslateJobDto })
+  @Public()
   @Post()
-  async enqueue(@CurrentUser() user: { userId: string } | undefined, @Body() dto: CreateTranslateJobDto) {
-    if (!user) {
-      throw new UnauthorizedException("Unauthorized");
-    }
-    dto.userId = user.userId;
+  async enqueue(@Body() dto: CreateTranslateJobDto) {
     return this.translateService.enqueue(dto);
   }
 
-  @ApiOperation({ summary: "Get current user translate history" })
-  @Get("history")
-  async history(@CurrentUser() user: { userId: string } | undefined) {
-    if (!user) {
-      throw new UnauthorizedException("Unauthorized");
+  @ApiOperation({ summary: "Get user translate history" })
+  @ApiQuery({ name: "userId", required: true, description: "User UUID" })
+  @Public()
+  @Get("histories")
+  async history(@Query("userId") userId?: string) {
+    if (!userId) {
+      throw new BadRequestException("userId is required");
     }
-    return this.translateService.getHistory(user.userId);
+    return this.translateService.getHistory(userId);
+  }
+
+  @ApiOperation({ summary: "Get translate artifact by result path" })
+  @ApiQuery({ name: "resultPath", required: true, description: "Absolute result video path" })
+  @ApiQuery({
+    name: "type",
+    required: true,
+    description: "Artifact type: zh | vi | audio | video",
+  })
+  @Public()
+  @Get("artifact")
+  async artifact(
+    @Query("resultPath") resultPath: string | undefined,
+    @Query("type") type: string | undefined,
+    @Res() res: Response,
+  ) {
+    if (!resultPath) {
+      throw new BadRequestException("resultPath is required");
+    }
+
+    const parsedType = this.translateService.parseArtifactType(type);
+    const artifact = this.translateService.resolveArtifact(resultPath, parsedType);
+
+    res.setHeader("Content-Type", artifact.contentType);
+    return res.sendFile(artifact.absolutePath);
   }
 }

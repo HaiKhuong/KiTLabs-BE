@@ -5,6 +5,7 @@ import { CurrentUser } from "../../common/decorators/current-user.decorator";
 import { Public } from "../../common/decorators/public.decorator";
 import { JwtAuthGuard } from "./guards/jwt-auth.guard";
 import { AuthService } from "./auth.service";
+import { GuestAuthDto } from "./dto/guest-auth.dto";
 import { LoginDto } from "./dto/login.dto";
 import { RefreshTokenDto } from "./dto/refresh-token.dto";
 import { RegisterDto } from "./dto/register.dto";
@@ -28,6 +29,14 @@ export class AuthController {
   @Post("login")
   async login(@Body() dto: LoginDto) {
     return this.authService.login(dto);
+  }
+
+  @ApiOperation({ summary: "Login/Create guest user by device identity and return profile" })
+  @ApiBody({ type: GuestAuthDto })
+  @Public()
+  @Post("guest")
+  async guest(@Body() dto: GuestAuthDto) {
+    return this.authService.guest(dto);
   }
 
   @ApiOperation({ summary: "Refresh access token" })

@@ -5,8 +5,9 @@ import { SignOptions } from "jsonwebtoken";
 
 import { LogsService } from "../logs/logs.service";
 import { CreateUserDto } from "../users/dto/create-user.dto";
-import { User } from "../users/user.entity";
+import { User, UserAuthType } from "../users/user.entity";
 import { UsersService } from "../users/users.service";
+import { GuestAuthDto } from "./dto/guest-auth.dto";
 import { LoginDto } from "./dto/login.dto";
 import { RegisterDto } from "./dto/register.dto";
 
@@ -19,7 +20,10 @@ export class AuthService {
   ) {}
 
   async register(dto: RegisterDto): Promise<Record<string, unknown>> {
-    const user = await this.usersService.createUserInternal(dto as CreateUserDto);
+    const user = await this.usersService.createUserInternal({
+      ...(dto as CreateUserDto),
+      authType: UserAuthType.ACCOUNT,
+    });
     await this.logsService.createLog({
       userId: user.id,
       action: "auth.register",
@@ -30,7 +34,7 @@ export class AuthService {
 
   async login(dto: LoginDto): Promise<Record<string, unknown>> {
     const user = await this.usersService.findByUserName(dto.userName);
-    if (!user) {
+    if (!user || user.authType !== UserAuthType.ACCOUNT) {
       throw new UnauthorizedException("Invalid credentials");
     }
     const valid = await this.usersService.verifyPassword(user, dto.password);
@@ -45,6 +49,40 @@ export class AuthService {
       ip: user.ip,
     });
     return this.generateAuthTokens(user);
+  }
+
+  async guest(dto: GuestAuthDto): Promise<Record<string, unknown>> {
+    const user = await this.usersService.createUserInternal({
+      authType: UserAuthType.GUEST,
+      deviceId: dto.deviceId,
+      ip: dto.ip,
+      mac: dto.mac,
+    });
+
+    await this.logsService.createLog({
+      userId: user.id,
+      action: "auth.guest",
+      payload: {
+        authType: user.authType,
+        deviceId: user.deviceId,
+        ip: user.ip,
+        mac: user.mac,
+      },
+      ip: dto.ip ?? user.ip,
+    });
+
+    return {
+      user: {
+        id: user.id,
+        authType: user.authType,
+        userName: user.userName,
+        credit: user.credit,
+        deviceId: user.deviceId,
+        ip: user.ip,
+        mac: user.mac,
+        isActive: user.isActive,
+      },
+    };
   }
 
   async refreshToken(refreshToken: string): Promise<Record<string, unknown>> {
@@ -99,6 +137,7 @@ export class AuthService {
     return {
       user: {
         id: user.id,
+        authType: user.authType,
         userName: user.userName,
         credit: user.credit,
       },

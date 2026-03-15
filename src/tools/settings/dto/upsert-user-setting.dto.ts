@@ -1,15 +1,19 @@
 import { IsOptional, IsString } from "class-validator";
-import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
+import { ApiProperty } from "@nestjs/swagger";
 
 export class UpsertUserSettingDto {
-  @ApiPropertyOptional({ example: "user-uuid" })
-  @IsOptional()
+  @ApiProperty({ example: "user-uuid" })
   @IsString()
-  userId?: string;
+  userId!: string;
 
   @ApiProperty({ example: "translate" })
   @IsString()
   type!: string;
+
+  @ApiProperty({ example: "profile-uuid", required: false })
+  @IsOptional()
+  @IsString()
+  profileId?: string;
 
   @ApiProperty({ example: "subtitle_font" })
   @IsString()

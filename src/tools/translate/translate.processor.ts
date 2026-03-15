@@ -1,14 +1,13 @@
 import { Logger } from "@nestjs/common";
 import { Processor, WorkerHost } from "@nestjs/bullmq";
 import { Job } from "bullmq";
-import { execFile } from "child_process";
+import { spawn } from "child_process";
 import { basename, dirname, extname, isAbsolute, join, resolve } from "path";
-import { promisify } from "util";
 
 import { TRANSLATE_QUEUE_NAME, TranslateService } from "./translate.service";
 import { TranslateGateway } from "./translate.gateway";
 
-const execFileAsync = promisify(execFile);
+const MAX_PYTHON_LOG_BUFFER = 10 * 1024 * 1024;
 const OPTION_MAPPINGS: Array<{
   cliFlag: string;
   keys: string[];
@@ -132,6 +131,7 @@ export class TranslateProcessor extends WorkerHost {
       this.translateGateway.notifyUser(completedHistory?.userId ?? "all", "translate.completed", {
         translateHistoryId,
         resultPath,
+        stepNbr: history.stepNbr,
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown translation failure";
@@ -164,19 +164,79 @@ export class TranslateProcessor extends WorkerHost {
     this.appendOptionalCliOptions(args, engineConfig);
 
     this.logger.log(`Executing python command: ${pythonBin} ${args.join(" ")}`);
-    const { stdout, stderr } = await execFileAsync(pythonBin, args, {
-      timeout: timeoutMs,
-      windowsHide: true,
-      maxBuffer: 10 * 1024 * 1024,
-      cwd: scriptDir,
-    });
+    const startedAt = Date.now();
+    const { stdout, stderr } = await new Promise<{ stdout: string; stderr: string }>(
+      (resolvePromise, rejectPromise) => {
+        const child = spawn(pythonBin, args, {
+          cwd: scriptDir,
+          windowsHide: true,
+        });
 
-    if (stdout) {
-      this.logger.log(`Python stdout: ${stdout}`);
-    }
-    if (stderr) {
-      this.logger.warn(`Python stderr: ${stderr}`);
-    }
+        this.logger.log(`Python process started (pid=${child.pid ?? "unknown"})`);
+
+        let stdout = "";
+        let stderr = "";
+        let timeoutHandle: NodeJS.Timeout | null = setTimeout(() => {
+          this.logger.error(`Python process timed out after ${timeoutMs}ms, killing process...`);
+          child.kill("SIGTERM");
+        }, timeoutMs);
+
+        const appendChunk = (target: "stdout" | "stderr", chunk: string) => {
+          if (target === "stdout") {
+            stdout += chunk;
+            if (stdout.length > MAX_PYTHON_LOG_BUFFER) {
+              stdout = stdout.slice(stdout.length - MAX_PYTHON_LOG_BUFFER);
+            }
+          } else {
+            stderr += chunk;
+            if (stderr.length > MAX_PYTHON_LOG_BUFFER) {
+              stderr = stderr.slice(stderr.length - MAX_PYTHON_LOG_BUFFER);
+            }
+          }
+        };
+
+        child.stdout?.on("data", (data: Buffer) => {
+          const message = data.toString();
+          appendChunk("stdout", message);
+          this.logger.log(`[python stdout] ${message.trimEnd()}`);
+        });
+
+        child.stderr?.on("data", (data: Buffer) => {
+          const message = data.toString();
+          appendChunk("stderr", message);
+          this.logger.warn(`[python stderr] ${message.trimEnd()}`);
+        });
+
+        child.on("error", (error) => {
+          if (timeoutHandle) {
+            clearTimeout(timeoutHandle);
+            timeoutHandle = null;
+          }
+          rejectPromise(error);
+        });
+
+        child.on("close", (code, signal) => {
+          if (timeoutHandle) {
+            clearTimeout(timeoutHandle);
+            timeoutHandle = null;
+          }
+
+          const elapsedMs = Date.now() - startedAt;
+          this.logger.log(
+            `Python process finished (pid=${child.pid ?? "unknown"}, code=${code}, signal=${signal ?? "none"}, elapsed=${elapsedMs}ms)`,
+          );
+
+          if (code !== 0) {
+            rejectPromise(
+              new Error(`Python command failed with code ${code ?? "unknown"}${signal ? ` and signal ${signal}` : ""}`),
+            );
+            return;
+          }
+
+          resolvePromise({ stdout, stderr });
+        });
+      },
+    );
 
     const outputPathFromLogs = this.extractDonePath(stdout) ?? this.extractDonePath(stderr);
     if (outputPathFromLogs) {
@@ -184,20 +244,16 @@ export class TranslateProcessor extends WorkerHost {
     }
 
     // Fallback by script's deterministic output convention.
-    return join(scriptDir, "workspace", workName, "videos", `${workName}_vs_tm.mp4`);
+    return join(scriptDir, "workspace", workName);
   }
 
-  private resolveVideoInputPath(
-    engineConfig: Record<string, unknown>,
-  ): string {
+  private resolveVideoInputPath(engineConfig: Record<string, unknown>): string {
     const localPath = this.pickConfigValue(engineConfig, ["localVideoPath", "local_video_path"]);
     if (typeof localPath === "string" && localPath.trim().length > 0) {
       return localPath.trim();
     }
 
-    throw new Error(
-      "Missing local video path. Provide engineConfig.localVideoPath or engineConfig.local_video_path.",
-    );
+    throw new Error("Missing local video path. Provide engineConfig.localVideoPath or engineConfig.local_video_path.");
   }
 
   private extractDonePath(text: string | undefined): string | null {

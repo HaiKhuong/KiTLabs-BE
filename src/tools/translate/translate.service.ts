@@ -1,7 +1,9 @@
-import { BadRequestException, Injectable } from "@nestjs/common";
+import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
 import { InjectQueue } from "@nestjs/bullmq";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Queue } from "bullmq";
+import { existsSync } from "fs";
+import { basename, extname, join, resolve, sep } from "path";
 import { Repository } from "typeorm";
 
 import { CreditHistory } from "../credits/credit-history.entity";
@@ -13,6 +15,7 @@ import { CreateTranslateJobDto } from "./dto/create-translate-job.dto";
 import { TranslateHistory } from "./translate-history.entity";
 
 export const TRANSLATE_QUEUE_NAME = "video-translate";
+export type TranslateArtifactType = "zh" | "vi" | "audio" | "video";
 const STEP_TO_FUNCTION_CODE: Record<number, string> = {
   1: "GET_SUBTITLES_ORIGINAL",
   2: "TRANSLATE_BY_AI",
@@ -69,7 +72,7 @@ export class TranslateService {
     const created = await this.translateRepository.save(history);
 
     const queueJob = await this.translateQueue.add(
-      "translate-video",
+      TRANSLATE_QUEUE_NAME,
       { translateHistoryId: created.id },
       { attempts: 3, removeOnComplete: true, removeOnFail: 50 },
     );
@@ -155,6 +158,38 @@ export class TranslateService {
     return this.translateRepository.findOne({ where: { id } });
   }
 
+  parseArtifactType(type?: string): TranslateArtifactType {
+    if (type === "zh" || type === "vi" || type === "audio" || type === "video") {
+      return type;
+    }
+    throw new BadRequestException("type must be one of: zh, vi, audio, video");
+  }
+
+  resolveArtifact(resultPath: string, type: TranslateArtifactType): { absolutePath: string; contentType: string } {
+    const normalizedResultPath = this.normalizeResultPath(resultPath);
+    const workspaceDir = this.resolveWorkspaceDir(normalizedResultPath);
+    const workName = basename(workspaceDir);
+
+    let absolutePath = normalizedResultPath;
+    let contentType = "video/mp4";
+
+    if (type === "zh" || type === "vi") {
+      absolutePath = join(workspaceDir, "subtitles", `${type}.srt`);
+      contentType = "text/plain; charset=utf-8";
+    } else if (type === "audio") {
+      absolutePath = join(workspaceDir, "videos", `${workName}_voice.wav`);
+      contentType = "audio/wav";
+    } else if (extname(normalizedResultPath).toLowerCase() !== ".mp4") {
+      absolutePath = join(workspaceDir, "videos", `${workName}_vs_tm.mp4`);
+    }
+
+    if (!existsSync(absolutePath)) {
+      throw new NotFoundException(`Artifact not found for type ${type}`);
+    }
+
+    return { absolutePath, contentType };
+  }
+
   private normalizeSteps(stepNbr: number[]): number[] {
     const normalized = [...new Set(stepNbr)].sort((a, b) => a - b);
     if (normalized.length === 0) {
@@ -171,5 +206,29 @@ export class TranslateService {
       }
     }
     return normalized;
+  }
+
+  private normalizeResultPath(resultPath: string): string {
+    if (!resultPath || resultPath.trim().length === 0) {
+      throw new BadRequestException("resultPath is required");
+    }
+
+    const normalized = resolve(resultPath.trim());
+    if (!normalized.split(sep).includes("workspace")) {
+      throw new BadRequestException("resultPath must point to translate workspace");
+    }
+
+    return normalized;
+  }
+
+  private resolveWorkspaceDir(normalizedResultPath: string): string {
+    const normalizedSlashPath = normalizedResultPath.replaceAll("\\", "/");
+    const matched = normalizedSlashPath.match(/^(.*\/workspace\/[^/]+)(?:\/.*)?$/);
+
+    if (!matched || !matched[1]) {
+      throw new BadRequestException("resultPath must contain workspace/<workName>");
+    }
+
+    return matched[1].replaceAll("/", sep);
   }
 }

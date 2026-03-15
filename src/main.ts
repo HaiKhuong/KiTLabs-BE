@@ -10,6 +10,14 @@ import { AppModule } from "./app.module";
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
+  const corsOrigins = (process.env.CORS_ORIGIN ?? "http://localhost:5173,http://localhost:4173,http://localhost:3001")
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+  app.enableCors({
+    origin: corsOrigins,
+    credentials: true,
+  });
   app.use((req: Request & { requestId?: string }, res: Response, next: NextFunction) => {
     const headerRequestId = req.headers["x-request-id"];
     const requestId = typeof headerRequestId === "string" ? headerRequestId : randomUUID();

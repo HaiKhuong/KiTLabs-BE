@@ -5,10 +5,11 @@ import { User } from "../users/user.entity";
 import { Setting } from "./setting.entity";
 import { SettingsController } from "./settings.controller";
 import { SettingsService } from "./settings.service";
+import { UserSettingProfile } from "./user-setting-profile.entity";
 import { UserSetting } from "./user-setting.entity";
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Setting, UserSetting, User], "tool")],
+  imports: [TypeOrmModule.forFeature([Setting, UserSetting, UserSettingProfile, User], "tool")],
   controllers: [SettingsController],
   providers: [SettingsService],
   exports: [SettingsService],

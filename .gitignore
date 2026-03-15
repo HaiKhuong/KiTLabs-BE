@@ -28,3 +28,5 @@ temp/
 tools/video-pipeline/.venv/
 tools/video-pipeline/workspace/
 tools/video-pipeline/**/*.log
+
+.cursor
