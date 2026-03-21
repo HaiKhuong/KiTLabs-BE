@@ -3,6 +3,7 @@ import { Column, Entity, OneToMany } from "typeorm";
 import { BaseEntity } from "../../common/entities/base.entity";
 import { CreditHistory } from "../credits/credit-history.entity";
 import { DownloadHistory } from "../downloads/download-history.entity";
+import { VideoDownload } from "../downloads/video-download.entity";
 import { UserActionLog } from "../logs/user-action-log.entity";
 import { Notification } from "../notifications/notification.entity";
 import { TranslateHistory } from "../translate/translate-history.entity";
@@ -54,6 +55,9 @@ export class User extends BaseEntity {
 
   @OneToMany(() => DownloadHistory, (history) => history.user)
   downloadHistories!: DownloadHistory[];
+
+  @OneToMany(() => VideoDownload, (video) => video.user)
+  videoDownloads!: VideoDownload[];
 
   @OneToMany(() => Notification, (notification) => notification.user)
   notifications!: Notification[];

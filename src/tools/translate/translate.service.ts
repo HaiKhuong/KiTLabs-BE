@@ -75,7 +75,7 @@ export class TranslateService {
     const queueJob = await this.translateQueue.add(
       TRANSLATE_QUEUE_NAME,
       { translateHistoryId: created.id },
-      { attempts: 3, removeOnComplete: true, removeOnFail: 50 },
+      { attempts: 2, removeOnComplete: true, removeOnFail: 50 },
     );
 
     created.queueJobId = queueJob.id ? String(queueJob.id) : null;

@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import time
 import asyncio
+import sys
 import traceback
 from pathlib import Path
 
@@ -20,13 +21,19 @@ WHISPER_MODEL = "large-v3"
 WHISPER_LANGUAGE = "zh"
 GEMINI_MODEL_NAME = "gemini-2.5-flash"
 EDGE_TTS_VOICE = "vi-VN-HoaiMyNeural"
-EDGE_TTS_RATE = "+60%"
-EDGE_TTS_VOLUME = "+0%"
+EDGE_TTS_RATE = "+40%"
+EDGE_TTS_VOLUME = "+20%"
 EDGE_TTS_PITCH = "+0Hz"
+STEP3_AUTO_RATE_ENABLED = True
+TRANSLATION_CONTEXT = ""  # Custom translation context for Gemini prompt
+STEP3_AUTO_RATE_TRIGGER_CHARS_PER_SEC = 18.0
+STEP3_AUTO_RATE_BONUS_PERCENT = 20
+STEP3_RATE_MIN_PERCENT = -50
+STEP3_RATE_MAX_PERCENT = 95
 # Optional: set absolute ffmpeg.exe path here if needed.
 FFMPEG_PATH = ""
 
-WORK_ROOT = Path("workspace")
+WORK_ROOT = Path(r"C:\Users\haikh\Videos\VideoVietsub")
 WORK_NAME = "default"
 WORK_DIR = WORK_ROOT / WORK_NAME
 VIDEO_DIR = WORK_DIR / "videos"
@@ -46,6 +53,7 @@ SUBTITLE_OUTLINE = 2
 SUBTITLE_SHADOW = 2
 SUBTITLE_ALIGNMENT = 2
 SUBTITLE_MARGIN_V = 30
+SUBTITLE_UPPERCASE = False
 SUBTITLE_BG_BLUR_WIDTH_RATIO = 0.70
 SUBTITLE_BG_BLUR_HEIGHT = 120
 SUBTITLE_BG_BLUR_BOTTOM_OFFSET = 200
@@ -61,16 +69,24 @@ LOGO_OPACITY = 0.5
 ORIGINAL_AUDIO_VOLUME = 0.1
 NARRATION_AUDIO_VOLUME = 1.0
 SPEED_VIDEO = 1.0
-STEP1_VAD_FILTER = True
-STEP1_VAD_THRESHOLD = 0.45
-STEP1_MIN_SILENCE_MS = 500
-STEP1_MIN_SPEECH_MS = 180
-STEP1_SPEECH_PAD_MS = 120
-STEP1_NO_SPEECH_THRESHOLD = 0.7
-STEP1_LOGPROB_THRESHOLD = -1.0
-STEP1_CONDITION_ON_PREVIOUS_TEXT = False
 
-API_KEY = "AIzaSyC1W6ml6VlzqmQ6kLrgR6Tw2AGVeCv_MDc"
+STEP1_VAD_FILTER = True # Nếu False thì sẽ không dùng 4 key phía dưới
+STEP1_VAD_THRESHOLD = 0.45 # bật lọc voice activity (lọc im lặng/nhiễu trước khi nhận diện).
+STEP1_MIN_SILENCE_MS = 500 # độ nhạy VAD (cao hơn = khắt khe hơn với speech yếu).
+STEP1_MIN_SPEECH_MS = 500 # im lặng tối thiểu để tách câu.
+STEP1_SPEECH_PAD_MS = 200 # độ dài tối thiểu để coi là speech hợp lệ.
+
+STEP1_NO_SPEECH_THRESHOLD = 0.6 # ngưỡng bỏ qua đoạn “không phải speech”.
+STEP1_LOGPROB_THRESHOLD = -1.5 # ngưỡng tin cậy text Whisper (cao hơn = lọc mạnh hơn).
+STEP1_CONDITION_ON_PREVIOUS_TEXT = False # dùng ngữ cảnh câu trước hay không (ổn định vs dễ lan lỗi).
+
+STEP1_MAX_SUBTITLE_CHARS = 24 # số ký tự tối đa mỗi câu sau tách.
+STEP1_MIN_SUBTITLE_DURATION_MS = 280 # thời gian hiển thị tối thiểu mỗi câu.
+STEP1_SHORT_TEXT_MAX_CHARS = 16 # ngưỡng để coi là “câu ngắn”.
+STEP1_MIN_CHARS_PER_SEC = 2.2 # nếu cps thấp hơn ngưỡng, coi là câu ngắn bị dính khoảng trống.
+STEP1_TARGET_CHARS_PER_SEC = 5.5 # tốc độ mục tiêu khi siết lại timing câu ngắn (giữ đuôi, cắt đầu).
+
+API_KEY = "AIzaSyAbtSihI9Mb0cAcDaGTcR-b-5ofYsIj9p8"
 if API_KEY:
     GEMINI_CLIENT = genai.Client(api_key=API_KEY)
 else:
@@ -86,7 +102,17 @@ def log(message):
     line = f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {message}"
     with open(LOG_PATH, "a", encoding="utf8") as f:
         f.write(line + "\n")
-    print(message)
+    try:
+        print(message)
+    except UnicodeEncodeError:
+        # Windows console may use a non-Unicode code page (charmap), so fallback safely.
+        out = getattr(sys.stdout, "buffer", None)
+        if out is not None:
+            encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+            out.write((str(message) + "\n").encode(encoding, errors="replace"))
+            out.flush()
+        else:
+            print(str(message).encode("ascii", errors="replace").decode("ascii"))
 
 
 def file_ready(path):
@@ -246,7 +272,10 @@ def write_srt(blocks, out_path):
         for b in blocks:
             f.write(f"{b['index']}\n")
             f.write(f"{b['time']}\n")
-            f.write(f"{b['text']}\n\n")
+            text = str(b["text"])
+            if SUBTITLE_UPPERCASE:
+                text = text.upper()
+            f.write(f"{text}\n\n")
 
 
 def chunk_text_for_tts(text, max_chars=TTS_CHUNK_MAX_CHARS):
@@ -272,6 +301,213 @@ def chunk_text_for_tts(text, max_chars=TTS_CHUNK_MAX_CHARS):
     if current:
         parts.append(" ".join(current).strip())
     return parts
+
+
+def parse_percent_string(value, default_value=0.0):
+    raw = str(value or "").strip()
+    matched = re.match(r"^([+-]?\d+(?:\.\d+)?)%$", raw)
+    if not matched:
+        return float(default_value)
+    return float(matched.group(1))
+
+
+def format_percent_string(value):
+    rounded = int(round(float(value)))
+    return f"{'+' if rounded >= 0 else ''}{rounded}%"
+
+
+def resolve_base_tts_rate(raw_rate):
+    default_rate = "+60%"
+    raw = str(raw_rate or "").strip()
+    if not raw:
+        return default_rate
+
+    matched = re.match(r"^([+-]?\d+(?:\.\d+)?)%$", raw)
+    if matched:
+        return format_percent_string(float(matched.group(1)))
+
+    try:
+        # Allow plain numeric values like "20" as "+20%".
+        return format_percent_string(float(raw))
+    except Exception:
+        return default_rate
+
+
+def resolve_dynamic_tts_rate(text, subtitle_duration_ms):
+    base_rate = parse_percent_string(resolve_base_tts_rate(EDGE_TTS_RATE), default_value=60.0)
+    if not STEP3_AUTO_RATE_ENABLED or subtitle_duration_ms <= 0:
+        return format_percent_string(base_rate), False
+
+    compact_text = re.sub(r"\s+", "", str(text or ""))
+    duration_sec = max(subtitle_duration_ms / 1000.0, 0.001)
+    chars_per_sec = len(compact_text) / duration_sec
+    should_boost = chars_per_sec >= float(STEP3_AUTO_RATE_TRIGGER_CHARS_PER_SEC)
+    bonus = float(STEP3_AUTO_RATE_BONUS_PERCENT) if should_boost else 0.0
+    final_rate = max(float(STEP3_RATE_MIN_PERCENT), min(float(STEP3_RATE_MAX_PERCENT), base_rate + bonus))
+    return format_percent_string(final_rate), should_boost
+
+
+def split_subtitle_text(text, max_chars=STEP1_MAX_SUBTITLE_CHARS):
+    cleaned = re.sub(r"\s+", " ", str(text or "").strip())
+    if not cleaned:
+        return []
+
+    # Keep punctuation with each clause to preserve speech rhythm.
+    clauses = re.findall(r"[^，。！？；：,.!?;:]+[，。！？；：,.!?;:]?", cleaned)
+    if not clauses:
+        clauses = [cleaned]
+
+    chunks = []
+    current = ""
+    for clause in clauses:
+        clause = clause.strip()
+        if not clause:
+            continue
+        if len(clause) > max_chars:
+            if current:
+                chunks.append(current)
+                current = ""
+            for i in range(0, len(clause), max_chars):
+                piece = clause[i : i + max_chars].strip()
+                if piece:
+                    chunks.append(piece)
+            continue
+
+        if not current:
+            current = clause
+        elif len(current) + len(clause) <= max_chars:
+            current = f"{current}{clause}"
+        else:
+            chunks.append(current)
+            current = clause
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+def split_segment_to_timed_chunks(text, start_sec, end_sec, word_items=None):
+    chunks = split_subtitle_text(text)
+    if not chunks:
+        return []
+
+    start_ms = int(max(start_sec, 0) * 1000)
+    end_ms = int(max(end_sec, 0) * 1000)
+    if end_ms <= start_ms:
+        end_ms = start_ms + STEP1_MIN_SUBTITLE_DURATION_MS
+
+    if len(chunks) == 1:
+        return [(start_ms, end_ms, chunks[0])]
+
+    if word_items and len(word_items) >= len(chunks):
+        usable_words = [
+            (float(w[0]), float(w[1]), str(w[2]).strip())
+            for w in word_items
+            if w and len(w) >= 3 and w[0] is not None and w[1] is not None and float(w[1]) > float(w[0])
+        ]
+        usable_words = [w for w in usable_words if w[2]]
+        usable_words.sort(key=lambda x: x[0])
+
+        if len(usable_words) >= len(chunks):
+            total_words = len(usable_words)
+            total_chunk_chars = sum(max(len(c), 1) for c in chunks)
+            remaining_chars = total_chunk_chars
+            cursor_word_idx = 0
+            timed = []
+
+            for idx, chunk in enumerate(chunks):
+                is_last = idx == len(chunks) - 1
+                if is_last:
+                    next_word_idx = total_words
+                else:
+                    remaining_words = total_words - cursor_word_idx
+                    remaining_chunks = len(chunks) - idx
+                    chunk_weight = max(len(chunk), 1)
+                    estimated = int(round((chunk_weight / max(remaining_chars, 1)) * remaining_words))
+                    estimated = max(1, estimated)
+                    max_allow = remaining_words - (remaining_chunks - 1)
+                    take_words = min(estimated, max_allow)
+                    next_word_idx = cursor_word_idx + take_words
+
+                selected = usable_words[cursor_word_idx:next_word_idx]
+                if not selected:
+                    selected = [usable_words[min(cursor_word_idx, total_words - 1)]]
+                    next_word_idx = min(cursor_word_idx + 1, total_words)
+
+                chunk_start = int(selected[0][0] * 1000)
+                chunk_end = int(selected[-1][1] * 1000)
+                timed.append((chunk_start, chunk_end, chunk))
+
+                cursor_word_idx = next_word_idx
+                remaining_chars = max(0, remaining_chars - max(len(chunk), 1))
+
+            min_required = STEP1_MIN_SUBTITLE_DURATION_MS * len(chunks)
+            segment_end_bound = max(end_ms, start_ms + min_required)
+            fixed = []
+            cursor = start_ms
+            for idx, (chunk_start, chunk_end, chunk_text) in enumerate(timed):
+                remaining_after = len(timed) - idx - 1
+                latest_end = segment_end_bound - STEP1_MIN_SUBTITLE_DURATION_MS * remaining_after
+                chunk_start = max(chunk_start, cursor)
+                chunk_end = max(chunk_end, chunk_start + STEP1_MIN_SUBTITLE_DURATION_MS)
+                chunk_end = min(chunk_end, latest_end)
+                if chunk_end <= chunk_start:
+                    chunk_end = chunk_start + STEP1_MIN_SUBTITLE_DURATION_MS
+                fixed.append((chunk_start, chunk_end, chunk_text))
+                cursor = chunk_end
+            return fixed
+
+    total_span = end_ms - start_ms
+    total_weight = sum(max(len(c), 1) for c in chunks)
+    min_required = STEP1_MIN_SUBTITLE_DURATION_MS * len(chunks)
+    if total_span < min_required:
+        total_span = min_required
+        end_ms = start_ms + total_span
+
+    timed = []
+    cursor = start_ms
+    for idx, chunk in enumerate(chunks):
+        if idx == len(chunks) - 1:
+            chunk_end = end_ms
+        else:
+            ratio = max(len(chunk), 1) / total_weight
+            duration = max(STEP1_MIN_SUBTITLE_DURATION_MS, int(total_span * ratio))
+            chunk_end = min(end_ms - STEP1_MIN_SUBTITLE_DURATION_MS * (len(chunks) - idx - 1), cursor + duration)
+        if chunk_end <= cursor:
+            chunk_end = cursor + STEP1_MIN_SUBTITLE_DURATION_MS
+        timed.append((cursor, chunk_end, chunk))
+        cursor = chunk_end
+    return timed
+
+
+def tighten_sparse_subtitle_timing(start_ms, end_ms, text):
+    raw_text = str(text or "")
+    compact = re.sub(r"\s+", "", raw_text).strip()
+    text_len = len(compact)
+    duration_ms = max(int(end_ms) - int(start_ms), 1)
+
+    if text_len == 0:
+        return int(start_ms), int(end_ms), False
+
+    duration_sec = duration_ms / 1000.0
+    chars_per_sec = text_len / duration_sec
+    is_short_text = text_len <= int(STEP1_SHORT_TEXT_MAX_CHARS)
+    is_too_sparse = chars_per_sec < float(STEP1_MIN_CHARS_PER_SEC)
+    if not (is_short_text and is_too_sparse):
+        return int(start_ms), int(end_ms), False
+
+    target_ms = int(round((text_len / max(float(STEP1_TARGET_CHARS_PER_SEC), 0.1)) * 1000))
+    max_short_ms = int(round((int(STEP1_SHORT_TEXT_MAX_CHARS) / max(float(STEP1_TARGET_CHARS_PER_SEC), 0.1)) * 1000))
+    target_ms = min(target_ms, max_short_ms)
+    target_ms = max(int(STEP1_MIN_SUBTITLE_DURATION_MS), target_ms)
+
+    # Keep the speech end anchor and trim leading silence.
+    # This matches real playback better for short phrases that only occur near segment end.
+    tightened_start = max(int(start_ms), int(end_ms) - target_ms)
+    if int(end_ms) <= tightened_start:
+        tightened_start = int(end_ms) - int(STEP1_MIN_SUBTITLE_DURATION_MS)
+    tightened_start = max(0, tightened_start)
+    changed = tightened_start > int(start_ms)
+    return int(tightened_start), int(end_ms), changed
 
 
 def extract_json_array(text):
@@ -341,6 +577,39 @@ def build_subtitle_filter(ass_path):
         f"[main][blurred]overlay=(W-w)/2:H-{SUBTITLE_BG_BLUR_BOTTOM_OFFSET},"
         f"ass='{filter_path}'[vsub]"
     )
+
+
+def normalize_ass_colour(raw_value):
+    value = str(raw_value or "").strip()
+    if not value:
+        return "&H00FFFFFF"
+
+    # ASS color format: &HAABBGGRR
+    # Accept CSS style #RRGGBB / #AARRGGBB and convert to ASS order.
+    if value.startswith("#"):
+        hex_value = value[1:]
+        if len(hex_value) == 6:
+            rr = hex_value[0:2]
+            gg = hex_value[2:4]
+            bb = hex_value[4:6]
+            return f"&H00{bb}{gg}{rr}".upper()
+        if len(hex_value) == 8:
+            aa = hex_value[0:2]
+            rr = hex_value[2:4]
+            gg = hex_value[4:6]
+            bb = hex_value[6:8]
+            return f"&H{aa}{bb}{gg}{rr}".upper()
+        return "&H00FFFFFF"
+
+    if value.lower().startswith("&h"):
+        body = value[2:]
+        if len(body) == 6:
+            return f"&H00{body}".upper()
+        if len(body) == 8:
+            return f"&H{body}".upper()
+        return "&H00FFFFFF"
+
+    return "&H00FFFFFF"
 
 
 def build_step6_render_command(video_path, out_path, subtitle_filter, use_gpu, logo_path=None):
@@ -474,6 +743,7 @@ def step1_transcribe(video_path):
             "log_prob_threshold": float(STEP1_LOGPROB_THRESHOLD),
             "condition_on_previous_text": bool(STEP1_CONDITION_ON_PREVIOUS_TEXT),
             "temperature": 0.0,
+            "word_timestamps": True,
         }
         if STEP1_VAD_FILTER:
             transcribe_kwargs["vad_parameters"] = {
@@ -485,13 +755,51 @@ def step1_transcribe(video_path):
         segments, _info = whisper_model.transcribe(str(step1_audio), **transcribe_kwargs)
         count = 0
         last_end_ms = 0
+        prev_end_sec = 0.0
         with open(out_path, "w", encoding="utf8") as f:
             for i, segment in enumerate(tqdm(segments, desc=f"Transcribe ({device_name})")):
-                count = i + 1
-                last_end_ms = int(float(segment.end) * 1000)
-                f.write(f"{count}\n")
-                f.write(f"{fmt_time(segment.start)} --> {fmt_time(segment.end)}\n")
-                f.write(f"{segment.text.strip()}\n\n")
+                seg_start = float(segment.start)
+                seg_end = float(segment.end)
+                words = getattr(segment, "words", None) or []
+                timed_words = [
+                    (float(w.start), float(w.end), str(getattr(w, "word", "") or "").strip())
+                    for w in words
+                    if getattr(w, "start", None) is not None and getattr(w, "end", None) is not None
+                ]
+                if timed_words:
+                    seg_start = min(start for start, _end, _text in timed_words)
+                    seg_end = max(end for _start, end, _text in timed_words)
+
+                # Prevent local drift from producing overlaps/inversions in the middle of the video.
+                if seg_start < prev_end_sec:
+                    seg_start = prev_end_sec
+                if seg_end <= seg_start:
+                    seg_end = seg_start + 0.2
+
+                split_chunks = split_segment_to_timed_chunks(segment.text.strip(), seg_start, seg_end, timed_words)
+                if not split_chunks:
+                    continue
+
+                for chunk_start_ms, chunk_end_ms, chunk_text in split_chunks:
+                    chunk_start_ms, chunk_end_ms, tightened = tighten_sparse_subtitle_timing(
+                        chunk_start_ms,
+                        chunk_end_ms,
+                        chunk_text,
+                    )
+                    chunk_start_sec = max(prev_end_sec, chunk_start_ms / 1000.0)
+                    chunk_end_sec = max(chunk_end_ms / 1000.0, chunk_start_sec + 0.2)
+                    if tightened:
+                        log(
+                            "Step1 timing tightened for sparse short subtitle: "
+                            f"'{chunk_text[:40]}' -> {chunk_start_sec:.3f}s..{chunk_end_sec:.3f}s"
+                        )
+                    prev_end_sec = chunk_end_sec
+                    last_end_ms = int(chunk_end_sec * 1000)
+                    count += 1
+                    f.write(f"{count}\n")
+                    f.write(f"{fmt_time(chunk_start_sec)} --> {fmt_time(chunk_end_sec)}\n")
+                    f.write(f"{chunk_text}\n\n")
+
                 if count % 50 == 0:
                     log(
                         f"Step1 {device_name}: {count} segments, "
@@ -528,20 +836,34 @@ def step1_transcribe(video_path):
 
 def translate_batch_with_gemini(batch, batch_start_index):
     payload = [{"id": i, "text": b["text"]} for i, b in enumerate(batch)]
-    prompt = (
+    
+    # Base prompt
+    prompt_parts = [
         "Translate Chinese subtitles into Vietnamese.\n"
-        "Context: Chinese historical / wuxia / xianxia animation.\n"
         "Write very concise, subtitle-friendly Vietnamese.\n"
-        "Prefer short words and compact sentence structure; remove filler words.\n"
         "Keep original meaning and emotional tone, but simplify phrasing.\n"
         "Preserve historical tone, titles, names, and relationships.\n"
-        "Use Sino-Vietnamese (Han-Viet) pronouns/family terms when appropriate.\n"
-        "Examples: Người Tôm => Hà Nhân, Thượng vị => hoàng thượng, cha => phụ thân, mẹ => mẫu thân, anh trai => huynh trưởng, em trai => đệ đệ.\n"
+    ]
+    
+    # Add custom context if provided, otherwise use default
+    if TRANSLATION_CONTEXT and TRANSLATION_CONTEXT.strip():
+        prompt_parts.append(f"{TRANSLATION_CONTEXT.strip()}\n")
+    else:
+        # Default context for Chinese historical/wuxia/xianxia
+        prompt_parts.extend([
+            "Use Sino-Vietnamese (Han-Viet) pronouns/family terms when appropriate.\n"
+            "Context: Chinese historical / wuxia / xianxia animation.\n"
+            "Examples: Người Tôm => Hà Nhân, Thượng vị => hoàng thượng, cha => phụ thân, mẹ => mẫu thân, anh trai => huynh trưởng, em trai => đệ đệ.\n"
+        ])
+    
+    prompt_parts.extend([
         "Avoid verbose or literary wording unless required by context.\n"
         "Do NOT explain anything.\n"
         "Return ONLY JSON array, exact schema: [{\"id\":0,\"vi\":\"...\"}]\n"
         f"Input JSON:\n{json.dumps(payload, ensure_ascii=False)}"
-    )
+    ])
+    
+    prompt = "".join(prompt_parts)
 
     debug_dir = LOG_DIR / "gemini_debug"
     debug_dir.mkdir(parents=True, exist_ok=True)
@@ -612,11 +934,11 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
     log("Step3: Generating voice with edge-tts (timeline by SRT)...")
     import edge_tts
 
-    async def _generate_edge_tts_mp3(text, out_path):
+    async def _generate_edge_tts_mp3(text, out_path, rate):
         communicate = edge_tts.Communicate(
             text=text,
             voice=EDGE_TTS_VOICE,
-            rate=EDGE_TTS_RATE,
+            rate=rate,
             volume=EDGE_TTS_VOLUME,
             pitch=EDGE_TTS_PITCH,
         )
@@ -692,13 +1014,32 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
 
         raw_mp3_path = chunk_dir / f"raw_{i:04d}.mp3"
         final_seg_path = chunk_dir / f"part_{i:04d}.wav"
+        tts_rate, boosted = resolve_dynamic_tts_rate(subtitle_text, subtitle_duration_ms)
+        if boosted:
+            log(f"Step3: subtitle {i} auto-rate boost -> {tts_rate}")
 
         def _call():
-            asyncio.run(_generate_edge_tts_mp3(subtitle_text, raw_mp3_path))
+            asyncio.run(_generate_edge_tts_mp3(subtitle_text, raw_mp3_path, tts_rate))
 
         retry_call(_call, f"TTS subtitle {i}")
 
-        # Force segment duration to exactly match subtitle duration (trim/pad).
+        # Fit narration to subtitle slot:
+        # - if too long, speed up first (atempo) to reduce hard cut risk
+        # - then pad/trim to exact slot duration
+        raw_segment_ms = get_media_duration_ms(raw_mp3_path)
+        fit_filters = []
+        if raw_segment_ms and raw_segment_ms > subtitle_duration_ms:
+            stretch_factor = raw_segment_ms / max(subtitle_duration_ms, 1)
+            if stretch_factor > 1.02:
+                fit_filters.append(build_atempo_filter(stretch_factor))
+
+        fit_filters.append(f"apad=pad_dur={subtitle_duration_ms / 1000:.3f}")
+        fit_filters.append(f"atrim=duration={subtitle_duration_ms / 1000:.3f}")
+        # Add a tiny release to avoid abrupt edge click on exact trim.
+        fade_d = min(0.08, max(0.02, subtitle_duration_ms / 1000.0 * 0.2))
+        fade_start = max(0.0, subtitle_duration_ms / 1000.0 - fade_d)
+        fit_filters.append(f"afade=t=out:st={fade_start:.3f}:d={fade_d:.3f}")
+
         run_command(
             [
                 FFMPEG_BIN,
@@ -706,10 +1047,7 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
                 "-i",
                 str(raw_mp3_path),
                 "-af",
-                (
-                    f"apad=pad_dur={subtitle_duration_ms / 1000:.3f},"
-                    f"atrim=duration={subtitle_duration_ms / 1000:.3f}"
-                ),
+                ",".join(fit_filters),
                 "-ac",
                 "1",
                 "-ar",
@@ -922,6 +1260,12 @@ def parse_cli_args():
     parser.add_argument("--subtitle-alignment", type=int, default=SUBTITLE_ALIGNMENT)
     parser.add_argument("--subtitle-margin-v", type=int, default=SUBTITLE_MARGIN_V)
     parser.add_argument(
+        "--subtitle-uppercase",
+        choices=["on", "off"],
+        default="on" if SUBTITLE_UPPERCASE else "off",
+        help="Force subtitle text to uppercase when writing SRT files.",
+    )
+    parser.add_argument(
         "--subtitle-bg-blur-width-ratio", type=float, default=SUBTITLE_BG_BLUR_WIDTH_RATIO
     )
     parser.add_argument("--subtitle-bg-blur-height", type=int, default=SUBTITLE_BG_BLUR_HEIGHT)
@@ -985,6 +1329,17 @@ def parse_cli_args():
     parser.add_argument("--edge-tts-volume", default=EDGE_TTS_VOLUME)
     parser.add_argument("--edge-tts-pitch", default=EDGE_TTS_PITCH)
     parser.add_argument(
+        "--auto-speed",
+        choices=["on", "off"],
+        default="on" if STEP3_AUTO_RATE_ENABLED else "off",
+        help="Enable/disable dynamic TTS speed boost based on subtitle density.",
+    )
+    parser.add_argument(
+        "--translation-context",
+        default=TRANSLATION_CONTEXT,
+        help="Custom context/instructions for Gemini translation. Overrides default Han-Viet prompt.",
+    )
+    parser.add_argument(
         "--step",
         default=None,
         help="Run only selected steps: N or A,B (inclusive). Example: --step 3 or --step 1,5",
@@ -1003,6 +1358,7 @@ def apply_cli_config(args):
     global SUBTITLE_SHADOW
     global SUBTITLE_ALIGNMENT
     global SUBTITLE_MARGIN_V
+    global SUBTITLE_UPPERCASE
     global SUBTITLE_BG_BLUR_WIDTH_RATIO
     global SUBTITLE_BG_BLUR_HEIGHT
     global SUBTITLE_BG_BLUR_BOTTOM_OFFSET
@@ -1018,15 +1374,9 @@ def apply_cli_config(args):
     global ORIGINAL_AUDIO_VOLUME
     global NARRATION_AUDIO_VOLUME
     global SPEED_VIDEO
-    global STEP1_VAD_FILTER
-    global STEP1_VAD_THRESHOLD
-    global STEP1_MIN_SILENCE_MS
-    global STEP1_MIN_SPEECH_MS
-    global STEP1_SPEECH_PAD_MS
-    global STEP1_NO_SPEECH_THRESHOLD
-    global STEP1_LOGPROB_THRESHOLD
-    global STEP1_CONDITION_ON_PREVIOUS_TEXT
     global EDGE_TTS_VOICE
+    global STEP3_AUTO_RATE_ENABLED
+    global TRANSLATION_CONTEXT
     WHISPER_LANGUAGE = str(args.whisper_language).strip() or None
     global EDGE_TTS_RATE
     global EDGE_TTS_VOLUME
@@ -1034,12 +1384,14 @@ def apply_cli_config(args):
 
     SUBTITLE_FONT = args.subtitle_font
     SUBTITLE_FONTSIZE = args.subtitle_fontsize
-    SUBTITLE_PRIMARY_COLOUR = args.subtitle_primary_colour
-    SUBTITLE_OUTLINE_COLOUR = args.subtitle_outline_colour
+    SUBTITLE_PRIMARY_COLOUR = normalize_ass_colour(args.subtitle_primary_colour)
+    SUBTITLE_OUTLINE_COLOUR = normalize_ass_colour(args.subtitle_outline_colour)
     SUBTITLE_OUTLINE = args.subtitle_outline
     SUBTITLE_SHADOW = args.subtitle_shadow
     SUBTITLE_ALIGNMENT = args.subtitle_alignment
     SUBTITLE_MARGIN_V = args.subtitle_margin_v
+    SUBTITLE_UPPERCASE = args.subtitle_uppercase == "on"
+
     SUBTITLE_BG_BLUR_WIDTH_RATIO = args.subtitle_bg_blur_width_ratio
     SUBTITLE_BG_BLUR_HEIGHT = args.subtitle_bg_blur_height
     SUBTITLE_BG_BLUR_BOTTOM_OFFSET = args.subtitle_bg_blur_bottom_offset
@@ -1047,26 +1399,23 @@ def apply_cli_config(args):
     SUBTITLE_BG_BLUR_LUMA_POWER = args.subtitle_bg_blur_luma_power
     SUBTITLE_BG_BLUR_CHROMA_RADIUS = args.subtitle_bg_blur_chroma_radius
     SUBTITLE_BG_BLUR_CHROMA_POWER = args.subtitle_bg_blur_chroma_power
+
     LOGO_FILE = args.logo_file
     LOGO_WIDTH = args.logo_width
     LOGO_MARGIN_X = args.logo_margin_x
     LOGO_MARGIN_Y = args.logo_margin_y
     LOGO_OPACITY = args.logo_opacity
+
     ORIGINAL_AUDIO_VOLUME = args.original_volume
     NARRATION_AUDIO_VOLUME = args.narration_volume
     SPEED_VIDEO = args.speed_video
-    STEP1_VAD_FILTER = args.step1_vad == "on"
-    STEP1_VAD_THRESHOLD = args.step1_vad_threshold
-    STEP1_MIN_SILENCE_MS = args.step1_min_silence_ms
-    STEP1_MIN_SPEECH_MS = args.step1_min_speech_ms
-    STEP1_SPEECH_PAD_MS = args.step1_speech_pad_ms
-    STEP1_NO_SPEECH_THRESHOLD = args.step1_no_speech_threshold
-    STEP1_LOGPROB_THRESHOLD = args.step1_logprob_threshold
-    STEP1_CONDITION_ON_PREVIOUS_TEXT = args.step1_condition_on_previous_text == "on"
+    
     EDGE_TTS_VOICE = args.edge_tts_voice
-    EDGE_TTS_RATE = args.edge_tts_rate
+    EDGE_TTS_RATE = resolve_base_tts_rate(args.edge_tts_rate)
     EDGE_TTS_VOLUME = args.edge_tts_volume
     EDGE_TTS_PITCH = args.edge_tts_pitch
+    STEP3_AUTO_RATE_ENABLED = args.auto_speed == "on"
+    TRANSLATION_CONTEXT = args.translation_context or ""
 
 
 def parse_step_range(step_arg, min_step=1, max_step=6):
@@ -1190,7 +1539,7 @@ def run_pipeline(video, step_arg=None):
         final = step7_apply_speed(final)
         if not file_ready(final):
             raise RuntimeError("Final video render failed.")
-        cleanup_step6_intermediate_files()
+        # cleanup_step6_intermediate_files()
         log(f"DONE: {final}")
         last_output = final
     else:
