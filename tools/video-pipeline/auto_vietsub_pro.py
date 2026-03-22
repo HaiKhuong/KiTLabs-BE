@@ -71,14 +71,17 @@ NARRATION_AUDIO_VOLUME = 1.0
 SPEED_VIDEO = 1.0
 
 STEP1_VAD_FILTER = True # Nếu False thì sẽ không dùng 4 key phía dưới
-STEP1_VAD_THRESHOLD = 0.45 # bật lọc voice activity (lọc im lặng/nhiễu trước khi nhận diện).
-STEP1_MIN_SILENCE_MS = 500 # độ nhạy VAD (cao hơn = khắt khe hơn với speech yếu).
-STEP1_MIN_SPEECH_MS = 500 # im lặng tối thiểu để tách câu.
-STEP1_SPEECH_PAD_MS = 200 # độ dài tối thiểu để coi là speech hợp lệ.
+# Profile “nhẹ” (giọng nhỏ / ASMR): VAD nhạy hơn, giữ đoạn nói ngắn, Whisper ít bỏ qua đoạn yếu.
+# Override: --step1-vad-threshold, --step1-min-silence-ms, --step1-min-speech-ms, --step1-speech-pad-ms,
+#           --step1-no-speech-threshold, --step1-logprob-threshold
+STEP1_VAD_THRESHOLD = 0.35 # Silero: xác suất tối thiểu để coi là speech (thấp hơn = nhạy hơn với giọng yếu).
+STEP1_MIN_SILENCE_MS = 400 # im lặng tối thiểu (ms) để tách segment VAD (cao = ít tách hơn).
+STEP1_MIN_SPEECH_MS = 280 # speech tối thiểu (ms); giảm để không nuốt câu ngắn/nói nhỏ.
+STEP1_SPEECH_PAD_MS = 320 # lề trước/sau mỗi đoạn speech (ms); tăng giúp bắt đầu/cuối câu nhỏ.
 
-STEP1_NO_SPEECH_THRESHOLD = 0.6 # ngưỡng bỏ qua đoạn “không phải speech”.
-STEP1_LOGPROB_THRESHOLD = -1.5 # ngưỡng tin cậy text Whisper (cao hơn = lọc mạnh hơn).
-STEP1_CONDITION_ON_PREVIOUS_TEXT = False # dùng ngữ cảnh câu trước hay không (ổn định vs dễ lan lỗi).
+STEP1_NO_SPEECH_THRESHOLD = 0.78 # Whisper: chỉ lọc “no speech” khi prob rất cao (cao hơn = giữ nhiều đoạn yếu hơn).
+STEP1_LOGPROB_THRESHOLD = -2.0 # Whisper: avg logprob; âm hơn = chấp nhận đoạn tin cậy thấp hơn (ít cắt hơn).
+STEP1_CONDITION_ON_PREVIOUS_TEXT = False # True có thể ổn định câu liền kề nhưng dễ lan lỗi sang đoạn sau.
 
 STEP1_MAX_SUBTITLE_CHARS = 24 # số ký tự tối đa mỗi câu sau tách.
 STEP1_MIN_SUBTITLE_DURATION_MS = 280 # thời gian hiển thị tối thiểu mỗi câu.

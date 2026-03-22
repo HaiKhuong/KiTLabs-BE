@@ -35,13 +35,8 @@ export class CreateTranslateJobDto {
 
   @ApiPropertyOptional({
     description: "Optional translate command options mapped to python CLI flags.",
-    type: "object",
-    example: {
-      localVideoPath: "D:/videos/input.mp4",
-      edgeTtsVoice: "vi-VN-HoaiMyNeural",
-      speedVideo: 1.1,
-      subtitleFont: "Arial",
-    },
+    type: TranslateEngineConfigDto,
+    example: new TranslateEngineConfigDto(),
   })
   @IsOptional()
   @ValidateNested()

@@ -267,4 +267,8 @@ export class TranslateEngineConfigDto {
   @IsOptional()
   @IsString()
   edge_tts_pitch?: string;
+
+  @IsOptional()
+  @IsString()
+  translationContext?: string;
 }
