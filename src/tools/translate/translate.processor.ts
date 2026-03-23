@@ -249,8 +249,9 @@ export class TranslateProcessor extends WorkerHost {
 
   private resolveVideoInputPath(engineConfig: Record<string, unknown>): string {
     const localPath = this.pickConfigValue(engineConfig, ["localVideoPath", "local_video_path"]);
+
     if (typeof localPath === "string" && localPath.trim().length > 0) {
-      return localPath.trim();
+      return resolve(localPath.trim()); // 🔥 FIX
     }
 
     throw new Error("Missing local video path. Provide engineConfig.localVideoPath or engineConfig.local_video_path.");
