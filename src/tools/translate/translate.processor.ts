@@ -170,6 +170,10 @@ export class TranslateProcessor extends WorkerHost {
         const child = spawn(pythonBin, args, {
           cwd: scriptDir,
           windowsHide: true,
+          env: {
+            HOME: "/home/haikhuong",
+            XDG_CACHE_HOME: "/home/haikhuong/.cache",
+          },
         });
 
         this.logger.log(`Python process started (pid=${child.pid ?? "unknown"})`);
