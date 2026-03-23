@@ -33,7 +33,7 @@ STEP3_RATE_MAX_PERCENT = 95
 # Optional: set absolute ffmpeg.exe path here if needed.
 FFMPEG_PATH = ""
 
-WORK_ROOT = Path(r"C:\Users\haikh\Videos\VideoVietsub")
+WORK_ROOT = Path("/mnt/c/Users/haikh/Videos/VideoVietsub")
 WORK_NAME = "default"
 WORK_DIR = WORK_ROOT / WORK_NAME
 VIDEO_DIR = WORK_DIR / "videos"
