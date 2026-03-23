@@ -25,8 +25,8 @@ async function bootstrap() {
     res.setHeader("x-request-id", requestId);
     next();
   });
-  app.use(json({ limit: process.env.JSON_LIMIT ?? "20mb" }));
-  app.use(urlencoded({ limit: process.env.JSON_LIMIT ?? "20mb", extended: true }));
+  app.use(json({ limit: process.env.JSON_LIMIT ?? "500mb" }));
+  app.use(urlencoded({ limit: process.env.JSON_LIMIT ?? "500mb", extended: true }));
   app.useGlobalPipes(
     new ValidationPipe({
       whitelist: true,
