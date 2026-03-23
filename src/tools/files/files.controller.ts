@@ -26,16 +26,15 @@ const resolveUploadDestination = (req: UploadRequest): string => {
 };
 
 const sanitizeFileBaseName = (name: string): string =>
-  name.replace(/[\\/:*?"<>|]/g, "_").replace(/\s+/g, " ").trim();
+  name
+    .replace(/[\\/:*?"<>|]/g, "_")
+    .replace(/\s+/g, " ")
+    .trim();
 
 const hasValidUserId = (req: UploadRequest): boolean =>
   typeof req.query.userId === "string" && req.query.userId.replace(/[^a-zA-Z0-9-_]/g, "").length > 0;
 
-const buildStoredFileName = (
-  destination: string,
-  originalName: string,
-  allowOverwriteExisting: boolean,
-): string => {
+const buildStoredFileName = (destination: string, originalName: string, allowOverwriteExisting: boolean): string => {
   const fileExt = extname(originalName);
   const rawBaseName = basename(originalName, fileExt);
   const safeBaseName = sanitizeFileBaseName(rawBaseName) || `upload_${Date.now()}`;
@@ -69,6 +68,9 @@ export class FilesController {
         destination: (req, _file, cb) => {
           const uploadRequest = req as UploadRequest;
           const destination = resolveUploadDestination(uploadRequest);
+
+          console.log("UPLOAD DEST:", destination);
+
           if (!existsSync(destination)) {
             mkdirSync(destination, { recursive: true });
           }
@@ -84,7 +86,11 @@ export class FilesController {
       limits: { fileSize: Number(process.env.UPLOAD_MAX_BYTES ?? 500000000) },
     }),
   )
-  upload(@UploadedFile() file: Express.Multer.File, @Query("folder") folder?: string, @Query("userId") userId?: string) {
+  upload(
+    @UploadedFile() file: Express.Multer.File,
+    @Query("folder") folder?: string,
+    @Query("userId") userId?: string,
+  ) {
     this.filesService.ensureUploadFolder(userId ? `${folder ?? "videos"}_${userId}` : (folder ?? "videos"));
     if (!file) {
       throw new BadRequestException("file is required");
