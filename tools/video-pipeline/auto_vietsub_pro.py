@@ -89,7 +89,7 @@ STEP1_SHORT_TEXT_MAX_CHARS = 16 # ngưỡng để coi là “câu ngắn”.
 STEP1_MIN_CHARS_PER_SEC = 2.2 # nếu cps thấp hơn ngưỡng, coi là câu ngắn bị dính khoảng trống.
 STEP1_TARGET_CHARS_PER_SEC = 5.5 # tốc độ mục tiêu khi siết lại timing câu ngắn (giữ đuôi, cắt đầu).
 
-API_KEY = "AIzaSyD0Ef0Ot65rhV9qsAhKcpsRN01sE9i_Bwo"
+API_KEY = "AIzaSyAPA44fWyvZrp76kSgEPXKUoW6B9ci0JIA"
 if API_KEY:
     GEMINI_CLIENT = genai.Client(api_key=API_KEY)
 else:
