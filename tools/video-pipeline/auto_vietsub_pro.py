@@ -24,7 +24,7 @@ from tqdm import tqdm
 
 WHISPER_MODEL = "large-v3"
 WHISPER_LANGUAGE = "zh"
-GEMINI_MODEL_NAME = "gemini-3-flash"
+GEMINI_MODEL_NAME = "gemini-2.5-flash"
 EDGE_TTS_VOICE = "vi-VN-HoaiMyNeural"
 EDGE_TTS_RATE = "+40%"
 EDGE_TTS_VOLUME = "+20%"

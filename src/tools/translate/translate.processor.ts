@@ -96,6 +96,7 @@ const OPTION_MAPPINGS: Array<{
   { cliFlag: "--edge-tts-rate", keys: ["edgeTtsRate", "edge_tts_rate"], allowedTypes: ["string"] },
   { cliFlag: "--auto-speed", keys: ["autoSpeed", "auto_speed"], allowedTypes: ["string"] },
   { cliFlag: "--translation-context", keys: ["translationContext", "translation_context"], allowedTypes: ["string"] },
+  { cliFlag: "--mode", keys: ["mode", "mode"], allowedTypes: ["string"] },
 ];
 
 @Processor(TRANSLATE_QUEUE_NAME)
