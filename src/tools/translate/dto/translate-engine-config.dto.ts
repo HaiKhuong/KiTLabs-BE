@@ -271,4 +271,8 @@ export class TranslateEngineConfigDto {
   @IsOptional()
   @IsString()
   translationContext?: string;
+
+  @IsOptional()
+  @IsString()
+  mode?: string;
 }
