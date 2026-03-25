@@ -69,8 +69,6 @@ export class FilesController {
           const uploadRequest = req as UploadRequest;
           const destination = resolveUploadDestination(uploadRequest);
 
-          console.log("UPLOAD DEST:", destination);
-
           if (!existsSync(destination)) {
             mkdirSync(destination, { recursive: true });
           }

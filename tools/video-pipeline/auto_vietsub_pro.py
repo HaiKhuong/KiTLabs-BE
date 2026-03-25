@@ -10,6 +10,11 @@ import sys
 import traceback
 from pathlib import Path
 
+try:
+    from dotenv import load_dotenv
+except ImportError:
+    load_dotenv = None
+
 from google import genai
 from tqdm import tqdm
 
@@ -19,7 +24,7 @@ from tqdm import tqdm
 
 WHISPER_MODEL = "large-v3"
 WHISPER_LANGUAGE = "zh"
-GEMINI_MODEL_NAME = "gemini-2.5-flash"
+GEMINI_MODEL_NAME = "gemini-3-flash"
 EDGE_TTS_VOICE = "vi-VN-HoaiMyNeural"
 EDGE_TTS_RATE = "+40%"
 EDGE_TTS_VOLUME = "+20%"
@@ -71,9 +76,9 @@ NARRATION_AUDIO_VOLUME = 1.0
 SPEED_VIDEO = 1.0
 
 STEP1_VAD_FILTER = True # Nếu False thì sẽ không dùng 4 key phía dưới
-# Profile “nhẹ” (giọng nhỏ / ASMR): VAD nhạy hơn, giữ đoạn nói ngắn, Whisper ít bỏ qua đoạn yếu.
-# Override: --step1-vad-threshold, --step1-min-silence-ms, --step1-min-speech-ms, --step1-speech-pad-ms,
-#           --step1-no-speech-threshold, --step1-logprob-threshold
+# Mặc định CLI: --mode basic (nhẹ, giọng nhỏ/ASMR) hoặc --mode advance (khắc khe hơn). Có thể ghi đè từng tham số.
+# Override: --mode, --step1-vad-threshold, --step1-min-silence-ms, --step1-min-speech-ms, --step1-speech-pad-ms,
+#           --step1-no-speech-threshold, --step1-logprob-threshold, --step1-condition-on-previous-text
 STEP1_VAD_THRESHOLD = 0.35 # Silero: xác suất tối thiểu để coi là speech (thấp hơn = nhạy hơn với giọng yếu).
 STEP1_MIN_SILENCE_MS = 400 # im lặng tối thiểu (ms) để tách segment VAD (cao = ít tách hơn).
 STEP1_MIN_SPEECH_MS = 280 # speech tối thiểu (ms); giảm để không nuốt câu ngắn/nói nhỏ.
@@ -89,7 +94,42 @@ STEP1_SHORT_TEXT_MAX_CHARS = 16 # ngưỡng để coi là “câu ngắn”.
 STEP1_MIN_CHARS_PER_SEC = 2.2 # nếu cps thấp hơn ngưỡng, coi là câu ngắn bị dính khoảng trống.
 STEP1_TARGET_CHARS_PER_SEC = 5.5 # tốc độ mục tiêu khi siết lại timing câu ngắn (giữ đuôi, cắt đầu).
 
-API_KEY = "AIzaSyCK4ekiRzyxg0SOtM_Isw8TgBJU2fBa2ow"
+# Step1 VAD/Whisper presets (--mode basic|advance). Per-flag CLI overrides still win when passed.
+STEP1_PROFILES = {
+    "basic": {
+        "vad_threshold": 0.35,
+        "min_silence_ms": 400,
+        "min_speech_ms": 280,
+        "speech_pad_ms": 320,
+        "no_speech_threshold": 0.78,
+        "logprob_threshold": -2.0,
+        "condition_on_previous_text": False,
+    },
+    "advance": {
+        "vad_threshold": 0.45,
+        "min_silence_ms": 500,
+        "min_speech_ms": 500,
+        "speech_pad_ms": 200,
+        "no_speech_threshold": 0.6,
+        "logprob_threshold": -1.5,
+        "condition_on_previous_text": False,
+    },
+}
+
+
+def _load_env_files():
+    """Load .env: video-pipeline, tools/, KiTLabs-BE repo root, then cwd (override=False: first wins per key)."""
+    if not load_dotenv:
+        return
+    here = Path(__file__).resolve().parent
+    repo_root = here.parents[1]  # .../KiTLabs-BE when script is at .../tools/video-pipeline/
+    for env_path in (here / ".env", here.parent / ".env", repo_root / ".env", Path.cwd() / ".env"):
+        if env_path.is_file():
+            load_dotenv(env_path, override=False)
+
+
+_load_env_files()
+API_KEY = (os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY") or "").strip()
 if API_KEY:
     GEMINI_CLIENT = genai.Client(api_key=API_KEY)
 else:
@@ -216,7 +256,9 @@ def preflight_checks():
     global FFMPEG_BIN
     log("Preflight checks...")
     if GEMINI_CLIENT is None:
-        raise EnvironmentError("Missing API_KEY in script config.")
+        raise EnvironmentError(
+            "Missing Gemini API key. Set GEMINI_API_KEY or GOOGLE_API_KEY in .env or the environment."
+        )
     FFMPEG_BIN = resolve_ffmpeg_binary()
     if FFMPEG_BIN is None:
         raise EnvironmentError(
@@ -1305,27 +1347,58 @@ def parse_cli_args():
         help="Whisper language code. Example: zh, en, vi.",
     )
     parser.add_argument(
+        "--mode",
+        choices=["basic", "advance"],
+        default="basic",
+        help="Step1 VAD/Whisper profile: basic (nhẹ, giọng yếu/ASMR) or advance (stricter thresholds).",
+    )
+    parser.add_argument(
         "--step1-vad",
         choices=["on", "off"],
         default="on" if STEP1_VAD_FILTER else "off",
         help="Enable/disable VAD filter in Step1 to reduce music/noise transcription.",
     )
-    parser.add_argument("--step1-vad-threshold", type=float, default=STEP1_VAD_THRESHOLD)
-    parser.add_argument("--step1-min-silence-ms", type=int, default=STEP1_MIN_SILENCE_MS)
-    parser.add_argument("--step1-min-speech-ms", type=int, default=STEP1_MIN_SPEECH_MS)
-    parser.add_argument("--step1-speech-pad-ms", type=int, default=STEP1_SPEECH_PAD_MS)
+    parser.add_argument(
+        "--step1-vad-threshold",
+        type=float,
+        default=None,
+        help="Override Silero VAD threshold (default from --mode if omitted).",
+    )
+    parser.add_argument(
+        "--step1-min-silence-ms",
+        type=int,
+        default=None,
+        help="Override min silence ms between VAD segments (default from --mode if omitted).",
+    )
+    parser.add_argument(
+        "--step1-min-speech-ms",
+        type=int,
+        default=None,
+        help="Override min speech segment ms (default from --mode if omitted).",
+    )
+    parser.add_argument(
+        "--step1-speech-pad-ms",
+        type=int,
+        default=None,
+        help="Override speech pad ms (default from --mode if omitted).",
+    )
     parser.add_argument(
         "--step1-no-speech-threshold",
         type=float,
-        default=STEP1_NO_SPEECH_THRESHOLD,
-        help="Higher values skip non-speech more aggressively.",
+        default=None,
+        help="Whisper no-speech threshold; higher skips non-speech more (default from --mode if omitted).",
     )
-    parser.add_argument("--step1-logprob-threshold", type=float, default=STEP1_LOGPROB_THRESHOLD)
+    parser.add_argument(
+        "--step1-logprob-threshold",
+        type=float,
+        default=None,
+        help="Whisper avg logprob threshold (default from --mode if omitted).",
+    )
     parser.add_argument(
         "--step1-condition-on-previous-text",
         choices=["on", "off"],
-        default="on" if STEP1_CONDITION_ON_PREVIOUS_TEXT else "off",
-        help="Use previous text as context; off can reduce hallucination around music.",
+        default=None,
+        help="Context from previous text; default from --mode if omitted.",
     )
     parser.add_argument("--edge-tts-voice", default=EDGE_TTS_VOICE)
     parser.add_argument("--edge-tts-rate", default=EDGE_TTS_RATE)
@@ -1384,6 +1457,14 @@ def apply_cli_config(args):
     global EDGE_TTS_RATE
     global EDGE_TTS_VOLUME
     global EDGE_TTS_PITCH
+    global STEP1_VAD_FILTER
+    global STEP1_VAD_THRESHOLD
+    global STEP1_MIN_SILENCE_MS
+    global STEP1_MIN_SPEECH_MS
+    global STEP1_SPEECH_PAD_MS
+    global STEP1_NO_SPEECH_THRESHOLD
+    global STEP1_LOGPROB_THRESHOLD
+    global STEP1_CONDITION_ON_PREVIOUS_TEXT
 
     SUBTITLE_FONT = args.subtitle_font
     SUBTITLE_FONTSIZE = args.subtitle_fontsize
@@ -1419,6 +1500,35 @@ def apply_cli_config(args):
     EDGE_TTS_PITCH = args.edge_tts_pitch
     STEP3_AUTO_RATE_ENABLED = args.auto_speed == "on"
     TRANSLATION_CONTEXT = args.translation_context or ""
+
+    prof = STEP1_PROFILES[args.mode]
+    STEP1_VAD_FILTER = args.step1_vad == "on"
+    STEP1_VAD_THRESHOLD = (
+        args.step1_vad_threshold if args.step1_vad_threshold is not None else prof["vad_threshold"]
+    )
+    STEP1_MIN_SILENCE_MS = (
+        args.step1_min_silence_ms if args.step1_min_silence_ms is not None else prof["min_silence_ms"]
+    )
+    STEP1_MIN_SPEECH_MS = (
+        args.step1_min_speech_ms if args.step1_min_speech_ms is not None else prof["min_speech_ms"]
+    )
+    STEP1_SPEECH_PAD_MS = (
+        args.step1_speech_pad_ms if args.step1_speech_pad_ms is not None else prof["speech_pad_ms"]
+    )
+    STEP1_NO_SPEECH_THRESHOLD = (
+        args.step1_no_speech_threshold
+        if args.step1_no_speech_threshold is not None
+        else prof["no_speech_threshold"]
+    )
+    STEP1_LOGPROB_THRESHOLD = (
+        args.step1_logprob_threshold
+        if args.step1_logprob_threshold is not None
+        else prof["logprob_threshold"]
+    )
+    if args.step1_condition_on_previous_text is not None:
+        STEP1_CONDITION_ON_PREVIOUS_TEXT = args.step1_condition_on_previous_text == "on"
+    else:
+        STEP1_CONDITION_ON_PREVIOUS_TEXT = prof["condition_on_previous_text"]
 
 
 def parse_step_range(step_arg, min_step=1, max_step=6):
