@@ -109,7 +109,7 @@ STEP1_PROFILES = {
         "vad_threshold": 0.45,
         "min_silence_ms": 500,
         "min_speech_ms": 500,
-        "speech_pad_ms": 200,
+        "speech_pad_ms": 320,
         "no_speech_threshold": 0.6,
         "logprob_threshold": -1.5,
         "condition_on_previous_text": False,
