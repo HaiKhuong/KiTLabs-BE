@@ -88,9 +88,9 @@ STEP1_NO_SPEECH_THRESHOLD = 0.78 # Whisper: chỉ lọc “no speech” khi prob
 STEP1_LOGPROB_THRESHOLD = -2.0 # Whisper: avg logprob; âm hơn = chấp nhận đoạn tin cậy thấp hơn (ít cắt hơn).
 STEP1_CONDITION_ON_PREVIOUS_TEXT = False # True có thể ổn định câu liền kề nhưng dễ lan lỗi sang đoạn sau.
 
-STEP1_MAX_SUBTITLE_CHARS = 24 # số ký tự tối đa mỗi câu sau tách.
+STEP1_MAX_SUBTITLE_CHARS = 22 # số ký tự tối đa mỗi câu sau tách.
 STEP1_MIN_SUBTITLE_DURATION_MS = 280 # thời gian hiển thị tối thiểu mỗi câu.
-STEP1_SHORT_TEXT_MAX_CHARS = 16 # ngưỡng để coi là “câu ngắn”.
+STEP1_SHORT_TEXT_MAX_CHARS = 14 # ngưỡng để coi là “câu ngắn”.
 STEP1_MIN_CHARS_PER_SEC = 2.2 # nếu cps thấp hơn ngưỡng, coi là câu ngắn bị dính khoảng trống.
 STEP1_TARGET_CHARS_PER_SEC = 5.5 # tốc độ mục tiêu khi siết lại timing câu ngắn (giữ đuôi, cắt đầu).
 
