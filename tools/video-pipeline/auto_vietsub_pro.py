@@ -27,7 +27,7 @@ WHISPER_LANGUAGE = "zh"
 GEMINI_MODEL_NAME = "gemini-2.5-flash"
 EDGE_TTS_VOICE = "vi-VN-HoaiMyNeural"
 EDGE_TTS_RATE = "+40%"
-EDGE_TTS_VOLUME = "+20%"
+EDGE_TTS_VOLUME = "+40%"
 EDGE_TTS_PITCH = "+0Hz"
 STEP3_AUTO_RATE_ENABLED = True
 TRANSLATION_CONTEXT = ""  # Custom translation context for Gemini prompt
@@ -38,7 +38,7 @@ STEP3_RATE_MAX_PERCENT = 95
 # Optional: set absolute ffmpeg.exe path here if needed.
 FFMPEG_PATH = ""
 
-WORK_ROOT = Path("/mnt/c/Users/haikh/Videos/VideoVietsub")
+WORK_ROOT = Path("/mnt/c/Users/haikh/Videos/VideoVietsub/videos")
 WORK_NAME = "default"
 WORK_DIR = WORK_ROOT / WORK_NAME
 VIDEO_DIR = WORK_DIR / "videos"
