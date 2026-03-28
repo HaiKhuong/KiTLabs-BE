@@ -270,6 +270,34 @@ export class TranslateEngineConfigDto {
 
   @IsOptional()
   @IsString()
+  autoSpeed?: string;
+
+  @IsOptional()
+  @IsString()
+  auto_speed?: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  step3AutoRateTriggerCharsPerSec?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  step3_auto_rate_trigger_chars_per_sec?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  step3AutoRateBonusPercent?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  step3_auto_rate_bonus_percent?: number;
+
+  @IsOptional()
+  @IsString()
   translationContext?: string;
 
   @IsOptional()
