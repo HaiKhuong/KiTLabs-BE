@@ -1411,6 +1411,18 @@ def parse_cli_args():
         help="Enable/disable dynamic TTS speed boost based on subtitle density.",
     )
     parser.add_argument(
+        "--step3-auto-rate-trigger-cps",
+        type=float,
+        default=STEP3_AUTO_RATE_TRIGGER_CHARS_PER_SEC,
+        help="Subtitle chars/sec threshold to apply auto rate boost (when --auto-speed on).",
+    )
+    parser.add_argument(
+        "--step3-auto-rate-bonus-percent",
+        type=int,
+        default=STEP3_AUTO_RATE_BONUS_PERCENT,
+        help="Extra percent added to edge-tts base rate when density exceeds trigger.",
+    )
+    parser.add_argument(
         "--translation-context",
         default=TRANSLATION_CONTEXT,
         help="Custom context/instructions for Gemini translation. Overrides default Han-Viet prompt.",
@@ -1452,6 +1464,8 @@ def apply_cli_config(args):
     global SPEED_VIDEO
     global EDGE_TTS_VOICE
     global STEP3_AUTO_RATE_ENABLED
+    global STEP3_AUTO_RATE_TRIGGER_CHARS_PER_SEC
+    global STEP3_AUTO_RATE_BONUS_PERCENT
     global TRANSLATION_CONTEXT
     WHISPER_LANGUAGE = str(args.whisper_language).strip() or None
     global EDGE_TTS_RATE
@@ -1499,6 +1513,8 @@ def apply_cli_config(args):
     EDGE_TTS_VOLUME = args.edge_tts_volume
     EDGE_TTS_PITCH = args.edge_tts_pitch
     STEP3_AUTO_RATE_ENABLED = args.auto_speed == "on"
+    STEP3_AUTO_RATE_TRIGGER_CHARS_PER_SEC = float(args.step3_auto_rate_trigger_cps)
+    STEP3_AUTO_RATE_BONUS_PERCENT = int(args.step3_auto_rate_bonus_percent)
     TRANSLATION_CONTEXT = args.translation_context or ""
 
     prof = STEP1_PROFILES[args.mode]

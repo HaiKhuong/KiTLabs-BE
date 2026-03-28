@@ -95,6 +95,16 @@ const OPTION_MAPPINGS: Array<{
   { cliFlag: "--edge-tts-voice", keys: ["edgeTtsVoice", "edge_tts_voice"], allowedTypes: ["string"] },
   { cliFlag: "--edge-tts-rate", keys: ["edgeTtsRate", "edge_tts_rate"], allowedTypes: ["string"] },
   { cliFlag: "--auto-speed", keys: ["autoSpeed", "auto_speed"], allowedTypes: ["string"] },
+  {
+    cliFlag: "--step3-auto-rate-trigger-cps",
+    keys: ["step3AutoRateTriggerCharsPerSec", "step3_auto_rate_trigger_chars_per_sec"],
+    allowedTypes: ["number", "string"],
+  },
+  {
+    cliFlag: "--step3-auto-rate-bonus-percent",
+    keys: ["step3AutoRateBonusPercent", "step3_auto_rate_bonus_percent"],
+    allowedTypes: ["number", "string"],
+  },
   { cliFlag: "--translation-context", keys: ["translationContext", "translation_context"], allowedTypes: ["string"] },
   { cliFlag: "--mode", keys: ["mode", "mode"], allowedTypes: ["string"] },
 ];
