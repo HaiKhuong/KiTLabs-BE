@@ -35,8 +35,11 @@ STEP3_AUTO_RATE_TRIGGER_CHARS_PER_SEC = 14.0
 STEP3_AUTO_RATE_BONUS_PERCENT = 30
 STEP3_RATE_MIN_PERCENT = -50
 STEP3_RATE_MAX_PERCENT = 95
+# Cho TTS tràn vào khoảng lặng trước câu phụ đề kế (tới next_start) để tránh cắt cụt giữa câu.
+STEP3_TTS_BORROW_GAP = False
 # Optional: set absolute ffmpeg.exe path here if needed.
 FFMPEG_PATH = ""
+SCRIPT_DIR = Path(__file__).resolve().parent
 
 WORK_ROOT = Path("/mnt/c/Users/haikh/Videos/VideoVietsub/videos")
 WORK_NAME = "default"
@@ -71,9 +74,24 @@ LOGO_WIDTH = 250
 LOGO_MARGIN_X = 30
 LOGO_MARGIN_Y = 30
 LOGO_OPACITY = 0.5
+# Step 6: optional visual pass before subtitle (hflip, zoom, eq, unsharp). Bật bằng --step6-visual-transform on.
+STEP6_VISUAL_TRANSFORM_ENABLED = True
+STEP6_HFLIP = True
+STEP6_ZOOM_PERCENT = 6.0  # 5–7: phóng nhẹ rồi crop giữa để lệch logo góc
+STEP6_EQ_SATURATION = 1.1
+STEP6_EQ_CONTRAST = 1.03
+# ffmpeg unsharp: luma WxH:amount:chroma WxH:amount
+STEP6_UNSHARP = "5:5:0.8:3:3:0.0"
 ORIGINAL_AUDIO_VOLUME = 0.1
 NARRATION_AUDIO_VOLUME = 1.0
+# Step4: hệ số tốc độ trước khi merge video + voice (1.0 = giữ nguyên; 0.97 = chậm ~3%; 1.03 = nhanh ~3%).
+STEP4_MERGE_SPEED = 0.97
 SPEED_VIDEO = 1.0
+# Xuất MP4: xóa metadata nguồn (-map_metadata -1) và ghi Title/Artist/Comment kênh. Bật: --output-metadata on.
+OUTPUT_METADATA_ENABLED = True
+OUTPUT_METADATA_TITLE = "Vạn Giới Vietsub"
+OUTPUT_METADATA_ARTIST = "Vạn Giới Vietsub"
+OUTPUT_METADATA_COMMENT = "Vạn Giới Vietsub"
 
 STEP1_VAD_FILTER = True # Nếu False thì sẽ không dùng 4 key phía dưới
 # Mặc định CLI: --mode basic (nhẹ, giọng nhỏ/ASMR) hoặc --mode advance (khắc khe hơn). Có thể ghi đè từng tham số.
@@ -379,17 +397,50 @@ def resolve_base_tts_rate(raw_rate):
 
 
 def resolve_dynamic_tts_rate(text, subtitle_duration_ms):
+    """Pick edge-tts rate from text density vs slot length.
+
+    STEP3_AUTO_RATE_TRIGGER_CHARS_PER_SEC is the *target* density: we ramp bonus
+    smoothly before/around that value (no hard cliff), and scale bonus up when
+    text is much denser than the SRT window — so ffmpeg needs less aggressive
+    atempo in Step3.
+    """
     base_rate = parse_percent_string(resolve_base_tts_rate(EDGE_TTS_RATE), default_value=60.0)
     if not STEP3_AUTO_RATE_ENABLED or subtitle_duration_ms <= 0:
         return format_percent_string(base_rate), False
 
     compact_text = re.sub(r"\s+", "", str(text or ""))
+    if not compact_text:
+        return format_percent_string(base_rate), False
+
     duration_sec = max(subtitle_duration_ms / 1000.0, 0.001)
     chars_per_sec = len(compact_text) / duration_sec
-    should_boost = chars_per_sec >= float(STEP3_AUTO_RATE_TRIGGER_CHARS_PER_SEC)
-    bonus = float(STEP3_AUTO_RATE_BONUS_PERCENT) if should_boost else 0.0
-    final_rate = max(float(STEP3_RATE_MIN_PERCENT), min(float(STEP3_RATE_MAX_PERCENT), base_rate + bonus))
-    return format_percent_string(final_rate), should_boost
+    trigger = float(STEP3_AUTO_RATE_TRIGGER_CHARS_PER_SEC)
+    if trigger <= 0:
+        return format_percent_string(base_rate), False
+
+    ratio = chars_per_sec / trigger
+    base_bonus = float(STEP3_AUTO_RATE_BONUS_PERCENT)
+
+    # Ease in before trigger (~0.82–1.0) so borderline subtitles don't jump 0→full bonus.
+    ramp_start = 0.82
+    if ratio <= ramp_start:
+        bonus = 0.0
+    elif ratio < 1.0:
+        t = (ratio - ramp_start) / max(1e-6, (1.0 - ramp_start))
+        bonus = base_bonus * t
+    else:
+        # Above trigger: full base bonus plus extra when text is much denser than the window.
+        extra = min(2.0, ratio - 1.0)
+        bonus = base_bonus * (1.0 + extra)
+
+    # Step3 logs: only flag noticeable boosts (light ramp near threshold stays quiet).
+    log_boost = ratio >= 1.0 or bonus >= base_bonus * 0.45
+
+    final_rate = max(
+        float(STEP3_RATE_MIN_PERCENT),
+        min(float(STEP3_RATE_MAX_PERCENT), base_rate + bonus),
+    )
+    return format_percent_string(final_rate), log_boost
 
 
 def split_subtitle_text(text, max_chars=STEP1_MAX_SUBTITLE_CHARS):
@@ -609,7 +660,8 @@ def cleanup_step6_intermediate_files():
             log(f"Cleanup warning: failed to remove {target}: {e}")
 
 
-def build_subtitle_filter(ass_path):
+def build_subtitle_filter_tail(ass_path):
+    """split → blur strip → overlay → ass, output [vsub]. Dùng sau [0:v] hoặc sau chuỗi biến đổi."""
     filter_path = to_ffmpeg_ass_filter_path(ass_path)
     return (
         "split[main][blur];"
@@ -622,6 +674,35 @@ def build_subtitle_filter(ass_path):
         f"[main][blurred]overlay=(W-w)/2:H-{SUBTITLE_BG_BLUR_BOTTOM_OFFSET},"
         f"ass='{filter_path}'[vsub]"
     )
+
+
+def build_visual_transform_filters():
+    """hflip → scale+crop (zoom ~STEP6_ZOOM_PERCENT%) → eq → unsharp. Chuỗi filter không gồm nhãn [0:v]."""
+    if not STEP6_VISUAL_TRANSFORM_ENABLED:
+        return ""
+    parts = []
+    if STEP6_HFLIP:
+        parts.append("hflip")
+    zp = float(STEP6_ZOOM_PERCENT)
+    if zp > 0.01:
+        zf = 1.0 + zp / 100.0
+        parts.append(f"scale=iw*{zf:.6f}:ih*{zf:.6f}")
+        parts.append(f"crop=iw/{zf:.6f}:ih/{zf:.6f}:(iw-ow)/2:(ih-oh)/2")
+    parts.append(
+        f"eq=saturation={float(STEP6_EQ_SATURATION):.4f}:contrast={float(STEP6_EQ_CONTRAST):.4f}"
+    )
+    parts.append(f"unsharp={STEP6_UNSHARP}")
+    return ",".join(parts)
+
+
+def build_subtitle_filter(ass_path):
+    tail = build_subtitle_filter_tail(ass_path)
+    if not STEP6_VISUAL_TRANSFORM_ENABLED:
+        return tail
+    vt = build_visual_transform_filters()
+    if not vt:
+        return tail
+    return f"[0:v]{vt},{tail}"
 
 
 def normalize_ass_colour(raw_value):
@@ -657,11 +738,31 @@ def normalize_ass_colour(raw_value):
     return "&H00FFFFFF"
 
 
+def ffmpeg_output_metadata_args():
+    """Trước path đầu ra: -map_metadata -1 và các -metadata (title/artist/comment) nếu bật."""
+    if not OUTPUT_METADATA_ENABLED:
+        return []
+    args = ["-map_metadata", "-1"]
+    t = str(OUTPUT_METADATA_TITLE or "").strip()
+    a = str(OUTPUT_METADATA_ARTIST or "").strip()
+    c = str(OUTPUT_METADATA_COMMENT or "").strip()
+    if t:
+        args.extend(["-metadata", f"title={t}"])
+    if a:
+        args.extend(["-metadata", f"artist={a}"])
+    if c:
+        args.extend(["-metadata", f"comment={c}"])
+    return args
+
+
 def build_step6_render_command(video_path, out_path, subtitle_filter, use_gpu, logo_path=None):
     input_args = ["-i", str(video_path)]
-    filter_arg_key = "-vf"
+    use_complex = logo_path is not None or STEP6_VISUAL_TRANSFORM_ENABLED
+    filter_arg_key = "-filter_complex" if use_complex else "-vf"
     filter_arg_value = subtitle_filter
     map_args = []
+    if use_complex and not logo_path:
+        map_args = ["-map", "[vsub]", "-map", "0:a?"]
 
     if logo_path:
         logo_filter = (
@@ -673,6 +774,7 @@ def build_step6_render_command(video_path, out_path, subtitle_filter, use_gpu, l
         input_args.extend(["-i", str(logo_path)])
         map_args = ["-map", "[vout]", "-map", "0:a?"]
 
+    meta = ffmpeg_output_metadata_args()
     if use_gpu:
         return [
             FFMPEG_BIN,
@@ -689,6 +791,7 @@ def build_step6_render_command(video_path, out_path, subtitle_filter, use_gpu, l
             "23",
             "-c:a",
             "copy",
+            *meta,
             str(out_path),
         ]
     return [
@@ -706,6 +809,7 @@ def build_step6_render_command(video_path, out_path, subtitle_filter, use_gpu, l
         "23",
         "-c:a",
         "copy",
+        *meta,
         str(out_path),
     ]
 
@@ -1059,30 +1163,70 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
 
         raw_mp3_path = chunk_dir / f"raw_{i:04d}.mp3"
         final_seg_path = chunk_dir / f"part_{i:04d}.wav"
+
+        def run_tts(rate):
+            asyncio.run(_generate_edge_tts_mp3(subtitle_text, raw_mp3_path, rate))
+
         tts_rate, boosted = resolve_dynamic_tts_rate(subtitle_text, subtitle_duration_ms)
         if boosted:
             log(f"Step3: subtitle {i} auto-rate boost -> {tts_rate}")
 
-        def _call():
-            asyncio.run(_generate_edge_tts_mp3(subtitle_text, raw_mp3_path, tts_rate))
+        retry_call(lambda: run_tts(tts_rate), f"TTS subtitle {i}")
 
-        retry_call(_call, f"TTS subtitle {i}")
-
-        # Fit narration to subtitle slot:
-        # - if too long, speed up first (atempo) to reduce hard cut risk
-        # - then pad/trim to exact slot duration
         raw_segment_ms = get_media_duration_ms(raw_mp3_path)
+        if (
+            STEP3_AUTO_RATE_ENABLED
+            and raw_segment_ms
+            and subtitle_duration_ms > 220
+        ):
+            stretch_pre = raw_segment_ms / float(subtitle_duration_ms)
+            if stretch_pre > 1.12:
+                pushed_ms = int(subtitle_duration_ms / min(stretch_pre, 1.85))
+                pushed_ms = max(220, min(pushed_ms, subtitle_duration_ms - 1))
+                tts_rate_2, _ = resolve_dynamic_tts_rate(subtitle_text, pushed_ms)
+                b1 = parse_percent_string(tts_rate, 0.0)
+                b2 = parse_percent_string(tts_rate_2, 0.0)
+                if b2 > b1 + 0.5:
+                    log(
+                        f"Step3: subtitle {i} auto-rate second pass (raw {stretch_pre:.2f}x vs slot) "
+                        f"{tts_rate} -> {tts_rate_2}"
+                    )
+                    tts_rate = tts_rate_2
+                    retry_call(lambda: run_tts(tts_rate), f"TTS subtitle {i} retry")
+                    raw_segment_ms = get_media_duration_ms(raw_mp3_path)
+
+        # Latest instant we may end this speech without overlapping the next cue (when borrow-gap on).
+        if i + 1 < len(blocks):
+            next_start_ms, _ = parse_srt_time_range(blocks[i + 1]["time"])
+        else:
+            next_start_ms = end_ms + 86_400_000
+        if STEP3_TTS_BORROW_GAP:
+            max_fit_ms = max(subtitle_duration_ms, next_start_ms - start_ms)
+        else:
+            max_fit_ms = subtitle_duration_ms
+        if max_fit_ms < subtitle_duration_ms:
+            max_fit_ms = subtitle_duration_ms
+
+        if not raw_segment_ms or raw_segment_ms <= 0:
+            raw_segment_ms = subtitle_duration_ms
+
         fit_filters = []
-        if raw_segment_ms and raw_segment_ms > subtitle_duration_ms:
-            stretch_factor = raw_segment_ms / max(subtitle_duration_ms, 1)
+        if raw_segment_ms > max_fit_ms:
+            stretch_factor = raw_segment_ms / float(max_fit_ms)
             if stretch_factor > 1.02:
                 fit_filters.append(build_atempo_filter(stretch_factor))
+            target_duration_ms = int(max_fit_ms)
+        elif raw_segment_ms > subtitle_duration_ms:
+            # Borrow gap: keep full TTS length when it fits before next subtitle start.
+            target_duration_ms = int(raw_segment_ms)
+        else:
+            target_duration_ms = int(subtitle_duration_ms)
 
-        fit_filters.append(f"apad=pad_dur={subtitle_duration_ms / 1000:.3f}")
-        fit_filters.append(f"atrim=duration={subtitle_duration_ms / 1000:.3f}")
-        # Add a tiny release to avoid abrupt edge click on exact trim.
-        fade_d = min(0.08, max(0.02, subtitle_duration_ms / 1000.0 * 0.2))
-        fade_start = max(0.0, subtitle_duration_ms / 1000.0 - fade_d)
+        td_sec = target_duration_ms / 1000.0
+        fit_filters.append(f"apad=pad_dur={td_sec:.3f}")
+        fit_filters.append(f"atrim=duration={td_sec:.3f}")
+        fade_d = min(0.12, max(0.02, td_sec * 0.2))
+        fade_start = max(0.0, td_sec - fade_d)
         fit_filters.append(f"afade=t=out:st={fade_start:.3f}:d={fade_d:.3f}")
 
         run_command(
@@ -1104,7 +1248,7 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
             f"Normalize subtitle segment {i}",
         )
         timeline_paths.append(final_seg_path.resolve())
-        current_time_ms = end_ms
+        current_time_ms = start_ms + target_duration_ms
 
     # Ensure final audio length reaches subtitle end or requested target duration.
     _start_ms, last_end_ms = parse_srt_time_range(blocks[-1]["time"])
@@ -1161,6 +1305,51 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
 def step4_merge_audio(video_path, voice_path):
     log("Step4: Merging narration audio...")
     out = VIDEO_DIR / f"{WORK_NAME}_tm.mp4"
+    s = float(STEP4_MERGE_SPEED)
+    if abs(s - 1.0) < 1e-6:
+        run_command(
+            [
+                FFMPEG_BIN,
+                "-y",
+                "-i",
+                str(video_path),
+                "-i",
+                str(voice_path),
+                "-filter_complex",
+                (
+                    f"[0:a]volume={float(ORIGINAL_AUDIO_VOLUME):.6f}[orig];"
+                    f"[1:a]volume={float(NARRATION_AUDIO_VOLUME):.6f}[voice];"
+                    "[orig][voice]amix=inputs=2:duration=first:dropout_transition=0[aout]"
+                ),
+                "-map",
+                "0:v",
+                "-map",
+                "[aout]",
+                "-c:v",
+                "copy",
+                "-c:a",
+                "aac",
+                "-shortest",
+                *ffmpeg_output_metadata_args(),
+                str(out),
+            ],
+            "Merge narration audio",
+        )
+        return out
+
+    if s <= 0:
+        raise ValueError(f"step4-merge-speed must be > 0, got {s}")
+
+    log(f"Step4: pre-merge speed {s:.4f}x (setpts + atempo on video & both audio tracks)")
+    at = build_atempo_filter(s)
+    orig_a = f"{at},volume={float(ORIGINAL_AUDIO_VOLUME):.6f}"
+    voice_a = f"{at},volume={float(NARRATION_AUDIO_VOLUME):.6f}"
+    fc = (
+        f"[0:v]setpts=PTS/{s:.6f}[v];"
+        f"[0:a]{orig_a}[orig];"
+        f"[1:a]{voice_a}[voice];"
+        "[orig][voice]amix=inputs=2:duration=first:dropout_transition=0[aout]"
+    )
     run_command(
         [
             FFMPEG_BIN,
@@ -1170,23 +1359,24 @@ def step4_merge_audio(video_path, voice_path):
             "-i",
             str(voice_path),
             "-filter_complex",
-            (
-                f"[0:a]volume={float(ORIGINAL_AUDIO_VOLUME):.6f}[orig];"
-                f"[1:a]volume={float(NARRATION_AUDIO_VOLUME):.6f}[voice];"
-                "[orig][voice]amix=inputs=2:duration=first:dropout_transition=0[aout]"
-            ),
+            fc,
             "-map",
-            "0:v",
+            "[v]",
             "-map",
             "[aout]",
             "-c:v",
-            "copy",
+            "libx264",
+            "-preset",
+            "medium",
+            "-crf",
+            "23",
             "-c:a",
             "aac",
             "-shortest",
+            *ffmpeg_output_metadata_args(),
             str(out),
         ],
-        "Merge narration audio",
+        "Merge narration audio (pre-merge speed)",
     )
     return out
 
@@ -1221,6 +1411,7 @@ def step7_apply_speed(video_path):
             "23",
             "-c:a",
             "aac",
+            *ffmpeg_output_metadata_args(),
             str(out),
         ],
         f"Apply speed-video x{speed:.3f}",
@@ -1254,9 +1445,22 @@ def step5_convert_ass(srt_path):
 
 def step6_render(video_path, ass_path):
     log("Step6: Rendering subtitles...")
+    if STEP6_VISUAL_TRANSFORM_ENABLED:
+        log(
+            "Step6: Visual transform: "
+            f"hflip={STEP6_HFLIP}, zoom={STEP6_ZOOM_PERCENT}%, "
+            f"sat={STEP6_EQ_SATURATION}, contrast={STEP6_EQ_CONTRAST}, unsharp={STEP6_UNSHARP}"
+        )
     out = VIDEO_DIR / f"{WORK_NAME}_vs_tm.mp4"
     subtitle_filter = build_subtitle_filter(ass_path)
-    logo_path = Path(LOGO_FILE).resolve()
+    configured_logo = Path(LOGO_FILE)
+    # Resolve relative logo paths from this script directory
+    # so changing LOGO_FILE in code always takes effect.
+    logo_path = (
+        configured_logo
+        if configured_logo.is_absolute()
+        else (SCRIPT_DIR / configured_logo)
+    ).resolve()
     if file_ready(logo_path):
         log(f"Step6: Using logo overlay from {logo_path}")
     else:
@@ -1336,10 +1540,50 @@ def parse_cli_args():
     parser.add_argument("--logo-margin-x", type=int, default=LOGO_MARGIN_X)
     parser.add_argument("--logo-margin-y", type=int, default=LOGO_MARGIN_Y)
     parser.add_argument("--logo-opacity", type=float, default=LOGO_OPACITY)
+    parser.add_argument(
+        "--step6-visual-transform",
+        choices=["on", "off"],
+        default="on" if STEP6_VISUAL_TRANSFORM_ENABLED else "off",
+        help="Step6: hflip, zoom (scale+crop), eq sat/contrast, unsharp before ASS.",
+    )
+    parser.add_argument(
+        "--step6-hflip",
+        choices=["on", "off"],
+        default="on" if STEP6_HFLIP else "off",
+        help="Horizontal flip when --step6-visual-transform on.",
+    )
+    parser.add_argument(
+        "--step6-zoom-percent",
+        type=float,
+        default=STEP6_ZOOM_PERCENT,
+        help="Center zoom %% (scale then crop); 0 disables zoom. Typical 5–7.",
+    )
+    parser.add_argument("--step6-eq-saturation", type=float, default=STEP6_EQ_SATURATION)
+    parser.add_argument("--step6-eq-contrast", type=float, default=STEP6_EQ_CONTRAST)
+    parser.add_argument(
+        "--step6-unsharp",
+        default=STEP6_UNSHARP,
+        help='ffmpeg unsharp= params, e.g. "5:5:0.8:3:3:0.0".',
+    )
+    parser.add_argument(
+        "--output-metadata",
+        choices=["on", "off"],
+        default="on" if OUTPUT_METADATA_ENABLED else "off",
+        help="Strip source metadata (-map_metadata -1) and set title/artist/comment on MP4 outputs.",
+    )
+    parser.add_argument("--metadata-title", default=OUTPUT_METADATA_TITLE, help="MP4 metadata title (channel).")
+    parser.add_argument("--metadata-artist", default=OUTPUT_METADATA_ARTIST, help="MP4 metadata artist.")
+    parser.add_argument("--metadata-comment", default=OUTPUT_METADATA_COMMENT, help="MP4 metadata comment.")
 
     # Audio and speed options
     parser.add_argument("--original-volume", type=float, default=ORIGINAL_AUDIO_VOLUME)
     parser.add_argument("--narration-volume", type=float, default=NARRATION_AUDIO_VOLUME)
+    parser.add_argument(
+        "--step4-merge-speed",
+        type=float,
+        default=STEP4_MERGE_SPEED,
+        help="Step4 before *_tm.mp4: video setpts + both audios atempo (e.g. 0.97 slower, 1.03 faster). 1.0 = copy video.",
+    )
     parser.add_argument("--speed-video", type=float, default=SPEED_VIDEO)
     parser.add_argument(
         "--whisper-language",
@@ -1414,13 +1658,19 @@ def parse_cli_args():
         "--step3-auto-rate-trigger-cps",
         type=float,
         default=STEP3_AUTO_RATE_TRIGGER_CHARS_PER_SEC,
-        help="Subtitle chars/sec threshold to apply auto rate boost (when --auto-speed on).",
+        help="Target chars/sec for TTS: ramp auto-rate near this value; above it, bonus scales up (when --auto-speed on).",
     )
     parser.add_argument(
         "--step3-auto-rate-bonus-percent",
         type=int,
         default=STEP3_AUTO_RATE_BONUS_PERCENT,
-        help="Extra percent added to edge-tts base rate when density exceeds trigger.",
+        help="Base bonus percent on edge-tts rate; scaled smoothly before trigger and by density above it.",
+    )
+    parser.add_argument(
+        "--step3-tts-borrow-gap",
+        choices=["on", "off"],
+        default="on" if STEP3_TTS_BORROW_GAP else "off",
+        help="Let TTS extend into silence before the next subtitle (reduces mid-sentence cuts).",
     )
     parser.add_argument(
         "--translation-context",
@@ -1459,13 +1709,25 @@ def apply_cli_config(args):
     global LOGO_MARGIN_X
     global LOGO_MARGIN_Y
     global LOGO_OPACITY
+    global STEP6_VISUAL_TRANSFORM_ENABLED
+    global STEP6_HFLIP
+    global STEP6_ZOOM_PERCENT
+    global STEP6_EQ_SATURATION
+    global STEP6_EQ_CONTRAST
+    global STEP6_UNSHARP
+    global OUTPUT_METADATA_ENABLED
+    global OUTPUT_METADATA_TITLE
+    global OUTPUT_METADATA_ARTIST
+    global OUTPUT_METADATA_COMMENT
     global ORIGINAL_AUDIO_VOLUME
     global NARRATION_AUDIO_VOLUME
     global SPEED_VIDEO
+    global STEP4_MERGE_SPEED
     global EDGE_TTS_VOICE
     global STEP3_AUTO_RATE_ENABLED
     global STEP3_AUTO_RATE_TRIGGER_CHARS_PER_SEC
     global STEP3_AUTO_RATE_BONUS_PERCENT
+    global STEP3_TTS_BORROW_GAP
     global TRANSLATION_CONTEXT
     WHISPER_LANGUAGE = str(args.whisper_language).strip() or None
     global EDGE_TTS_RATE
@@ -1504,10 +1766,23 @@ def apply_cli_config(args):
     LOGO_MARGIN_Y = args.logo_margin_y
     LOGO_OPACITY = args.logo_opacity
 
+    STEP6_VISUAL_TRANSFORM_ENABLED = args.step6_visual_transform == "on"
+    STEP6_HFLIP = args.step6_hflip == "on"
+    STEP6_ZOOM_PERCENT = float(args.step6_zoom_percent)
+    STEP6_EQ_SATURATION = float(args.step6_eq_saturation)
+    STEP6_EQ_CONTRAST = float(args.step6_eq_contrast)
+    STEP6_UNSHARP = str(args.step6_unsharp).strip() or "5:5:0.8:3:3:0.0"
+
+    OUTPUT_METADATA_ENABLED = args.output_metadata == "on"
+    OUTPUT_METADATA_TITLE = str(args.metadata_title or "").strip()
+    OUTPUT_METADATA_ARTIST = str(args.metadata_artist or "").strip()
+    OUTPUT_METADATA_COMMENT = str(args.metadata_comment or "").strip()
+
     ORIGINAL_AUDIO_VOLUME = args.original_volume
     NARRATION_AUDIO_VOLUME = args.narration_volume
     SPEED_VIDEO = args.speed_video
-    
+    STEP4_MERGE_SPEED = float(args.step4_merge_speed)
+
     EDGE_TTS_VOICE = args.edge_tts_voice
     EDGE_TTS_RATE = resolve_base_tts_rate(args.edge_tts_rate)
     EDGE_TTS_VOLUME = args.edge_tts_volume
@@ -1515,6 +1790,7 @@ def apply_cli_config(args):
     STEP3_AUTO_RATE_ENABLED = args.auto_speed == "on"
     STEP3_AUTO_RATE_TRIGGER_CHARS_PER_SEC = float(args.step3_auto_rate_trigger_cps)
     STEP3_AUTO_RATE_BONUS_PERCENT = int(args.step3_auto_rate_bonus_percent)
+    STEP3_TTS_BORROW_GAP = args.step3_tts_borrow_gap == "on"
     TRANSLATION_CONTEXT = args.translation_context or ""
 
     prof = STEP1_PROFILES[args.mode]
