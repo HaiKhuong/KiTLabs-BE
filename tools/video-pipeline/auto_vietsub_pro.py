@@ -84,9 +84,10 @@ STEP6_EQ_CONTRAST = 1.03
 STEP6_UNSHARP = "5:5:0.8:3:3:0.0"
 ORIGINAL_AUDIO_VOLUME = 0.1
 NARRATION_AUDIO_VOLUME = 1.0
-# Step4: hệ số tốc độ trước khi merge video + voice (1.0 = giữ nguyên; 0.97 = chậm ~3%; 1.03 = nhanh ~3%).
-STEP4_MERGE_SPEED = 0.97
-SPEED_VIDEO = 1.0
+# Step4: tốc độ trước khi merge (1.0 = copy video, không setpts). Đổi tốc 0.97 nên dùng --speed-video ở Step7.
+STEP4_MERGE_SPEED = 1.0
+# Step7: sau render phụ đề (_vs_tm), áp dụng setpts + atempo lên file cuối (vd 0.97 = chậm ~3%).
+SPEED_VIDEO = 0.97
 # Xuất MP4: xóa metadata nguồn (-map_metadata -1) và ghi Title/Artist/Comment kênh. Bật: --output-metadata on.
 OUTPUT_METADATA_ENABLED = True
 OUTPUT_METADATA_TITLE = "Vạn Giới Vietsub"
@@ -1389,6 +1390,7 @@ def step7_apply_speed(video_path):
     if speed <= 0:
         raise ValueError(f"speed-video must be > 0, got {speed}")
 
+    log(f"Step7: final speed x{speed:.4f} (after subtitle render)")
     out = VIDEO_DIR / f"{WORK_NAME}_vs_tm_x{speed:.2f}.mp4"
     atempo_filter = build_atempo_filter(speed)
     run_command(
@@ -1582,9 +1584,14 @@ def parse_cli_args():
         "--step4-merge-speed",
         type=float,
         default=STEP4_MERGE_SPEED,
-        help="Step4 before *_tm.mp4: video setpts + both audios atempo (e.g. 0.97 slower, 1.03 faster). 1.0 = copy video.",
+        help="Step4 merge only: 1.0 = copy video. If not 1.0, re-encodes video+audio before subtitle step.",
     )
-    parser.add_argument("--speed-video", type=float, default=SPEED_VIDEO)
+    parser.add_argument(
+        "--speed-video",
+        type=float,
+        default=SPEED_VIDEO,
+        help="Step7 after subtitle render: final speed on *_vs_tm*.mp4 (e.g. 0.97). 1.0 = skip Step7 encode.",
+    )
     parser.add_argument(
         "--whisper-language",
         default=WHISPER_LANGUAGE,
