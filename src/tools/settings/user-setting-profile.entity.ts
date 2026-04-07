@@ -23,6 +23,9 @@ export class UserSettingProfile extends BaseEntity {
   @Column({ name: "is_default", default: false })
   isDefault!: boolean;
 
+  @Column({ name: "direct_url", nullable: true })
+  directUrl?: string;
+
   @OneToMany(() => UserSetting, (setting) => setting.profile)
   userSettings!: UserSetting[];
 }
