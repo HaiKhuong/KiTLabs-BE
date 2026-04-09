@@ -155,6 +155,15 @@ else:
     GEMINI_CLIENT = None
 
 
+def mask_secret(secret, show_prefix=4, show_suffix=4):
+    raw = str(secret or "")
+    if not raw:
+        return ""
+    if len(raw) <= show_prefix + show_suffix:
+        return "*" * len(raw)
+    return f"{raw[:show_prefix]}***{raw[-show_suffix:]}"
+
+
 # ==============================
 # HELPER
 # ==============================
@@ -278,6 +287,10 @@ def preflight_checks():
         raise EnvironmentError(
             "Missing Gemini API key. Set GEMINI_API_KEY or GOOGLE_API_KEY in .env or the environment."
         )
+    key_source = "GEMINI_API_KEY" if os.environ.get("GEMINI_API_KEY") else "GOOGLE_API_KEY"
+    log(
+        f"Gemini key detected: source={key_source}, value={mask_secret(API_KEY)}, len={len(API_KEY)}"
+    )
     FFMPEG_BIN = resolve_ffmpeg_binary()
     if FFMPEG_BIN is None:
         raise EnvironmentError(
