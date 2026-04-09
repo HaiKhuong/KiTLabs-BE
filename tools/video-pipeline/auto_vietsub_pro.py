@@ -35,7 +35,7 @@ STEP3_AUTO_RATE_TRIGGER_CHARS_PER_SEC = 14.0
 STEP3_AUTO_RATE_BONUS_PERCENT = 30
 STEP3_RATE_MIN_PERCENT = -50
 STEP3_RATE_MAX_PERCENT = 95
-STEP3_TTS_REQUEST_SLEEP_MS = 150
+STEP3_TTS_REQUEST_SLEEP_MS = 300
 # Cho TTS tràn vào khoảng lặng trước câu phụ đề kế (tới next_start) để tránh cắt cụt giữa câu.
 STEP3_TTS_BORROW_GAP = False
 # Optional: set absolute ffmpeg.exe path here if needed.
@@ -52,6 +52,7 @@ LOG_PATH = LOG_DIR / "pipeline.log"
 TRANSLATE_BATCH_SIZE = 500
 TTS_CHUNK_MAX_CHARS = 350
 RETRY_MAX = 4
+TTS_RETRY_MAX = 10
 FFMPEG_BIN = None
 SKIP_VOICE_STEP = False
 SUBTITLE_FONT = "Arial"
@@ -1215,7 +1216,7 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
         if boosted:
             log(f"Step3: subtitle {i} auto-rate boost -> {tts_rate}")
 
-        retry_call(lambda: run_tts(tts_rate), f"TTS subtitle {i}")
+        retry_call(lambda: run_tts(tts_rate), f"TTS subtitle {i}", max_retry=TTS_RETRY_MAX)
 
         raw_segment_ms = get_media_duration_ms(raw_mp3_path)
         if (
@@ -1236,7 +1237,11 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
                         f"{tts_rate} -> {tts_rate_2}"
                     )
                     tts_rate = tts_rate_2
-                    retry_call(lambda: run_tts(tts_rate), f"TTS subtitle {i} retry")
+                    retry_call(
+                        lambda: run_tts(tts_rate),
+                        f"TTS subtitle {i} retry",
+                        max_retry=TTS_RETRY_MAX,
+                    )
                     raw_segment_ms = get_media_duration_ms(raw_mp3_path)
 
         # Latest instant we may end this speech without overlapping the next cue (when borrow-gap on).

@@ -26,6 +26,7 @@ temp/
 
 # Python pipeline artifacts
 tools/video-pipeline/.venv/
+tools/video-pipeline/venv/
 tools/video-pipeline/workspace/
 tools/video-pipeline/**/*.log
 
