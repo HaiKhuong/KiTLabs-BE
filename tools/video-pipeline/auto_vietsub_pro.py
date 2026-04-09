@@ -380,6 +380,25 @@ def chunk_text_for_tts(text, max_chars=TTS_CHUNK_MAX_CHARS):
     return parts
 
 
+def sanitize_tts_text(text):
+    """Normalize subtitle text before sending to edge-tts."""
+    raw = str(text or "")
+    # Normalize line breaks/tabs and collapse repeated spaces.
+    cleaned = raw.replace("\r", " ").replace("\n", " ").replace("\t", " ")
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    # Strip common invisible/control chars that can make TTS return no audio.
+    cleaned = re.sub(r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]", "", cleaned)
+    cleaned = cleaned.replace("\u200b", "").replace("\ufeff", "").strip()
+    return cleaned
+
+
+def make_text_preview(text, max_len=80):
+    compact = re.sub(r"\s+", " ", str(text or "")).strip()
+    if len(compact) <= max_len:
+        return compact
+    return compact[: max_len - 3] + "..."
+
+
 def parse_percent_string(value, default_value=0.0):
     raw = str(value or "").strip()
     matched = re.match(r"^([+-]?\d+(?:\.\d+)?)%$", raw)
@@ -1150,7 +1169,7 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
             current_time_ms = start_ms
 
         subtitle_duration_ms = end_ms - start_ms
-        subtitle_text = block["text"].replace("\n", " ").strip()
+        subtitle_text = sanitize_tts_text(block["text"])
 
         # Empty text block keeps timing with silence segment.
         if not subtitle_text:
@@ -1182,6 +1201,13 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
             asyncio.run(_generate_edge_tts_mp3(subtitle_text, raw_mp3_path, rate))
 
         tts_rate, boosted = resolve_dynamic_tts_rate(subtitle_text, subtitle_duration_ms)
+        subtitle_idx = block.get("index", i + 1)
+        char_count = len(re.sub(r"\s+", "", subtitle_text))
+        text_preview = make_text_preview(subtitle_text, max_len=96)
+        log(
+            f"Step3 TTS request: subtitle_idx={subtitle_idx}, timeline_idx={i}, "
+            f"char_count={char_count}, rate={tts_rate}, preview='{text_preview}'"
+        )
         if boosted:
             log(f"Step3: subtitle {i} auto-rate boost -> {tts_rate}")
 
