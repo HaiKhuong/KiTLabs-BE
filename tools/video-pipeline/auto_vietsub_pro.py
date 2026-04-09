@@ -35,6 +35,7 @@ STEP3_AUTO_RATE_TRIGGER_CHARS_PER_SEC = 14.0
 STEP3_AUTO_RATE_BONUS_PERCENT = 30
 STEP3_RATE_MIN_PERCENT = -50
 STEP3_RATE_MAX_PERCENT = 95
+STEP3_TTS_REQUEST_SLEEP_MS = 150
 # Cho TTS tràn vào khoảng lặng trước câu phụ đề kế (tới next_start) để tránh cắt cụt giữa câu.
 STEP3_TTS_BORROW_GAP = False
 # Optional: set absolute ffmpeg.exe path here if needed.
@@ -1198,6 +1199,9 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
         final_seg_path = chunk_dir / f"part_{i:04d}.wav"
 
         def run_tts(rate):
+            sleep_ms = max(0, int(STEP3_TTS_REQUEST_SLEEP_MS))
+            if sleep_ms > 0:
+                time.sleep(sleep_ms / 1000.0)
             asyncio.run(_generate_edge_tts_mp3(subtitle_text, raw_mp3_path, rate))
 
         tts_rate, boosted = resolve_dynamic_tts_rate(subtitle_text, subtitle_duration_ms)
