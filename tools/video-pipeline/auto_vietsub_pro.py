@@ -252,6 +252,24 @@ def build_atempo_filter(speed_factor):
     return ",".join(stages)
 
 
+def media_has_audio_stream(path):
+    """True if the file has at least one audio stream (uses ffmpeg -i probe)."""
+    result = subprocess.run(
+        [FFMPEG_BIN, "-hide_banner", "-i", str(path)],
+        capture_output=True,
+        text=True,
+        timeout=600,
+    )
+    combined = (result.stderr or "") + (result.stdout or "")
+    # e.g. "Stream #0:1[0x101](und): Audio: aac" — allow optional [0x..] before (lang).
+    return bool(
+        re.search(
+            r"Stream\s+#\d+:\d+(?:\[[^\]]+\])?(?:\([^)]*\))?:\s*Audio:",
+            combined,
+        )
+    )
+
+
 def resolve_ffmpeg_binary():
     candidates = []
     if FFMPEG_PATH:
@@ -1441,32 +1459,66 @@ def step7_apply_speed(video_path):
     log(f"Step7: final speed x{speed:.4f} (after subtitle render) -> {WORK_NAME}_vs_tm.mp4")
     final_out = VIDEO_DIR / f"{WORK_NAME}_vs_tm.mp4"
     part = VIDEO_DIR / f"{WORK_NAME}_vs_tm.mp4.part"
-    atempo_filter = build_atempo_filter(speed)
-    run_command(
-        [
-            FFMPEG_BIN,
-            "-y",
-            "-i",
-            str(video_path),
-            "-filter_complex",
-            f"[0:v]setpts=PTS/{speed:.6f}[v];[0:a]{atempo_filter}[a]",
-            "-map",
-            "[v]",
-            "-map",
-            "[a]",
-            "-c:v",
-            "libx264",
-            "-preset",
-            "medium",
-            "-crf",
-            "23",
-            "-c:a",
-            "aac",
-            *ffmpeg_output_metadata_args(),
-            str(part),
-        ],
-        f"Apply speed-video x{speed:.3f}",
-    )
+    meta = ffmpeg_output_metadata_args()
+    if media_has_audio_stream(video_path):
+        atempo_filter = build_atempo_filter(speed)
+        run_command(
+            [
+                FFMPEG_BIN,
+                "-y",
+                "-i",
+                str(video_path),
+                "-filter_complex",
+                f"[0:v]setpts=PTS/{speed:.6f}[v];[0:a]{atempo_filter}[a]",
+                "-map",
+                "[v]",
+                "-map",
+                "[a]",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "medium",
+                "-crf",
+                "23",
+                "-c:a",
+                "aac",
+                *meta,
+                # .mp4.part has no standard ext — muxer must be set explicitly
+                "-f",
+                "mp4",
+                str(part),
+            ],
+            f"Apply speed-video x{speed:.3f}",
+        )
+    else:
+        log(
+            "Step7: input has no audio stream; applying setpts to video only "
+            "(often after Step6 omitted audio with -map 0:a?)."
+        )
+        run_command(
+            [
+                FFMPEG_BIN,
+                "-y",
+                "-i",
+                str(video_path),
+                "-filter_complex",
+                f"[0:v]setpts=PTS/{speed:.6f}[v]",
+                "-map",
+                "[v]",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "medium",
+                "-crf",
+                "23",
+                "-an",
+                *meta,
+                "-f",
+                "mp4",
+                str(part),
+            ],
+            f"Apply speed-video (video-only) x{speed:.3f}",
+        )
     try:
         os.replace(part, final_out)
     except OSError:
