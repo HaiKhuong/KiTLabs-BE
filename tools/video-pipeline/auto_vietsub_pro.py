@@ -35,7 +35,7 @@ STEP3_AUTO_RATE_TRIGGER_CHARS_PER_SEC = 14.0
 STEP3_AUTO_RATE_BONUS_PERCENT = 30
 STEP3_RATE_MIN_PERCENT = -50
 STEP3_RATE_MAX_PERCENT = 95
-STEP3_TTS_REQUEST_SLEEP_MS = 300
+STEP3_TTS_REQUEST_SLEEP_MS = 150
 # Cho TTS tràn vào khoảng lặng trước câu phụ đề kế (tới next_start) để tránh cắt cụt giữa câu.
 STEP3_TTS_BORROW_GAP = False
 # Optional: set absolute ffmpeg.exe path here if needed.
@@ -1438,8 +1438,9 @@ def step7_apply_speed(video_path):
     if speed <= 0:
         raise ValueError(f"speed-video must be > 0, got {speed}")
 
-    log(f"Step7: final speed x{speed:.4f} (after subtitle render)")
-    out = VIDEO_DIR / f"{WORK_NAME}_vs_tm_x{speed:.2f}.mp4"
+    log(f"Step7: final speed x{speed:.4f} (after subtitle render) -> {WORK_NAME}_vs_tm.mp4")
+    final_out = VIDEO_DIR / f"{WORK_NAME}_vs_tm.mp4"
+    part = VIDEO_DIR / f"{WORK_NAME}_vs_tm.mp4.part"
     atempo_filter = build_atempo_filter(speed)
     run_command(
         [
@@ -1462,11 +1463,17 @@ def step7_apply_speed(video_path):
             "-c:a",
             "aac",
             *ffmpeg_output_metadata_args(),
-            str(out),
+            str(part),
         ],
         f"Apply speed-video x{speed:.3f}",
     )
-    return out
+    try:
+        os.replace(part, final_out)
+    except OSError:
+        if part.is_file():
+            part.unlink(missing_ok=True)
+        raise
+    return final_out
 
 
 # ==============================
@@ -1638,7 +1645,7 @@ def parse_cli_args():
         "--speed-video",
         type=float,
         default=SPEED_VIDEO,
-        help="Step7 after subtitle render: final speed on *_vs_tm*.mp4 (e.g. 0.97). 1.0 = skip Step7 encode.",
+        help="Step7 after subtitle render: re-encode *_vs_tm.mp4 in place (temp .part). 1.0 = skip Step7 encode.",
     )
     parser.add_argument(
         "--whisper-language",
