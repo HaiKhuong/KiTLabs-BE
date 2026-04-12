@@ -110,6 +110,11 @@ const OPTION_MAPPINGS: Array<{
     keys: ["step3TtsApiTimeoutSec", "step3_tts_api_timeout_sec"],
     allowedTypes: ["number", "string"],
   },
+  {
+    cliFlag: "--step3-tts-max-retry-action",
+    keys: ["step3TtsMaxRetryAction", "step3_tts_max_retry_action"],
+    allowedTypes: ["string"],
+  },
   { cliFlag: "--translation-context", keys: ["translationContext", "translation_context"], allowedTypes: ["string"] },
   { cliFlag: "--mode", keys: ["mode", "mode"], allowedTypes: ["string"] },
   {

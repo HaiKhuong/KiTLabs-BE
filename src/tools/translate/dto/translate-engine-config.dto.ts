@@ -1,5 +1,5 @@
 import { Type } from "class-transformer";
-import { IsNumber, IsOptional, IsString } from "class-validator";
+import { IsIn, IsNumber, IsOptional, IsString } from "class-validator";
 
 export class TranslateEngineConfigDto {
   @IsOptional()
@@ -305,6 +305,15 @@ export class TranslateEngineConfigDto {
   @Type(() => Number)
   @IsNumber()
   step3_tts_api_timeout_sec?: number;
+
+  /** After TTS_RETRY_MAX failures: stop | skip */
+  @IsOptional()
+  @IsIn(["stop", "skip"])
+  step3TtsMaxRetryAction?: string;
+
+  @IsOptional()
+  @IsIn(["stop", "skip"])
+  step3_tts_max_retry_action?: string;
 
   @IsOptional()
   @IsString()

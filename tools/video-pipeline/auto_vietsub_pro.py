@@ -38,6 +38,8 @@ STEP3_RATE_MAX_PERCENT = 95
 STEP3_TTS_REQUEST_SLEEP_MS = 150
 # Mỗi request edge-tts (save MP3): 0 = không giới hạn thời gian.
 STEP3_TTS_API_TIMEOUT_SEC = 120.0
+# Sau TTS_RETRY_MAX lần thử edge-tts vẫn lỗi: "stop" = dừng pipeline; "skip" = thay bằng im lặng và tiếp tục.
+STEP3_TTS_MAX_RETRY_ACTION = "skip"
 # Cho TTS tràn vào khoảng lặng trước câu phụ đề kế (tới next_start) để tránh cắt cụt giữa câu.
 STEP3_TTS_BORROW_GAP = False
 # Optional: set absolute ffmpeg.exe path here if needed.
@@ -206,6 +208,47 @@ def retry_call(fn, label, max_retry=RETRY_MAX, base_delay=1.5):
             delay = base_delay
             log(f"{label} error (attempt {attempt}/{max_retry}): {e}. Retry in {delay:.1f}s")
             time.sleep(delay)
+
+
+def step3_tts_retry(run_fn, label, max_retry=TTS_RETRY_MAX, base_delay=1.5):
+    """Chạy TTS với retry. Trả về True nếu thành công; False nếu hết retry và STEP3_TTS_MAX_RETRY_ACTION=='skip'."""
+    for attempt in range(1, max_retry + 1):
+        try:
+            run_fn()
+            return True
+        except Exception as e:
+            if attempt == max_retry:
+                log(f"{label} error (final attempt {attempt}/{max_retry}): {e}")
+                if STEP3_TTS_MAX_RETRY_ACTION == "skip":
+                    log(
+                        f"Step3 TTS: exhausted {max_retry} retries; "
+                        f"STEP3_TTS_MAX_RETRY_ACTION=skip -> bỏ qua segment này. {label}"
+                    )
+                    return False
+                raise RuntimeError(f"{label} failed after {max_retry} attempts: {e}") from e
+            delay = base_delay
+            log(f"{label} error (attempt {attempt}/{max_retry}): {e}. Retry in {delay:.1f}s")
+            time.sleep(delay)
+
+
+def _write_step3_silent_wav(path, duration_ms, label):
+    sec = max(0.001, duration_ms / 1000.0)
+    run_command(
+        [
+            FFMPEG_BIN,
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "anullsrc=r=24000:cl=mono",
+            "-t",
+            f"{sec:.3f}",
+            "-c:a",
+            "pcm_s16le",
+            str(path),
+        ],
+        label,
+    )
 
 
 def run_command(args, label):
@@ -1227,14 +1270,14 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
             current_time_ms = end_ms
             continue
 
-        raw_mp3_path = chunk_dir / f"raw_{i:04d}.mp3"
+        raw_audio_path = chunk_dir / f"raw_{i:04d}.mp3"
         final_seg_path = chunk_dir / f"part_{i:04d}.wav"
 
         def run_tts(rate):
             sleep_ms = max(0, int(STEP3_TTS_REQUEST_SLEEP_MS))
             if sleep_ms > 0:
                 time.sleep(sleep_ms / 1000.0)
-            asyncio.run(_generate_edge_tts_mp3(subtitle_text, raw_mp3_path, rate))
+            asyncio.run(_generate_edge_tts_mp3(subtitle_text, raw_audio_path, rate))
 
         tts_rate, boosted = resolve_dynamic_tts_rate(subtitle_text, subtitle_duration_ms)
         subtitle_idx = block.get("index", i + 1)
@@ -1251,9 +1294,19 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
             f"Step3 TTS request subtitle_idx={subtitle_idx} timeline_idx={i} rate={tts_rate} "
             f"preview={text_preview!r}"
         )
-        retry_call(lambda: run_tts(tts_rate), tts_retry_label, max_retry=TTS_RETRY_MAX)
+        ok_tts = step3_tts_retry(lambda: run_tts(tts_rate), tts_retry_label, max_retry=TTS_RETRY_MAX)
+        if not ok_tts:
+            # Im lặng đúng khung SRT [start_ms, end_ms], khớp current_time_ms như nhánh câu rỗng.
+            _write_step3_silent_wav(
+                final_seg_path,
+                subtitle_duration_ms,
+                f"Step3 TTS skip: silent track slot {start_ms}-{end_ms}ms ({subtitle_duration_ms}ms) idx={i}",
+            )
+            timeline_paths.append(final_seg_path.resolve())
+            current_time_ms = end_ms
+            continue
 
-        raw_segment_ms = get_media_duration_ms(raw_mp3_path)
+        raw_segment_ms = get_media_duration_ms(raw_audio_path)
         if (
             STEP3_AUTO_RATE_ENABLED
             and raw_segment_ms
@@ -1276,12 +1329,22 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
                         f"Step3 TTS request (2nd pass) subtitle_idx={subtitle_idx} "
                         f"timeline_idx={i} rate={tts_rate} preview={text_preview!r}"
                     )
-                    retry_call(
-                        lambda: run_tts(tts_rate),
-                        tts_retry_label_2,
-                        max_retry=TTS_RETRY_MAX,
-                    )
-                    raw_segment_ms = get_media_duration_ms(raw_mp3_path)
+                    pass2_backup = chunk_dir / f"raw_{i:04d}_before_pass2_audio.bak"
+                    shutil.copy2(raw_audio_path, pass2_backup)
+                    try:
+                        ok_tts2 = step3_tts_retry(
+                            lambda: run_tts(tts_rate),
+                            tts_retry_label_2,
+                            max_retry=TTS_RETRY_MAX,
+                        )
+                        if not ok_tts2:
+                            shutil.copy2(pass2_backup, raw_audio_path)
+                    finally:
+                        try:
+                            pass2_backup.unlink()
+                        except OSError:
+                            pass
+                    raw_segment_ms = get_media_duration_ms(raw_audio_path)
 
         # Latest instant we may end this speech without overlapping the next cue (when borrow-gap on).
         if i + 1 < len(blocks):
@@ -1322,7 +1385,7 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
                 FFMPEG_BIN,
                 "-y",
                 "-i",
-                str(raw_mp3_path),
+                str(raw_audio_path),
                 "-af",
                 ",".join(fit_filters),
                 "-ac",
@@ -1814,6 +1877,12 @@ def parse_cli_args():
         help="Per-request timeout for edge-tts (save). 0 disables timeout.",
     )
     parser.add_argument(
+        "--step3-tts-max-retry-action",
+        choices=["stop", "skip"],
+        default=STEP3_TTS_MAX_RETRY_ACTION,
+        help="After TTS_RETRY_MAX failed attempts: stop=pipeline error; skip=silent segment and continue.",
+    )
+    parser.add_argument(
         "--translation-context",
         default=TRANSLATION_CONTEXT,
         help="Custom context/instructions for Gemini translation. Overrides default Han-Viet prompt.",
@@ -1870,6 +1939,7 @@ def apply_cli_config(args):
     global STEP3_AUTO_RATE_BONUS_PERCENT
     global STEP3_TTS_BORROW_GAP
     global STEP3_TTS_API_TIMEOUT_SEC
+    global STEP3_TTS_MAX_RETRY_ACTION
     global TRANSLATION_CONTEXT
     WHISPER_LANGUAGE = str(args.whisper_language).strip() or None
     global EDGE_TTS_RATE
@@ -1934,6 +2004,7 @@ def apply_cli_config(args):
     STEP3_AUTO_RATE_BONUS_PERCENT = int(args.step3_auto_rate_bonus_percent)
     STEP3_TTS_BORROW_GAP = args.step3_tts_borrow_gap == "on"
     STEP3_TTS_API_TIMEOUT_SEC = float(args.step3_tts_api_timeout_sec)
+    STEP3_TTS_MAX_RETRY_ACTION = str(args.step3_tts_max_retry_action or "stop").strip().lower()
     TRANSLATION_CONTEXT = args.translation_context or ""
 
     prof = STEP1_PROFILES[args.mode]
