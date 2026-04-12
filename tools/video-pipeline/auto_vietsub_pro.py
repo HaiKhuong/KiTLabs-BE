@@ -1287,8 +1287,8 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
         #     f"Step3 TTS request: subtitle_idx={subtitle_idx}, timeline_idx={i}, "
         #     f"char_count={char_count}, rate={tts_rate}, preview='{text_preview}'"
         # )
-        if boosted:
-            log(f"Step3: subtitle {i} auto-rate boost -> {tts_rate}")
+        # if boosted:
+        #     log(f"Step3: subtitle {i} auto-rate boost -> {tts_rate}")
 
         tts_retry_label = (
             f"Step3 TTS request subtitle_idx={subtitle_idx} timeline_idx={i} rate={tts_rate} "
@@ -1532,6 +1532,52 @@ def step4_merge_audio(video_path, voice_path):
     return out
 
 
+def build_step7_speed_command(video_path, part_path, speed, use_gpu, has_audio):
+    """Step7: setpts + atempo; video encode NVENC (GPU) hoặc libx264 (CPU), giống Step6."""
+    meta = ffmpeg_output_metadata_args()
+    if use_gpu:
+        v_enc = ["-c:v", "h264_nvenc", "-preset", "p4", "-cq", "23"]
+    else:
+        v_enc = ["-c:v", "libx264", "-preset", "medium", "-crf", "23"]
+    if has_audio:
+        atempo_filter = build_atempo_filter(speed)
+        return [
+            FFMPEG_BIN,
+            "-y",
+            "-i",
+            str(video_path),
+            "-filter_complex",
+            f"[0:v]setpts=PTS/{speed:.6f}[v];[0:a]{atempo_filter}[a]",
+            "-map",
+            "[v]",
+            "-map",
+            "[a]",
+            *v_enc,
+            "-c:a",
+            "aac",
+            *meta,
+            "-f",
+            "mp4",
+            str(part_path),
+        ]
+    return [
+        FFMPEG_BIN,
+        "-y",
+        "-i",
+        str(video_path),
+        "-filter_complex",
+        f"[0:v]setpts=PTS/{speed:.6f}[v]",
+        "-map",
+        "[v]",
+        *v_enc,
+        "-an",
+        *meta,
+        "-f",
+        "mp4",
+        str(part_path),
+    ]
+
+
 def step7_apply_speed(video_path):
     if abs(float(SPEED_VIDEO) - 1.0) < 1e-6:
         return video_path
@@ -1543,66 +1589,23 @@ def step7_apply_speed(video_path):
     log(f"Step7: final speed x{speed:.4f} (after subtitle render) -> {WORK_NAME}_vs_tm.mp4")
     final_out = VIDEO_DIR / f"{WORK_NAME}_vs_tm.mp4"
     part = VIDEO_DIR / f"{WORK_NAME}_vs_tm.mp4.part"
-    meta = ffmpeg_output_metadata_args()
-    if media_has_audio_stream(video_path):
-        atempo_filter = build_atempo_filter(speed)
-        run_command(
-            [
-                FFMPEG_BIN,
-                "-y",
-                "-i",
-                str(video_path),
-                "-filter_complex",
-                f"[0:v]setpts=PTS/{speed:.6f}[v];[0:a]{atempo_filter}[a]",
-                "-map",
-                "[v]",
-                "-map",
-                "[a]",
-                "-c:v",
-                "libx264",
-                "-preset",
-                "medium",
-                "-crf",
-                "23",
-                "-c:a",
-                "aac",
-                *meta,
-                # .mp4.part has no standard ext — muxer must be set explicitly
-                "-f",
-                "mp4",
-                str(part),
-            ],
-            f"Apply speed-video x{speed:.3f}",
-        )
-    else:
+    has_audio = media_has_audio_stream(video_path)
+    if not has_audio:
         log(
             "Step7: input has no audio stream; applying setpts to video only "
             "(often after Step6 omitted audio with -map 0:a?)."
         )
-        run_command(
-            [
-                FFMPEG_BIN,
-                "-y",
-                "-i",
-                str(video_path),
-                "-filter_complex",
-                f"[0:v]setpts=PTS/{speed:.6f}[v]",
-                "-map",
-                "[v]",
-                "-c:v",
-                "libx264",
-                "-preset",
-                "medium",
-                "-crf",
-                "23",
-                "-an",
-                *meta,
-                "-f",
-                "mp4",
-                str(part),
-            ],
-            f"Apply speed-video (video-only) x{speed:.3f}",
-        )
+
+    gpu_cmd = build_step7_speed_command(video_path, part, speed, use_gpu=True, has_audio=has_audio)
+    try:
+        label = f"Apply speed-video x{speed:.3f}" + ("" if has_audio else " (video-only)")
+        run_command(gpu_cmd, f"{label} (GPU)")
+        log("Step7 encode used GPU (h264_nvenc).")
+    except Exception as e:
+        log(f"Step7 GPU encode unavailable, fallback CPU: {e}")
+        cpu_cmd = build_step7_speed_command(video_path, part, speed, use_gpu=False, has_audio=has_audio)
+        label = f"Apply speed-video x{speed:.3f}" + ("" if has_audio else " (video-only)")
+        run_command(cpu_cmd, f"{label} (CPU)")
     try:
         os.replace(part, final_out)
     except OSError:
