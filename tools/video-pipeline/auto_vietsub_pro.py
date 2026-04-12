@@ -1283,10 +1283,10 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
         subtitle_idx = block.get("index", i + 1)
         char_count = len(re.sub(r"\s+", "", subtitle_text))
         text_preview = make_text_preview(subtitle_text, max_len=96)
-        log(
-            f"Step3 TTS request: subtitle_idx={subtitle_idx}, timeline_idx={i}, "
-            f"char_count={char_count}, rate={tts_rate}, preview='{text_preview}'"
-        )
+        # log(
+        #     f"Step3 TTS request: subtitle_idx={subtitle_idx}, timeline_idx={i}, "
+        #     f"char_count={char_count}, rate={tts_rate}, preview='{text_preview}'"
+        # )
         if boosted:
             log(f"Step3: subtitle {i} auto-rate boost -> {tts_rate}")
 
