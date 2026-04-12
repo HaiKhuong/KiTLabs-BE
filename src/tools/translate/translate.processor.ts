@@ -105,8 +105,18 @@ const OPTION_MAPPINGS: Array<{
     keys: ["step3AutoRateBonusPercent", "step3_auto_rate_bonus_percent"],
     allowedTypes: ["number", "string"],
   },
+  {
+    cliFlag: "--step3-tts-api-timeout-sec",
+    keys: ["step3TtsApiTimeoutSec", "step3_tts_api_timeout_sec"],
+    allowedTypes: ["number", "string"],
+  },
   { cliFlag: "--translation-context", keys: ["translationContext", "translation_context"], allowedTypes: ["string"] },
   { cliFlag: "--mode", keys: ["mode", "mode"], allowedTypes: ["string"] },
+  {
+    cliFlag: "--step6-hflip",
+    keys: ["step6Hflip", "step6_hflip", "enableFlip", "enable_flip"],
+    allowedTypes: ["string"],
+  },
 ];
 
 @Processor(TRANSLATE_QUEUE_NAME)

@@ -297,10 +297,37 @@ export class TranslateEngineConfigDto {
   step3_auto_rate_bonus_percent?: number;
 
   @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  step3TtsApiTimeoutSec?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  step3_tts_api_timeout_sec?: number;
+
+  @IsOptional()
   @IsString()
   translationContext?: string;
 
   @IsOptional()
   @IsString()
   mode?: string;
+
+  /** Step6 horizontal flip (ffmpeg hflip); CLI: on | off */
+  @IsOptional()
+  @IsString()
+  step6Hflip?: string;
+
+  @IsOptional()
+  @IsString()
+  step6_hflip?: string;
+
+  @IsOptional()
+  @IsString()
+  enableFlip?: string;
+
+  @IsOptional()
+  @IsString()
+  enable_flip?: string;
 }

@@ -36,6 +36,8 @@ STEP3_AUTO_RATE_BONUS_PERCENT = 30
 STEP3_RATE_MIN_PERCENT = -50
 STEP3_RATE_MAX_PERCENT = 95
 STEP3_TTS_REQUEST_SLEEP_MS = 150
+# Mỗi request edge-tts (save MP3): 0 = không giới hạn thời gian.
+STEP3_TTS_API_TIMEOUT_SEC = 120.0
 # Cho TTS tràn vào khoảng lặng trước câu phụ đề kế (tới next_start) để tránh cắt cụt giữa câu.
 STEP3_TTS_BORROW_GAP = False
 # Optional: set absolute ffmpeg.exe path here if needed.
@@ -199,8 +201,9 @@ def retry_call(fn, label, max_retry=RETRY_MAX, base_delay=1.5):
             return fn()
         except Exception as e:
             if attempt == max_retry:
+                log(f"{label} error (final attempt {attempt}/{max_retry}): {e}")
                 raise RuntimeError(f"{label} failed after {max_retry} attempts: {e}") from e
-            delay = base_delay * (2 ** (attempt - 1))
+            delay = base_delay
             log(f"{label} error (attempt {attempt}/{max_retry}): {e}. Retry in {delay:.1f}s")
             time.sleep(delay)
 
@@ -1144,7 +1147,17 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
             volume=EDGE_TTS_VOLUME,
             pitch=EDGE_TTS_PITCH,
         )
-        await communicate.save(str(out_path))
+        out = str(out_path)
+        timeout_sec = float(STEP3_TTS_API_TIMEOUT_SEC)
+        if timeout_sec <= 0:
+            await communicate.save(out)
+        else:
+            try:
+                await asyncio.wait_for(communicate.save(out), timeout=timeout_sec)
+            except asyncio.TimeoutError as exc:
+                raise TimeoutError(
+                    f"edge-tts request timed out after {timeout_sec:.1f}s"
+                ) from exc
 
     with open(srt_path, encoding="utf8") as f:
         blocks = parse_srt(f.read())
@@ -1234,7 +1247,11 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
         if boosted:
             log(f"Step3: subtitle {i} auto-rate boost -> {tts_rate}")
 
-        retry_call(lambda: run_tts(tts_rate), f"TTS subtitle {i}", max_retry=TTS_RETRY_MAX)
+        tts_retry_label = (
+            f"Step3 TTS request subtitle_idx={subtitle_idx} timeline_idx={i} rate={tts_rate} "
+            f"preview={text_preview!r}"
+        )
+        retry_call(lambda: run_tts(tts_rate), tts_retry_label, max_retry=TTS_RETRY_MAX)
 
         raw_segment_ms = get_media_duration_ms(raw_mp3_path)
         if (
@@ -1255,9 +1272,13 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
                         f"{tts_rate} -> {tts_rate_2}"
                     )
                     tts_rate = tts_rate_2
+                    tts_retry_label_2 = (
+                        f"Step3 TTS request (2nd pass) subtitle_idx={subtitle_idx} "
+                        f"timeline_idx={i} rate={tts_rate} preview={text_preview!r}"
+                    )
                     retry_call(
                         lambda: run_tts(tts_rate),
-                        f"TTS subtitle {i} retry",
+                        tts_retry_label_2,
                         max_retry=TTS_RETRY_MAX,
                     )
                     raw_segment_ms = get_media_duration_ms(raw_mp3_path)
@@ -1787,6 +1808,12 @@ def parse_cli_args():
         help="Let TTS extend into silence before the next subtitle (reduces mid-sentence cuts).",
     )
     parser.add_argument(
+        "--step3-tts-api-timeout-sec",
+        type=float,
+        default=STEP3_TTS_API_TIMEOUT_SEC,
+        help="Per-request timeout for edge-tts (save). 0 disables timeout.",
+    )
+    parser.add_argument(
         "--translation-context",
         default=TRANSLATION_CONTEXT,
         help="Custom context/instructions for Gemini translation. Overrides default Han-Viet prompt.",
@@ -1842,6 +1869,7 @@ def apply_cli_config(args):
     global STEP3_AUTO_RATE_TRIGGER_CHARS_PER_SEC
     global STEP3_AUTO_RATE_BONUS_PERCENT
     global STEP3_TTS_BORROW_GAP
+    global STEP3_TTS_API_TIMEOUT_SEC
     global TRANSLATION_CONTEXT
     WHISPER_LANGUAGE = str(args.whisper_language).strip() or None
     global EDGE_TTS_RATE
@@ -1905,6 +1933,7 @@ def apply_cli_config(args):
     STEP3_AUTO_RATE_TRIGGER_CHARS_PER_SEC = float(args.step3_auto_rate_trigger_cps)
     STEP3_AUTO_RATE_BONUS_PERCENT = int(args.step3_auto_rate_bonus_percent)
     STEP3_TTS_BORROW_GAP = args.step3_tts_borrow_gap == "on"
+    STEP3_TTS_API_TIMEOUT_SEC = float(args.step3_tts_api_timeout_sec)
     TRANSLATION_CONTEXT = args.translation_context or ""
 
     prof = STEP1_PROFILES[args.mode]
