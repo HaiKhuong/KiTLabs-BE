@@ -39,7 +39,9 @@ STEP3_TTS_REQUEST_SLEEP_MS = 150
 # Mỗi request edge-tts (save MP3): 0 = không giới hạn thời gian.
 STEP3_TTS_API_TIMEOUT_SEC = 120.0
 # Sau TTS_RETRY_MAX lần thử edge-tts vẫn lỗi: "stop" = dừng pipeline; "skip" = thay bằng im lặng và tiếp tục.
-STEP3_TTS_MAX_RETRY_ACTION = "skip"
+STEP3_TTS_MAX_RETRY_ACTION = "stop"
+# Ghi/đọc checkpoint segment TTS trong logs/tts_chunks: rerender chỉ gọi edge-tts cho segment chưa xong (tiết kiệm rate).
+STEP3_VOICE_RESUME = True
 # Cho TTS tràn vào khoảng lặng trước câu phụ đề kế (tới next_start) để tránh cắt cụt giữa câu.
 STEP3_TTS_BORROW_GAP = False
 # Optional: set absolute ffmpeg.exe path here if needed.
@@ -736,6 +738,99 @@ def write_ffmpeg_concat_list(paths, out_list_path):
             f.write(f"file '{p.as_posix()}'\n")
 
 
+def _step3_voice_checkpoint_paths(chunk_dir):
+    """JSON: chỉ số block 0-based trong vòng lặp (khớp part_XXXX.wav). TXT: số thứ tự dòng SRT (1-based) đã gen xong."""
+    return (
+        chunk_dir / f"{WORK_NAME}_voice_segments.json",
+        chunk_dir / f"{WORK_NAME}_voice_ok_srt.txt",
+    )
+
+
+def _step3_prune_voice_checkpoint_missing_wavs(done_set, srt_path, chunk_dir, blocks):
+    """Bỏ idx nếu thiếu file WAV (user xóa part/empty để gen lại). Cập nhật json/txt nếu có thay đổi."""
+    if not done_set:
+        return
+    removed = []
+    for i in list(done_set):
+        if i < 0 or i >= len(blocks):
+            done_set.discard(i)
+            removed.append(i)
+            continue
+        st = sanitize_tts_text(blocks[i]["text"])
+        p = (
+            chunk_dir / f"empty_{i:04d}.wav"
+            if not st
+            else chunk_dir / f"part_{i:04d}.wav"
+        )
+        if not file_ready(p):
+            done_set.discard(i)
+            removed.append(i)
+    if removed:
+        log(
+            f"Step3: checkpoint — bỏ idx thiếu WAV (sẽ gọi lại TTS/ffmpeg cho các idx này): "
+            f"{removed[:24]}{'...' if len(removed) > 24 else ''}"
+        )
+        _step3_save_voice_checkpoint(srt_path, chunk_dir, blocks, done_set)
+
+
+def _step3_load_voice_checkpoint(srt_path, chunk_dir, block_count):
+    """Trả về set chỉ số i (enumerate blocks) đã có WAV để bỏ qua edge-tts."""
+    json_path, _ = _step3_voice_checkpoint_paths(chunk_dir)
+    if not json_path.is_file():
+        return set()
+    try:
+        with open(json_path, encoding="utf8") as f:
+            data = json.load(f)
+    except Exception as e:
+        log(f"Step3: không đọc checkpoint voice ({e}), gen lại TTS theo segment.")
+        return set()
+    try:
+        sp = str(Path(srt_path).resolve())
+        mtime = Path(srt_path).stat().st_mtime
+    except OSError:
+        return set()
+    if str(data.get("srt_path_resolved") or "") != sp:
+        log("Step3: checkpoint voice khác đường dẫn SRT, không resume.")
+        return set()
+    if abs(float(data.get("srt_mtime", 0)) - mtime) > 0.01:
+        log("Step3: SRT đã đổi (mtime), không resume voice checkpoint.")
+        return set()
+    if int(data.get("block_count", -1)) != int(block_count):
+        log("Step3: số khối SRT khác checkpoint, không resume voice.")
+        return set()
+    raw = data.get("done_block_indices") or []
+    return {int(x) for x in raw if 0 <= int(x) < block_count}
+
+
+def _step3_save_voice_checkpoint(srt_path, chunk_dir, blocks, done_indices):
+    json_path, txt_path = _step3_voice_checkpoint_paths(chunk_dir)
+    try:
+        sp = str(Path(srt_path).resolve())
+        mtime = Path(srt_path).stat().st_mtime
+    except OSError as e:
+        log(f"Step3: không ghi checkpoint voice (stat SRT): {e}")
+        return
+    payload = {
+        "version": 1,
+        "srt_path_resolved": sp,
+        "srt_mtime": mtime,
+        "block_count": len(blocks),
+        "done_block_indices": sorted(int(x) for x in done_indices),
+    }
+    try:
+        tmp = json_path.with_suffix(".json.tmp")
+        with open(tmp, "w", encoding="utf8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+        tmp.replace(json_path)
+    except Exception as e:
+        log(f"Step3: không ghi checkpoint voice json: {e}")
+    try:
+        srt_ok = sorted(blocks[i]["index"] for i in sorted(done_indices) if i < len(blocks))
+        write_text(txt_path, " ".join(str(x) for x in srt_ok))
+    except Exception as e:
+        log(f"Step3: không ghi voice_ok_srt.txt: {e}")
+
+
 def get_zh_srt_path():
     return SUBTITLE_DIR / f"{WORK_NAME}.zh.srt"
 
@@ -1213,6 +1308,20 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
 
     chunk_dir = LOG_DIR / "tts_chunks"
     chunk_dir.mkdir(parents=True, exist_ok=True)
+    done_block_indices = (
+        _step3_load_voice_checkpoint(srt_path, chunk_dir, len(blocks))
+        if STEP3_VOICE_RESUME
+        else set()
+    )
+    if STEP3_VOICE_RESUME:
+        _step3_prune_voice_checkpoint_missing_wavs(
+            done_block_indices, srt_path, chunk_dir, blocks
+        )
+    if STEP3_VOICE_RESUME and done_block_indices:
+        log(
+            f"Step3: resume voice — bỏ qua edge-tts cho {len(done_block_indices)} segment đã xong "
+            f"(checkpoint + file WAV). Thiếu segment sẽ gọi API."
+        )
     timeline_paths = []
     current_time_ms = 0
 
@@ -1250,6 +1359,10 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
         # Empty text block keeps timing with silence segment.
         if not subtitle_text:
             empty_path = chunk_dir / f"empty_{i:04d}.wav"
+            if STEP3_VOICE_RESUME and i in done_block_indices and file_ready(empty_path):
+                timeline_paths.append(empty_path.resolve())
+                current_time_ms = end_ms
+                continue
             run_command(
                 [
                     FFMPEG_BIN,
@@ -1268,10 +1381,24 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
             )
             timeline_paths.append(empty_path.resolve())
             current_time_ms = end_ms
+            done_block_indices.add(i)
+            _step3_save_voice_checkpoint(srt_path, chunk_dir, blocks, done_block_indices)
             continue
 
         raw_audio_path = chunk_dir / f"raw_{i:04d}.mp3"
         final_seg_path = chunk_dir / f"part_{i:04d}.wav"
+
+        if STEP3_VOICE_RESUME and i in done_block_indices and file_ready(final_seg_path):
+            seg_ms = get_media_duration_ms(final_seg_path)
+            if not seg_ms:
+                seg_ms = int(subtitle_duration_ms)
+            timeline_paths.append(final_seg_path.resolve())
+            current_time_ms = start_ms + int(seg_ms)
+            log(
+                f"Step3: reuse segment timeline_idx={i} SRT#{block.get('index', i + 1)} "
+                f"({final_seg_path.name}), không gọi edge-tts."
+            )
+            continue
 
         def run_tts(rate):
             sleep_ms = max(0, int(STEP3_TTS_REQUEST_SLEEP_MS))
@@ -1304,6 +1431,8 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
             )
             timeline_paths.append(final_seg_path.resolve())
             current_time_ms = end_ms
+            done_block_indices.add(i)
+            _step3_save_voice_checkpoint(srt_path, chunk_dir, blocks, done_block_indices)
             continue
 
         raw_segment_ms = get_media_duration_ms(raw_audio_path)
@@ -1400,6 +1529,8 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
         )
         timeline_paths.append(final_seg_path.resolve())
         current_time_ms = start_ms + target_duration_ms
+        done_block_indices.add(i)
+        _step3_save_voice_checkpoint(srt_path, chunk_dir, blocks, done_block_indices)
 
     # Ensure final audio length reaches subtitle end or requested target duration.
     _start_ms, last_end_ms = parse_srt_time_range(blocks[-1]["time"])
@@ -1445,6 +1576,8 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
         ],
         "Concatenate edge-tts timeline segments",
     )
+    ck_json, ck_txt = _step3_voice_checkpoint_paths(chunk_dir)
+    log(f"Step3: checkpoint segment TTS -> {ck_json.name} (idx 0-based), {ck_txt.name} (số SRT đã xong).")
     return audio_path
 
 
@@ -1886,6 +2019,12 @@ def parse_cli_args():
         help="After TTS_RETRY_MAX failed attempts: stop=pipeline error; skip=silent segment and continue.",
     )
     parser.add_argument(
+        "--step3-voice-resume",
+        choices=["on", "off"],
+        default="on" if STEP3_VOICE_RESUME else "off",
+        help="on=đọc/ghi checkpoint trong logs/tts_chunks; chỉ gọi edge-tts cho segment chưa trong list + chưa có part_XXXX.wav (tiết kiệm rate).",
+    )
+    parser.add_argument(
         "--translation-context",
         default=TRANSLATION_CONTEXT,
         help="Custom context/instructions for Gemini translation. Overrides default Han-Viet prompt.",
@@ -1943,6 +2082,7 @@ def apply_cli_config(args):
     global STEP3_TTS_BORROW_GAP
     global STEP3_TTS_API_TIMEOUT_SEC
     global STEP3_TTS_MAX_RETRY_ACTION
+    global STEP3_VOICE_RESUME
     global TRANSLATION_CONTEXT
     WHISPER_LANGUAGE = str(args.whisper_language).strip() or None
     global EDGE_TTS_RATE
@@ -2008,6 +2148,7 @@ def apply_cli_config(args):
     STEP3_TTS_BORROW_GAP = args.step3_tts_borrow_gap == "on"
     STEP3_TTS_API_TIMEOUT_SEC = float(args.step3_tts_api_timeout_sec)
     STEP3_TTS_MAX_RETRY_ACTION = str(args.step3_tts_max_retry_action or "stop").strip().lower()
+    STEP3_VOICE_RESUME = args.step3_voice_resume == "on"
     TRANSLATION_CONTEXT = args.translation_context or ""
 
     prof = STEP1_PROFILES[args.mode]
