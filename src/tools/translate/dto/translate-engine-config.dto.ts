@@ -68,6 +68,15 @@ export class TranslateEngineConfigDto {
   @IsNumber()
   subtitle_shadow?: number;
 
+  /** Force uppercase when writing SRT; CLI: on | off */
+  @IsOptional()
+  @IsIn(["on", "off"])
+  subtitleUppercase?: string;
+
+  @IsOptional()
+  @IsIn(["on", "off"])
+  subtitle_uppercase?: string;
+
   @IsOptional()
   @Type(() => Number)
   @IsNumber()

@@ -36,6 +36,11 @@ const OPTION_MAPPINGS: Array<{
   },
   { cliFlag: "--subtitle-shadow", keys: ["subtitleShadow", "subtitle_shadow"], allowedTypes: ["number", "string"] },
   {
+    cliFlag: "--subtitle-uppercase",
+    keys: ["subtitleUppercase", "subtitle_uppercase"],
+    allowedTypes: ["string"],
+  },
+  {
     cliFlag: "--subtitle-alignment",
     keys: ["subtitleAlignment", "subtitle_alignment"],
     allowedTypes: ["number", "string"],

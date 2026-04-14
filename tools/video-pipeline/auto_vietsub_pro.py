@@ -58,6 +58,8 @@ LOG_PATH = LOG_DIR / "pipeline.log"
 TRANSLATE_BATCH_SIZE = 500
 TTS_CHUNK_MAX_CHARS = 350
 RETRY_MAX = 4
+# Step 2 Gemini: không retry khi lỗi (một lần gọi thất bại là dừng batch đó).
+GEMINI_RETRY_MAX = 1
 TTS_RETRY_MAX = 10
 FFMPEG_BIN = None
 SKIP_VOICE_STEP = False
@@ -1245,7 +1247,7 @@ def translate_batch_with_gemini(batch, batch_start_index):
             mapped[idx] = str(item["vi"]).strip()
         return mapped
 
-    return retry_call(_call, "Gemini translation")
+    return retry_call(_call, "Gemini translation", max_retry=GEMINI_RETRY_MAX)
 
 
 def step2_translate_srt(srt_path):
