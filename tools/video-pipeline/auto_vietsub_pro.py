@@ -84,6 +84,8 @@ LOGO_WIDTH = 250
 LOGO_MARGIN_X = 30
 LOGO_MARGIN_Y = 30
 LOGO_OPACITY = 0.5
+# Step 6: tắt overlay logo (--logo-enabled off) dù vẫn có file --logo-file.
+LOGO_ENABLED = True
 # Step 6: optional visual pass before subtitle (hflip, zoom, eq, unsharp). Bật bằng --step6-visual-transform on.
 STEP6_VISUAL_TRANSFORM_ENABLED = True
 STEP6_HFLIP = True
@@ -1784,19 +1786,23 @@ def step6_render(video_path, ass_path):
         )
     out = VIDEO_DIR / f"{WORK_NAME}_vs_tm.mp4"
     subtitle_filter = build_subtitle_filter(ass_path)
-    configured_logo = Path(LOGO_FILE)
-    # Resolve relative logo paths from this script directory
-    # so changing LOGO_FILE in code always takes effect.
-    logo_path = (
-        configured_logo
-        if configured_logo.is_absolute()
-        else (SCRIPT_DIR / configured_logo)
-    ).resolve()
-    if file_ready(logo_path):
-        log(f"Step6: Using logo overlay from {logo_path}")
+    logo_path = None
+    if LOGO_ENABLED:
+        configured_logo = Path(LOGO_FILE)
+        # Resolve relative logo paths from this script directory
+        # so changing LOGO_FILE in code always takes effect.
+        logo_path = (
+            configured_logo
+            if configured_logo.is_absolute()
+            else (SCRIPT_DIR / configured_logo)
+        ).resolve()
+        if file_ready(logo_path):
+            log(f"Step6: Using logo overlay from {logo_path}")
+        else:
+            log(f"Step6: Logo not found ({logo_path}), render without logo.")
+            logo_path = None
     else:
-        log(f"Step6: Logo not found ({logo_path}), render without logo.")
-        logo_path = None
+        log("Step6: Logo disabled (--logo-enabled off), render without logo overlay.")
 
     gpu_cmd = build_step6_render_command(
         video_path, out, subtitle_filter, use_gpu=True, logo_path=logo_path
@@ -1871,6 +1877,12 @@ def parse_cli_args():
     parser.add_argument("--logo-margin-x", type=int, default=LOGO_MARGIN_X)
     parser.add_argument("--logo-margin-y", type=int, default=LOGO_MARGIN_Y)
     parser.add_argument("--logo-opacity", type=float, default=LOGO_OPACITY)
+    parser.add_argument(
+        "--logo-enabled",
+        choices=["on", "off"],
+        default="on" if LOGO_ENABLED else "off",
+        help="Step6: overlay logo image on video. off = skip logo even if --logo-file exists.",
+    )
     parser.add_argument(
         "--step6-visual-transform",
         choices=["on", "off"],
@@ -2063,6 +2075,7 @@ def apply_cli_config(args):
     global LOGO_MARGIN_X
     global LOGO_MARGIN_Y
     global LOGO_OPACITY
+    global LOGO_ENABLED
     global STEP6_VISUAL_TRANSFORM_ENABLED
     global STEP6_HFLIP
     global STEP6_ZOOM_PERCENT
@@ -2122,6 +2135,7 @@ def apply_cli_config(args):
     LOGO_MARGIN_X = args.logo_margin_x
     LOGO_MARGIN_Y = args.logo_margin_y
     LOGO_OPACITY = args.logo_opacity
+    LOGO_ENABLED = args.logo_enabled == "on"
 
     STEP6_VISUAL_TRANSFORM_ENABLED = args.step6_visual_transform == "on"
     STEP6_HFLIP = args.step6_hflip == "on"
@@ -2304,6 +2318,9 @@ def run_pipeline(video, step_arg=None):
         final = step7_apply_speed(final)
         if not file_ready(final):
             raise RuntimeError("Final video render failed.")
+        if not SKIP_VOICE_STEP and tm_video.is_file():
+            tm_video.unlink()
+            log(f"Step7: removed intermediate {tm_video.name}")
         # cleanup_step6_intermediate_files()
         log(f"DONE: {final}")
         last_output = final

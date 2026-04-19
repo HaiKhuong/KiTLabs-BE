@@ -13,6 +13,15 @@ type UploadRequest = {
   uploadDestination?: string;
 };
 
+const LOGO_ALLOWED_MIME_TYPES = new Set([
+  "image/png",
+  "image/jpeg",
+  "image/jpg",
+  "image/gif",
+  "image/webp",
+  "image/svg+xml",
+]);
+
 const resolveUploadDestination = (req: UploadRequest): string => {
   const folderQuery = String(req.query.folder ?? "videos");
   const folder = folderQuery.length > 0 ? folderQuery : "videos";
@@ -23,6 +32,19 @@ const resolveUploadDestination = (req: UploadRequest): string => {
   return process.env.UPLOAD_DIR && process.env.UPLOAD_DIR.length > 0
     ? join(process.env.UPLOAD_DIR, targetFolder)
     : join("uploads", targetFolder);
+};
+
+const resolveLogoRelativeSubPath = (req: UploadRequest): string => {
+  const userIdRaw = typeof req.query.userId === "string" ? req.query.userId : "";
+  const userId = userIdRaw.replace(/[^a-zA-Z0-9-_]/g, "");
+  return userId ? `logos/${userId}` : "logos";
+};
+
+const resolveLogoDestination = (req: UploadRequest): string => {
+  const subPath = resolveLogoRelativeSubPath(req);
+  return process.env.UPLOAD_DIR && process.env.UPLOAD_DIR.length > 0
+    ? join(process.env.UPLOAD_DIR, subPath)
+    : join("uploads", subPath);
 };
 
 const sanitizeFileBaseName = (name: string): string =>
@@ -98,6 +120,65 @@ export class FilesController {
       userId: userId ?? null,
       originalName: file.originalname,
       fileName: file.filename,
+      filePath: file.path.replaceAll("\\", "/"),
+      mimeType: file.mimetype,
+      size: file.size,
+    };
+  }
+
+  @ApiOperation({ summary: "Upload logo image to logos folder" })
+  @ApiConsumes("multipart/form-data")
+  @ApiQuery({ name: "userId", required: false, description: "Owner user id for grouping under logos/" })
+  @ApiBody({
+    schema: { type: "object", properties: { file: { type: "string", format: "binary" } }, required: ["file"] },
+  })
+  @Public()
+  @Post("upload-logo")
+  @UseInterceptors(
+    FileInterceptor("file", {
+      storage: diskStorage({
+        destination: (req, _file, cb) => {
+          const uploadRequest = req as UploadRequest;
+          const destination = resolveLogoDestination(uploadRequest);
+          if (!existsSync(destination)) {
+            mkdirSync(destination, { recursive: true });
+          }
+          uploadRequest.uploadDestination = destination;
+          cb(null, destination);
+        },
+        filename: (req, file, cb) => {
+          const uploadRequest = req as UploadRequest;
+          const destination = uploadRequest.uploadDestination ?? resolveLogoDestination(uploadRequest);
+          cb(null, buildStoredFileName(destination, file.originalname, hasValidUserId(uploadRequest)));
+        },
+      }),
+      limits: { fileSize: Number(process.env.LOGO_UPLOAD_MAX_BYTES ?? 15_000_000) },
+      fileFilter: (_req, file, cb) => {
+        if (!LOGO_ALLOWED_MIME_TYPES.has(file.mimetype)) {
+          cb(new BadRequestException("Logo must be an image (PNG, JPEG, GIF, WebP, or SVG)."), false);
+          return;
+        }
+        cb(null, true);
+      },
+    }),
+  )
+  uploadLogo(@UploadedFile() file: Express.Multer.File, @Query("userId") userId?: string) {
+    this.filesService.ensureUploadFolder(userId ? `logos_${userId}` : "logos");
+    if (!file) {
+      throw new BadRequestException("file is required");
+    }
+
+    const reqStub = { query: { userId } } as UploadRequest;
+    const subPath = resolveLogoRelativeSubPath(reqStub);
+    const pathUnderUploadRoot = `${subPath}/${file.filename}`.replaceAll("//", "/");
+
+    return {
+      userId: userId ?? null,
+      originalName: file.originalname,
+      fileName: file.filename,
+      /** Path relative to upload root (e.g. logos/acme.png). */
+      path: pathUnderUploadRoot,
+      /** Absolute path on the server filesystem. */
       filePath: file.path.replaceAll("\\", "/"),
       mimeType: file.mimetype,
       size: file.size,

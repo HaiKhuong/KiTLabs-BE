@@ -216,6 +216,14 @@ export class TranslateEngineConfigDto {
   logo_opacity?: number;
 
   @IsOptional()
+  @IsString()
+  logoEnabled?: string;
+
+  @IsOptional()
+  @IsString()
+  logo_enabled?: string;
+
+  @IsOptional()
   @Type(() => Number)
   @IsNumber()
   originalVolume?: number;
@@ -348,4 +356,37 @@ export class TranslateEngineConfigDto {
   @IsOptional()
   @IsString()
   enable_flip?: string;
+
+  /** Step6: zoom %% (scale+crop giữa); 0 tắt zoom */
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  step6ZoomPercent?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  step6_zoom_percent?: number;
+
+  /** Step6: ffmpeg eq saturation */
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  step6EqSaturation?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  step6_eq_saturation?: number;
+
+  /** Step6: ffmpeg eq contrast */
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  step6EqContrast?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  step6_eq_contrast?: number;
 }

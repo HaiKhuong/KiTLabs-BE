@@ -90,6 +90,7 @@ const OPTION_MAPPINGS: Array<{
   { cliFlag: "--logo-margin-x", keys: ["logoMarginX", "logo_margin_x"], allowedTypes: ["number", "string"] },
   { cliFlag: "--logo-margin-y", keys: ["logoMarginY", "logo_margin_y"], allowedTypes: ["number", "string"] },
   { cliFlag: "--logo-opacity", keys: ["logoOpacity", "logo_opacity"], allowedTypes: ["number", "string"] },
+  { cliFlag: "--logo-enabled", keys: ["logoEnabled", "logo_enabled"], allowedTypes: ["string"] },
   { cliFlag: "--original-volume", keys: ["originalVolume", "original_volume"], allowedTypes: ["number", "string"] },
   {
     cliFlag: "--narration-volume",
@@ -126,6 +127,21 @@ const OPTION_MAPPINGS: Array<{
     cliFlag: "--step6-hflip",
     keys: ["step6Hflip", "step6_hflip", "enableFlip", "enable_flip"],
     allowedTypes: ["string"],
+  },
+  {
+    cliFlag: "--step6-zoom-percent",
+    keys: ["step6ZoomPercent", "step6_zoom_percent"],
+    allowedTypes: ["number", "string"],
+  },
+  {
+    cliFlag: "--step6-eq-saturation",
+    keys: ["step6EqSaturation", "step6_eq_saturation"],
+    allowedTypes: ["number", "string"],
+  },
+  {
+    cliFlag: "--step6-eq-contrast",
+    keys: ["step6EqContrast", "step6_eq_contrast"],
+    allowedTypes: ["number", "string"],
   },
 ];
 
