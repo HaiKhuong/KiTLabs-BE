@@ -178,9 +178,11 @@ export class FilesController {
       originalName: file.originalname,
       fileName: file.filename,
       /** Path relative to project root (e.g. tools/video-pipeline/logo/acme.png). */
-      path: pathUnderProjectRoot.replace("tools/video-pipeline/logo/", ""),
+      path: pathUnderProjectRoot.replace("/home/haikhuong/sources/KiTLabs-BE/tools/video-pipeline/logo/", "logo/"),
       /** Absolute path on the server filesystem. */
-      filePath: file.path.replaceAll("\\", "/"),
+      filePath: file.path
+        .replaceAll("\\", "/")
+        .replace("/home/haikhuong/sources/KiTLabs-BE/tools/video-pipeline/logo/", "logo/"),
       mimeType: file.mimetype,
       size: file.size,
     };
