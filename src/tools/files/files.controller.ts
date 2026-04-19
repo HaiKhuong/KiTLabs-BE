@@ -34,18 +34,16 @@ const resolveUploadDestination = (req: UploadRequest): string => {
     : join("uploads", targetFolder);
 };
 
+/** Project-relative base for video pipeline logos (see tools/video-pipeline/). */
+const VIDEO_PIPELINE_LOGO_DIR = join("tools", "video-pipeline", "logo");
+
 const resolveLogoRelativeSubPath = (req: UploadRequest): string => {
   const userIdRaw = typeof req.query.userId === "string" ? req.query.userId : "";
   const userId = userIdRaw.replace(/[^a-zA-Z0-9-_]/g, "");
-  return userId ? `logos/${userId}` : "logos";
+  return userId ? join(VIDEO_PIPELINE_LOGO_DIR, userId) : VIDEO_PIPELINE_LOGO_DIR;
 };
 
-const resolveLogoDestination = (req: UploadRequest): string => {
-  const subPath = resolveLogoRelativeSubPath(req);
-  return process.env.UPLOAD_DIR && process.env.UPLOAD_DIR.length > 0
-    ? join(process.env.UPLOAD_DIR, subPath)
-    : join("uploads", subPath);
-};
+const resolveLogoDestination = (req: UploadRequest): string => join(process.cwd(), resolveLogoRelativeSubPath(req));
 
 const sanitizeFileBaseName = (name: string): string =>
   name
@@ -126,9 +124,13 @@ export class FilesController {
     };
   }
 
-  @ApiOperation({ summary: "Upload logo image to logos folder" })
+  @ApiOperation({ summary: "Upload logo image to tools/video-pipeline/logo" })
   @ApiConsumes("multipart/form-data")
-  @ApiQuery({ name: "userId", required: false, description: "Owner user id for grouping under logos/" })
+  @ApiQuery({
+    name: "userId",
+    required: false,
+    description: "Optional owner id; files go under tools/video-pipeline/logo/<userId>/",
+  })
   @ApiBody({
     schema: { type: "object", properties: { file: { type: "string", format: "binary" } }, required: ["file"] },
   })
@@ -163,21 +165,20 @@ export class FilesController {
     }),
   )
   uploadLogo(@UploadedFile() file: Express.Multer.File, @Query("userId") userId?: string) {
-    this.filesService.ensureUploadFolder(userId ? `logos_${userId}` : "logos");
     if (!file) {
       throw new BadRequestException("file is required");
     }
 
     const reqStub = { query: { userId } } as UploadRequest;
     const subPath = resolveLogoRelativeSubPath(reqStub);
-    const pathUnderUploadRoot = `${subPath}/${file.filename}`.replaceAll("//", "/");
+    const pathUnderProjectRoot = join(subPath, file.filename).replaceAll("\\", "/");
 
     return {
       userId: userId ?? null,
       originalName: file.originalname,
       fileName: file.filename,
-      /** Path relative to upload root (e.g. logos/acme.png). */
-      path: pathUnderUploadRoot,
+      /** Path relative to project root (e.g. tools/video-pipeline/logo/acme.png). */
+      path: pathUnderProjectRoot.replace("tools/video-pipeline/logo/", ""),
       /** Absolute path on the server filesystem. */
       filePath: file.path.replaceAll("\\", "/"),
       mimeType: file.mimetype,
