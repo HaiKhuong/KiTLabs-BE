@@ -110,14 +110,14 @@ export class SettingsService {
     if (!type) {
       return this.userSettingProfileRepository.find({
         where: { userId },
-        order: { isDefault: "DESC", createdAt: "ASC" },
+        order: { isDefault: "DESC", name: "ASC" },
       });
     }
 
     await this.ensureDefaultProfile(userId, type);
     return this.userSettingProfileRepository.find({
       where: { userId, type },
-      order: { isDefault: "DESC", createdAt: "ASC" },
+      order: { isDefault: "DESC", name: "ASC" },
     });
   }
 
@@ -161,11 +161,7 @@ export class SettingsService {
     return item?.value ?? null;
   }
 
-  private async resolveProfile(
-    userId: string,
-    type: string,
-    profileId?: string,
-  ): Promise<UserSettingProfile> {
+  private async resolveProfile(userId: string, type: string, profileId?: string): Promise<UserSettingProfile> {
     if (profileId) {
       const profile = await this.userSettingProfileRepository.findOne({
         where: { id: profileId, userId, type },
