@@ -102,6 +102,8 @@ STEP4_MERGE_SPEED = 1.0
 SPEED_VIDEO = 0.97
 # Xuất MP4: xóa metadata nguồn (-map_metadata -1) và ghi Title/Artist/Comment kênh. Bật: --output-metadata on.
 OUTPUT_METADATA_ENABLED = True
+# True: title/artist/comment = stem file đầu ra (vd. Ten_vs_tm từ Ten_vs_tm.mp4). False: dùng 3 biến bên dưới.
+OUTPUT_METADATA_FROM_FILENAME = True
 OUTPUT_METADATA_TITLE = "Vạn Giới Vietsub"
 OUTPUT_METADATA_ARTIST = "Vạn Giới Vietsub"
 OUTPUT_METADATA_COMMENT = "Vạn Giới Vietsub"
@@ -936,14 +938,26 @@ def normalize_ass_colour(raw_value):
     return "&H00FFFFFF"
 
 
-def ffmpeg_output_metadata_args():
+def _stem_for_mp4_metadata(out_path):
+    """Stem hiển thị trong metadata; bỏ hậu tố .part nếu là file tạm ffmpeg (vd. *.mp4.part)."""
+    p = Path(out_path)
+    if p.suffix.lower() == ".part":
+        p = p.with_suffix("")
+    return p.stem
+
+
+def ffmpeg_output_metadata_args(out_path=None):
     """Trước path đầu ra: -map_metadata -1 và các -metadata (title/artist/comment) nếu bật."""
     if not OUTPUT_METADATA_ENABLED:
         return []
     args = ["-map_metadata", "-1"]
-    t = str(OUTPUT_METADATA_TITLE or "").strip()
-    a = str(OUTPUT_METADATA_ARTIST or "").strip()
-    c = str(OUTPUT_METADATA_COMMENT or "").strip()
+    if OUTPUT_METADATA_FROM_FILENAME and out_path is not None:
+        base = _stem_for_mp4_metadata(out_path).strip()
+        t = a = c = base
+    else:
+        t = str(OUTPUT_METADATA_TITLE or "").strip()
+        a = str(OUTPUT_METADATA_ARTIST or "").strip()
+        c = str(OUTPUT_METADATA_COMMENT or "").strip()
     if t:
         args.extend(["-metadata", f"title={t}"])
     if a:
@@ -972,7 +986,7 @@ def build_step6_render_command(video_path, out_path, subtitle_filter, use_gpu, l
         input_args.extend(["-i", str(logo_path)])
         map_args = ["-map", "[vout]", "-map", "0:a?"]
 
-    meta = ffmpeg_output_metadata_args()
+    meta = ffmpeg_output_metadata_args(out_path)
     if use_gpu:
         return [
             FFMPEG_BIN,
@@ -1618,7 +1632,7 @@ def step4_merge_audio(video_path, voice_path):
                 "-c:a",
                 "aac",
                 "-shortest",
-                *ffmpeg_output_metadata_args(),
+                *ffmpeg_output_metadata_args(out),
                 str(out),
             ],
             "Merge narration audio",
@@ -1661,7 +1675,7 @@ def step4_merge_audio(video_path, voice_path):
             "-c:a",
             "aac",
             "-shortest",
-            *ffmpeg_output_metadata_args(),
+            *ffmpeg_output_metadata_args(out),
             str(out),
         ],
         "Merge narration audio (pre-merge speed)",
@@ -1671,7 +1685,7 @@ def step4_merge_audio(video_path, voice_path):
 
 def build_step7_speed_command(video_path, part_path, speed, use_gpu, has_audio):
     """Step7: setpts + atempo; video encode NVENC (GPU) hoặc libx264 (CPU), giống Step6."""
-    meta = ffmpeg_output_metadata_args()
+    meta = ffmpeg_output_metadata_args(part_path)
     if use_gpu:
         v_enc = ["-c:v", "h264_nvenc", "-preset", "p4", "-cq", "23"]
     else:
@@ -1914,6 +1928,12 @@ def parse_cli_args():
         default="on" if OUTPUT_METADATA_ENABLED else "off",
         help="Strip source metadata (-map_metadata -1) and set title/artist/comment on MP4 outputs.",
     )
+    parser.add_argument(
+        "--metadata-from-filename",
+        choices=["on", "off"],
+        default="on" if OUTPUT_METADATA_FROM_FILENAME else "off",
+        help="on: title/artist/comment = stem file đầu ra. off: dùng --metadata-title/artist/comment.",
+    )
     parser.add_argument("--metadata-title", default=OUTPUT_METADATA_TITLE, help="MP4 metadata title (channel).")
     parser.add_argument("--metadata-artist", default=OUTPUT_METADATA_ARTIST, help="MP4 metadata artist.")
     parser.add_argument("--metadata-comment", default=OUTPUT_METADATA_COMMENT, help="MP4 metadata comment.")
@@ -2083,6 +2103,7 @@ def apply_cli_config(args):
     global STEP6_EQ_CONTRAST
     global STEP6_UNSHARP
     global OUTPUT_METADATA_ENABLED
+    global OUTPUT_METADATA_FROM_FILENAME
     global OUTPUT_METADATA_TITLE
     global OUTPUT_METADATA_ARTIST
     global OUTPUT_METADATA_COMMENT
@@ -2145,6 +2166,7 @@ def apply_cli_config(args):
     STEP6_UNSHARP = str(args.step6_unsharp).strip() or "5:5:0.8:3:3:0.0"
 
     OUTPUT_METADATA_ENABLED = args.output_metadata == "on"
+    OUTPUT_METADATA_FROM_FILENAME = args.metadata_from_filename == "on"
     OUTPUT_METADATA_TITLE = str(args.metadata_title or "").strip()
     OUTPUT_METADATA_ARTIST = str(args.metadata_artist or "").strip()
     OUTPUT_METADATA_COMMENT = str(args.metadata_comment or "").strip()
