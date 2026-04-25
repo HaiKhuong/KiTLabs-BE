@@ -340,6 +340,15 @@ export class TranslateEngineConfigDto {
   @IsString()
   mode?: string;
 
+  /** Step1 subtitle source: whisper | embedded */
+  @IsOptional()
+  @IsIn(["whisper", "embedded"])
+  step1SubtitleSource?: string;
+
+  @IsOptional()
+  @IsIn(["whisper", "embedded"])
+  step1_subtitle_source?: string;
+
   /** Step6 horizontal flip (ffmpeg hflip); CLI: on | off */
   @IsOptional()
   @IsString()
