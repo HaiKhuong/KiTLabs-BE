@@ -17,7 +17,6 @@ export class TranslateController {
   @Public()
   @Post()
   async enqueue(@Body() dto: CreateTranslateJobDto) {
-    console.log("🚀🚀🚀🚀🚀🚀🚀🚀🚀 ~ dto:", dto);
     return this.translateService.enqueue(dto);
   }
 
