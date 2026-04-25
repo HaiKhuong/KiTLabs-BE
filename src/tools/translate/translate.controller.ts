@@ -13,29 +13,11 @@ export class TranslateController {
   constructor(private readonly translateService: TranslateService) {}
 
   @ApiOperation({ summary: "Create translate queue job" })
-  @ApiBody({
-    type: CreateTranslateJobDto,
-    examples: {
-      render: {
-        summary: "Render 1-6 with embedded subtitle source",
-        value: {
-          userId: "user-uuid",
-          stepNbr: [1, 2, 3, 4, 5, 6],
-          estimatedCost: 0,
-          engineConfig: {
-            localVideoPath: "/uploads/videos/demo.mp4",
-            step1SubtitleSource: "embedded",
-            edgeTtsRate: "+30%",
-            edgeTtsVolume: "+10%",
-            edgeTtsPitch: "+20Hz",
-          },
-        },
-      },
-    },
-  })
+  @ApiBody({ type: CreateTranslateJobDto })
   @Public()
   @Post()
   async enqueue(@Body() dto: CreateTranslateJobDto) {
+    console.log("🚀🚀🚀🚀🚀🚀🚀🚀🚀 ~ dto:", dto);
     return this.translateService.enqueue(dto);
   }
 
