@@ -24,10 +24,11 @@ from tqdm import tqdm
 
 WHISPER_MODEL = "large-v3"
 WHISPER_LANGUAGE = "zh"
+STEP1_SUBTITLE_SOURCE = "embedded"
 GEMINI_MODEL_NAME = "gemini-2.5-flash"
 EDGE_TTS_VOICE = "vi-VN-HoaiMyNeural"
 EDGE_TTS_RATE = "+30%"
-EDGE_TTS_VOLUME = "+3dB"
+EDGE_TTS_VOLUME = "+10%"
 EDGE_TTS_PITCH = "+20Hz"
 STEP3_AUTO_RATE_ENABLED = True
 TRANSLATION_CONTEXT = ""  # Custom translation context for Gemini prompt
@@ -1053,10 +1054,82 @@ def update_ass_default_style(ass_path):
 
 # ==============================
 # STEP 1
-# Whisper -> <work_name>.zh.srt
+# Source zh subtitle -> <work_name>.zh.srt
 # ==============================
 
-def step1_transcribe(video_path):
+def _probe_subtitle_streams(video_path):
+    ffprobe_path = Path(FFMPEG_BIN).with_name("ffprobe.exe")
+    if not ffprobe_path.exists():
+        raise RuntimeError("ffprobe not found beside ffmpeg binary.")
+    result = run_command(
+        [
+            str(ffprobe_path),
+            "-v",
+            "error",
+            "-select_streams",
+            "s",
+            "-show_entries",
+            "stream=index:stream_tags=language,title",
+            "-of",
+            "json",
+            str(video_path),
+        ],
+        "Probe subtitle streams",
+    )
+    payload = json.loads(result.stdout or "{}")
+    return payload.get("streams", []) or []
+
+
+def _step1_extract_embedded_subtitle(video_path):
+    log("Step1: Extract embedded subtitle stream...")
+    streams = _probe_subtitle_streams(video_path)
+    if not streams:
+        raise RuntimeError("No subtitle stream found in input video.")
+
+    preferred_langs = {"zh", "zho", "chi", "cmn"}
+    chosen = None
+    for stream in streams:
+        tags = stream.get("tags") or {}
+        lang = str(tags.get("language", "")).strip().lower()
+        if lang in preferred_langs:
+            chosen = stream
+            break
+    if chosen is None:
+        chosen = streams[0]
+
+    stream_index = int(chosen.get("index", 0))
+    stream_lang = str((chosen.get("tags") or {}).get("language", "unknown")).strip() or "unknown"
+    stream_title = str((chosen.get("tags") or {}).get("title", "")).strip()
+    log(
+        f"Step1 subtitle stream selected: index={stream_index}, "
+        f"language={stream_lang}{', title=' + stream_title if stream_title else ''}"
+    )
+
+    srt_path = get_zh_srt_path()
+    run_command(
+        [
+            FFMPEG_BIN,
+            "-y",
+            "-i",
+            str(video_path),
+            "-map",
+            f"0:{stream_index}",
+            "-c:s",
+            "srt",
+            str(srt_path),
+        ],
+        "Extract subtitle stream to SRT",
+    )
+
+    with open(srt_path, encoding="utf8") as f:
+        blocks = parse_srt(f.read())
+    if not blocks:
+        raise RuntimeError("Extracted subtitle is empty after ffmpeg conversion.")
+    log(f"Step1 complete: extracted {len(blocks)} subtitle lines.")
+    return srt_path
+
+
+def _step1_transcribe_with_whisper(video_path):
     log("Step1: Transcribing video...")
     from faster_whisper import WhisperModel
 
@@ -1185,6 +1258,18 @@ def step1_transcribe(video_path):
             raise RuntimeError("Whisper produced no segments in Step1.")
     log(f"Step1 complete: {count} segments, last_end={last_end_ms / 1000:.2f}s")
     return srt_path
+
+
+def step1_transcribe(video_path):
+    source_mode = str(STEP1_SUBTITLE_SOURCE or "whisper").strip().lower()
+    if source_mode == "embedded":
+        return _step1_extract_embedded_subtitle(video_path)
+    if source_mode == "whisper":
+        return _step1_transcribe_with_whisper(video_path)
+    raise RuntimeError(
+        f"Unsupported Step1 source: {STEP1_SUBTITLE_SOURCE}. "
+        "Use --step1-subtitle-source whisper|embedded."
+    )
 
 
 # ==============================
@@ -1977,6 +2062,12 @@ def parse_cli_args():
         help="Whisper language code. Example: zh, en, vi.",
     )
     parser.add_argument(
+        "--step1-subtitle-source",
+        choices=["whisper", "embedded"],
+        default=STEP1_SUBTITLE_SOURCE,
+        help="Step1 subtitle source: whisper=ASR from audio, embedded=extract subtitle stream with ffmpeg.",
+    )
+    parser.add_argument(
         "--mode",
         choices=["basic", "advance"],
         default="basic",
@@ -2092,6 +2183,7 @@ def parse_cli_args():
 
 def apply_cli_config(args):
     global WHISPER_LANGUAGE
+    global STEP1_SUBTITLE_SOURCE
     global SUBTITLE_FONT
     global SUBTITLE_FONTSIZE
     global SUBTITLE_PRIMARY_COLOUR
@@ -2139,6 +2231,7 @@ def apply_cli_config(args):
     global STEP3_VOICE_RESUME
     global TRANSLATION_CONTEXT
     WHISPER_LANGUAGE = str(args.whisper_language).strip() or None
+    STEP1_SUBTITLE_SOURCE = str(args.step1_subtitle_source or STEP1_SUBTITLE_SOURCE).strip().lower()
     global EDGE_TTS_RATE
     global EDGE_TTS_VOLUME
     global EDGE_TTS_PITCH
