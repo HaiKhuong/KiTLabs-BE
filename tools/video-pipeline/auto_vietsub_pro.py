@@ -63,6 +63,7 @@ RETRY_MAX = 4
 GEMINI_RETRY_MAX = 1
 TTS_RETRY_MAX = 10
 FFMPEG_BIN = None
+FFPROBE_BIN = None
 SKIP_VOICE_STEP = False
 SUBTITLE_FONT = "Arial"
 SUBTITLE_FONTSIZE = 16
@@ -269,13 +270,12 @@ def run_command(args, label):
 
 
 def get_media_duration_ms(path):
-    ffprobe_path = Path(FFMPEG_BIN).with_name("ffprobe.exe")
-    if not ffprobe_path.exists():
+    if not FFPROBE_BIN:
         return None
     try:
         result = run_command(
             [
-                str(ffprobe_path),
+                str(FFPROBE_BIN),
                 "-v",
                 "error",
                 "-show_entries",
@@ -355,8 +355,27 @@ def resolve_ffmpeg_binary():
     return None
 
 
+def resolve_ffprobe_binary():
+    candidates = []
+    if FFMPEG_BIN:
+        ffmpeg_path = Path(FFMPEG_BIN)
+        candidates.append(ffmpeg_path.with_name("ffprobe.exe"))
+        candidates.append(ffmpeg_path.with_name("ffprobe"))
+
+    for name in ("ffprobe", "ffprobe.exe"):
+        which_path = shutil.which(name)
+        if which_path:
+            candidates.append(Path(which_path))
+
+    for candidate in candidates:
+        if candidate and candidate.exists():
+            return str(candidate)
+    return None
+
+
 def preflight_checks():
     global FFMPEG_BIN
+    global FFPROBE_BIN
     log("Preflight checks...")
     if GEMINI_CLIENT is None:
         raise EnvironmentError(
@@ -373,6 +392,12 @@ def preflight_checks():
         )
     run_command([FFMPEG_BIN, "-version"], "ffmpeg check")
     log(f"ffmpeg resolved: {FFMPEG_BIN}")
+    FFPROBE_BIN = resolve_ffprobe_binary()
+    if FFPROBE_BIN:
+        run_command([FFPROBE_BIN, "-version"], "ffprobe check")
+        log(f"ffprobe resolved: {FFPROBE_BIN}")
+    else:
+        log("Warning: ffprobe not found. Some duration/subtitle probe features may be unavailable.")
     log("Preflight OK.")
 
 
@@ -1058,12 +1083,11 @@ def update_ass_default_style(ass_path):
 # ==============================
 
 def _probe_subtitle_streams(video_path):
-    ffprobe_path = Path(FFMPEG_BIN).with_name("ffprobe.exe")
-    if not ffprobe_path.exists():
-        raise RuntimeError("ffprobe not found beside ffmpeg binary.")
+    if not FFPROBE_BIN:
+        raise RuntimeError("ffprobe not found. Add ffprobe to PATH or install ffmpeg package including ffprobe.")
     result = run_command(
         [
-            str(ffprobe_path),
+            str(FFPROBE_BIN),
             "-v",
             "error",
             "-select_streams",
