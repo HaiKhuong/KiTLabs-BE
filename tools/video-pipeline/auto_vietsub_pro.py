@@ -26,9 +26,9 @@ WHISPER_MODEL = "large-v3"
 WHISPER_LANGUAGE = "zh"
 GEMINI_MODEL_NAME = "gemini-2.5-flash"
 EDGE_TTS_VOICE = "vi-VN-HoaiMyNeural"
-EDGE_TTS_RATE = "+40%"
-EDGE_TTS_VOLUME = "+20%"
-EDGE_TTS_PITCH = "+0Hz"
+EDGE_TTS_RATE = "+30%"
+EDGE_TTS_VOLUME = "+3dB"
+EDGE_TTS_PITCH = "+20Hz"
 STEP3_AUTO_RATE_ENABLED = True
 TRANSLATION_CONTEXT = ""  # Custom translation context for Gemini prompt
 STEP3_AUTO_RATE_TRIGGER_CHARS_PER_SEC = 14.0
@@ -423,10 +423,7 @@ def write_srt(blocks, out_path):
         for b in blocks:
             f.write(f"{b['index']}\n")
             f.write(f"{b['time']}\n")
-            text = str(b["text"])
-            if SUBTITLE_UPPERCASE:
-                text = text.upper()
-            f.write(f"{text}\n\n")
+            f.write(f"{str(b['text'])}\n\n")
 
 
 def chunk_text_for_tts(text, max_chars=TTS_CHUNK_MAX_CHARS):
@@ -1774,7 +1771,28 @@ def step7_apply_speed(video_path):
 def step5_convert_ass(srt_path):
     log("Step5: Convert subtitle to ASS")
     ass = SUBTITLE_DIR / "sub.ass"
-    run_command([FFMPEG_BIN, "-y", "-i", str(srt_path), str(ass)], "Convert SRT to ASS")
+    srt_for_ass = Path(srt_path)
+    temp_upper_srt = None
+    if SUBTITLE_UPPERCASE:
+        with open(srt_path, encoding="utf8") as f:
+            blocks = parse_srt(f.read())
+        temp_upper_srt = SUBTITLE_DIR / "__step5_uppercase_tmp.srt"
+        write_srt(
+            [
+                {
+                    "index": b["index"],
+                    "time": b["time"],
+                    "text": str(b["text"]).upper(),
+                }
+                for b in blocks
+            ],
+            temp_upper_srt,
+        )
+        srt_for_ass = temp_upper_srt
+
+    run_command([FFMPEG_BIN, "-y", "-i", str(srt_for_ass), str(ass)], "Convert SRT to ASS")
+    if temp_upper_srt and temp_upper_srt.exists():
+        temp_upper_srt.unlink()
     update_ass_default_style(ass)
     log(
         "Subtitle style updated: "
