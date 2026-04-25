@@ -1583,7 +1583,8 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
                         f"timeline_idx={i} rate={tts_rate} preview={text_preview!r}"
                     )
                     pass2_backup = chunk_dir / f"raw_{i:04d}_before_pass2_audio.bak"
-                    shutil.copy2(raw_audio_path, pass2_backup)
+                    # copy2() may fail with EPERM on some Linux/WSL mounts when copying metadata.
+                    shutil.copyfile(raw_audio_path, pass2_backup)
                     try:
                         ok_tts2 = step3_tts_retry(
                             lambda: run_tts(tts_rate),
@@ -1591,7 +1592,7 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
                             max_retry=TTS_RETRY_MAX,
                         )
                         if not ok_tts2:
-                            shutil.copy2(pass2_backup, raw_audio_path)
+                            shutil.copyfile(pass2_backup, raw_audio_path)
                     finally:
                         try:
                             pass2_backup.unlink()
