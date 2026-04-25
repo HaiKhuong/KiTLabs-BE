@@ -2479,6 +2479,9 @@ def run_pipeline(video, step_arg=None):
         if not SKIP_VOICE_STEP and tm_video.is_file():
             tm_video.unlink()
             log(f"Step7: removed intermediate {tm_video.name}")
+        if ass.is_file():
+            ass.unlink()
+            log(f"Step7: removed intermediate {ass.name}")
         # cleanup_step6_intermediate_files()
         log(f"DONE: {final}")
         last_output = final
