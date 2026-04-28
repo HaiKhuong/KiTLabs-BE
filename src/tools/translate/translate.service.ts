@@ -262,10 +262,11 @@ export class TranslateService {
     }
 
     const logPath = this.resolveRuntimeLogPath(history);
+    const publicLogPath = this.toPublicWorkspacePath(logPath);
     if (!existsSync(logPath)) {
       return {
         exists: false,
-        logPath,
+        logPath: publicLogPath,
         updatedAt: null,
         content: "",
       };
@@ -277,7 +278,7 @@ export class TranslateService {
     const stats = statSync(logPath);
     return {
       exists: true,
-      logPath,
+      logPath: publicLogPath,
       updatedAt: stats.mtime.toISOString(),
       content,
     };
@@ -328,6 +329,16 @@ export class TranslateService {
       return normalized;
     }
     return lines.slice(lines.length - tailLines).join("\n");
+  }
+
+  private toPublicWorkspacePath(absPath: string): string {
+    const normalized = String(absPath || "").replaceAll("\\", "/");
+    const marker = "/workspace/";
+    const markerIndex = normalized.indexOf(marker);
+    if (markerIndex >= 0) {
+      return `/tools/translates${normalized.slice(markerIndex)}`;
+    }
+    return normalized;
   }
 
   private pickConfigValue(engineConfig: Record<string, unknown>, keys: string[]): unknown {
