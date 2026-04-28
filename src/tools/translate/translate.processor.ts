@@ -178,6 +178,7 @@ export class TranslateProcessor extends WorkerHost {
       const resultPath = await this.executePythonTranslate({
         stepNbr: history.stepNbr,
         engineConfig: history.engineConfig,
+        translateHistoryId,
       });
 
       await this.translateService.processCompleted(translateHistoryId, resultPath);
@@ -202,6 +203,7 @@ export class TranslateProcessor extends WorkerHost {
   private async executePythonTranslate(input: {
     stepNbr: number[];
     engineConfig: Record<string, unknown> | null;
+    translateHistoryId: string;
   }): Promise<string> {
     const pythonBin = process.env.TRANSLATE_PYTHON_BIN ?? (process.platform === "win32" ? "py" : "python3");
     const scriptPath = process.env.TRANSLATE_PYTHON_SCRIPT ?? "tools/video-pipeline/auto_vietsub_pro.py";
@@ -253,15 +255,31 @@ export class TranslateProcessor extends WorkerHost {
           }
         };
 
+        const handleRuntimeStatus = (chunk: string) => {
+          const matches = [
+            ...chunk.matchAll(/DB_STATUS\|step=(\d+)\|state=(running|completed|failed)\|message=([^\r\n]*)/g),
+          ];
+          for (const matched of matches) {
+            const step = Number(matched[1]);
+            const state = matched[2] as "running" | "completed" | "failed";
+            const message = (matched[3] ?? "").trim();
+            void this.translateService
+              .processRuntimeStatus(input.translateHistoryId, { step, state, message })
+              .catch((err) => this.logger.warn(`Failed to persist runtime status: ${String(err)}`));
+          }
+        };
+
         child.stdout?.on("data", (data: Buffer) => {
           const message = data.toString();
           appendChunk("stdout", message);
+          handleRuntimeStatus(message);
           this.logger.log(`[python stdout] ${message.trimEnd()}`);
         });
 
         child.stderr?.on("data", (data: Buffer) => {
           const message = data.toString();
           appendChunk("stderr", message);
+          handleRuntimeStatus(message);
           this.logger.warn(`[python stderr] ${message.trimEnd()}`);
         });
 
@@ -285,8 +303,14 @@ export class TranslateProcessor extends WorkerHost {
           );
 
           if (code !== 0) {
+            const lastStatus = this.extractLatestRuntimeStatus(stdout) ?? this.extractLatestRuntimeStatus(stderr);
+            const statusPart = lastStatus
+              ? ` (last step=${lastStatus.step}, state=${lastStatus.state}${lastStatus.message ? `, message=${lastStatus.message}` : ""})`
+              : "";
             rejectPromise(
-              new Error(`Python command failed with code ${code ?? "unknown"}${signal ? ` and signal ${signal}` : ""}`),
+              new Error(
+                `Python command failed with code ${code ?? "unknown"}${signal ? ` and signal ${signal}` : ""}${statusPart}`,
+              ),
             );
             return;
           }
@@ -324,6 +348,24 @@ export class TranslateProcessor extends WorkerHost {
       return null;
     }
     return matched[1].trim();
+  }
+
+  private extractLatestRuntimeStatus(
+    text: string | undefined,
+  ): { step: number; state: "running" | "completed" | "failed"; message: string } | null {
+    if (!text) {
+      return null;
+    }
+    const matches = [...text.matchAll(/DB_STATUS\|step=(\d+)\|state=(running|completed|failed)\|message=([^\r\n]*)/g)];
+    if (!matches.length) {
+      return null;
+    }
+    const last = matches[matches.length - 1];
+    return {
+      step: Number(last[1]),
+      state: last[2] as "running" | "completed" | "failed",
+      message: (last[3] ?? "").trim(),
+    };
   }
 
   private appendOptionalCliOptions(args: string[], engineConfig: Record<string, unknown>): void {

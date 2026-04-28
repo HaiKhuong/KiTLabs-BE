@@ -55,4 +55,26 @@ export class TranslateController {
     res.setHeader("Content-Type", artifact.contentType);
     return res.sendFile(artifact.absolutePath);
   }
+
+  @ApiOperation({ summary: "Read runtime pipeline log by translate history id" })
+  @ApiQuery({ name: "translateHistoryId", required: true, description: "Translate history UUID" })
+  @ApiQuery({
+    name: "tailLines",
+    required: false,
+    description: "Return latest N lines only (default 200, max 2000)",
+  })
+  @Public()
+  @Get("runtime-log")
+  async runtimeLog(
+    @Query("translateHistoryId") translateHistoryId: string | undefined,
+    @Query("tailLines") tailLinesRaw: string | undefined,
+  ) {
+    if (!translateHistoryId) {
+      throw new BadRequestException("translateHistoryId is required");
+    }
+
+    const tailLines =
+      typeof tailLinesRaw === "string" && tailLinesRaw.trim().length > 0 ? Number(tailLinesRaw.trim()) : undefined;
+    return this.translateService.readRuntimeLog({ translateHistoryId, tailLines });
+  }
 }

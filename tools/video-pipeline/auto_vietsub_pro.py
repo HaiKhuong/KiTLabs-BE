@@ -61,6 +61,8 @@ TTS_CHUNK_MAX_CHARS = 350
 RETRY_MAX = 4
 # Step 2 Gemini: không retry khi lỗi (một lần gọi thất bại là dừng batch đó).
 GEMINI_RETRY_MAX = 1
+# Step 2 Gemini: on = thử xoay qua tất cả key khi lỗi; off = chỉ dùng key đang active.
+STEP2_MULTI_KEYS_ENABLED = True
 TTS_RETRY_MAX = 10
 FFMPEG_BIN = None
 FFPROBE_BIN = None
@@ -164,11 +166,20 @@ def _load_env_files():
 
 
 _load_env_files()
-API_KEY = (os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY") or "").strip()
-if API_KEY:
-    GEMINI_CLIENT = genai.Client(api_key=API_KEY)
-else:
-    GEMINI_CLIENT = None
+def parse_api_keys(raw_value):
+    if not raw_value:
+        return []
+    parts = [p.strip() for p in re.split(r"[,\n;]+", str(raw_value)) if p and str(p).strip()]
+    # Deduplicate while preserving order.
+    return list(dict.fromkeys(parts))
+
+
+_raw_gemini_api_keys = []
+_raw_gemini_api_keys.extend(parse_api_keys(os.environ.get("GEMINI_API_KEY")))
+_raw_gemini_api_keys.extend(parse_api_keys(os.environ.get("GOOGLE_API_KEY")))
+GEMINI_API_KEYS = list(dict.fromkeys(_raw_gemini_api_keys))
+GEMINI_CLIENTS = [genai.Client(api_key=api_key) for api_key in GEMINI_API_KEYS]
+ACTIVE_GEMINI_KEY_INDEX = 0
 
 
 def mask_secret(secret, show_prefix=4, show_suffix=4):
@@ -200,6 +211,12 @@ def log(message):
             out.flush()
         else:
             print(str(message).encode("ascii", errors="replace").decode("ascii"))
+
+
+def emit_db_status(step_no, state, message=""):
+    """Structured status marker for backend parser."""
+    clean_message = str(message or "").replace("\n", " ").strip()
+    log(f"DB_STATUS|step={int(step_no)}|state={state}|message={clean_message}")
 
 
 def file_ready(path):
@@ -377,13 +394,21 @@ def preflight_checks():
     global FFMPEG_BIN
     global FFPROBE_BIN
     log("Preflight checks...")
-    if GEMINI_CLIENT is None:
+    if not GEMINI_CLIENTS:
         raise EnvironmentError(
             "Missing Gemini API key. Set GEMINI_API_KEY or GOOGLE_API_KEY in .env or the environment."
         )
-    key_source = "GEMINI_API_KEY" if os.environ.get("GEMINI_API_KEY") else "GOOGLE_API_KEY"
+    has_gemini_env = bool(parse_api_keys(os.environ.get("GEMINI_API_KEY")))
+    has_google_env = bool(parse_api_keys(os.environ.get("GOOGLE_API_KEY")))
+    if has_gemini_env and has_google_env:
+        key_source = "GEMINI_API_KEY + GOOGLE_API_KEY"
+    elif has_gemini_env:
+        key_source = "GEMINI_API_KEY"
+    else:
+        key_source = "GOOGLE_API_KEY"
     log(
-        f"Gemini key detected: source={key_source}, value={mask_secret(API_KEY)}, len={len(API_KEY)}"
+        f"Gemini keys detected: source={key_source}, count={len(GEMINI_API_KEYS)}, "
+        f"active={mask_secret(GEMINI_API_KEYS[ACTIVE_GEMINI_KEY_INDEX])}"
     )
     FFMPEG_BIN = resolve_ffmpeg_binary()
     if FFMPEG_BIN is None:
@@ -1302,6 +1327,7 @@ def step1_transcribe(video_path):
 # ==============================
 
 def translate_batch_with_gemini(batch, batch_start_index):
+    global ACTIVE_GEMINI_KEY_INDEX
     payload = [{"id": i, "text": b["text"]} for i, b in enumerate(batch)]
     
     # Base prompt
@@ -1347,33 +1373,111 @@ def translate_batch_with_gemini(batch, batch_start_index):
 
     attempt_no = 0
 
+    def _is_token_limit_error(exc):
+        text = str(exc or "").lower()
+        return any(
+            key in text
+            for key in (
+                "token",
+                "quota",
+                "resource_exhausted",
+                "rate limit",
+                "too many requests",
+                "429",
+            )
+        )
+
+    def _is_high_demand_error(exc):
+        text = str(exc or "").lower()
+        return any(
+            key in text
+            for key in (
+                "high demand",
+                "overloaded",
+                "service unavailable",
+                "unavailable",
+                "temporarily unavailable",
+                "503",
+            )
+        )
+
     def _call():
         nonlocal attempt_no
-        attempt_no += 1
-        response = GEMINI_CLIENT.models.generate_content(
-            model=GEMINI_MODEL_NAME,
-            contents=prompt,
-        )
-        raw_text = response.text or ""
-        append_text(
-            response_path,
-            (
-                f"===== attempt {attempt_no} | {time.strftime('%Y-%m-%d %H:%M:%S')} =====\n"
-                f"{raw_text}\n\n"
-            ),
-        )
-        data = extract_json_array(raw_text)
-        mapped = {}
-        for item in data:
-            idx = int(item["id"])
-            mapped[idx] = str(item["vi"]).strip()
-        return mapped
+        total_key_count = len(GEMINI_CLIENTS)
+        if total_key_count == 0:
+            raise RuntimeError("No Gemini API keys available.")
+        key_count = total_key_count if STEP2_MULTI_KEYS_ENABLED else 1
+        start_idx = ACTIVE_GEMINI_KEY_INDEX % total_key_count
+        last_error = None
+
+        for offset in range(key_count):
+            key_idx = (start_idx + offset) % total_key_count
+            key_masked = mask_secret(GEMINI_API_KEYS[key_idx])
+            attempt_no += 1
+            try:
+                response = GEMINI_CLIENTS[key_idx].models.generate_content(
+                    model=GEMINI_MODEL_NAME,
+                    contents=prompt,
+                )
+                raw_text = response.text or ""
+                append_text(
+                    response_path,
+                    (
+                        f"===== attempt {attempt_no} | key {key_idx + 1}/{total_key_count} "
+                        f"({key_masked}) | {time.strftime('%Y-%m-%d %H:%M:%S')} =====\n"
+                        f"{raw_text}\n\n"
+                    ),
+                )
+                data = extract_json_array(raw_text)
+                mapped = {}
+                for item in data:
+                    idx = int(item["id"])
+                    mapped[idx] = str(item["vi"]).strip()
+                ACTIVE_GEMINI_KEY_INDEX = key_idx
+                return mapped
+            except Exception as e:
+                last_error = e
+                append_text(
+                    response_path,
+                    (
+                        f"===== attempt {attempt_no} | key {key_idx + 1}/{total_key_count} "
+                        f"({key_masked}) | {time.strftime('%Y-%m-%d %H:%M:%S')} =====\n"
+                        f"ERROR: {e}\n\n"
+                    ),
+                )
+                if _is_high_demand_error(e):
+                    # User requirement: high demand/server overload must stop immediately.
+                    raise RuntimeError(
+                        f"Gemini server high demand/unavailable on key {key_idx + 1}/{total_key_count}; "
+                        f"stop without key rotation. Error: {e}"
+                    ) from e
+                if offset < key_count - 1:
+                    if not _is_token_limit_error(e):
+                        # Only rotate keys for token/quota/rate-limit class errors.
+                        raise RuntimeError(
+                            f"Gemini translation failed with non-rotatable error on key "
+                            f"{key_idx + 1}/{total_key_count}: {e}"
+                        ) from e
+                    next_key_idx = (key_idx + 1) % total_key_count
+                    log(
+                        f"Step2 Gemini error with key {key_idx + 1}/{total_key_count} ({key_masked}): {e}. "
+                        f"Switching to key {next_key_idx + 1}/{total_key_count}."
+                    )
+
+        if STEP2_MULTI_KEYS_ENABLED:
+            raise RuntimeError(
+                f"Gemini translation failed on all {total_key_count} keys. Last error: {last_error}"
+            ) from last_error
+        raise RuntimeError(
+            f"Gemini translation failed on active key only (multi-keys off). Last error: {last_error}"
+        ) from last_error
 
     return retry_call(_call, "Gemini translation", max_retry=GEMINI_RETRY_MAX)
 
 
 def step2_translate_srt(srt_path):
-    log("Step2: Translating subtitles with Gemini (batched)...")
+    key_mode = "multi-keys on" if STEP2_MULTI_KEYS_ENABLED else "multi-keys off"
+    log(f"Step2: Translating subtitles with Gemini (batched, {key_mode})...")
     with open(srt_path, encoding="utf8") as f:
         blocks = parse_srt(f.read())
 
@@ -2198,6 +2302,12 @@ def parse_cli_args():
         help="Custom context/instructions for Gemini translation. Overrides default Han-Viet prompt.",
     )
     parser.add_argument(
+        "--step2-multi-keys",
+        choices=["on", "off"],
+        default="on" if STEP2_MULTI_KEYS_ENABLED else "off",
+        help="Step2 Gemini: on=rotate through all keys on error; off=use active key only.",
+    )
+    parser.add_argument(
         "--step",
         default=None,
         help="Run only selected steps: N or A,B (inclusive). Example: --step 3 or --step 1,5",
@@ -2255,6 +2365,7 @@ def apply_cli_config(args):
     global STEP3_TTS_MAX_RETRY_ACTION
     global STEP3_VOICE_RESUME
     global TRANSLATION_CONTEXT
+    global STEP2_MULTI_KEYS_ENABLED
     WHISPER_LANGUAGE = str(args.whisper_language).strip() or None
     STEP1_SUBTITLE_SOURCE = str(args.step1_subtitle_source or STEP1_SUBTITLE_SOURCE).strip().lower()
     global EDGE_TTS_RATE
@@ -2324,6 +2435,7 @@ def apply_cli_config(args):
     STEP3_TTS_MAX_RETRY_ACTION = str(args.step3_tts_max_retry_action or "stop").strip().lower()
     STEP3_VOICE_RESUME = args.step3_voice_resume == "on"
     TRANSLATION_CONTEXT = args.translation_context or ""
+    STEP2_MULTI_KEYS_ENABLED = args.step2_multi_keys == "on"
 
     prof = STEP1_PROFILES[args.mode]
     STEP1_VAD_FILTER = args.step1_vad == "on"
@@ -2389,6 +2501,29 @@ def require_ready(path, label):
     return p
 
 
+def _run_step6_and_finalize(ass, tm_video, video_path, skip_voice_step):
+    require_ready(ass, "Step6 input sub.ass")
+    if skip_voice_step:
+        video_for_render = video_path
+    else:
+        video_for_render = require_ready(tm_video, "Step6 input merged video (_tm.mp4)")
+    # Re-apply subtitle style even when ASS is reused from cache.
+    update_ass_default_style(ass)
+    final = step6_render(video_for_render, ass)
+    final = step7_apply_speed(final)
+    if not file_ready(final):
+        raise RuntimeError("Final video render failed.")
+    if not skip_voice_step and tm_video.is_file():
+        tm_video.unlink()
+        log(f"Step7: removed intermediate {tm_video.name}")
+    if ass.is_file():
+        ass.unlink()
+        log(f"Step7: removed intermediate {ass.name}")
+    # cleanup_step6_intermediate_files()
+    log(f"DONE: {final}")
+    return final
+
+
 # ==============================
 # MAIN PIPELINE
 # ==============================
@@ -2431,13 +2566,29 @@ def run_pipeline(video, step_arg=None):
     final = VIDEO_DIR / f"{WORK_NAME}_vs_tm.mp4"
     last_output = None
 
+    def run_step(step_no, step_name, fn):
+        emit_db_status(step_no, "running", f"{step_name} started")
+        try:
+            result = fn()
+            emit_db_status(step_no, "completed", f"{step_name} completed")
+            return result
+        except Exception as exc:
+            emit_db_status(step_no, "failed", f"{step_name} failed: {exc}")
+            raise RuntimeError(f"[STEP_{step_no}_FAILED] {step_name} failed: {exc}") from exc
+
     if step_enabled(1):
-        zh_srt = get_or_run(zh_srt, "Step1", step1_transcribe, video_path)
+        zh_srt = run_step(1, "Step1", lambda: get_or_run(zh_srt, "Step1", step1_transcribe, video_path))
         last_output = zh_srt
 
     if step_enabled(2):
-        require_ready(zh_srt, "Step2 input zh subtitle")
-        vi_srt = get_or_run(vi_srt, "Step2", step2_translate_srt, zh_srt)
+        vi_srt = run_step(
+            2,
+            "Step2",
+            lambda: (
+                require_ready(zh_srt, "Step2 input zh subtitle"),
+                get_or_run(vi_srt, "Step2", step2_translate_srt, zh_srt),
+            )[1],
+        )
         last_output = vi_srt
 
     if SKIP_VOICE_STEP:
@@ -2445,45 +2596,54 @@ def run_pipeline(video, step_arg=None):
             log("Skip voice steps enabled: Step3/Step4 are skipped.")
     else:
         if step_enabled(3):
-            require_ready(vi_srt, "Step3 input vi subtitle")
-            voice = get_or_run(
-                voice,
+            voice = run_step(
+                3,
                 "Step3",
-                step3_generate_voice_from_srt,
-                vi_srt,
-                video_duration_ms,
+                lambda: (
+                    require_ready(vi_srt, "Step3 input vi subtitle"),
+                    get_or_run(
+                        voice,
+                        "Step3",
+                        step3_generate_voice_from_srt,
+                        vi_srt,
+                        video_duration_ms,
+                    ),
+                )[1],
             )
             last_output = voice
         if step_enabled(4):
-            require_ready(voice, "Step4 input voice.wav")
-            tm_video = get_or_run(tm_video, "Step4", step4_merge_audio, video_path, voice)
+            tm_video = run_step(
+                4,
+                "Step4",
+                lambda: (
+                    require_ready(voice, "Step4 input voice.wav"),
+                    get_or_run(tm_video, "Step4", step4_merge_audio, video_path, voice),
+                )[1],
+            )
             last_output = tm_video
 
     if step_enabled(5):
-        require_ready(vi_srt, "Step5 input vi subtitle")
-        ass = get_or_run(ass, "Step5", step5_convert_ass, vi_srt)
+        ass = run_step(
+            5,
+            "Step5",
+            lambda: (
+                require_ready(vi_srt, "Step5 input vi subtitle"),
+                get_or_run(ass, "Step5", step5_convert_ass, vi_srt),
+            )[1],
+        )
         last_output = ass
 
     if step_enabled(6):
-        require_ready(ass, "Step6 input sub.ass")
-        if SKIP_VOICE_STEP:
-            video_for_render = video_path
-        else:
-            video_for_render = require_ready(tm_video, "Step6 input merged video (_tm.mp4)")
-        # Re-apply subtitle style even when ASS is reused from cache.
-        update_ass_default_style(ass)
-        final = step6_render(video_for_render, ass)
-        final = step7_apply_speed(final)
-        if not file_ready(final):
-            raise RuntimeError("Final video render failed.")
-        if not SKIP_VOICE_STEP and tm_video.is_file():
-            tm_video.unlink()
-            log(f"Step7: removed intermediate {tm_video.name}")
-        if ass.is_file():
-            ass.unlink()
-            log(f"Step7: removed intermediate {ass.name}")
-        # cleanup_step6_intermediate_files()
-        log(f"DONE: {final}")
+        final = run_step(
+            6,
+            "Step6",
+            lambda: _run_step6_and_finalize(
+                ass=ass,
+                tm_video=tm_video,
+                video_path=video_path,
+                skip_voice_step=SKIP_VOICE_STEP,
+            ),
+        )
         last_output = final
     else:
         log("Stopped before Step6 by --step option.")

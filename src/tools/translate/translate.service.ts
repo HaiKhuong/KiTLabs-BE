@@ -2,8 +2,8 @@ import { BadRequestException, Injectable, NotFoundException } from "@nestjs/comm
 import { InjectQueue } from "@nestjs/bullmq";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Queue } from "bullmq";
-import { existsSync } from "fs";
-import { basename, extname, join, resolve, sep } from "path";
+import { existsSync, readFileSync, statSync } from "fs";
+import { basename, dirname, extname, isAbsolute, join, resolve, sep } from "path";
 import { Repository } from "typeorm";
 
 import { CreditHistory } from "../credits/credit-history.entity";
@@ -149,6 +149,23 @@ export class TranslateService {
     );
   }
 
+  async processRuntimeStatus(
+    translateHistoryId: string,
+    input: { step: number; state: "running" | "completed" | "failed"; message?: string },
+  ): Promise<void> {
+    const step = Number(input.step);
+    const state = String(input.state || "").trim().toLowerCase();
+    const message = String(input.message || "").trim();
+    const composed = `[Step ${step}] ${state}${message ? `: ${message}` : ""}`;
+    await this.translateRepository.update(
+      { id: translateHistoryId },
+      {
+        status: state === "failed" ? QueueJobStatus.FAILED : QueueJobStatus.RUNNING,
+        errorMessage: composed,
+      },
+    );
+  }
+
   async getHistory(userId: string): Promise<TranslateHistory[]> {
     return this.translateRepository.find({
       where: { userId },
@@ -225,6 +242,47 @@ export class TranslateService {
     return normalized;
   }
 
+  async readRuntimeLog(input: {
+    translateHistoryId: string;
+    tailLines?: number;
+  }): Promise<{
+    exists: boolean;
+    logPath: string;
+    updatedAt: string | null;
+    content: string;
+  }> {
+    const historyId = String(input.translateHistoryId || "").trim();
+    if (!historyId) {
+      throw new BadRequestException("translateHistoryId is required");
+    }
+
+    const history = await this.getById(historyId);
+    if (!history) {
+      throw new NotFoundException(`Translate history ${historyId} not found`);
+    }
+
+    const logPath = this.resolveRuntimeLogPath(history);
+    if (!existsSync(logPath)) {
+      return {
+        exists: false,
+        logPath,
+        updatedAt: null,
+        content: "",
+      };
+    }
+
+    const tailLines = this.normalizeTailLines(input.tailLines);
+    const text = readFileSync(logPath, "utf8");
+    const content = this.tailTextByLines(text, tailLines);
+    const stats = statSync(logPath);
+    return {
+      exists: true,
+      logPath,
+      updatedAt: stats.mtime.toISOString(),
+      content,
+    };
+  }
+
   private resolveWorkspaceDir(normalizedResultPath: string): string {
     const normalizedSlashPath = normalizedResultPath.replaceAll("\\", "/");
     const matched = normalizedSlashPath.match(/^(.*\/workspace\/[^/]+)(?:\/.*)?$/);
@@ -234,5 +292,50 @@ export class TranslateService {
     }
 
     return matched[1].replaceAll("/", sep);
+  }
+
+  private resolveRuntimeLogPath(history: TranslateHistory): string {
+    if (history.resultPath) {
+      const normalizedResultPath = this.normalizeResultPath(history.resultPath);
+      const workspaceDir = this.resolveWorkspaceDir(normalizedResultPath);
+      return join(workspaceDir, "logs", "pipeline.log");
+    }
+
+    const engineConfig = history.engineConfig ?? {};
+    const localPath = this.pickConfigValue(engineConfig, ["localVideoPath", "local_video_path"]);
+    if (typeof localPath !== "string" || !localPath.trim()) {
+      throw new BadRequestException("Cannot resolve runtime log path: engineConfig.localVideoPath is missing");
+    }
+
+    const scriptPath = process.env.TRANSLATE_PYTHON_SCRIPT ?? "tools/video-pipeline/auto_vietsub_pro.py";
+    const absScriptPath = isAbsolute(scriptPath) ? scriptPath : resolve(scriptPath);
+    const scriptDir = dirname(absScriptPath);
+    const workName = basename(resolve(localPath.trim()), extname(resolve(localPath.trim())));
+    return join(scriptDir, "workspace", workName, "logs", "pipeline.log");
+  }
+
+  private normalizeTailLines(value: number | undefined): number {
+    if (value === undefined || Number.isNaN(Number(value))) {
+      return 200;
+    }
+    return Math.min(Math.max(Number(value), 1), 2000);
+  }
+
+  private tailTextByLines(text: string, tailLines: number): string {
+    const normalized = text.replace(/\r\n/g, "\n");
+    const lines = normalized.split("\n");
+    if (lines.length <= tailLines) {
+      return normalized;
+    }
+    return lines.slice(lines.length - tailLines).join("\n");
+  }
+
+  private pickConfigValue(engineConfig: Record<string, unknown>, keys: string[]): unknown {
+    for (const key of keys) {
+      if (key in engineConfig) {
+        return engineConfig[key];
+      }
+    }
+    return undefined;
   }
 }
