@@ -1402,6 +1402,7 @@ def translate_batch_with_gemini(batch, batch_start_index):
         )
 
     def _call():
+        global ACTIVE_GEMINI_KEY_INDEX
         nonlocal attempt_no
         total_key_count = len(GEMINI_CLIENTS)
         if total_key_count == 0:
