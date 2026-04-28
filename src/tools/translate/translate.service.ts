@@ -308,11 +308,9 @@ export class TranslateService {
       throw new BadRequestException("Cannot resolve runtime log path: engineConfig.localVideoPath is missing");
     }
 
-    const scriptPath = process.env.TRANSLATE_PYTHON_SCRIPT ?? "tools/video-pipeline/auto_vietsub_pro.py";
-    const absScriptPath = isAbsolute(scriptPath) ? scriptPath : resolve(scriptPath);
-    const scriptDir = dirname(absScriptPath);
+    const workRoot = process.env.TRANSLATE_WORK_ROOT ?? "/mnt/c/Users/haikh/Videos/VideoVietsub/videos";
     const workName = basename(resolve(localPath.trim()), extname(resolve(localPath.trim())));
-    return join(scriptDir, "workspace", workName, "logs", "pipeline.log");
+    return join(workRoot, workName, "logs", "pipeline.log");
   }
 
   private normalizeTailLines(value: number | undefined): number {
