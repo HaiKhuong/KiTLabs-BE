@@ -16,13 +16,7 @@ except ImportError:
     load_dotenv = None
 
 from google import genai
-from tqdm import tqdm as _tqdm_orig
-
-def tqdm(iterable, **kwargs):
-    """Wrapper that disables tqdm progress bar when stdout is not a TTY
-    (e.g. piped from Node.js BE service) to avoid ANSI/blob noise in logs."""
-    kwargs.setdefault("disable", not sys.stdout.isatty())
-    return _tqdm_orig(iterable, **kwargs)
+from tqdm import tqdm
 
 # ==============================
 # CONFIG
@@ -49,6 +43,9 @@ STEP3_TTS_API_TIMEOUT_SEC = 120.0
 STEP3_TTS_MAX_RETRY_ACTION = "stop"
 # Ghi/đọc checkpoint segment TTS trong logs/tts_chunks: rerender chỉ gọi edge-tts cho segment chưa xong (tiết kiệm rate).
 STEP3_VOICE_RESUME = True
+# Hiển thị tqdm progress bar ra stdout/stderr khi chạy qua BE.
+# off: giữ log sạch (không có blob/progress control chars), on: show progress bar.
+PROCESSBAR_LOG_ENABLED = False
 # Cho TTS tràn vào khoảng lặng trước câu phụ đề kế (tới next_start) để tránh cắt cụt giữa câu.
 STEP3_TTS_BORROW_GAP = False
 # Optional: set absolute ffmpeg.exe path here if needed.
@@ -207,7 +204,7 @@ def log(message):
     with open(LOG_PATH, "a", encoding="utf8") as f:
         f.write(line + "\n")
     try:
-        print(message, flush=True)
+        print(message)
     except UnicodeEncodeError:
         # Windows console may use a non-Unicode code page (charmap), so fallback safely.
         out = getattr(sys.stdout, "buffer", None)
@@ -216,7 +213,12 @@ def log(message):
             out.write((str(message) + "\n").encode(encoding, errors="replace"))
             out.flush()
         else:
-            print(str(message).encode("ascii", errors="replace").decode("ascii"), flush=True)
+            print(str(message).encode("ascii", errors="replace").decode("ascii"))
+
+
+def progressbar(iterable, **kwargs):
+    kwargs.setdefault("disable", not PROCESSBAR_LOG_ENABLED)
+    return tqdm(iterable, **kwargs)
 
 
 def emit_db_status(step_no, state, message=""):
@@ -1243,7 +1245,7 @@ def _step1_transcribe_with_whisper(video_path):
         last_end_ms = 0
         prev_end_sec = 0.0
         with open(out_path, "w", encoding="utf8") as f:
-            for i, segment in enumerate(tqdm(segments, desc=f"Transcribe ({device_name})")):
+            for i, segment in enumerate(progressbar(segments, desc=f"Transcribe ({device_name})")):
                 seg_start = float(segment.start)
                 seg_end = float(segment.end)
                 words = getattr(segment, "words", None) or []
@@ -1489,7 +1491,7 @@ def step2_translate_srt(srt_path):
         blocks = parse_srt(f.read())
 
     translated_blocks = []
-    for i in tqdm(range(0, len(blocks), TRANSLATE_BATCH_SIZE), desc="Translate"):
+    for i in progressbar(range(0, len(blocks), TRANSLATE_BATCH_SIZE), desc="Translate"):
         batch = blocks[i : i + TRANSLATE_BATCH_SIZE]
         mapping = translate_batch_with_gemini(batch, i)
         for local_idx, b in enumerate(batch):
@@ -1560,7 +1562,7 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
     timeline_paths = []
     current_time_ms = 0
 
-    for i, block in enumerate(tqdm(blocks, desc="TTS timeline")):
+    for i, block in enumerate(progressbar(blocks, desc="TTS timeline")):
         start_ms, end_ms = parse_srt_time_range(block["time"])
         if end_ms <= start_ms:
             continue
@@ -2315,6 +2317,12 @@ def parse_cli_args():
         help="Step2 Gemini: on=rotate through all keys on error; off=use active key only.",
     )
     parser.add_argument(
+        "--processbar-log",
+        choices=["on", "off"],
+        default="on" if PROCESSBAR_LOG_ENABLED else "off",
+        help="Show tqdm process bars in output logs.",
+    )
+    parser.add_argument(
         "--step",
         default=None,
         help="Run only selected steps: N or A,B (inclusive). Example: --step 3 or --step 1,5",
@@ -2373,6 +2381,7 @@ def apply_cli_config(args):
     global STEP3_VOICE_RESUME
     global TRANSLATION_CONTEXT
     global STEP2_MULTI_KEYS_ENABLED
+    global PROCESSBAR_LOG_ENABLED
     WHISPER_LANGUAGE = str(args.whisper_language).strip() or None
     STEP1_SUBTITLE_SOURCE = str(args.step1_subtitle_source or STEP1_SUBTITLE_SOURCE).strip().lower()
     global EDGE_TTS_RATE
@@ -2443,6 +2452,7 @@ def apply_cli_config(args):
     STEP3_VOICE_RESUME = args.step3_voice_resume == "on"
     TRANSLATION_CONTEXT = args.translation_context or ""
     STEP2_MULTI_KEYS_ENABLED = args.step2_multi_keys == "on"
+    PROCESSBAR_LOG_ENABLED = args.processbar_log == "on"
 
     prof = STEP1_PROFILES[args.mode]
     STEP1_VAD_FILTER = args.step1_vad == "on"
@@ -2663,11 +2673,6 @@ def run_pipeline(video, step_arg=None):
 # ==============================
 
 if __name__ == "__main__":
-    # Force line-buffered stdout so every log() call is flushed immediately
-    # even when running non-interactively (piped from Node.js / BE service).
-    if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(line_buffering=True)
-
     args = parse_cli_args()
     apply_cli_config(args)
     try:
