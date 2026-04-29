@@ -227,8 +227,14 @@ export class TranslateProcessor extends WorkerHost {
           cwd: scriptDir,
           windowsHide: true,
           env: {
+            ...process.env,
             HOME: "/home/haikhuong",
             XDG_CACHE_HOME: "/home/haikhuong/.cache",
+            // Force Python to flush stdout on every write (line-buffered).
+            // Without this, print() inside Python is block-buffered when piped,
+            // so logs only appear after the buffer fills or the process exits.
+            PYTHONUNBUFFERED: "1",
+            PYTHONIOENCODING: "utf-8",
           },
         });
 

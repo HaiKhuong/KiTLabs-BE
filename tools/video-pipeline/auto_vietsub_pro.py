@@ -16,7 +16,13 @@ except ImportError:
     load_dotenv = None
 
 from google import genai
-from tqdm import tqdm
+from tqdm import tqdm as _tqdm_orig
+
+def tqdm(iterable, **kwargs):
+    """Wrapper that disables tqdm progress bar when stdout is not a TTY
+    (e.g. piped from Node.js BE service) to avoid ANSI/blob noise in logs."""
+    kwargs.setdefault("disable", not sys.stdout.isatty())
+    return _tqdm_orig(iterable, **kwargs)
 
 # ==============================
 # CONFIG
@@ -201,7 +207,7 @@ def log(message):
     with open(LOG_PATH, "a", encoding="utf8") as f:
         f.write(line + "\n")
     try:
-        print(message)
+        print(message, flush=True)
     except UnicodeEncodeError:
         # Windows console may use a non-Unicode code page (charmap), so fallback safely.
         out = getattr(sys.stdout, "buffer", None)
@@ -210,7 +216,7 @@ def log(message):
             out.write((str(message) + "\n").encode(encoding, errors="replace"))
             out.flush()
         else:
-            print(str(message).encode("ascii", errors="replace").decode("ascii"))
+            print(str(message).encode("ascii", errors="replace").decode("ascii"), flush=True)
 
 
 def emit_db_status(step_no, state, message=""):
@@ -2657,6 +2663,11 @@ def run_pipeline(video, step_arg=None):
 # ==============================
 
 if __name__ == "__main__":
+    # Force line-buffered stdout so every log() call is flushed immediately
+    # even when running non-interactively (piped from Node.js / BE service).
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(line_buffering=True)
+
     args = parse_cli_args()
     apply_cli_config(args)
     try:
