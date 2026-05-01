@@ -128,6 +128,17 @@ STEP1_NO_SPEECH_THRESHOLD = 0.78 # Whisper: chỉ lọc “no speech” khi prob
 STEP1_LOGPROB_THRESHOLD = -2.0 # Whisper: avg logprob; âm hơn = chấp nhận đoạn tin cậy thấp hơn (ít cắt hơn).
 STEP1_CONDITION_ON_PREVIOUS_TEXT = False # True có thể ổn định câu liền kề nhưng dễ lan lỗi sang đoạn sau.
 
+# EasyOCR config (STEP1_SUBTITLE_SOURCE = "easyocr")
+EASYOCR_LANG = ["ch_sim", "en"]     # EasyOCR language codes
+EASYOCR_SUBTITLE_CROP_RATIO = 0.25  # bottom fraction of frame to crop as subtitle region
+EASYOCR_FPS = 2                     # frame extraction rate for OCR
+EASYOCR_WORKERS = 4                 # parallel OCR threads
+EASYOCR_MIN_CONFIDENCE = 0.5        # discard OCR results below this confidence
+EASYOCR_FUZZY_THRESHOLD = 80        # % similarity threshold for dedup/merge
+EASYOCR_MIN_DURATION_MS = 500       # minimum subtitle display duration (ms)
+EASYOCR_MERGE_GAP_MS = 200          # merge adjacent similar blocks within this gap (ms)
+EASYOCR_GPU = True
+
 STEP1_MAX_SUBTITLE_CHARS = 22 # số ký tự tối đa mỗi câu sau tách.
 STEP1_MIN_SUBTITLE_DURATION_MS = 280 # thời gian hiển thị tối thiểu mỗi câu.
 STEP1_SHORT_TEXT_MAX_CHARS = 14 # ngưỡng để coi là “câu ngắn”.
@@ -1317,15 +1328,158 @@ def _step1_transcribe_with_whisper(video_path):
     return srt_path
 
 
+def _step1_ocr_with_easyocr(video_path):
+    """Step1: extract subtitles via EasyOCR on the cropped subtitle region."""
+    log("Step1: OCR subtitle with EasyOCR...")
+    import concurrent.futures
+    from difflib import SequenceMatcher
+
+    try:
+        import easyocr
+    except ImportError:
+        raise RuntimeError(
+            "easyocr is not installed. Run: pip install easyocr opencv-python-headless"
+        )
+
+    ocr_dir = LOG_DIR / "step1_ocr"
+    frames_dir = ocr_dir / "frames"
+    shutil.rmtree(ocr_dir, ignore_errors=True)
+    frames_dir.mkdir(parents=True, exist_ok=True)
+
+    # --- 1. Crop subtitle region + preprocess (grayscale + contrast boost) ---
+    log(f"Step1 OCR: cropping bottom {EASYOCR_SUBTITLE_CROP_RATIO * 100:.0f}% of video...")
+    crop_video = ocr_dir / "cropped.mp4"
+    crop_ratio = EASYOCR_SUBTITLE_CROP_RATIO
+    run_command(
+        [
+            FFMPEG_BIN, "-y", "-i", str(video_path),
+            "-vf",
+            (
+                f"crop=iw:ih*{crop_ratio}:0:ih*(1-{crop_ratio}),"
+                "format=gray,eq=contrast=2:brightness=0.05"
+            ),
+            "-an", "-c:v", "libx264", "-crf", "23", "-preset", "ultrafast",
+            str(crop_video),
+        ],
+        "Crop subtitle region",
+    )
+
+    # --- 2. Extract frames ---
+    log(f"Step1 OCR: extracting frames at {EASYOCR_FPS} fps...")
+    run_command(
+        [
+            FFMPEG_BIN, "-y", "-i", str(crop_video),
+            "-vf", f"fps={EASYOCR_FPS}",
+            str(frames_dir / "frame_%05d.png"),
+        ],
+        "Extract frames for OCR",
+    )
+
+    frame_files = sorted(frames_dir.glob("frame_*.png"))
+    if not frame_files:
+        raise RuntimeError("Step1 OCR: no frames extracted.")
+    log(f"Step1 OCR: {len(frame_files)} frames to process.")
+
+    # --- 3. OCR with EasyOCR (parallel ThreadPoolExecutor) ---
+    log(f"Step1 OCR: loading EasyOCR reader (lang={EASYOCR_LANG}, gpu={EASYOCR_GPU})...")
+    reader = easyocr.Reader(EASYOCR_LANG, gpu=EASYOCR_GPU)
+    frame_interval_sec = 1.0 / EASYOCR_FPS
+
+    def ocr_frame(idx_path):
+        idx, fpath = idx_path
+        timestamp_sec = idx * frame_interval_sec
+        try:
+            results = reader.readtext(str(fpath), detail=1)
+            texts = [
+                t.strip()
+                for _bbox, t, conf in results
+                if conf >= EASYOCR_MIN_CONFIDENCE and t.strip()
+            ]
+            return timestamp_sec, " ".join(texts)
+        except Exception as exc:
+            log(f"Step1 OCR frame {idx} error: {exc}")
+            return timestamp_sec, ""
+
+    raw_results = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=EASYOCR_WORKERS) as pool:
+        indexed = list(enumerate(frame_files))
+        futures = {pool.submit(ocr_frame, item): item[0] for item in indexed}
+        for fut in progressbar(
+            concurrent.futures.as_completed(futures),
+            total=len(futures),
+            desc="EasyOCR frames",
+        ):
+            ts, text = fut.result()
+            if text:
+                raw_results.append((ts, text))
+
+    raw_results.sort(key=lambda x: x[0])
+    log(f"Step1 OCR: {len(raw_results)} non-empty frames after OCR.")
+
+    # --- 4. Text cleaning ---
+    _re_keep = re.compile(r"[\w\s\u4e00-\u9fff\u3000-\u303f\uff00-\uffef]+")
+
+    def clean_text(t):
+        parts = _re_keep.findall(t)
+        return re.sub(r"\s+", " ", " ".join(parts)).strip()
+
+    def fuzzy_sim(a, b):
+        return SequenceMatcher(None, a, b).ratio() * 100
+
+    cleaned = [(ts, clean_text(text)) for ts, text in raw_results]
+    cleaned = [(ts, text) for ts, text in cleaned if text]
+
+    if not cleaned:
+        raise RuntimeError("Step1 OCR: no text survived cleaning.")
+
+    # --- 5. Group by time + fuzzy dedup ---
+    # First pass: extend same-subtitle groups frame by frame
+    groups = []  # each entry: [start_sec, end_sec, text]
+    for ts, text in cleaned:
+        if groups and fuzzy_sim(groups[-1][2], text) >= EASYOCR_FUZZY_THRESHOLD:
+            groups[-1][1] = ts + frame_interval_sec
+        else:
+            groups.append([ts, ts + frame_interval_sec, text])
+
+    # Second pass: merge groups separated by a small silent gap
+    merged = []
+    for block in groups:
+        if (
+            merged
+            and fuzzy_sim(merged[-1][2], block[2]) >= EASYOCR_FUZZY_THRESHOLD
+            and (block[0] - merged[-1][1]) * 1000 <= EASYOCR_MERGE_GAP_MS
+        ):
+            merged[-1][1] = block[1]
+        else:
+            merged.append(list(block))
+
+    if not merged:
+        raise RuntimeError("Step1 OCR: no subtitle groups after dedup.")
+
+    # --- 6. Export SRT ---
+    srt_path = get_zh_srt_path()
+    with open(srt_path, "w", encoding="utf8") as f:
+        for i, (start, end, text) in enumerate(merged, 1):
+            if (end - start) * 1000 < EASYOCR_MIN_DURATION_MS:
+                end = start + EASYOCR_MIN_DURATION_MS / 1000.0
+            f.write(f"{i}\n")
+            f.write(f"{fmt_time(start)} --> {fmt_time(end)}\n")
+            f.write(f"{text}\n\n")
+    log(f"Step1 OCR complete: {len(merged)} subtitle blocks -> {srt_path}")
+    return srt_path
+
+
 def step1_transcribe(video_path):
     source_mode = str(STEP1_SUBTITLE_SOURCE or "whisper").strip().lower()
     if source_mode == "embedded":
         return _step1_extract_embedded_subtitle(video_path)
     if source_mode == "whisper":
         return _step1_transcribe_with_whisper(video_path)
+    if source_mode == "easyocr":
+        return _step1_ocr_with_easyocr(video_path)
     raise RuntimeError(
         f"Unsupported Step1 source: {STEP1_SUBTITLE_SOURCE}. "
-        "Use --step1-subtitle-source whisper|embedded."
+        "Use --step1-subtitle-source whisper|embedded|easyocr."
     )
 
 
@@ -2201,9 +2355,54 @@ def parse_cli_args():
     )
     parser.add_argument(
         "--step1-subtitle-source",
-        choices=["whisper", "embedded"],
+        choices=["whisper", "embedded", "easyocr"],
         default=STEP1_SUBTITLE_SOURCE,
-        help="Step1 subtitle source: whisper=ASR from audio, embedded=extract subtitle stream with ffmpeg.",
+        help=(
+            "Step1 subtitle source: whisper=ASR from audio, "
+            "embedded=extract subtitle stream with ffmpeg, "
+            "easyocr=visual OCR on subtitle region."
+        ),
+    )
+    parser.add_argument(
+        "--easyocr-lang",
+        default=None,
+        help="Comma-separated EasyOCR language codes. Example: ch_sim,en (default).",
+    )
+    parser.add_argument(
+        "--easyocr-crop-ratio",
+        type=float,
+        default=EASYOCR_SUBTITLE_CROP_RATIO,
+        help="Fraction of frame height to crop from bottom as subtitle area (default 0.25).",
+    )
+    parser.add_argument(
+        "--easyocr-fps",
+        type=float,
+        default=EASYOCR_FPS,
+        help="Frame extraction rate for EasyOCR (default 2).",
+    )
+    parser.add_argument(
+        "--easyocr-workers",
+        type=int,
+        default=EASYOCR_WORKERS,
+        help="Parallel OCR worker threads (default 4).",
+    )
+    parser.add_argument(
+        "--easyocr-min-confidence",
+        type=float,
+        default=EASYOCR_MIN_CONFIDENCE,
+        help="Minimum OCR confidence to keep a text result (default 0.5).",
+    )
+    parser.add_argument(
+        "--easyocr-fuzzy-threshold",
+        type=float,
+        default=EASYOCR_FUZZY_THRESHOLD,
+        help="Similarity %% threshold for fuzzy dedup/merge (default 80).",
+    )
+    parser.add_argument(
+        "--easyocr-gpu",
+        choices=["on", "off"],
+        default="on" if EASYOCR_GPU else "off",
+        help="Enable GPU for EasyOCR inference (default on).",
     )
     parser.add_argument(
         "--mode",
@@ -2395,6 +2594,13 @@ def apply_cli_config(args):
     global STEP1_NO_SPEECH_THRESHOLD
     global STEP1_LOGPROB_THRESHOLD
     global STEP1_CONDITION_ON_PREVIOUS_TEXT
+    global EASYOCR_LANG
+    global EASYOCR_SUBTITLE_CROP_RATIO
+    global EASYOCR_FPS
+    global EASYOCR_WORKERS
+    global EASYOCR_MIN_CONFIDENCE
+    global EASYOCR_FUZZY_THRESHOLD
+    global EASYOCR_GPU
 
     SUBTITLE_FONT = args.subtitle_font
     SUBTITLE_FONTSIZE = args.subtitle_fontsize
@@ -2482,6 +2688,15 @@ def apply_cli_config(args):
         STEP1_CONDITION_ON_PREVIOUS_TEXT = args.step1_condition_on_previous_text == "on"
     else:
         STEP1_CONDITION_ON_PREVIOUS_TEXT = prof["condition_on_previous_text"]
+
+    if args.easyocr_lang:
+        EASYOCR_LANG = [s.strip() for s in args.easyocr_lang.split(",") if s.strip()]
+    EASYOCR_SUBTITLE_CROP_RATIO = float(args.easyocr_crop_ratio)
+    EASYOCR_FPS = float(args.easyocr_fps)
+    EASYOCR_WORKERS = int(args.easyocr_workers)
+    EASYOCR_MIN_CONFIDENCE = float(args.easyocr_min_confidence)
+    EASYOCR_FUZZY_THRESHOLD = float(args.easyocr_fuzzy_threshold)
+    EASYOCR_GPU = args.easyocr_gpu == "on"
 
 
 def parse_step_range(step_arg, min_step=1, max_step=6):

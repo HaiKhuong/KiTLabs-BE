@@ -7,3 +7,5 @@ torchvision
 torchaudio
 edge-tts
 tqdm
+easyocr
+opencv-python-headless
