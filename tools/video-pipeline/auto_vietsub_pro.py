@@ -1491,7 +1491,7 @@ def step1_transcribe(video_path):
 def translate_batch_with_gemini(batch, batch_start_index):
     global ACTIVE_GEMINI_KEY_INDEX
     payload = [{"id": i, "text": b["text"]} for i, b in enumerate(batch)]
-    
+
     # Base prompt
     prompt_parts = [
         "Translate Chinese subtitles into Vietnamese.\n"
@@ -1499,7 +1499,7 @@ def translate_batch_with_gemini(batch, batch_start_index):
         "Keep original meaning and emotional tone, but simplify phrasing.\n"
         "Preserve historical tone, titles, names, and relationships.\n"
     ]
-    
+
     # Add custom context if provided, otherwise use default
     if TRANSLATION_CONTEXT and TRANSLATION_CONTEXT.strip():
         prompt_parts.append(f"{TRANSLATION_CONTEXT.strip()}\n")
@@ -1510,14 +1510,14 @@ def translate_batch_with_gemini(batch, batch_start_index):
             "Context: Chinese historical / wuxia / xianxia animation.\n"
             "Examples: Người Tôm => Hà Nhân, Thượng vị => hoàng thượng, cha => phụ thân, mẹ => mẫu thân, anh trai => huynh trưởng, em trai => đệ đệ.\n"
         ])
-    
+
     prompt_parts.extend([
         "Avoid verbose or literary wording unless required by context.\n"
         "Do NOT explain anything.\n"
         "Return ONLY JSON array, exact schema: [{\"id\":0,\"vi\":\"...\"}]\n"
         f"Input JSON:\n{json.dumps(payload, ensure_ascii=False)}"
     ])
-    
+
     prompt = "".join(prompt_parts)
 
     debug_dir = LOG_DIR / "gemini_debug"

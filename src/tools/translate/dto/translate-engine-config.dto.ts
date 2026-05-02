@@ -342,11 +342,11 @@ export class TranslateEngineConfigDto {
 
   /** Step1 subtitle source: whisper | embedded */
   @IsOptional()
-  @IsIn(["whisper", "embedded"])
+  @IsIn(["whisper", "embedded", "easyocr"])
   step1SubtitleSource?: string;
 
   @IsOptional()
-  @IsIn(["whisper", "embedded"])
+  @IsIn(["whisper", "embedded", "easyocr"])
   step1_subtitle_source?: string;
 
   /** Step6 horizontal flip (ffmpeg hflip); CLI: on | off */
