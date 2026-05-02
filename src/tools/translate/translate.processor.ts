@@ -13,144 +13,144 @@ const OPTION_MAPPINGS: Array<{
   keys: string[];
   allowedTypes: Array<"string" | "number">;
 }> = [
-  { cliFlag: "--subtitle-font", keys: ["subtitleFont", "subtitle_font"], allowedTypes: ["string"] },
-  {
-    cliFlag: "--subtitle-fontsize",
-    keys: ["subtitleFontsize", "subtitle_fontsize"],
-    allowedTypes: ["number", "string"],
-  },
-  {
-    cliFlag: "--subtitle-primary-colour",
-    keys: ["subtitlePrimaryColor", "subtitle_primary_colour"],
-    allowedTypes: ["string"],
-  },
-  {
-    cliFlag: "--subtitle-outline-colour",
-    keys: ["subtitleOutlineColor", "subtitle_outline_colour"],
-    allowedTypes: ["string"],
-  },
-  {
-    cliFlag: "--subtitle-outline",
-    keys: ["subtitleOutline", "subtitle_outline"],
-    allowedTypes: ["number", "string"],
-  },
-  { cliFlag: "--subtitle-shadow", keys: ["subtitleShadow", "subtitle_shadow"], allowedTypes: ["number", "string"] },
-  {
-    cliFlag: "--subtitle-uppercase",
-    keys: ["subtitleUppercase", "subtitle_uppercase"],
-    allowedTypes: ["string"],
-  },
-  {
-    cliFlag: "--subtitle-alignment",
-    keys: ["subtitleAlignment", "subtitle_alignment"],
-    allowedTypes: ["number", "string"],
-  },
-  {
-    cliFlag: "--subtitle-margin-v",
-    keys: ["subtitleMarginV", "subtitle_margin_v"],
-    allowedTypes: ["number", "string"],
-  },
-  {
-    cliFlag: "--subtitle-bg-blur-width-ratio",
-    keys: ["subtitleBgBlurWidthRatio", "subtitle_bg_blur_width_ratio"],
-    allowedTypes: ["number", "string"],
-  },
-  {
-    cliFlag: "--subtitle-bg-blur-height",
-    keys: ["subtitleBgBlurHeight", "subtitle_bg_blur_height"],
-    allowedTypes: ["number", "string"],
-  },
-  {
-    cliFlag: "--subtitle-bg-blur-bottom-offset",
-    keys: ["subtitleBgBlurBottomOffset", "subtitle_bg_blur_bottom_offset"],
-    allowedTypes: ["number", "string"],
-  },
-  {
-    cliFlag: "--subtitle-bg-blur-luma-radius",
-    keys: ["subtitleBgBlurLumaRadius", "subtitle_bg_blur_luma_radius"],
-    allowedTypes: ["number", "string"],
-  },
-  {
-    cliFlag: "--subtitle-bg-blur-luma-power",
-    keys: ["subtitleBgBlurLumaPower", "subtitle_bg_blur_luma_power"],
-    allowedTypes: ["number", "string"],
-  },
-  {
-    cliFlag: "--subtitle-bg-blur-chroma-radius",
-    keys: ["subtitleBgBlurChromaRadius", "subtitle_bg_blur_chroma_radius"],
-    allowedTypes: ["number", "string"],
-  },
-  {
-    cliFlag: "--subtitle-bg-blur-chroma-power",
-    keys: ["subtitleBgBlurChromaPower", "subtitle_bg_blur_chroma_power"],
-    allowedTypes: ["number", "string"],
-  },
-  { cliFlag: "--logo-file", keys: ["logoFile", "logo_file"], allowedTypes: ["string"] },
-  { cliFlag: "--logo-width", keys: ["logoWidth", "logo_width"], allowedTypes: ["number", "string"] },
-  { cliFlag: "--logo-margin-x", keys: ["logoMarginX", "logo_margin_x"], allowedTypes: ["number", "string"] },
-  { cliFlag: "--logo-margin-y", keys: ["logoMarginY", "logo_margin_y"], allowedTypes: ["number", "string"] },
-  { cliFlag: "--logo-opacity", keys: ["logoOpacity", "logo_opacity"], allowedTypes: ["number", "string"] },
-  { cliFlag: "--logo-enabled", keys: ["logoEnabled", "logo_enabled"], allowedTypes: ["string"] },
-  { cliFlag: "--original-volume", keys: ["originalVolume", "original_volume"], allowedTypes: ["number", "string"] },
-  {
-    cliFlag: "--narration-volume",
-    keys: ["narrationVolume", "narration_volume"],
-    allowedTypes: ["number", "string"],
-  },
-  { cliFlag: "--speed-video", keys: ["speedVideo", "speed_video"], allowedTypes: ["number", "string"] },
-  { cliFlag: "--edge-tts-voice", keys: ["edgeTtsVoice", "edge_tts_voice"], allowedTypes: ["string"] },
-  { cliFlag: "--edge-tts-rate", keys: ["edgeTtsRate", "edge_tts_rate"], allowedTypes: ["string"] },
-  { cliFlag: "--edge-tts-volume", keys: ["edgeTtsVolume", "edge_tts_volume"], allowedTypes: ["string"] },
-  { cliFlag: "--edge-tts-pitch", keys: ["edgeTtsPitch", "edge_tts_pitch"], allowedTypes: ["string"] },
-  { cliFlag: "--auto-speed", keys: ["autoSpeed", "auto_speed"], allowedTypes: ["string"] },
-  {
-    cliFlag: "--step3-auto-rate-trigger-cps",
-    keys: ["step3AutoRateTriggerCharsPerSec", "step3_auto_rate_trigger_chars_per_sec"],
-    allowedTypes: ["number", "string"],
-  },
-  {
-    cliFlag: "--step3-auto-rate-bonus-percent",
-    keys: ["step3AutoRateBonusPercent", "step3_auto_rate_bonus_percent"],
-    allowedTypes: ["number", "string"],
-  },
-  {
-    cliFlag: "--step3-tts-api-timeout-sec",
-    keys: ["step3TtsApiTimeoutSec", "step3_tts_api_timeout_sec"],
-    allowedTypes: ["number", "string"],
-  },
-  {
-    cliFlag: "--step3-tts-max-retry-action",
-    keys: ["step3TtsMaxRetryAction", "step3_tts_max_retry_action"],
-    allowedTypes: ["string"],
-  },
-  { cliFlag: "--translation-context", keys: ["translationContext", "translation_context"], allowedTypes: ["string"] },
-  { cliFlag: "--mode", keys: ["mode", "mode"], allowedTypes: ["string"] },
-  {
-    cliFlag: "--step1-subtitle-source",
-    keys: ["step1SubtitleSource", "step1_subtitle_source"],
-    allowedTypes: ["string"],
-  },
-  {
-    cliFlag: "--step6-hflip",
-    keys: ["step6Hflip", "step6_hflip", "enableFlip", "enable_flip"],
-    allowedTypes: ["string"],
-  },
-  {
-    cliFlag: "--step6-zoom-percent",
-    keys: ["step6ZoomPercent", "step6_zoom_percent"],
-    allowedTypes: ["number", "string"],
-  },
-  {
-    cliFlag: "--step6-eq-saturation",
-    keys: ["step6EqSaturation", "step6_eq_saturation"],
-    allowedTypes: ["number", "string"],
-  },
-  {
-    cliFlag: "--step6-eq-contrast",
-    keys: ["step6EqContrast", "step6_eq_contrast"],
-    allowedTypes: ["number", "string"],
-  },
-];
+    { cliFlag: "--subtitle-font", keys: ["subtitleFont", "subtitle_font"], allowedTypes: ["string"] },
+    {
+      cliFlag: "--subtitle-fontsize",
+      keys: ["subtitleFontsize", "subtitle_fontsize"],
+      allowedTypes: ["number", "string"],
+    },
+    {
+      cliFlag: "--subtitle-primary-colour",
+      keys: ["subtitlePrimaryColor", "subtitle_primary_colour"],
+      allowedTypes: ["string"],
+    },
+    {
+      cliFlag: "--subtitle-outline-colour",
+      keys: ["subtitleOutlineColor", "subtitle_outline_colour"],
+      allowedTypes: ["string"],
+    },
+    {
+      cliFlag: "--subtitle-outline",
+      keys: ["subtitleOutline", "subtitle_outline"],
+      allowedTypes: ["number", "string"],
+    },
+    { cliFlag: "--subtitle-shadow", keys: ["subtitleShadow", "subtitle_shadow"], allowedTypes: ["number", "string"] },
+    {
+      cliFlag: "--subtitle-uppercase",
+      keys: ["subtitleUppercase", "subtitle_uppercase"],
+      allowedTypes: ["string"],
+    },
+    {
+      cliFlag: "--subtitle-alignment",
+      keys: ["subtitleAlignment", "subtitle_alignment"],
+      allowedTypes: ["number", "string"],
+    },
+    {
+      cliFlag: "--subtitle-margin-v",
+      keys: ["subtitleMarginV", "subtitle_margin_v"],
+      allowedTypes: ["number", "string"],
+    },
+    {
+      cliFlag: "--subtitle-bg-blur-width-ratio",
+      keys: ["subtitleBgBlurWidthRatio", "subtitle_bg_blur_width_ratio"],
+      allowedTypes: ["number", "string"],
+    },
+    {
+      cliFlag: "--subtitle-bg-blur-height",
+      keys: ["subtitleBgBlurHeight", "subtitle_bg_blur_height"],
+      allowedTypes: ["number", "string"],
+    },
+    {
+      cliFlag: "--subtitle-bg-blur-bottom-offset",
+      keys: ["subtitleBgBlurBottomOffset", "subtitle_bg_blur_bottom_offset"],
+      allowedTypes: ["number", "string"],
+    },
+    {
+      cliFlag: "--subtitle-bg-blur-luma-radius",
+      keys: ["subtitleBgBlurLumaRadius", "subtitle_bg_blur_luma_radius"],
+      allowedTypes: ["number", "string"],
+    },
+    {
+      cliFlag: "--subtitle-bg-blur-luma-power",
+      keys: ["subtitleBgBlurLumaPower", "subtitle_bg_blur_luma_power"],
+      allowedTypes: ["number", "string"],
+    },
+    {
+      cliFlag: "--subtitle-bg-blur-chroma-radius",
+      keys: ["subtitleBgBlurChromaRadius", "subtitle_bg_blur_chroma_radius"],
+      allowedTypes: ["number", "string"],
+    },
+    {
+      cliFlag: "--subtitle-bg-blur-chroma-power",
+      keys: ["subtitleBgBlurChromaPower", "subtitle_bg_blur_chroma_power"],
+      allowedTypes: ["number", "string"],
+    },
+    { cliFlag: "--logo-file", keys: ["logoFile", "logo_file"], allowedTypes: ["string"] },
+    { cliFlag: "--logo-width", keys: ["logoWidth", "logo_width"], allowedTypes: ["number", "string"] },
+    { cliFlag: "--logo-margin-x", keys: ["logoMarginX", "logo_margin_x"], allowedTypes: ["number", "string"] },
+    { cliFlag: "--logo-margin-y", keys: ["logoMarginY", "logo_margin_y"], allowedTypes: ["number", "string"] },
+    { cliFlag: "--logo-opacity", keys: ["logoOpacity", "logo_opacity"], allowedTypes: ["number", "string"] },
+    { cliFlag: "--logo-enabled", keys: ["logoEnabled", "logo_enabled"], allowedTypes: ["string"] },
+    { cliFlag: "--original-volume", keys: ["originalVolume", "original_volume"], allowedTypes: ["number", "string"] },
+    {
+      cliFlag: "--narration-volume",
+      keys: ["narrationVolume", "narration_volume"],
+      allowedTypes: ["number", "string"],
+    },
+    { cliFlag: "--speed-video", keys: ["speedVideo", "speed_video"], allowedTypes: ["number", "string"] },
+    { cliFlag: "--edge-tts-voice", keys: ["edgeTtsVoice", "edge_tts_voice"], allowedTypes: ["string"] },
+    { cliFlag: "--edge-tts-rate", keys: ["edgeTtsRate", "edge_tts_rate"], allowedTypes: ["string"] },
+    { cliFlag: "--edge-tts-volume", keys: ["edgeTtsVolume", "edge_tts_volume"], allowedTypes: ["string"] },
+    { cliFlag: "--edge-tts-pitch", keys: ["edgeTtsPitch", "edge_tts_pitch"], allowedTypes: ["string"] },
+    { cliFlag: "--auto-speed", keys: ["autoSpeed", "auto_speed"], allowedTypes: ["string"] },
+    {
+      cliFlag: "--step3-auto-rate-trigger-cps",
+      keys: ["step3AutoRateTriggerCharsPerSec", "step3_auto_rate_trigger_chars_per_sec"],
+      allowedTypes: ["number", "string"],
+    },
+    {
+      cliFlag: "--step3-auto-rate-bonus-percent",
+      keys: ["step3AutoRateBonusPercent", "step3_auto_rate_bonus_percent"],
+      allowedTypes: ["number", "string"],
+    },
+    {
+      cliFlag: "--step3-tts-api-timeout-sec",
+      keys: ["step3TtsApiTimeoutSec", "step3_tts_api_timeout_sec"],
+      allowedTypes: ["number", "string"],
+    },
+    {
+      cliFlag: "--step3-tts-max-retry-action",
+      keys: ["step3TtsMaxRetryAction", "step3_tts_max_retry_action"],
+      allowedTypes: ["string"],
+    },
+    { cliFlag: "--translation-context", keys: ["translationContext", "translation_context"], allowedTypes: ["string"] },
+    { cliFlag: "--mode", keys: ["mode", "mode"], allowedTypes: ["string"] },
+    {
+      cliFlag: "--step1-subtitle-source",
+      keys: ["step1SubtitleSource", "step1_subtitle_source"],
+      allowedTypes: ["string"],
+    },
+    {
+      cliFlag: "--step6-hflip",
+      keys: ["step6Hflip", "step6_hflip", "enableFlip", "enable_flip"],
+      allowedTypes: ["string"],
+    },
+    {
+      cliFlag: "--step6-zoom-percent",
+      keys: ["step6ZoomPercent", "step6_zoom_percent"],
+      allowedTypes: ["number", "string"],
+    },
+    {
+      cliFlag: "--step6-eq-saturation",
+      keys: ["step6EqSaturation", "step6_eq_saturation"],
+      allowedTypes: ["number", "string"],
+    },
+    {
+      cliFlag: "--step6-eq-contrast",
+      keys: ["step6EqContrast", "step6_eq_contrast"],
+      allowedTypes: ["number", "string"],
+    },
+  ];
 
 @Processor(TRANSLATE_QUEUE_NAME)
 export class TranslateProcessor extends WorkerHost {
@@ -223,19 +223,30 @@ export class TranslateProcessor extends WorkerHost {
     const startedAt = Date.now();
     const { stdout, stderr } = await new Promise<{ stdout: string; stderr: string }>(
       (resolvePromise, rejectPromise) => {
+        const pythonEnv: NodeJS.ProcessEnv = {
+          ...process.env,
+          // Force Python to flush stdout on every write (line-buffered).
+          // Without this, print() inside Python is block-buffered when piped,
+          // so logs only appear after the buffer fills or the process exits.
+          PYTHONUNBUFFERED: "1",
+          PYTHONIOENCODING: "utf-8",
+        };
+        // Do not override HOME by default: EasyOCR uses ~/.EasyOCR; forcing
+        // another user's home causes Errno 13 for the real service account.
+        if (process.env.TRANSLATE_PYTHON_HOME) {
+          pythonEnv.HOME = process.env.TRANSLATE_PYTHON_HOME;
+        }
+        if (process.env.TRANSLATE_PYTHON_XDG_CACHE_HOME) {
+          pythonEnv.XDG_CACHE_HOME = process.env.TRANSLATE_PYTHON_XDG_CACHE_HOME;
+        }
+        if (!pythonEnv.EASYOCR_MODEL_STORAGE_DIR) {
+          pythonEnv.EASYOCR_MODEL_STORAGE_DIR = join(scriptDir, ".easyocr_models");
+        }
+
         const child = spawn(pythonBin, args, {
           cwd: scriptDir,
           windowsHide: true,
-          env: {
-            ...process.env,
-            HOME: "/home/haikhuong",
-            XDG_CACHE_HOME: "/home/haikhuong/.cache",
-            // Force Python to flush stdout on every write (line-buffered).
-            // Without this, print() inside Python is block-buffered when piped,
-            // so logs only appear after the buffer fills or the process exits.
-            PYTHONUNBUFFERED: "1",
-            PYTHONIOENCODING: "utf-8",
-          },
+          env: pythonEnv,
         });
 
         this.logger.log(`Python process started (pid=${child.pid ?? "unknown"})`);

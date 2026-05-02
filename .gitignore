@@ -25,6 +25,7 @@ tmp/
 temp/
 
 # Python pipeline artifacts
+tools/video-pipeline/.easyocr_models/
 tools/video-pipeline/.venv/
 tools/video-pipeline/venv/
 tools/video-pipeline/workspace/
