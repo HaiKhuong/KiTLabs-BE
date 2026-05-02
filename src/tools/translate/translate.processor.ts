@@ -223,30 +223,19 @@ export class TranslateProcessor extends WorkerHost {
     const startedAt = Date.now();
     const { stdout, stderr } = await new Promise<{ stdout: string; stderr: string }>(
       (resolvePromise, rejectPromise) => {
-        const pythonEnv: NodeJS.ProcessEnv = {
-          ...process.env,
-          // Force Python to flush stdout on every write (line-buffered).
-          // Without this, print() inside Python is block-buffered when piped,
-          // so logs only appear after the buffer fills or the process exits.
-          PYTHONUNBUFFERED: "1",
-          PYTHONIOENCODING: "utf-8",
-        };
-        // Do not override HOME by default: EasyOCR uses ~/.EasyOCR; forcing
-        // another user's home causes Errno 13 for the real service account.
-        if (process.env.TRANSLATE_PYTHON_HOME) {
-          pythonEnv.HOME = process.env.TRANSLATE_PYTHON_HOME;
-        }
-        if (process.env.TRANSLATE_PYTHON_XDG_CACHE_HOME) {
-          pythonEnv.XDG_CACHE_HOME = process.env.TRANSLATE_PYTHON_XDG_CACHE_HOME;
-        }
-        if (!pythonEnv.EASYOCR_MODEL_STORAGE_DIR) {
-          pythonEnv.EASYOCR_MODEL_STORAGE_DIR = join(scriptDir, ".easyocr_models");
-        }
-
         const child = spawn(pythonBin, args, {
           cwd: scriptDir,
           windowsHide: true,
-          env: pythonEnv,
+          env: {
+            ...process.env,
+            HOME: "/home/haikhuong",
+            XDG_CACHE_HOME: "/home/haikhuong/.cache",
+            // Force Python to flush stdout on every write (line-buffered).
+            // Without this, print() inside Python is block-buffered when piped,
+            // so logs only appear after the buffer fills or the process exits.
+            PYTHONUNBUFFERED: "1",
+            PYTHONIOENCODING: "utf-8",
+          },
         });
 
         this.logger.log(`Python process started (pid=${child.pid ?? "unknown"})`);
