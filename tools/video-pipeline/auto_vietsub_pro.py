@@ -115,35 +115,49 @@ OUTPUT_METADATA_TITLE = "Vạn Giới Vietsub"
 OUTPUT_METADATA_ARTIST = "Vạn Giới Vietsub"
 OUTPUT_METADATA_COMMENT = "Vạn Giới Vietsub"
 
-STEP1_VAD_FILTER = True # Nếu False thì sẽ không dùng 4 key phía dưới
+STEP1_VAD_FILTER = True  # Nếu False thì sẽ không dùng 4 key phía dưới
 # Mặc định CLI: --mode basic (nhẹ, giọng nhỏ/ASMR) hoặc --mode advance (khắc khe hơn). Có thể ghi đè từng tham số.
 # Override: --mode, --step1-vad-threshold, --step1-min-silence-ms, --step1-min-speech-ms, --step1-speech-pad-ms,
 #           --step1-no-speech-threshold, --step1-logprob-threshold, --step1-condition-on-previous-text
-STEP1_VAD_THRESHOLD = 0.35 # Silero: xác suất tối thiểu để coi là speech (thấp hơn = nhạy hơn với giọng yếu).
-STEP1_MIN_SILENCE_MS = 400 # im lặng tối thiểu (ms) để tách segment VAD (cao = ít tách hơn).
-STEP1_MIN_SPEECH_MS = 280 # speech tối thiểu (ms); giảm để không nuốt câu ngắn/nói nhỏ.
-STEP1_SPEECH_PAD_MS = 320 # lề trước/sau mỗi đoạn speech (ms); tăng giúp bắt đầu/cuối câu nhỏ.
+STEP1_VAD_THRESHOLD = 0.35  # Silero: xác suất tối thiểu để coi là speech (thấp hơn = nhạy hơn với giọng yếu).
+STEP1_MIN_SILENCE_MS = (
+    400  # im lặng tối thiểu (ms) để tách segment VAD (cao = ít tách hơn).
+)
+STEP1_MIN_SPEECH_MS = 280  # speech tối thiểu (ms); giảm để không nuốt câu ngắn/nói nhỏ.
+STEP1_SPEECH_PAD_MS = (
+    320  # lề trước/sau mỗi đoạn speech (ms); tăng giúp bắt đầu/cuối câu nhỏ.
+)
 
-STEP1_NO_SPEECH_THRESHOLD = 0.78 # Whisper: chỉ lọc “no speech” khi prob rất cao (cao hơn = giữ nhiều đoạn yếu hơn).
-STEP1_LOGPROB_THRESHOLD = -2.0 # Whisper: avg logprob; âm hơn = chấp nhận đoạn tin cậy thấp hơn (ít cắt hơn).
-STEP1_CONDITION_ON_PREVIOUS_TEXT = False # True có thể ổn định câu liền kề nhưng dễ lan lỗi sang đoạn sau.
+STEP1_NO_SPEECH_THRESHOLD = 0.78  # Whisper: chỉ lọc “no speech” khi prob rất cao (cao hơn = giữ nhiều đoạn yếu hơn).
+STEP1_LOGPROB_THRESHOLD = (
+    -2.0
+)  # Whisper: avg logprob; âm hơn = chấp nhận đoạn tin cậy thấp hơn (ít cắt hơn).
+STEP1_CONDITION_ON_PREVIOUS_TEXT = (
+    False  # True có thể ổn định câu liền kề nhưng dễ lan lỗi sang đoạn sau.
+)
 
 # EasyOCR config (STEP1_SUBTITLE_SOURCE = "easyocr")
-EASYOCR_LANG = ["ch_sim", "en"]     # EasyOCR language codes
-EASYOCR_SUBTITLE_CROP_RATIO = 0.25  # bottom fraction of frame to crop as subtitle region
-EASYOCR_FPS = 2                     # frame extraction rate for OCR
-EASYOCR_WORKERS = 4                 # parallel OCR threads
-EASYOCR_MIN_CONFIDENCE = 0.5        # discard OCR results below this confidence
-EASYOCR_FUZZY_THRESHOLD = 80        # % similarity threshold for dedup/merge
-EASYOCR_MIN_DURATION_MS = 500       # minimum subtitle display duration (ms)
-EASYOCR_MERGE_GAP_MS = 200          # merge adjacent similar blocks within this gap (ms)
+EASYOCR_LANG = ["ch_sim", "en"]  # EasyOCR language codes
+EASYOCR_SUBTITLE_CROP_RATIO = (
+    0.25  # bottom fraction of frame to crop as subtitle region
+)
+EASYOCR_FPS = 2  # frame extraction rate for OCR
+EASYOCR_WORKERS = 4  # parallel OCR threads
+EASYOCR_MIN_CONFIDENCE = 0.5  # discard OCR results below this confidence
+EASYOCR_FUZZY_THRESHOLD = 80  # % similarity threshold for dedup/merge
+EASYOCR_MIN_DURATION_MS = 500  # minimum subtitle display duration (ms)
+EASYOCR_MERGE_GAP_MS = 200  # merge adjacent similar blocks within this gap (ms)
 EASYOCR_GPU = True
 
-STEP1_MAX_SUBTITLE_CHARS = 22 # số ký tự tối đa mỗi câu sau tách.
-STEP1_MIN_SUBTITLE_DURATION_MS = 280 # thời gian hiển thị tối thiểu mỗi câu.
-STEP1_SHORT_TEXT_MAX_CHARS = 14 # ngưỡng để coi là “câu ngắn”.
-STEP1_MIN_CHARS_PER_SEC = 2.2 # nếu cps thấp hơn ngưỡng, coi là câu ngắn bị dính khoảng trống.
-STEP1_TARGET_CHARS_PER_SEC = 5.5 # tốc độ mục tiêu khi siết lại timing câu ngắn (giữ đuôi, cắt đầu).
+STEP1_MAX_SUBTITLE_CHARS = 22  # số ký tự tối đa mỗi câu sau tách.
+STEP1_MIN_SUBTITLE_DURATION_MS = 280  # thời gian hiển thị tối thiểu mỗi câu.
+STEP1_SHORT_TEXT_MAX_CHARS = 14  # ngưỡng để coi là “câu ngắn”.
+STEP1_MIN_CHARS_PER_SEC = (
+    2.2  # nếu cps thấp hơn ngưỡng, coi là câu ngắn bị dính khoảng trống.
+)
+STEP1_TARGET_CHARS_PER_SEC = (
+    5.5  # tốc độ mục tiêu khi siết lại timing câu ngắn (giữ đuôi, cắt đầu).
+)
 
 # Step1 VAD/Whisper presets (--mode basic|advance). Per-flag CLI overrides still win when passed.
 STEP1_PROFILES = {
@@ -173,17 +187,28 @@ def _load_env_files():
     if not load_dotenv:
         return
     here = Path(__file__).resolve().parent
-    repo_root = here.parents[1]  # .../KiTLabs-BE when script is at .../tools/video-pipeline/
-    for env_path in (here / ".env", here.parent / ".env", repo_root / ".env", Path.cwd() / ".env"):
+    repo_root = here.parents[
+        1
+    ]  # .../KiTLabs-BE when script is at .../tools/video-pipeline/
+    for env_path in (
+        here / ".env",
+        here.parent / ".env",
+        repo_root / ".env",
+        Path.cwd() / ".env",
+    ):
         if env_path.is_file():
             load_dotenv(env_path, override=False)
 
 
 _load_env_files()
+
+
 def parse_api_keys(raw_value):
     if not raw_value:
         return []
-    parts = [p.strip() for p in re.split(r"[,\n;]+", str(raw_value)) if p and str(p).strip()]
+    parts = [
+        p.strip() for p in re.split(r"[,\n;]+", str(raw_value)) if p and str(p).strip()
+    ]
     # Deduplicate while preserving order.
     return list(dict.fromkeys(parts))
 
@@ -208,6 +233,7 @@ def mask_secret(secret, show_prefix=4, show_suffix=4):
 # ==============================
 # HELPER
 # ==============================
+
 
 def log(message):
     LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -243,20 +269,29 @@ def file_ready(path):
     return p.exists() and p.stat().st_size > 0
 
 
-def retry_call(fn, label, max_retry=RETRY_MAX, base_delay=1.5):
+def retry_call(fn, label, max_retry=RETRY_MAX, base_delay=1.5, db_step=None):
     for attempt in range(1, max_retry + 1):
         try:
             return fn()
         except Exception as e:
             if attempt == max_retry:
-                log(f"{label} error (final attempt {attempt}/{max_retry}): {e}")
-                raise RuntimeError(f"{label} failed after {max_retry} attempts: {e}") from e
+                log(f"{label}: failed after {max_retry} attempts: {e}")
+                raise RuntimeError(
+                    f"{label} failed after {max_retry} attempts: {e}"
+                ) from e
             delay = base_delay
-            log(f"{label} error (attempt {attempt}/{max_retry}): {e}. Retry in {delay:.1f}s")
+            if db_step is not None:
+                emit_db_status(
+                    int(db_step),
+                    "running",
+                    f"{label} thử lại ({attempt}/{max_retry})…",
+                )
             time.sleep(delay)
 
 
-def step3_tts_retry(run_fn, label, max_retry=TTS_RETRY_MAX, base_delay=1.5):
+def step3_tts_retry(
+    run_fn, label, max_retry=TTS_RETRY_MAX, base_delay=1.5, db_step=None
+):
     """Chạy TTS với retry. Trả về True nếu thành công; False nếu hết retry và STEP3_TTS_MAX_RETRY_ACTION=='skip'."""
     for attempt in range(1, max_retry + 1):
         try:
@@ -264,16 +299,20 @@ def step3_tts_retry(run_fn, label, max_retry=TTS_RETRY_MAX, base_delay=1.5):
             return True
         except Exception as e:
             if attempt == max_retry:
-                log(f"{label} error (final attempt {attempt}/{max_retry}): {e}")
+                log(f"Step3 TTS: failed after {max_retry} attempts: {e}")
                 if STEP3_TTS_MAX_RETRY_ACTION == "skip":
-                    log(
-                        f"Step3 TTS: exhausted {max_retry} retries; "
-                        f"STEP3_TTS_MAX_RETRY_ACTION=skip -> bỏ qua segment này. {label}"
-                    )
+                    log("Step3 TTS: skip segment (exhausted retries, action=skip).")
                     return False
-                raise RuntimeError(f"{label} failed after {max_retry} attempts: {e}") from e
+                raise RuntimeError(
+                    f"{label} failed after {max_retry} attempts: {e}"
+                ) from e
             delay = base_delay
-            log(f"{label} error (attempt {attempt}/{max_retry}): {e}. Retry in {delay:.1f}s")
+            if db_step is not None:
+                emit_db_status(
+                    int(db_step),
+                    "running",
+                    f"Step3 TTS thử lại ({attempt}/{max_retry})…",
+                )
             time.sleep(delay)
 
 
@@ -381,7 +420,13 @@ def resolve_ffmpeg_binary():
         [
             Path(r"C:\ffmpeg\bin\ffmpeg.exe"),
             Path(r"C:\ProgramData\chocolatey\bin\ffmpeg.exe"),
-            Path.home() / "scoop" / "apps" / "ffmpeg" / "current" / "bin" / "ffmpeg.exe",
+            Path.home()
+            / "scoop"
+            / "apps"
+            / "ffmpeg"
+            / "current"
+            / "bin"
+            / "ffmpeg.exe",
         ]
     )
 
@@ -412,37 +457,26 @@ def resolve_ffprobe_binary():
 def preflight_checks():
     global FFMPEG_BIN
     global FFPROBE_BIN
-    log("Preflight checks...")
     if not GEMINI_CLIENTS:
         raise EnvironmentError(
             "Missing Gemini API key. Set GEMINI_API_KEY or GOOGLE_API_KEY in .env or the environment."
         )
-    has_gemini_env = bool(parse_api_keys(os.environ.get("GEMINI_API_KEY")))
-    has_google_env = bool(parse_api_keys(os.environ.get("GOOGLE_API_KEY")))
-    if has_gemini_env and has_google_env:
-        key_source = "GEMINI_API_KEY + GOOGLE_API_KEY"
-    elif has_gemini_env:
-        key_source = "GEMINI_API_KEY"
-    else:
-        key_source = "GOOGLE_API_KEY"
-    log(
-        f"Gemini keys detected: source={key_source}, count={len(GEMINI_API_KEYS)}, "
-        f"active={mask_secret(GEMINI_API_KEYS[ACTIVE_GEMINI_KEY_INDEX])}"
-    )
     FFMPEG_BIN = resolve_ffmpeg_binary()
     if FFMPEG_BIN is None:
         raise EnvironmentError(
             "ffmpeg not found. Add it to PATH or set FFMPEG_PATH in script config."
         )
     run_command([FFMPEG_BIN, "-version"], "ffmpeg check")
-    log(f"ffmpeg resolved: {FFMPEG_BIN}")
     FFPROBE_BIN = resolve_ffprobe_binary()
     if FFPROBE_BIN:
         run_command([FFPROBE_BIN, "-version"], "ffprobe check")
-        log(f"ffprobe resolved: {FFPROBE_BIN}")
     else:
-        log("Warning: ffprobe not found. Some duration/subtitle probe features may be unavailable.")
-    log("Preflight OK.")
+        log(
+            "Warning: ffprobe not found. Some duration/subtitle probe features may be unavailable."
+        )
+    log(
+        f"Preflight OK (Gemini keys={len(GEMINI_API_KEYS)}, ffmpeg+ffprobe ready)."
+    )
 
 
 def fmt_time(seconds):
@@ -456,12 +490,7 @@ def fmt_time(seconds):
 def srt_time_to_ms(time_str):
     hms, ms = time_str.strip().split(",")
     h, m, s = hms.split(":")
-    return (
-        int(h) * 3600000
-        + int(m) * 60000
-        + int(s) * 1000
-        + int(ms)
-    )
+    return int(h) * 3600000 + int(m) * 60000 + int(s) * 1000 + int(ms)
 
 
 def parse_srt_time_range(time_range):
@@ -578,7 +607,9 @@ def resolve_dynamic_tts_rate(text, subtitle_duration_ms):
     text is much denser than the SRT window — so ffmpeg needs less aggressive
     atempo in Step3.
     """
-    base_rate = parse_percent_string(resolve_base_tts_rate(EDGE_TTS_RATE), default_value=60.0)
+    base_rate = parse_percent_string(
+        resolve_base_tts_rate(EDGE_TTS_RATE), default_value=60.0
+    )
     if not STEP3_AUTO_RATE_ENABLED or subtitle_duration_ms <= 0:
         return format_percent_string(base_rate), False
 
@@ -672,7 +703,11 @@ def split_segment_to_timed_chunks(text, start_sec, end_sec, word_items=None):
         usable_words = [
             (float(w[0]), float(w[1]), str(w[2]).strip())
             for w in word_items
-            if w and len(w) >= 3 and w[0] is not None and w[1] is not None and float(w[1]) > float(w[0])
+            if w
+            and len(w) >= 3
+            and w[0] is not None
+            and w[1] is not None
+            and float(w[1]) > float(w[0])
         ]
         usable_words = [w for w in usable_words if w[2]]
         usable_words.sort(key=lambda x: x[0])
@@ -692,7 +727,11 @@ def split_segment_to_timed_chunks(text, start_sec, end_sec, word_items=None):
                     remaining_words = total_words - cursor_word_idx
                     remaining_chunks = len(chunks) - idx
                     chunk_weight = max(len(chunk), 1)
-                    estimated = int(round((chunk_weight / max(remaining_chars, 1)) * remaining_words))
+                    estimated = int(
+                        round(
+                            (chunk_weight / max(remaining_chars, 1)) * remaining_words
+                        )
+                    )
                     estimated = max(1, estimated)
                     max_allow = remaining_words - (remaining_chunks - 1)
                     take_words = min(estimated, max_allow)
@@ -716,7 +755,9 @@ def split_segment_to_timed_chunks(text, start_sec, end_sec, word_items=None):
             cursor = start_ms
             for idx, (chunk_start, chunk_end, chunk_text) in enumerate(timed):
                 remaining_after = len(timed) - idx - 1
-                latest_end = segment_end_bound - STEP1_MIN_SUBTITLE_DURATION_MS * remaining_after
+                latest_end = (
+                    segment_end_bound - STEP1_MIN_SUBTITLE_DURATION_MS * remaining_after
+                )
                 chunk_start = max(chunk_start, cursor)
                 chunk_end = max(chunk_end, chunk_start + STEP1_MIN_SUBTITLE_DURATION_MS)
                 chunk_end = min(chunk_end, latest_end)
@@ -741,7 +782,10 @@ def split_segment_to_timed_chunks(text, start_sec, end_sec, word_items=None):
         else:
             ratio = max(len(chunk), 1) / total_weight
             duration = max(STEP1_MIN_SUBTITLE_DURATION_MS, int(total_span * ratio))
-            chunk_end = min(end_ms - STEP1_MIN_SUBTITLE_DURATION_MS * (len(chunks) - idx - 1), cursor + duration)
+            chunk_end = min(
+                end_ms - STEP1_MIN_SUBTITLE_DURATION_MS * (len(chunks) - idx - 1),
+                cursor + duration,
+            )
         if chunk_end <= cursor:
             chunk_end = cursor + STEP1_MIN_SUBTITLE_DURATION_MS
         timed.append((cursor, chunk_end, chunk))
@@ -765,8 +809,18 @@ def tighten_sparse_subtitle_timing(start_ms, end_ms, text):
     if not (is_short_text and is_too_sparse):
         return int(start_ms), int(end_ms), False
 
-    target_ms = int(round((text_len / max(float(STEP1_TARGET_CHARS_PER_SEC), 0.1)) * 1000))
-    max_short_ms = int(round((int(STEP1_SHORT_TEXT_MAX_CHARS) / max(float(STEP1_TARGET_CHARS_PER_SEC), 0.1)) * 1000))
+    target_ms = int(
+        round((text_len / max(float(STEP1_TARGET_CHARS_PER_SEC), 0.1)) * 1000)
+    )
+    max_short_ms = int(
+        round(
+            (
+                int(STEP1_SHORT_TEXT_MAX_CHARS)
+                / max(float(STEP1_TARGET_CHARS_PER_SEC), 0.1)
+            )
+            * 1000
+        )
+    )
     target_ms = min(target_ms, max_short_ms)
     target_ms = max(int(STEP1_MIN_SUBTITLE_DURATION_MS), target_ms)
 
@@ -839,10 +893,6 @@ def _step3_prune_voice_checkpoint_missing_wavs(done_set, srt_path, chunk_dir, bl
             done_set.discard(i)
             removed.append(i)
     if removed:
-        log(
-            f"Step3: checkpoint — bỏ idx thiếu WAV (sẽ gọi lại TTS/ffmpeg cho các idx này): "
-            f"{removed[:24]}{'...' if len(removed) > 24 else ''}"
-        )
         _step3_save_voice_checkpoint(srt_path, chunk_dir, blocks, done_set)
 
 
@@ -854,8 +904,7 @@ def _step3_load_voice_checkpoint(srt_path, chunk_dir, block_count):
     try:
         with open(json_path, encoding="utf8") as f:
             data = json.load(f)
-    except Exception as e:
-        log(f"Step3: không đọc checkpoint voice ({e}), gen lại TTS theo segment.")
+    except Exception:
         return set()
     try:
         sp = str(Path(srt_path).resolve())
@@ -863,13 +912,10 @@ def _step3_load_voice_checkpoint(srt_path, chunk_dir, block_count):
     except OSError:
         return set()
     if str(data.get("srt_path_resolved") or "") != sp:
-        log("Step3: checkpoint voice khác đường dẫn SRT, không resume.")
         return set()
     if abs(float(data.get("srt_mtime", 0)) - mtime) > 0.01:
-        log("Step3: SRT đã đổi (mtime), không resume voice checkpoint.")
         return set()
     if int(data.get("block_count", -1)) != int(block_count):
-        log("Step3: số khối SRT khác checkpoint, không resume voice.")
         return set()
     raw = data.get("done_block_indices") or []
     return {int(x) for x in raw if 0 <= int(x) < block_count}
@@ -898,7 +944,9 @@ def _step3_save_voice_checkpoint(srt_path, chunk_dir, blocks, done_indices):
     except Exception as e:
         log(f"Step3: không ghi checkpoint voice json: {e}")
     try:
-        srt_ok = sorted(blocks[i]["index"] for i in sorted(done_indices) if i < len(blocks))
+        srt_ok = sorted(
+            blocks[i]["index"] for i in sorted(done_indices) if i < len(blocks)
+        )
         write_text(txt_path, " ".join(str(x) for x in srt_ok))
     except Exception as e:
         log(f"Step3: không ghi voice_ok_srt.txt: {e}")
@@ -1034,7 +1082,9 @@ def ffmpeg_output_metadata_args(out_path=None):
     return args
 
 
-def build_step6_render_command(video_path, out_path, subtitle_filter, use_gpu, logo_path=None):
+def build_step6_render_command(
+    video_path, out_path, subtitle_filter, use_gpu, logo_path=None
+):
     input_args = ["-i", str(video_path)]
     use_complex = logo_path is not None or STEP6_VISUAL_TRANSFORM_ENABLED
     filter_arg_key = "-filter_complex" if use_complex else "-vf"
@@ -1126,9 +1176,12 @@ def update_ass_default_style(ass_path):
 # Source zh subtitle -> <work_name>.zh.srt
 # ==============================
 
+
 def _probe_subtitle_streams(video_path):
     if not FFPROBE_BIN:
-        raise RuntimeError("ffprobe not found. Add ffprobe to PATH or install ffmpeg package including ffprobe.")
+        raise RuntimeError(
+            "ffprobe not found. Add ffprobe to PATH or install ffmpeg package including ffprobe."
+        )
     result = run_command(
         [
             str(FFPROBE_BIN),
@@ -1149,7 +1202,7 @@ def _probe_subtitle_streams(video_path):
 
 
 def _step1_extract_embedded_subtitle(video_path):
-    log("Step1: Extract embedded subtitle stream...")
+    log("Step1: embedded subtitles…")
     streams = _probe_subtitle_streams(video_path)
     if not streams:
         raise RuntimeError("No subtitle stream found in input video.")
@@ -1166,13 +1219,6 @@ def _step1_extract_embedded_subtitle(video_path):
         chosen = streams[0]
 
     stream_index = int(chosen.get("index", 0))
-    stream_lang = str((chosen.get("tags") or {}).get("language", "unknown")).strip() or "unknown"
-    stream_title = str((chosen.get("tags") or {}).get("title", "")).strip()
-    log(
-        f"Step1 subtitle stream selected: index={stream_index}, "
-        f"language={stream_lang}{', title=' + stream_title if stream_title else ''}"
-    )
-
     srt_path = get_zh_srt_path()
     run_command(
         [
@@ -1193,12 +1239,12 @@ def _step1_extract_embedded_subtitle(video_path):
         blocks = parse_srt(f.read())
     if not blocks:
         raise RuntimeError("Extracted subtitle is empty after ffmpeg conversion.")
-    log(f"Step1 complete: extracted {len(blocks)} subtitle lines.")
+    log(f"Step1: extracted {len(blocks)} lines.")
     return srt_path
 
 
 def _step1_transcribe_with_whisper(video_path):
-    log("Step1: Transcribing video...")
+    log("Step1: transcribe (Whisper)…")
     from faster_whisper import WhisperModel
 
     # Decode to stable WAV first to avoid truncated decode from some video sources.
@@ -1221,17 +1267,10 @@ def _step1_transcribe_with_whisper(video_path):
         "Extract audio for Step1",
     )
 
-    source_duration_ms = get_media_duration_ms(step1_audio) or get_media_duration_ms(video_path)
-    if source_duration_ms:
-        log(f"Step1 audio duration: {source_duration_ms / 1000:.3f}s")
-    min_expected_ms = int(source_duration_ms * 0.40) if source_duration_ms else None
-    log(
-        "Step1 config: "
-        f"language={WHISPER_LANGUAGE}, vad_filter={STEP1_VAD_FILTER}, "
-        f"vad_threshold={STEP1_VAD_THRESHOLD}, min_silence_ms={STEP1_MIN_SILENCE_MS}, "
-        f"no_speech_threshold={STEP1_NO_SPEECH_THRESHOLD}, "
-        f"condition_on_previous_text={STEP1_CONDITION_ON_PREVIOUS_TEXT}"
+    source_duration_ms = get_media_duration_ms(step1_audio) or get_media_duration_ms(
+        video_path
     )
+    min_expected_ms = int(source_duration_ms * 0.40) if source_duration_ms else None
 
     def _transcribe_with_device(device_name, out_path):
         whisper_model = WhisperModel(WHISPER_MODEL, device=device_name)
@@ -1251,19 +1290,28 @@ def _step1_transcribe_with_whisper(video_path):
                 "min_speech_duration_ms": int(STEP1_MIN_SPEECH_MS),
                 "speech_pad_ms": int(STEP1_SPEECH_PAD_MS),
             }
-        segments, _info = whisper_model.transcribe(str(step1_audio), **transcribe_kwargs)
+        segments, _info = whisper_model.transcribe(
+            str(step1_audio), **transcribe_kwargs
+        )
         count = 0
         last_end_ms = 0
         prev_end_sec = 0.0
         with open(out_path, "w", encoding="utf8") as f:
-            for i, segment in enumerate(progressbar(segments, desc=f"Transcribe ({device_name})")):
+            for i, segment in enumerate(
+                progressbar(segments, desc=f"Transcribe ({device_name})")
+            ):
                 seg_start = float(segment.start)
                 seg_end = float(segment.end)
                 words = getattr(segment, "words", None) or []
                 timed_words = [
-                    (float(w.start), float(w.end), str(getattr(w, "word", "") or "").strip())
+                    (
+                        float(w.start),
+                        float(w.end),
+                        str(getattr(w, "word", "") or "").strip(),
+                    )
                     for w in words
-                    if getattr(w, "start", None) is not None and getattr(w, "end", None) is not None
+                    if getattr(w, "start", None) is not None
+                    and getattr(w, "end", None) is not None
                 ]
                 if timed_words:
                     seg_start = min(start for start, _end, _text in timed_words)
@@ -1275,62 +1323,51 @@ def _step1_transcribe_with_whisper(video_path):
                 if seg_end <= seg_start:
                     seg_end = seg_start + 0.2
 
-                split_chunks = split_segment_to_timed_chunks(segment.text.strip(), seg_start, seg_end, timed_words)
+                split_chunks = split_segment_to_timed_chunks(
+                    segment.text.strip(), seg_start, seg_end, timed_words
+                )
                 if not split_chunks:
                     continue
 
                 for chunk_start_ms, chunk_end_ms, chunk_text in split_chunks:
-                    chunk_start_ms, chunk_end_ms, tightened = tighten_sparse_subtitle_timing(
+                    chunk_start_ms, chunk_end_ms, _ = tighten_sparse_subtitle_timing(
                         chunk_start_ms,
                         chunk_end_ms,
                         chunk_text,
                     )
                     chunk_start_sec = max(prev_end_sec, chunk_start_ms / 1000.0)
                     chunk_end_sec = max(chunk_end_ms / 1000.0, chunk_start_sec + 0.2)
-                    if tightened:
-                        log(
-                            "Step1 timing tightened for sparse short subtitle: "
-                            f"'{chunk_text[:40]}' -> {chunk_start_sec:.3f}s..{chunk_end_sec:.3f}s"
-                        )
                     prev_end_sec = chunk_end_sec
                     last_end_ms = int(chunk_end_sec * 1000)
                     count += 1
                     f.write(f"{count}\n")
-                    f.write(f"{fmt_time(chunk_start_sec)} --> {fmt_time(chunk_end_sec)}\n")
+                    f.write(
+                        f"{fmt_time(chunk_start_sec)} --> {fmt_time(chunk_end_sec)}\n"
+                    )
                     f.write(f"{chunk_text}\n\n")
 
-                if count % 50 == 0:
-                    log(
-                        f"Step1 {device_name}: {count} segments, "
-                        f"last_end={last_end_ms / 1000:.2f}s"
-                    )
         return count, last_end_ms
 
     srt_path = get_zh_srt_path()
 
     try:
-        log("Whisper using CUDA.")
         count, last_end_ms = _transcribe_with_device("cuda", srt_path)
         if count == 0:
             raise RuntimeError("CUDA produced no segments.")
         if min_expected_ms and last_end_ms < min_expected_ms:
-            log(
-                f"Step1 warning: CUDA transcript too short ({last_end_ms / 1000:.2f}s), "
-                "retrying on CPU..."
-            )
             count, last_end_ms = _transcribe_with_device("cpu", srt_path)
     except Exception as e:
-        log(f"Step1 CUDA failed, fallback CPU: {e}")
+        log(f"Step1: CUDA failed → CPU: {e}")
         count, last_end_ms = _transcribe_with_device("cpu", srt_path)
         if count == 0:
             raise RuntimeError("Whisper produced no segments in Step1.")
-    log(f"Step1 complete: {count} segments, last_end={last_end_ms / 1000:.2f}s")
+    log(f"Step1: done — {count} segments, {last_end_ms / 1000:.1f}s")
     return srt_path
 
 
 def _step1_ocr_with_easyocr(video_path):
     """Step1: extract subtitles via EasyOCR on the cropped subtitle region."""
-    log("Step1: OCR subtitle with EasyOCR...")
+    log("Step1: OCR (EasyOCR)…")
     import concurrent.futures
     from difflib import SequenceMatcher
 
@@ -1347,29 +1384,40 @@ def _step1_ocr_with_easyocr(video_path):
     frames_dir.mkdir(parents=True, exist_ok=True)
 
     # --- 1. Crop subtitle region + preprocess (grayscale + contrast boost) ---
-    log(f"Step1 OCR: cropping bottom {EASYOCR_SUBTITLE_CROP_RATIO * 100:.0f}% of video...")
     crop_video = ocr_dir / "cropped.mp4"
     crop_ratio = EASYOCR_SUBTITLE_CROP_RATIO
     run_command(
         [
-            FFMPEG_BIN, "-y", "-i", str(video_path),
+            FFMPEG_BIN,
+            "-y",
+            "-i",
+            str(video_path),
             "-vf",
             (
                 f"crop=iw:ih*{crop_ratio}:0:ih*(1-{crop_ratio}),"
                 "format=gray,eq=contrast=2:brightness=0.05"
             ),
-            "-an", "-c:v", "libx264", "-crf", "23", "-preset", "ultrafast",
+            "-an",
+            "-c:v",
+            "libx264",
+            "-crf",
+            "23",
+            "-preset",
+            "ultrafast",
             str(crop_video),
         ],
         "Crop subtitle region",
     )
 
     # --- 2. Extract frames ---
-    log(f"Step1 OCR: extracting frames at {EASYOCR_FPS} fps...")
     run_command(
         [
-            FFMPEG_BIN, "-y", "-i", str(crop_video),
-            "-vf", f"fps={EASYOCR_FPS}",
+            FFMPEG_BIN,
+            "-y",
+            "-i",
+            str(crop_video),
+            "-vf",
+            f"fps={EASYOCR_FPS}",
             str(frames_dir / "frame_%05d.png"),
         ],
         "Extract frames for OCR",
@@ -1378,10 +1426,8 @@ def _step1_ocr_with_easyocr(video_path):
     frame_files = sorted(frames_dir.glob("frame_*.png"))
     if not frame_files:
         raise RuntimeError("Step1 OCR: no frames extracted.")
-    log(f"Step1 OCR: {len(frame_files)} frames to process.")
 
     # --- 3. OCR with EasyOCR (parallel ThreadPoolExecutor) ---
-    log(f"Step1 OCR: loading EasyOCR reader (lang={EASYOCR_LANG}, gpu={EASYOCR_GPU})...")
     reader = easyocr.Reader(EASYOCR_LANG, gpu=EASYOCR_GPU)
     frame_interval_sec = 1.0 / EASYOCR_FPS
 
@@ -1396,8 +1442,7 @@ def _step1_ocr_with_easyocr(video_path):
                 if conf >= EASYOCR_MIN_CONFIDENCE and t.strip()
             ]
             return timestamp_sec, " ".join(texts)
-        except Exception as exc:
-            log(f"Step1 OCR frame {idx} error: {exc}")
+        except Exception:
             return timestamp_sec, ""
 
     raw_results = []
@@ -1414,7 +1459,6 @@ def _step1_ocr_with_easyocr(video_path):
                 raw_results.append((ts, text))
 
     raw_results.sort(key=lambda x: x[0])
-    log(f"Step1 OCR: {len(raw_results)} non-empty frames after OCR.")
 
     # --- 4. Text cleaning ---
     _re_keep = re.compile(r"[\w\s\u4e00-\u9fff\u3000-\u303f\uff00-\uffef]+")
@@ -1465,7 +1509,7 @@ def _step1_ocr_with_easyocr(video_path):
             f.write(f"{i}\n")
             f.write(f"{fmt_time(start)} --> {fmt_time(end)}\n")
             f.write(f"{text}\n\n")
-    log(f"Step1 OCR complete: {len(merged)} subtitle blocks -> {srt_path}")
+    log(f"Step1: OCR done — {len(merged)} blocks.")
     return srt_path
 
 
@@ -1488,6 +1532,7 @@ def step1_transcribe(video_path):
 # Gemini translate zh -> vi (batched)
 # ==============================
 
+
 def translate_batch_with_gemini(batch, batch_start_index):
     global ACTIVE_GEMINI_KEY_INDEX
     payload = [{"id": i, "text": b["text"]} for i, b in enumerate(batch)]
@@ -1505,18 +1550,22 @@ def translate_batch_with_gemini(batch, batch_start_index):
         prompt_parts.append(f"{TRANSLATION_CONTEXT.strip()}\n")
     else:
         # Default context for Chinese historical/wuxia/xianxia
-        prompt_parts.extend([
-            "Use Sino-Vietnamese (Han-Viet) pronouns/family terms when appropriate.\n"
-            "Context: Chinese historical / wuxia / xianxia animation.\n"
-            "Examples: Người Tôm => Hà Nhân, Thượng vị => hoàng thượng, cha => phụ thân, mẹ => mẫu thân, anh trai => huynh trưởng, em trai => đệ đệ.\n"
-        ])
+        prompt_parts.extend(
+            [
+                "Use Sino-Vietnamese (Han-Viet) pronouns/family terms when appropriate.\n"
+                "Context: Chinese historical / wuxia / xianxia animation.\n"
+                "Examples: Người Tôm => Hà Nhân, Thượng vị => hoàng thượng, cha => phụ thân, mẹ => mẫu thân, anh trai => huynh trưởng, em trai => đệ đệ.\n"
+            ]
+        )
 
-    prompt_parts.extend([
-        "Avoid verbose or literary wording unless required by context.\n"
-        "Do NOT explain anything.\n"
-        "Return ONLY JSON array, exact schema: [{\"id\":0,\"vi\":\"...\"}]\n"
-        f"Input JSON:\n{json.dumps(payload, ensure_ascii=False)}"
-    ])
+    prompt_parts.extend(
+        [
+            "Avoid verbose or literary wording unless required by context.\n"
+            "Do NOT explain anything.\n"
+            'Return ONLY JSON array, exact schema: [{"id":0,"vi":"..."}]\n'
+            f"Input JSON:\n{json.dumps(payload, ensure_ascii=False)}"
+        ]
+    )
 
     prompt = "".join(prompt_parts)
 
@@ -1623,8 +1672,8 @@ def translate_batch_with_gemini(batch, batch_start_index):
                         ) from e
                     next_key_idx = (key_idx + 1) % total_key_count
                     log(
-                        f"Step2 Gemini error with key {key_idx + 1}/{total_key_count} ({key_masked}): {e}. "
-                        f"Switching to key {next_key_idx + 1}/{total_key_count}."
+                        f"Step2: Gemini key {key_idx + 1}/{total_key_count} → "
+                        f"{next_key_idx + 1}/{total_key_count}."
                     )
 
         if STEP2_MULTI_KEYS_ENABLED:
@@ -1635,12 +1684,14 @@ def translate_batch_with_gemini(batch, batch_start_index):
             f"Gemini translation failed on active key only (multi-keys off). Last error: {last_error}"
         ) from last_error
 
-    return retry_call(_call, "Gemini translation", max_retry=GEMINI_RETRY_MAX)
+    return retry_call(
+        _call, "Gemini translation", max_retry=GEMINI_RETRY_MAX, db_step=2
+    )
 
 
 def step2_translate_srt(srt_path):
     key_mode = "multi-keys on" if STEP2_MULTI_KEYS_ENABLED else "multi-keys off"
-    log(f"Step2: Translating subtitles with Gemini (batched, {key_mode})...")
+    log(f"Step2: Gemini ({key_mode})…")
     with open(srt_path, encoding="utf8") as f:
         blocks = parse_srt(f.read())
 
@@ -1664,8 +1715,9 @@ def step2_translate_srt(srt_path):
 # TTS generate voice directly from SRT (chunked)
 # ==============================
 
+
 def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
-    log("Step3: Generating voice with edge-tts (timeline by SRT)...")
+    log("Step3: edge-tts (timeline SRT)…")
     import edge_tts
 
     async def _generate_edge_tts_mp3(text, out_path, rate):
@@ -1709,10 +1761,7 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
             done_block_indices, srt_path, chunk_dir, blocks
         )
     if STEP3_VOICE_RESUME and done_block_indices:
-        log(
-            f"Step3: resume voice — bỏ qua edge-tts cho {len(done_block_indices)} segment đã xong "
-            f"(checkpoint + file WAV). Thiếu segment sẽ gọi API."
-        )
+        log(f"Step3: resume {len(done_block_indices)} segments (checkpoint).")
     timeline_paths = []
     current_time_ms = 0
 
@@ -1750,7 +1799,11 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
         # Empty text block keeps timing with silence segment.
         if not subtitle_text:
             empty_path = chunk_dir / f"empty_{i:04d}.wav"
-            if STEP3_VOICE_RESUME and i in done_block_indices and file_ready(empty_path):
+            if (
+                STEP3_VOICE_RESUME
+                and i in done_block_indices
+                and file_ready(empty_path)
+            ):
                 timeline_paths.append(empty_path.resolve())
                 current_time_ms = end_ms
                 continue
@@ -1773,22 +1826,24 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
             timeline_paths.append(empty_path.resolve())
             current_time_ms = end_ms
             done_block_indices.add(i)
-            _step3_save_voice_checkpoint(srt_path, chunk_dir, blocks, done_block_indices)
+            _step3_save_voice_checkpoint(
+                srt_path, chunk_dir, blocks, done_block_indices
+            )
             continue
 
         raw_audio_path = chunk_dir / f"raw_{i:04d}.mp3"
         final_seg_path = chunk_dir / f"part_{i:04d}.wav"
 
-        if STEP3_VOICE_RESUME and i in done_block_indices and file_ready(final_seg_path):
+        if (
+            STEP3_VOICE_RESUME
+            and i in done_block_indices
+            and file_ready(final_seg_path)
+        ):
             seg_ms = get_media_duration_ms(final_seg_path)
             if not seg_ms:
                 seg_ms = int(subtitle_duration_ms)
             timeline_paths.append(final_seg_path.resolve())
             current_time_ms = start_ms + int(seg_ms)
-            log(
-                f"Step3: reuse segment timeline_idx={i} SRT#{block.get('index', i + 1)} "
-                f"({final_seg_path.name}), không gọi edge-tts."
-            )
             continue
 
         def run_tts(rate):
@@ -1797,22 +1852,15 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
                 time.sleep(sleep_ms / 1000.0)
             asyncio.run(_generate_edge_tts_mp3(subtitle_text, raw_audio_path, rate))
 
-        tts_rate, boosted = resolve_dynamic_tts_rate(subtitle_text, subtitle_duration_ms)
+        tts_rate, _ = resolve_dynamic_tts_rate(subtitle_text, subtitle_duration_ms)
         subtitle_idx = block.get("index", i + 1)
-        char_count = len(re.sub(r"\s+", "", subtitle_text))
-        text_preview = make_text_preview(subtitle_text, max_len=96)
-        # log(
-        #     f"Step3 TTS request: subtitle_idx={subtitle_idx}, timeline_idx={i}, "
-        #     f"char_count={char_count}, rate={tts_rate}, preview='{text_preview}'"
-        # )
-        # if boosted:
-        #     log(f"Step3: subtitle {i} auto-rate boost -> {tts_rate}")
-
-        tts_retry_label = (
-            f"Step3 TTS request subtitle_idx={subtitle_idx} timeline_idx={i} rate={tts_rate} "
-            f"preview={text_preview!r}"
+        tts_retry_label = f"Step3 TTS seg {subtitle_idx} (timeline {i})"
+        ok_tts = step3_tts_retry(
+            lambda: run_tts(tts_rate),
+            tts_retry_label,
+            max_retry=TTS_RETRY_MAX,
+            db_step=3,
         )
-        ok_tts = step3_tts_retry(lambda: run_tts(tts_rate), tts_retry_label, max_retry=TTS_RETRY_MAX)
         if not ok_tts:
             # Im lặng đúng khung SRT [start_ms, end_ms], khớp current_time_ms như nhánh câu rỗng.
             _write_step3_silent_wav(
@@ -1823,15 +1871,13 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
             timeline_paths.append(final_seg_path.resolve())
             current_time_ms = end_ms
             done_block_indices.add(i)
-            _step3_save_voice_checkpoint(srt_path, chunk_dir, blocks, done_block_indices)
+            _step3_save_voice_checkpoint(
+                srt_path, chunk_dir, blocks, done_block_indices
+            )
             continue
 
         raw_segment_ms = get_media_duration_ms(raw_audio_path)
-        if (
-            STEP3_AUTO_RATE_ENABLED
-            and raw_segment_ms
-            and subtitle_duration_ms > 220
-        ):
+        if STEP3_AUTO_RATE_ENABLED and raw_segment_ms and subtitle_duration_ms > 220:
             stretch_pre = raw_segment_ms / float(subtitle_duration_ms)
             if stretch_pre > 1.12:
                 pushed_ms = int(subtitle_duration_ms / min(stretch_pre, 1.85))
@@ -1840,15 +1886,8 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
                 b1 = parse_percent_string(tts_rate, 0.0)
                 b2 = parse_percent_string(tts_rate_2, 0.0)
                 if b2 > b1 + 0.5:
-                    log(
-                        f"Step3: subtitle {i} auto-rate second pass (raw {stretch_pre:.2f}x vs slot) "
-                        f"{tts_rate} -> {tts_rate_2}"
-                    )
                     tts_rate = tts_rate_2
-                    tts_retry_label_2 = (
-                        f"Step3 TTS request (2nd pass) subtitle_idx={subtitle_idx} "
-                        f"timeline_idx={i} rate={tts_rate} preview={text_preview!r}"
-                    )
+                    tts_retry_label_2 = f"Step3 TTS seg {subtitle_idx} pass2 (timeline {i})"
                     pass2_backup = chunk_dir / f"raw_{i:04d}_before_pass2_audio.bak"
                     # copy2() may fail with EPERM on some Linux/WSL mounts when copying metadata.
                     shutil.copyfile(raw_audio_path, pass2_backup)
@@ -1857,6 +1896,7 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
                             lambda: run_tts(tts_rate),
                             tts_retry_label_2,
                             max_retry=TTS_RETRY_MAX,
+                            db_step=3,
                         )
                         if not ok_tts2:
                             shutil.copyfile(pass2_backup, raw_audio_path)
@@ -1968,8 +2008,6 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
         ],
         "Concatenate edge-tts timeline segments",
     )
-    ck_json, ck_txt = _step3_voice_checkpoint_paths(chunk_dir)
-    log(f"Step3: checkpoint segment TTS -> {ck_json.name} (idx 0-based), {ck_txt.name} (số SRT đã xong).")
     return audio_path
 
 
@@ -1978,8 +2016,9 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
 # Merge voice with video
 # ==============================
 
+
 def step4_merge_audio(video_path, voice_path):
-    log("Step4: Merging narration audio...")
+    log("Step4: merge audio…")
     out = VIDEO_DIR / f"{WORK_NAME}_tm.mp4"
     s = float(STEP4_MERGE_SPEED)
     if abs(s - 1.0) < 1e-6:
@@ -2016,7 +2055,6 @@ def step4_merge_audio(video_path, voice_path):
     if s <= 0:
         raise ValueError(f"step4-merge-speed must be > 0, got {s}")
 
-    log(f"Step4: pre-merge speed {s:.4f}x (setpts + atempo on video & both audio tracks)")
     at = build_atempo_filter(s)
     orig_a = f"{at},volume={float(ORIGINAL_AUDIO_VOLUME):.6f}"
     voice_a = f"{at},volume={float(NARRATION_AUDIO_VOLUME):.6f}"
@@ -2111,25 +2149,25 @@ def step7_apply_speed(video_path):
     if speed <= 0:
         raise ValueError(f"speed-video must be > 0, got {speed}")
 
-    log(f"Step7: final speed x{speed:.4f} (after subtitle render) -> {WORK_NAME}_vs_tm.mp4")
     final_out = VIDEO_DIR / f"{WORK_NAME}_vs_tm.mp4"
     part = VIDEO_DIR / f"{WORK_NAME}_vs_tm.mp4.part"
     has_audio = media_has_audio_stream(video_path)
-    if not has_audio:
-        log(
-            "Step7: input has no audio stream; applying setpts to video only "
-            "(often after Step6 omitted audio with -map 0:a?)."
-        )
-
-    gpu_cmd = build_step7_speed_command(video_path, part, speed, use_gpu=True, has_audio=has_audio)
+    gpu_cmd = build_step7_speed_command(
+        video_path, part, speed, use_gpu=True, has_audio=has_audio
+    )
     try:
-        label = f"Apply speed-video x{speed:.3f}" + ("" if has_audio else " (video-only)")
+        label = f"Apply speed-video x{speed:.3f}" + (
+            "" if has_audio else " (video-only)"
+        )
         run_command(gpu_cmd, f"{label} (GPU)")
-        log("Step7 encode used GPU (h264_nvenc).")
     except Exception as e:
-        log(f"Step7 GPU encode unavailable, fallback CPU: {e}")
-        cpu_cmd = build_step7_speed_command(video_path, part, speed, use_gpu=False, has_audio=has_audio)
-        label = f"Apply speed-video x{speed:.3f}" + ("" if has_audio else " (video-only)")
+        log(f"Step7: GPU encode failed → CPU: {e}")
+        cpu_cmd = build_step7_speed_command(
+            video_path, part, speed, use_gpu=False, has_audio=has_audio
+        )
+        label = f"Apply speed-video x{speed:.3f}" + (
+            "" if has_audio else " (video-only)"
+        )
         run_command(cpu_cmd, f"{label} (CPU)")
     try:
         os.replace(part, final_out)
@@ -2145,8 +2183,9 @@ def step7_apply_speed(video_path):
 # convert srt -> ass
 # ==============================
 
+
 def step5_convert_ass(srt_path):
-    log("Step5: Convert subtitle to ASS")
+    log("Step5: SRT → ASS…")
     ass = SUBTITLE_DIR / "sub.ass"
     srt_for_ass = Path(srt_path)
     temp_upper_srt = None
@@ -2167,16 +2206,12 @@ def step5_convert_ass(srt_path):
         )
         srt_for_ass = temp_upper_srt
 
-    run_command([FFMPEG_BIN, "-y", "-i", str(srt_for_ass), str(ass)], "Convert SRT to ASS")
+    run_command(
+        [FFMPEG_BIN, "-y", "-i", str(srt_for_ass), str(ass)], "Convert SRT to ASS"
+    )
     if temp_upper_srt and temp_upper_srt.exists():
         temp_upper_srt.unlink()
     update_ass_default_style(ass)
-    log(
-        "Subtitle style updated: "
-        f"font={SUBTITLE_FONT}, size={SUBTITLE_FONTSIZE}, "
-        f"outline={SUBTITLE_OUTLINE}, shadow={SUBTITLE_SHADOW}, "
-        f"alignment={SUBTITLE_ALIGNMENT}, margin_v={SUBTITLE_MARGIN_V}."
-    )
     return ass
 
 
@@ -2185,14 +2220,9 @@ def step5_convert_ass(srt_path):
 # render subtitle
 # ==============================
 
+
 def step6_render(video_path, ass_path):
-    log("Step6: Rendering subtitles...")
-    if STEP6_VISUAL_TRANSFORM_ENABLED:
-        log(
-            "Step6: Visual transform: "
-            f"hflip={STEP6_HFLIP}, zoom={STEP6_ZOOM_PERCENT}%, "
-            f"sat={STEP6_EQ_SATURATION}, contrast={STEP6_EQ_CONTRAST}, unsharp={STEP6_UNSHARP}"
-        )
+    log("Step6: render + subs…")
     out = VIDEO_DIR / f"{WORK_NAME}_vs_tm.mp4"
     subtitle_filter = build_subtitle_filter(ass_path)
     logo_path = None
@@ -2205,22 +2235,16 @@ def step6_render(video_path, ass_path):
             if configured_logo.is_absolute()
             else (SCRIPT_DIR / configured_logo)
         ).resolve()
-        if file_ready(logo_path):
-            log(f"Step6: Using logo overlay from {logo_path}")
-        else:
-            log(f"Step6: Logo not found ({logo_path}), render without logo.")
+        if not file_ready(logo_path):
             logo_path = None
-    else:
-        log("Step6: Logo disabled (--logo-enabled off), render without logo overlay.")
 
     gpu_cmd = build_step6_render_command(
         video_path, out, subtitle_filter, use_gpu=True, logo_path=logo_path
     )
     try:
         run_command(gpu_cmd, "Render ASS subtitles (GPU)")
-        log("Step6 render used GPU (h264_nvenc).")
     except Exception as e:
-        log(f"GPU render unavailable, fallback CPU: {e}")
+        log(f"Step6: GPU render failed → CPU: {e}")
         cpu_cmd = build_step6_render_command(
             video_path, out, subtitle_filter, use_gpu=False, logo_path=logo_path
         )
@@ -2231,7 +2255,7 @@ def step6_render(video_path, ass_path):
 def get_or_run(path, step_name, step_func, *args):
     p = Path(path)
     if file_ready(p):
-        log(f"{step_name}: reuse existing {p}")
+        log(f"{step_name}: cached output.")
         return p
     result = step_func(*args)
     if not file_ready(result):
@@ -2261,11 +2285,17 @@ def parse_cli_args():
         help="Force subtitle text to uppercase when writing SRT files.",
     )
     parser.add_argument(
-        "--subtitle-bg-blur-width-ratio", type=float, default=SUBTITLE_BG_BLUR_WIDTH_RATIO
+        "--subtitle-bg-blur-width-ratio",
+        type=float,
+        default=SUBTITLE_BG_BLUR_WIDTH_RATIO,
     )
-    parser.add_argument("--subtitle-bg-blur-height", type=int, default=SUBTITLE_BG_BLUR_HEIGHT)
     parser.add_argument(
-        "--subtitle-bg-blur-bottom-offset", type=int, default=SUBTITLE_BG_BLUR_BOTTOM_OFFSET
+        "--subtitle-bg-blur-height", type=int, default=SUBTITLE_BG_BLUR_HEIGHT
+    )
+    parser.add_argument(
+        "--subtitle-bg-blur-bottom-offset",
+        type=int,
+        default=SUBTITLE_BG_BLUR_BOTTOM_OFFSET,
     )
     parser.add_argument(
         "--subtitle-bg-blur-luma-radius", type=int, default=SUBTITLE_BG_BLUR_LUMA_RADIUS
@@ -2274,10 +2304,14 @@ def parse_cli_args():
         "--subtitle-bg-blur-luma-power", type=int, default=SUBTITLE_BG_BLUR_LUMA_POWER
     )
     parser.add_argument(
-        "--subtitle-bg-blur-chroma-radius", type=int, default=SUBTITLE_BG_BLUR_CHROMA_RADIUS
+        "--subtitle-bg-blur-chroma-radius",
+        type=int,
+        default=SUBTITLE_BG_BLUR_CHROMA_RADIUS,
     )
     parser.add_argument(
-        "--subtitle-bg-blur-chroma-power", type=int, default=SUBTITLE_BG_BLUR_CHROMA_POWER
+        "--subtitle-bg-blur-chroma-power",
+        type=int,
+        default=SUBTITLE_BG_BLUR_CHROMA_POWER,
     )
 
     # Logo options
@@ -2310,7 +2344,9 @@ def parse_cli_args():
         default=STEP6_ZOOM_PERCENT,
         help="Center zoom %% (scale then crop); 0 disables zoom. Typical 5–7.",
     )
-    parser.add_argument("--step6-eq-saturation", type=float, default=STEP6_EQ_SATURATION)
+    parser.add_argument(
+        "--step6-eq-saturation", type=float, default=STEP6_EQ_SATURATION
+    )
     parser.add_argument("--step6-eq-contrast", type=float, default=STEP6_EQ_CONTRAST)
     parser.add_argument(
         "--step6-unsharp",
@@ -2329,13 +2365,25 @@ def parse_cli_args():
         default="on" if OUTPUT_METADATA_FROM_FILENAME else "off",
         help="on: title/artist/comment = stem file đầu ra. off: dùng --metadata-title/artist/comment.",
     )
-    parser.add_argument("--metadata-title", default=OUTPUT_METADATA_TITLE, help="MP4 metadata title (channel).")
-    parser.add_argument("--metadata-artist", default=OUTPUT_METADATA_ARTIST, help="MP4 metadata artist.")
-    parser.add_argument("--metadata-comment", default=OUTPUT_METADATA_COMMENT, help="MP4 metadata comment.")
+    parser.add_argument(
+        "--metadata-title",
+        default=OUTPUT_METADATA_TITLE,
+        help="MP4 metadata title (channel).",
+    )
+    parser.add_argument(
+        "--metadata-artist", default=OUTPUT_METADATA_ARTIST, help="MP4 metadata artist."
+    )
+    parser.add_argument(
+        "--metadata-comment",
+        default=OUTPUT_METADATA_COMMENT,
+        help="MP4 metadata comment.",
+    )
 
     # Audio and speed options
     parser.add_argument("--original-volume", type=float, default=ORIGINAL_AUDIO_VOLUME)
-    parser.add_argument("--narration-volume", type=float, default=NARRATION_AUDIO_VOLUME)
+    parser.add_argument(
+        "--narration-volume", type=float, default=NARRATION_AUDIO_VOLUME
+    )
     parser.add_argument(
         "--step4-merge-speed",
         type=float,
@@ -2582,7 +2630,9 @@ def apply_cli_config(args):
     global STEP2_MULTI_KEYS_ENABLED
     global PROCESSBAR_LOG_ENABLED
     WHISPER_LANGUAGE = str(args.whisper_language).strip() or None
-    STEP1_SUBTITLE_SOURCE = str(args.step1_subtitle_source or STEP1_SUBTITLE_SOURCE).strip().lower()
+    STEP1_SUBTITLE_SOURCE = (
+        str(args.step1_subtitle_source or STEP1_SUBTITLE_SOURCE).strip().lower()
+    )
     global EDGE_TTS_RATE
     global EDGE_TTS_VOLUME
     global EDGE_TTS_PITCH
@@ -2654,7 +2704,9 @@ def apply_cli_config(args):
     STEP3_AUTO_RATE_BONUS_PERCENT = int(args.step3_auto_rate_bonus_percent)
     STEP3_TTS_BORROW_GAP = args.step3_tts_borrow_gap == "on"
     STEP3_TTS_API_TIMEOUT_SEC = float(args.step3_tts_api_timeout_sec)
-    STEP3_TTS_MAX_RETRY_ACTION = str(args.step3_tts_max_retry_action or "stop").strip().lower()
+    STEP3_TTS_MAX_RETRY_ACTION = (
+        str(args.step3_tts_max_retry_action or "stop").strip().lower()
+    )
     STEP3_VOICE_RESUME = args.step3_voice_resume == "on"
     TRANSLATION_CONTEXT = args.translation_context or ""
     STEP2_MULTI_KEYS_ENABLED = args.step2_multi_keys == "on"
@@ -2663,16 +2715,24 @@ def apply_cli_config(args):
     prof = STEP1_PROFILES[args.mode]
     STEP1_VAD_FILTER = args.step1_vad == "on"
     STEP1_VAD_THRESHOLD = (
-        args.step1_vad_threshold if args.step1_vad_threshold is not None else prof["vad_threshold"]
+        args.step1_vad_threshold
+        if args.step1_vad_threshold is not None
+        else prof["vad_threshold"]
     )
     STEP1_MIN_SILENCE_MS = (
-        args.step1_min_silence_ms if args.step1_min_silence_ms is not None else prof["min_silence_ms"]
+        args.step1_min_silence_ms
+        if args.step1_min_silence_ms is not None
+        else prof["min_silence_ms"]
     )
     STEP1_MIN_SPEECH_MS = (
-        args.step1_min_speech_ms if args.step1_min_speech_ms is not None else prof["min_speech_ms"]
+        args.step1_min_speech_ms
+        if args.step1_min_speech_ms is not None
+        else prof["min_speech_ms"]
     )
     STEP1_SPEECH_PAD_MS = (
-        args.step1_speech_pad_ms if args.step1_speech_pad_ms is not None else prof["speech_pad_ms"]
+        args.step1_speech_pad_ms
+        if args.step1_speech_pad_ms is not None
+        else prof["speech_pad_ms"]
     )
     STEP1_NO_SPEECH_THRESHOLD = (
         args.step1_no_speech_threshold
@@ -2720,7 +2780,9 @@ def parse_step_range(step_arg, min_step=1, max_step=6):
         end_step = int(raw)
 
     if start_step < min_step or end_step > max_step:
-        raise ValueError(f"--step out of range. Supported steps: {min_step}..{max_step}.")
+        raise ValueError(
+            f"--step out of range. Supported steps: {min_step}..{max_step}."
+        )
     if start_step > end_step:
         raise ValueError("--step range invalid: start must be <= end.")
     return start_step, end_step
@@ -2747,11 +2809,8 @@ def _run_step6_and_finalize(ass, tm_video, video_path, skip_voice_step):
         raise RuntimeError("Final video render failed.")
     if not skip_voice_step and tm_video.is_file():
         tm_video.unlink()
-        log(f"Step7: removed intermediate {tm_video.name}")
     if ass.is_file():
         ass.unlink()
-        log(f"Step7: removed intermediate {ass.name}")
-    # cleanup_step6_intermediate_files()
     log(f"DONE: {final}")
     return final
 
@@ -2759,6 +2818,7 @@ def _run_step6_and_finalize(ass, tm_video, video_path, skip_voice_step):
 # ==============================
 # MAIN PIPELINE
 # ==============================
+
 
 def run_pipeline(video, step_arg=None):
     global WORK_NAME, WORK_DIR, VIDEO_DIR, SUBTITLE_DIR, LOG_DIR, LOG_PATH
@@ -2779,13 +2839,12 @@ def run_pipeline(video, step_arg=None):
 
     preflight_checks()
     video_duration_ms = get_media_duration_ms(video_path)
-    if video_duration_ms:
-        log(f"Input video duration: {video_duration_ms / 1000:.3f}s")
-    else:
-        log("Warning: input video duration unavailable; voice timeline uses subtitle end only.")
-
     start_step, end_step = parse_step_range(step_arg)
-    log(f"Run step range: {start_step}..{end_step}")
+    dur_s = (video_duration_ms / 1000.0) if video_duration_ms else None
+    log(
+        f"Pipeline steps {start_step}..{end_step}"
+        + (f", input ~{dur_s:.1f}s" if dur_s is not None else " (duration unknown)")
+    )
 
     def step_enabled(step_no):
         return start_step <= step_no <= end_step
@@ -2806,10 +2865,16 @@ def run_pipeline(video, step_arg=None):
             return result
         except Exception as exc:
             emit_db_status(step_no, "failed", f"{step_name} failed: {exc}")
-            raise RuntimeError(f"[STEP_{step_no}_FAILED] {step_name} failed: {exc}") from exc
+            raise RuntimeError(
+                f"[STEP_{step_no}_FAILED] {step_name} failed: {exc}"
+            ) from exc
 
     if step_enabled(1):
-        zh_srt = run_step(1, "Step1", lambda: get_or_run(zh_srt, "Step1", step1_transcribe, video_path))
+        zh_srt = run_step(
+            1,
+            "Step1",
+            lambda: get_or_run(zh_srt, "Step1", step1_transcribe, video_path),
+        )
         last_output = zh_srt
 
     if step_enabled(2):

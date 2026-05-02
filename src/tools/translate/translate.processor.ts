@@ -1,6 +1,6 @@
 import { Logger } from "@nestjs/common";
 import { Processor, WorkerHost } from "@nestjs/bullmq";
-import { Job } from "bullmq";
+import { Job, UnrecoverableError } from "bullmq";
 import { spawn } from "child_process";
 import { basename, dirname, extname, isAbsolute, join, resolve } from "path";
 
@@ -167,7 +167,7 @@ export class TranslateProcessor extends WorkerHost {
     const { translateHistoryId } = job.data;
 
     await this.translateService.processStarted(translateHistoryId);
-    this.logger.log(`Started translate job ${job.id} for history ${translateHistoryId}`);
+    this.logger.log(`Translate job ${job.id} → ${translateHistoryId}`);
 
     try {
       const history = await this.translateService.getById(translateHistoryId);
@@ -190,11 +190,23 @@ export class TranslateProcessor extends WorkerHost {
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown translation failure";
+      const maxAttempts = job.opts.attempts != null ? Number(job.opts.attempts) : 1;
+      const attemptsMade = job.attemptsMade != null ? Number(job.attemptsMade) : 0;
+      const isUnrecoverable =
+        error instanceof UnrecoverableError || (error instanceof Error && error.name === "UnrecoverableError");
+      const willRetry = !isUnrecoverable && attemptsMade + 1 < maxAttempts;
+      if (willRetry) {
+        this.logger.warn(
+          `Translate job ${job.id} failed (attempt ${attemptsMade + 1}/${maxAttempts}), will retry: ${message}`,
+        );
+        throw error;
+      }
       await this.translateService.processFailed(translateHistoryId, message);
       const failedHistory = await this.translateService.getById(translateHistoryId);
       this.translateGateway.notifyUser(failedHistory?.userId ?? "all", "translate.failed", {
         translateHistoryId,
         errorMessage: message,
+        terminal: true,
       });
       throw error;
     }
@@ -219,7 +231,11 @@ export class TranslateProcessor extends WorkerHost {
     this.appendStepRangeArg(args, input.stepNbr);
     this.appendOptionalCliOptions(args, engineConfig);
 
-    this.logger.log(`Executing python command: ${pythonBin} ${args.join(" ")}`);
+    const scriptBase = basename(absScriptPath);
+    const videoBase = basename(videoInputPath);
+    this.logger.log(
+      `Translate python: ${scriptBase} video=${videoBase} steps=[${input.stepNbr.join(",")}]`,
+    );
     const startedAt = Date.now();
     const { stdout, stderr } = await new Promise<{ stdout: string; stderr: string }>(
       (resolvePromise, rejectPromise) => {
@@ -238,7 +254,7 @@ export class TranslateProcessor extends WorkerHost {
           },
         });
 
-        this.logger.log(`Python process started (pid=${child.pid ?? "unknown"})`);
+        this.logger.log(`Python pid=${child.pid ?? "?"}`);
 
         let stdout = "";
         let stderr = "";
@@ -275,18 +291,30 @@ export class TranslateProcessor extends WorkerHost {
           }
         };
 
+        const echoPythonChunk = (chunk: string, level: "log" | "warn") => {
+          const clipped = this.clipPythonStreamForNestLog(chunk);
+          if (clipped === null) {
+            return;
+          }
+          if (level === "warn") {
+            this.logger.warn(`[py] ${clipped}`);
+          } else {
+            this.logger.log(`[py] ${clipped}`);
+          }
+        };
+
         child.stdout?.on("data", (data: Buffer) => {
           const message = data.toString();
           appendChunk("stdout", message);
           handleRuntimeStatus(message);
-          this.logger.log(`[python stdout] ${message.trimEnd()}`);
+          echoPythonChunk(message, "log");
         });
 
         child.stderr?.on("data", (data: Buffer) => {
           const message = data.toString();
           appendChunk("stderr", message);
           handleRuntimeStatus(message);
-          this.logger.warn(`[python stderr] ${message.trimEnd()}`);
+          echoPythonChunk(message, "warn");
         });
 
         child.on("error", (error) => {
@@ -304,9 +332,7 @@ export class TranslateProcessor extends WorkerHost {
           }
 
           const elapsedMs = Date.now() - startedAt;
-          this.logger.log(
-            `Python process finished (pid=${child.pid ?? "unknown"}, code=${code}, signal=${signal ?? "none"}, elapsed=${elapsedMs}ms)`,
-          );
+          this.logger.log(`Python done code=${code ?? "?"} ${elapsedMs}ms`);
 
           if (code !== 0) {
             const lastStatus = this.extractLatestRuntimeStatus(stdout) ?? this.extractLatestRuntimeStatus(stderr);
@@ -333,6 +359,23 @@ export class TranslateProcessor extends WorkerHost {
 
     // Fallback by script's deterministic output convention.
     return this.resolveFallbackOutputPath(scriptDir, workName, input.stepNbr);
+  }
+
+  /**
+   * Skip echoing chunks that only contain DB_STATUS lines (already persisted).
+   * Truncate long lines for shorter Nest / journald output.
+   */
+  private clipPythonStreamForNestLog(chunk: string): string | null {
+    const trimmed = chunk.trimEnd();
+    if (!trimmed) {
+      return null;
+    }
+    const lines = trimmed.split(/\r?\n/).filter((l) => l.trim().length > 0);
+    if (lines.length > 0 && lines.every((l) => l.trimStart().startsWith("DB_STATUS|"))) {
+      return null;
+    }
+    const maxLen = 380;
+    return trimmed.length > maxLen ? `${trimmed.slice(0, maxLen)}…` : trimmed;
   }
 
   private resolveVideoInputPath(engineConfig: Record<string, unknown>): string {

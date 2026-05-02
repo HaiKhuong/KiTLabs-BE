@@ -96,7 +96,10 @@ export class TranslateService {
   }
 
   async processStarted(translateHistoryId: string): Promise<void> {
-    await this.translateRepository.update({ id: translateHistoryId }, { status: QueueJobStatus.RUNNING });
+    await this.translateRepository.update(
+      { id: translateHistoryId },
+      { status: QueueJobStatus.RUNNING, errorMessage: null },
+    );
   }
 
   async processCompleted(translateHistoryId: string, resultPath: string): Promise<void> {
