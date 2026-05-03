@@ -164,7 +164,7 @@ EASYOCR_GRAY_CONTRAST = 2.0
 EASYOCR_GRAY_BRIGHTNESS = 0.05
 EASYOCR_GRAY_GAMMA = 1.0
 # Giới hạn độ cao dải OCR (hi−lo) so với chiều cao khung; 0 = không chặn (vd 0.05 = tối đa 5%).
-EASYOCR_MAX_STRIP_HEIGHT_RATIO = 0.03
+EASYOCR_MAX_STRIP_HEIGHT_RATIO = 0.05
 # Bỏ qua block SRT sau merge nếu fullmatch regex (sau clean_text).
 EASYOCR_TEXT_SKIP_DEFAULTS_ON = True
 EASYOCR_TEXT_SKIP_REGEXES_JSON = "[]"
@@ -1609,8 +1609,8 @@ def _detect_easyocr_crop_band(video_path, reader, ocr_dir):
     fallback_lo = lo_floor
     fallback_hi = lo_floor + strip_max
 
-    SCAN_HI = 0.35   # quét 35% đáy frame để bắt hết phụ đề
-    PAD = 0.008      # padding quanh bbox (% chiều cao frame)
+    SCAN_HI = 0.4   # quét 35% đáy frame để bắt hết phụ đề
+    PAD = 0.015      # padding quanh bbox (1.5% chiều cao frame) — đủ cho descender/ascender
     # Box có đáy (lo) quá cao so với lo_floor → khả năng watermark/logo, không phải phụ đề đáy.
     LO_OUTLIER_MAX = lo_floor + 0.12
 
@@ -1670,11 +1670,6 @@ def _detect_easyocr_crop_band(video_path, reader, ocr_dir):
             hi_cand = (ih - y_top_frame) / ih
             lo_cand = max(0.0, (ih - y_bot_frame) / ih)
             if lo_cand > LO_OUTLIER_MAX:
-                log(
-                    f"Step1 OCR: crop detect [{fp.name}] skip watermark "
-                    f"lo={lo_cand:.3f} > max={LO_OUTLIER_MAX:.3f} "
-                    f'conf={conf_f:.2f} "{text_s[:20]}"'
-                )
                 continue
             all_hi.append(hi_cand)
             all_lo.append(lo_cand)
@@ -1695,13 +1690,14 @@ def _detect_easyocr_crop_band(video_path, reader, ocr_dir):
     n = len(all_hi)
     all_hi_s = sorted(all_hi)
     all_lo_s = sorted(all_lo)
-    det_hi = all_hi_s[min(n - 1, int(n * 0.90))] + PAD
-    det_lo = max(lo_floor, all_lo_s[max(0, int(n * 0.10))] - PAD)
+    # Dùng p95/p5 thay vì p90/p10 để bao nhiều boxes hơn, tránh cắt phụ đề thật ngoài cùng
+    det_hi = all_hi_s[min(n - 1, int(n * 0.95))] + PAD
+    det_lo = max(lo_floor, all_lo_s[max(0, int(n * 0.05))] - PAD)
     det_hi = min(1.0, det_hi)
     log(
         f"Step1 OCR: crop detect dist "
-        f"hi=[{all_hi_s[0]:.3f}…{all_hi_s[-1]:.3f}] p90={all_hi_s[min(n-1,int(n*0.90))]:.3f} "
-        f"lo=[{all_lo_s[0]:.3f}…{all_lo_s[-1]:.3f}] p10={all_lo_s[max(0,int(n*0.10))]:.3f} "
+        f"hi=[{all_hi_s[0]:.3f}…{all_hi_s[-1]:.3f}] p95={all_hi_s[min(n-1,int(n*0.95))]:.3f} "
+        f"lo=[{all_lo_s[0]:.3f}…{all_lo_s[-1]:.3f}] p5={all_lo_s[max(0,int(n*0.05))]:.3f} "
         f"n={n}"
     )
 
