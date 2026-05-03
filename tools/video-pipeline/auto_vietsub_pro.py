@@ -140,8 +140,8 @@ STEP1_CONDITION_ON_PREVIOUS_TEXT = (
 EASYOCR_LANG = ["ch_sim", "en"]  # EasyOCR language codes
 # Crop dải phụ đề đáy: khoảng theo % chiều cao tính **từ đáy khung** lên (0 = sát đáy).
 # inner < outer: chỉ lấy dải từ mốc inner đến outer (vd 10%→15% = bỏ 10% sát đáy, không lấy 0→10%).
-EASYOCR_SUBTITLE_CROP_BAND_LO = 0.10
-EASYOCR_SUBTITLE_CROP_BAND_HI = 0.17
+EASYOCR_SUBTITLE_CROP_BAND_LO = 0.05
+EASYOCR_SUBTITLE_CROP_BAND_HI = 0.20
 # Auto: quét outer hi (cạnh xa đáy hơn) với inner cố định = EASYOCR_SUBTITLE_CROP_BAND_LO.
 EASYOCR_SUBTITLE_CROP_AUTO_DETECT = True
 EASYOCR_CROP_PROBE_OUTER_MIN = 0.11
@@ -151,9 +151,9 @@ EASYOCR_CROP_PROBE_FRAMES = 12
 # Chọn ratio nhỏ nhất vẫn đạt >= tie_frac điểm của ratio tốt nhất (vừa khít vùng chữ).
 EASYOCR_CROP_PROBE_SCORE_TIE_FRAC = 0.92
 # Bật --easyocr-crop-probe-debug on: log timeline probe, điểm theo từng frame / outer hi, tổng hợp.
-EASYOCR_CROP_PROBE_DEBUG = True
+EASYOCR_CROP_PROBE_DEBUG = False
 # Bật --easyocr-crop-probe-export on: mỗi lần probe đều copy PNG + probe_meta.json vào LOG_DIR/easyocr_crop_probe/…
-EASYOCR_CROP_PROBE_EXPORT = True
+EASYOCR_CROP_PROBE_EXPORT = False
 # Khi auto probe không có điểm OCR: tự extract lại PNG + meta (không cần --easyocr-crop-probe-export).
 EASYOCR_CROP_PROBE_EXPORT_ON_FALLBACK = True
 EASYOCR_FPS = 2  # frame extraction rate for OCR
