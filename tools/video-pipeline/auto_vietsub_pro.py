@@ -1639,13 +1639,20 @@ def _detect_easyocr_crop_band(video_path, reader, ocr_dir):
             results = reader.readtext(gray, detail=1)
         except Exception:
             continue
+        frame_boxes = []
         for item in results:
             if not item or len(item) < 3:
                 continue
             box, text, conf = item[0], item[1], item[2]
-            if float(conf) < float(EASYOCR_MIN_CONFIDENCE):
+            conf_f = float(conf)
+            text_s = str(text or "").strip()
+            if conf_f < float(EASYOCR_MIN_CONFIDENCE):
+                log(
+                    f"Step1 OCR: crop detect [{fp.name}] skip conf={conf_f:.2f} "
+                    f'text="{text_s[:30]}"'
+                )
                 continue
-            if not str(text or "").strip():
+            if not text_s:
                 continue
             ys = [float(pt[1]) for pt in box]
             y_top_in_scan = min(ys)
@@ -1656,6 +1663,13 @@ def _detect_easyocr_crop_band(video_path, reader, ocr_dir):
             lo_cand = max(0.0, (ih - y_bot_frame) / ih)
             all_hi.append(hi_cand)
             all_lo.append(lo_cand)
+            frame_boxes.append((conf_f, text_s, lo_cand, hi_cand))
+        if frame_boxes:
+            parts = " | ".join(
+                f'conf={c:.2f} lo={l:.3f} hi={h:.3f} "{t[:20]}"'
+                for c, t, l, h in frame_boxes
+            )
+            log(f"Step1 OCR: crop detect [{fp.name}] {parts}")
 
     shutil.rmtree(probe_dir, ignore_errors=True)
 
@@ -1669,6 +1683,12 @@ def _detect_easyocr_crop_band(video_path, reader, ocr_dir):
     det_hi = all_hi_s[min(n - 1, int(n * 0.90))] + PAD
     det_lo = max(lo_floor, all_lo_s[max(0, int(n * 0.10))] - PAD)
     det_hi = min(1.0, det_hi)
+    log(
+        f"Step1 OCR: crop detect dist "
+        f"hi=[{all_hi_s[0]:.3f}…{all_hi_s[-1]:.3f}] p90={all_hi_s[min(n-1,int(n*0.90))]:.3f} "
+        f"lo=[{all_lo_s[0]:.3f}…{all_lo_s[-1]:.3f}] p10={all_lo_s[max(0,int(n*0.10))]:.3f} "
+        f"n={n}"
+    )
 
     if strip_max > 0 and det_hi > det_lo + strip_max + 1e-9:
         det_hi = det_lo + strip_max
