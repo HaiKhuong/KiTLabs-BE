@@ -349,6 +349,69 @@ export class TranslateEngineConfigDto {
   @IsIn(["whisper", "embedded", "easyocr"])
   step1_subtitle_source?: string;
 
+  /** EasyOCR crop band inner edge from bottom (0–1) */
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  easyOcrCropBandLo?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  easy_ocr_crop_band_lo?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  easyOcrCropBandHi?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  easy_ocr_crop_band_hi?: number;
+
+  @IsOptional()
+  @IsString()
+  easyOcrCropAuto?: string;
+
+  @IsOptional()
+  @IsString()
+  easy_ocr_crop_auto?: string;
+
+  @IsOptional()
+  @IsString()
+  easyOcrCropProbeDebug?: string;
+
+  @IsOptional()
+  @IsString()
+  easy_ocr_crop_probe_debug?: string;
+
+  @IsOptional()
+  @IsString()
+  easyOcrCropProbeExport?: string;
+
+  @IsOptional()
+  @IsString()
+  easy_ocr_crop_probe_export?: string;
+
+  @IsOptional()
+  @IsString()
+  easyOcrCropProbeExportOnFallback?: string;
+
+  @IsOptional()
+  @IsString()
+  easy_ocr_crop_probe_export_on_fallback?: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  easyOcrMinDurationMs?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  easy_ocr_min_duration_ms?: number;
+
   /** Step6 horizontal flip (ffmpeg hflip); CLI: on | off */
   @IsOptional()
   @IsString()

@@ -160,7 +160,7 @@ EASYOCR_FPS = 2  # frame extraction rate for OCR
 EASYOCR_WORKERS = 4  # parallel OCR threads
 EASYOCR_MIN_CONFIDENCE = 0.5  # discard OCR results below this confidence
 EASYOCR_FUZZY_THRESHOLD = 80  # % similarity threshold for dedup/merge
-EASYOCR_MIN_DURATION_MS = 500  # minimum subtitle display duration (ms)
+EASYOCR_MIN_DURATION_MS = 100  # minimum subtitle display duration (ms)
 EASYOCR_MERGE_GAP_MS = 200  # merge adjacent similar blocks within this gap (ms)
 EASYOCR_GPU = True
 
@@ -2956,6 +2956,12 @@ def parse_cli_args():
         help="Minimum OCR confidence to keep a text result (default 0.5).",
     )
     parser.add_argument(
+        "--easyocr-min-duration-ms",
+        type=int,
+        default=EASYOCR_MIN_DURATION_MS,
+        help="EasyOCR: minimum SRT cue duration (ms) after merge (default 500). Lower = shorter cues allowed.",
+    )
+    parser.add_argument(
         "--easyocr-fuzzy-threshold",
         type=float,
         default=EASYOCR_FUZZY_THRESHOLD,
@@ -3169,6 +3175,7 @@ def apply_cli_config(args):
     global EASYOCR_FPS
     global EASYOCR_WORKERS
     global EASYOCR_MIN_CONFIDENCE
+    global EASYOCR_MIN_DURATION_MS
     global EASYOCR_FUZZY_THRESHOLD
     global EASYOCR_GPU
 
@@ -3289,6 +3296,7 @@ def apply_cli_config(args):
     EASYOCR_FPS = float(args.easyocr_fps)
     EASYOCR_WORKERS = int(args.easyocr_workers)
     EASYOCR_MIN_CONFIDENCE = float(args.easyocr_min_confidence)
+    EASYOCR_MIN_DURATION_MS = max(1, int(args.easyocr_min_duration_ms))
     EASYOCR_FUZZY_THRESHOLD = float(args.easyocr_fuzzy_threshold)
     EASYOCR_GPU = args.easyocr_gpu == "on"
 
@@ -3329,6 +3337,19 @@ def require_ready(path, label):
     return p
 
 
+def _cleanup_easyocr_artifacts_after_step7():
+    """Sau Step7 xong: xóa thư mục tạm EasyOCR (step1_ocr + easyocr_crop_probe dưới LOG_DIR)."""
+    for name in ("step1_ocr", "easyocr_crop_probe"):
+        path = LOG_DIR / name
+        if not path.exists():
+            continue
+        shutil.rmtree(path, ignore_errors=True)
+        if path.exists():
+            log(f"Step7 cleanup: không xóa hết được {path} (quyền/ghi volume).")
+        else:
+            log(f"Step7 cleanup: đã xóa {name} ({path}).")
+
+
 def _run_step6_and_finalize(ass, tm_video, video_path, skip_voice_step):
     require_ready(ass, "Step6 input sub.ass")
     if skip_voice_step:
@@ -3341,6 +3362,7 @@ def _run_step6_and_finalize(ass, tm_video, video_path, skip_voice_step):
     final = step7_apply_speed(final)
     if not file_ready(final):
         raise RuntimeError("Final video render failed.")
+    _cleanup_easyocr_artifacts_after_step7()
     if not skip_voice_step and tm_video.is_file():
         tm_video.unlink()
     if ass.is_file():

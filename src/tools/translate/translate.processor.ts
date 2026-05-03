@@ -131,6 +131,41 @@ const OPTION_MAPPINGS: Array<{
       allowedTypes: ["string"],
     },
     {
+      cliFlag: "--easyocr-crop-band-lo",
+      keys: ["easyOcrCropBandLo", "easy_ocr_crop_band_lo"],
+      allowedTypes: ["number", "string"],
+    },
+    {
+      cliFlag: "--easyocr-crop-band-hi",
+      keys: ["easyOcrCropBandHi", "easy_ocr_crop_band_hi"],
+      allowedTypes: ["number", "string"],
+    },
+    {
+      cliFlag: "--easyocr-crop-auto",
+      keys: ["easyOcrCropAuto", "easy_ocr_crop_auto"],
+      allowedTypes: ["string"],
+    },
+    {
+      cliFlag: "--easyocr-crop-probe-debug",
+      keys: ["easyOcrCropProbeDebug", "easy_ocr_crop_probe_debug"],
+      allowedTypes: ["string"],
+    },
+    {
+      cliFlag: "--easyocr-crop-probe-export",
+      keys: ["easyOcrCropProbeExport", "easy_ocr_crop_probe_export"],
+      allowedTypes: ["string"],
+    },
+    {
+      cliFlag: "--easyocr-crop-probe-export-on-fallback",
+      keys: ["easyOcrCropProbeExportOnFallback", "easy_ocr_crop_probe_export_on_fallback"],
+      allowedTypes: ["string"],
+    },
+    {
+      cliFlag: "--easyocr-min-duration-ms",
+      keys: ["easyOcrMinDurationMs", "easy_ocr_min_duration_ms"],
+      allowedTypes: ["number", "string"],
+    },
+    {
       cliFlag: "--step6-hflip",
       keys: ["step6Hflip", "step6_hflip", "enableFlip", "enable_flip"],
       allowedTypes: ["string"],
