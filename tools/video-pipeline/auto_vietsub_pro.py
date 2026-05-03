@@ -2150,13 +2150,8 @@ def _step1_ocr_with_easyocr(video_path):
         else float(EASYOCR_SUBTITLE_CROP_BAND_HI)
     )
     strip_max = float(EASYOCR_MAX_STRIP_HEIGHT_RATIO or 0)
-    if strip_max > 0 and band_hi > band_lo + strip_max + 1e-9:
-        prev_hi = band_hi
-        band_hi = band_lo + strip_max
-        log(
-            "Step1 OCR: crop strip height capped "
-            f"(max={strip_max * 100:.1f}% frame): hi {prev_hi:.3f} → {band_hi:.3f}"
-        )
+    # Siết bbox / lo trên hi probe TRƯỚC khi cap strip — nếu cap quá sớm (hi = lo + strip_max)
+    # thì lo+0.05 trùng hi → lo-tighten không chạy được.
     band_hi = _refine_easyocr_band_hi_by_bbox(
         reader,
         video_path,
@@ -2164,13 +2159,6 @@ def _step1_ocr_with_easyocr(video_path):
         band_hi,
         ocr_dir / "__bbox_refine_sample.png",
     )
-    if strip_max > 0 and band_hi > band_lo + strip_max + 1e-9:
-        prev_hi = band_hi
-        band_hi = band_lo + strip_max
-        log(
-            "Step1 OCR: crop strip height capped (after bbox refine) "
-            f"(max={strip_max * 100:.1f}% frame): hi {prev_hi:.3f} → {band_hi:.3f}"
-        )
     band_lo = _tighten_easyocr_band_lo_progressive(
         reader,
         video_path,
@@ -2182,7 +2170,7 @@ def _step1_ocr_with_easyocr(video_path):
         prev_hi = band_hi
         band_hi = band_lo + strip_max
         log(
-            "Step1 OCR: crop strip height capped (after lo tighten) "
+            "Step1 OCR: crop strip height capped "
             f"(max={strip_max * 100:.1f}% frame): hi {prev_hi:.3f} → {band_hi:.3f}"
         )
     if band_hi <= band_lo + 1e-9:
@@ -3529,7 +3517,6 @@ def parse_cli_args():
 
 def _log_cli_input(args):
     """Log đầy đủ sys.argv và dict argparse đã parse (không cắt chuỗi)."""
-    log("CLI argv: " + json.dumps(sys.argv, ensure_ascii=False))
     d = vars(args)
     keys = sorted(d.keys())
     if "video" in d:
