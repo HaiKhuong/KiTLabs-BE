@@ -152,9 +152,10 @@ EASYOCR_SUBTITLE_CROP_BAND_LO = 0.05
 EASYOCR_SUBTITLE_CROP_BAND_HI = 0.20
 # Auto: quét outer hi (cạnh xa đáy hơn) với inner cố định = EASYOCR_SUBTITLE_CROP_BAND_LO.
 EASYOCR_SUBTITLE_CROP_AUTO_DETECT = True
-EASYOCR_CROP_PROBE_OUTER_MIN = 0.11
-EASYOCR_CROP_PROBE_OUTER_MAX = 0.22
-EASYOCR_CROP_PROBE_STEP = 0.01
+# Quét outer hi từ ~7.5% khung (với lo=0.05 → dải tối thiểu ~2.5%); trước đây min 11% → dải tối thiểu ~6%.
+EASYOCR_CROP_PROBE_OUTER_MIN = 0.075
+EASYOCR_CROP_PROBE_OUTER_MAX = 0.20
+EASYOCR_CROP_PROBE_STEP = 0.005
 EASYOCR_CROP_PROBE_FRAMES = 12
 # Chọn ratio nhỏ nhất vẫn đạt >= tie_frac điểm của ratio tốt nhất (vừa khít vùng chữ).
 EASYOCR_CROP_PROBE_SCORE_TIE_FRAC = 0.92
@@ -177,7 +178,7 @@ EASYOCR_GRAY_CONTRAST = 2.0
 EASYOCR_GRAY_BRIGHTNESS = 0.05
 EASYOCR_GRAY_GAMMA = 1.0
 # Giới hạn độ cao dải OCR (hi−lo) so với chiều cao khung; 0 = không chặn (vd 0.05 = tối đa 5%).
-EASYOCR_MAX_STRIP_HEIGHT_RATIO = 0.0
+EASYOCR_MAX_STRIP_HEIGHT_RATIO = 0.03
 # Bỏ qua block SRT sau merge nếu fullmatch regex (sau clean_text).
 EASYOCR_TEXT_SKIP_DEFAULTS_ON = True
 EASYOCR_TEXT_SKIP_REGEXES_JSON = "[]"
@@ -1410,6 +1411,12 @@ def _step1_transcribe_with_whisper(video_path):
     return srt_path
 
 
+# Chỉ siết hi theo bbox nếu phía trên dải crop còn khoảng trống ≥ tỷ lệ này (tránh cắt nhầm khi chữ full dải).
+EASYOCR_REFINE_TOP_MARGIN_MIN_FRAC = 0.06
+# Sau refine bbox: không hạ hi quá thấp (sàn ~2% chiều cao khung cho dải hi−lo).
+EASYOCR_REFINE_MIN_STRIP_HEIGHT_RATIO = 0.02
+
+
 def _easyocr_crop_outer_hi_candidates(band_lo):
     """Các mức outer (từ đáy) để chấm điểm; inner = band_lo, dải có độ cao (hi - band_lo)."""
     out = []
@@ -1885,6 +1892,99 @@ def _easyocr_should_skip_merged_text(text):
 _rebuild_easyocr_skip_regexes()
 
 
+def _refine_easyocr_band_hi_by_bbox(reader, video_path, band_lo, band_hi, scratch_png):
+    """
+    Một frame mẫu: nếu phía trên vùng đã crop vẫn còn nhiều nền trống (bbox chữ thấp trong dải),
+    hạ hi để siết dải về gần chiều cao chữ thực (+ padding).
+    """
+    import cv2
+
+    try:
+        duration_ms = int(get_media_duration_ms(video_path) or 0)
+    except Exception:
+        duration_ms = 0
+    t_sec = 1.0
+    if duration_ms > 0:
+        d = duration_ms / 1000.0
+        t_sec = min(max(d * 0.12, 0.25), max(d - 0.1, 0.25))
+        t_sec = min(t_sec, 120.0)
+    try:
+        run_command(
+            [
+                FFMPEG_BIN,
+                "-y",
+                "-ss",
+                f"{t_sec:.3f}",
+                "-i",
+                str(video_path),
+                "-vframes",
+                "1",
+                "-q:v",
+                "2",
+                str(scratch_png),
+            ],
+            "EasyOCR bbox-refine sample frame",
+        )
+    except Exception:
+        return band_hi
+    if not scratch_png.is_file() or scratch_png.stat().st_size < 32:
+        try:
+            scratch_png.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return band_hi
+    img = cv2.imread(str(scratch_png))
+    try:
+        scratch_png.unlink(missing_ok=True)
+    except OSError:
+        pass
+    if img is None or img.size == 0:
+        return band_hi
+    ih, _iw = img.shape[:2]
+    if ih < 16:
+        return band_hi
+    strip = _easyocr_crop_band_strip_bgr(img, band_lo, band_hi)
+    if strip is None or strip.size == 0:
+        return band_hi
+    strip_h = strip.shape[0]
+    gray = _preprocess_easyocr_strip_like_pipeline(strip)
+    try:
+        results = reader.readtext(gray, detail=1)
+    except Exception:
+        return band_hi
+    ys = []
+    for item in results:
+        if not item or len(item) < 3:
+            continue
+        box, text, conf = item[0], item[1], item[2]
+        if float(conf) < float(EASYOCR_MIN_CONFIDENCE):
+            continue
+        if not str(text or "").strip():
+            continue
+        for pt in box:
+            ys.append(float(pt[1]))
+    if len(ys) < 2:
+        return band_hi
+    y_min = min(ys)
+    if y_min < strip_h * float(EASYOCR_REFINE_TOP_MARGIN_MIN_FRAC):
+        return band_hi
+    pad = max(2, int(0.015 * strip_h))
+    y_top = max(0.0, y_min - pad)
+    new_strip_px = strip_h - y_top
+    if new_strip_px < strip_h * 0.42:
+        return band_hi
+    hi_new = band_lo + (new_strip_px / float(ih))
+    hi_floor = band_lo + float(EASYOCR_REFINE_MIN_STRIP_HEIGHT_RATIO)
+    hi_new = min(float(band_hi), max(hi_floor, hi_new))
+    if hi_new >= float(band_hi) - 1e-6:
+        return band_hi
+    log(
+        "Step1 OCR: crop bbox refine "
+        f"hi {band_hi:.3f} → {hi_new:.3f} strip_pct={(hi_new - band_lo) * 100:.1f}"
+    )
+    return float(hi_new)
+
+
 def _step1_ocr_with_easyocr(video_path):
     """Step1: extract subtitles via EasyOCR on the cropped subtitle region."""
     log("Step1: OCR (EasyOCR)…")
@@ -1922,6 +2022,20 @@ def _step1_ocr_with_easyocr(video_path):
         band_hi = band_lo + strip_max
         log(
             "Step1 OCR: crop strip height capped "
+            f"(max={strip_max * 100:.1f}% frame): hi {prev_hi:.3f} → {band_hi:.3f}"
+        )
+    band_hi = _refine_easyocr_band_hi_by_bbox(
+        reader,
+        video_path,
+        band_lo,
+        band_hi,
+        ocr_dir / "__bbox_refine_sample.png",
+    )
+    if strip_max > 0 and band_hi > band_lo + strip_max + 1e-9:
+        prev_hi = band_hi
+        band_hi = band_lo + strip_max
+        log(
+            "Step1 OCR: crop strip height capped (after bbox refine) "
             f"(max={strip_max * 100:.1f}% frame): hi {prev_hi:.3f} → {band_hi:.3f}"
         )
     if band_hi <= band_lo + 1e-9:
@@ -3063,7 +3177,7 @@ def parse_cli_args():
         default=EASYOCR_MAX_STRIP_HEIGHT_RATIO,
         help=(
             "Cap OCR band height (hi-lo) to this fraction of frame height; 0 disables. "
-            "Example 0.05 limits strip to 5%% of frame even if auto probe picks a taller band."
+            "Default 0.03 (~3%%); subtitle lines are often ~2.5–3%% tall — use 0 with probe+bbox refine if needed."
         ),
     )
     parser.add_argument(
