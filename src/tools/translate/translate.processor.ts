@@ -13,197 +13,189 @@ const OPTION_MAPPINGS: Array<{
   keys: string[];
   allowedTypes: Array<"string" | "number">;
 }> = [
-    { cliFlag: "--subtitle-font", keys: ["subtitleFont", "subtitle_font"], allowedTypes: ["string"] },
-    {
-      cliFlag: "--subtitle-fontsize",
-      keys: ["subtitleFontsize", "subtitle_fontsize"],
-      allowedTypes: ["number", "string"],
-    },
-    {
-      cliFlag: "--subtitle-primary-colour",
-      keys: ["subtitlePrimaryColor", "subtitle_primary_colour"],
-      allowedTypes: ["string"],
-    },
-    {
-      cliFlag: "--subtitle-outline-colour",
-      keys: ["subtitleOutlineColor", "subtitle_outline_colour"],
-      allowedTypes: ["string"],
-    },
-    {
-      cliFlag: "--subtitle-outline",
-      keys: ["subtitleOutline", "subtitle_outline"],
-      allowedTypes: ["number", "string"],
-    },
-    { cliFlag: "--subtitle-shadow", keys: ["subtitleShadow", "subtitle_shadow"], allowedTypes: ["number", "string"] },
-    {
-      cliFlag: "--subtitle-uppercase",
-      keys: ["subtitleUppercase", "subtitle_uppercase"],
-      allowedTypes: ["string"],
-    },
-    {
-      cliFlag: "--subtitle-alignment",
-      keys: ["subtitleAlignment", "subtitle_alignment"],
-      allowedTypes: ["number", "string"],
-    },
-    {
-      cliFlag: "--subtitle-margin-v",
-      keys: ["subtitleMarginV", "subtitle_margin_v"],
-      allowedTypes: ["number", "string"],
-    },
-    {
-      cliFlag: "--subtitle-bg-blur-width-ratio",
-      keys: ["subtitleBgBlurWidthRatio", "subtitle_bg_blur_width_ratio"],
-      allowedTypes: ["number", "string"],
-    },
-    {
-      cliFlag: "--subtitle-bg-blur-height",
-      keys: ["subtitleBgBlurHeight", "subtitle_bg_blur_height"],
-      allowedTypes: ["number", "string"],
-    },
-    {
-      cliFlag: "--subtitle-bg-blur-bottom-offset",
-      keys: ["subtitleBgBlurBottomOffset", "subtitle_bg_blur_bottom_offset"],
-      allowedTypes: ["number", "string"],
-    },
-    {
-      cliFlag: "--subtitle-bg-blur-luma-radius",
-      keys: ["subtitleBgBlurLumaRadius", "subtitle_bg_blur_luma_radius"],
-      allowedTypes: ["number", "string"],
-    },
-    {
-      cliFlag: "--subtitle-bg-blur-luma-power",
-      keys: ["subtitleBgBlurLumaPower", "subtitle_bg_blur_luma_power"],
-      allowedTypes: ["number", "string"],
-    },
-    {
-      cliFlag: "--subtitle-bg-blur-chroma-radius",
-      keys: ["subtitleBgBlurChromaRadius", "subtitle_bg_blur_chroma_radius"],
-      allowedTypes: ["number", "string"],
-    },
-    {
-      cliFlag: "--subtitle-bg-blur-chroma-power",
-      keys: ["subtitleBgBlurChromaPower", "subtitle_bg_blur_chroma_power"],
-      allowedTypes: ["number", "string"],
-    },
-    { cliFlag: "--logo-file", keys: ["logoFile", "logo_file"], allowedTypes: ["string"] },
-    { cliFlag: "--logo-width", keys: ["logoWidth", "logo_width"], allowedTypes: ["number", "string"] },
-    { cliFlag: "--logo-margin-x", keys: ["logoMarginX", "logo_margin_x"], allowedTypes: ["number", "string"] },
-    { cliFlag: "--logo-margin-y", keys: ["logoMarginY", "logo_margin_y"], allowedTypes: ["number", "string"] },
-    { cliFlag: "--logo-opacity", keys: ["logoOpacity", "logo_opacity"], allowedTypes: ["number", "string"] },
-    { cliFlag: "--logo-enabled", keys: ["logoEnabled", "logo_enabled"], allowedTypes: ["string"] },
-    { cliFlag: "--original-volume", keys: ["originalVolume", "original_volume"], allowedTypes: ["number", "string"] },
-    {
-      cliFlag: "--narration-volume",
-      keys: ["narrationVolume", "narration_volume"],
-      allowedTypes: ["number", "string"],
-    },
-    { cliFlag: "--speed-video", keys: ["speedVideo", "speed_video"], allowedTypes: ["number", "string"] },
-    { cliFlag: "--edge-tts-voice", keys: ["edgeTtsVoice", "edge_tts_voice"], allowedTypes: ["string"] },
-    { cliFlag: "--edge-tts-rate", keys: ["edgeTtsRate", "edge_tts_rate"], allowedTypes: ["string"] },
-    { cliFlag: "--edge-tts-volume", keys: ["edgeTtsVolume", "edge_tts_volume"], allowedTypes: ["string"] },
-    { cliFlag: "--edge-tts-pitch", keys: ["edgeTtsPitch", "edge_tts_pitch"], allowedTypes: ["string"] },
-    { cliFlag: "--auto-speed", keys: ["autoSpeed", "auto_speed"], allowedTypes: ["string"] },
-    {
-      cliFlag: "--step3-auto-rate-trigger-cps",
-      keys: ["step3AutoRateTriggerCharsPerSec", "step3_auto_rate_trigger_chars_per_sec"],
-      allowedTypes: ["number", "string"],
-    },
-    {
-      cliFlag: "--step3-auto-rate-bonus-percent",
-      keys: ["step3AutoRateBonusPercent", "step3_auto_rate_bonus_percent"],
-      allowedTypes: ["number", "string"],
-    },
-    {
-      cliFlag: "--step3-tts-api-timeout-sec",
-      keys: ["step3TtsApiTimeoutSec", "step3_tts_api_timeout_sec"],
-      allowedTypes: ["number", "string"],
-    },
-    {
-      cliFlag: "--step3-tts-max-retry-action",
-      keys: ["step3TtsMaxRetryAction", "step3_tts_max_retry_action"],
-      allowedTypes: ["string"],
-    },
-    { cliFlag: "--translation-context", keys: ["translationContext", "translation_context"], allowedTypes: ["string"] },
-    { cliFlag: "--mode", keys: ["mode", "mode"], allowedTypes: ["string"] },
-    {
-      cliFlag: "--step1-subtitle-source",
-      keys: ["step1SubtitleSource", "step1_subtitle_source"],
-      allowedTypes: ["string"],
-    },
-    {
-      cliFlag: "--easyocr-crop-band-lo",
-      keys: ["easyOcrCropBandLo", "easy_ocr_crop_band_lo"],
-      allowedTypes: ["number", "string"],
-    },
-    {
-      cliFlag: "--easyocr-min-duration-ms",
-      keys: ["easyOcrMinDurationMs", "easy_ocr_min_duration_ms"],
-      allowedTypes: ["number", "string"],
-    },
-    {
-      cliFlag: "--easyocr-cleanup-debug-after-step7",
-      keys: [
-        "easyOcrCleanupDebugAfterStep7",
-        "easy_ocr_cleanup_debug_after_step7",
-        "easyocr_cleanup_debug_after_step7",
-      ],
-      allowedTypes: ["string"],
-    },
-    {
-      cliFlag: "--easyocr-max-strip-height-ratio",
-      keys: ["easyOcrMaxStripHeightRatio", "easy_ocr_max_strip_height_ratio"],
-      allowedTypes: ["number", "string"],
-    },
-    {
-      cliFlag: "--easyocr-text-skip-defaults",
-      keys: ["easyOcrTextSkipDefaults", "easy_ocr_text_skip_defaults"],
-      allowedTypes: ["string"],
-    },
-    {
-      cliFlag: "--easyocr-text-skip-regexes-json",
-      keys: [
-        "easyOcrTextSkipRegexesJson",
-        "easy_ocr_text_skip_regexes_json",
-        "easyocr_text_skip_regexes_json",
-      ],
-      allowedTypes: ["string"],
-    },
-    {
-      cliFlag: "--easyocr-gray-contrast",
-      keys: ["easyOcrGrayContrast", "easy_ocr_gray_contrast"],
-      allowedTypes: ["number", "string"],
-    },
-    {
-      cliFlag: "--easyocr-gray-brightness",
-      keys: ["easyOcrGrayBrightness", "easy_ocr_gray_brightness"],
-      allowedTypes: ["number", "string"],
-    },
-    {
-      cliFlag: "--easyocr-gray-gamma",
-      keys: ["easyOcrGrayGamma", "easy_ocr_gray_gamma"],
-      allowedTypes: ["number", "string"],
-    },
-    {
-      cliFlag: "--step6-hflip",
-      keys: ["step6Hflip", "step6_hflip", "enableFlip", "enable_flip"],
-      allowedTypes: ["string"],
-    },
-    {
-      cliFlag: "--step6-zoom-percent",
-      keys: ["step6ZoomPercent", "step6_zoom_percent"],
-      allowedTypes: ["number", "string"],
-    },
-    {
-      cliFlag: "--step6-eq-saturation",
-      keys: ["step6EqSaturation", "step6_eq_saturation"],
-      allowedTypes: ["number", "string"],
-    },
-    {
-      cliFlag: "--step6-eq-contrast",
-      keys: ["step6EqContrast", "step6_eq_contrast"],
-      allowedTypes: ["number", "string"],
-    },
-  ];
+  { cliFlag: "--subtitle-font", keys: ["subtitleFont", "subtitle_font"], allowedTypes: ["string"] },
+  {
+    cliFlag: "--subtitle-fontsize",
+    keys: ["subtitleFontsize", "subtitle_fontsize"],
+    allowedTypes: ["number", "string"],
+  },
+  {
+    cliFlag: "--subtitle-primary-colour",
+    keys: ["subtitlePrimaryColor", "subtitle_primary_colour"],
+    allowedTypes: ["string"],
+  },
+  {
+    cliFlag: "--subtitle-outline-colour",
+    keys: ["subtitleOutlineColor", "subtitle_outline_colour"],
+    allowedTypes: ["string"],
+  },
+  {
+    cliFlag: "--subtitle-outline",
+    keys: ["subtitleOutline", "subtitle_outline"],
+    allowedTypes: ["number", "string"],
+  },
+  { cliFlag: "--subtitle-shadow", keys: ["subtitleShadow", "subtitle_shadow"], allowedTypes: ["number", "string"] },
+  {
+    cliFlag: "--subtitle-uppercase",
+    keys: ["subtitleUppercase", "subtitle_uppercase"],
+    allowedTypes: ["string"],
+  },
+  {
+    cliFlag: "--subtitle-alignment",
+    keys: ["subtitleAlignment", "subtitle_alignment"],
+    allowedTypes: ["number", "string"],
+  },
+  {
+    cliFlag: "--subtitle-margin-v",
+    keys: ["subtitleMarginV", "subtitle_margin_v"],
+    allowedTypes: ["number", "string"],
+  },
+  {
+    cliFlag: "--subtitle-bg-blur-width-ratio",
+    keys: ["subtitleBgBlurWidthRatio", "subtitle_bg_blur_width_ratio"],
+    allowedTypes: ["number", "string"],
+  },
+  {
+    cliFlag: "--subtitle-bg-blur-height",
+    keys: ["subtitleBgBlurHeight", "subtitle_bg_blur_height"],
+    allowedTypes: ["number", "string"],
+  },
+  {
+    cliFlag: "--subtitle-bg-blur-bottom-offset",
+    keys: ["subtitleBgBlurBottomOffset", "subtitle_bg_blur_bottom_offset"],
+    allowedTypes: ["number", "string"],
+  },
+  {
+    cliFlag: "--subtitle-bg-blur-luma-radius",
+    keys: ["subtitleBgBlurLumaRadius", "subtitle_bg_blur_luma_radius"],
+    allowedTypes: ["number", "string"],
+  },
+  {
+    cliFlag: "--subtitle-bg-blur-luma-power",
+    keys: ["subtitleBgBlurLumaPower", "subtitle_bg_blur_luma_power"],
+    allowedTypes: ["number", "string"],
+  },
+  {
+    cliFlag: "--subtitle-bg-blur-chroma-radius",
+    keys: ["subtitleBgBlurChromaRadius", "subtitle_bg_blur_chroma_radius"],
+    allowedTypes: ["number", "string"],
+  },
+  {
+    cliFlag: "--subtitle-bg-blur-chroma-power",
+    keys: ["subtitleBgBlurChromaPower", "subtitle_bg_blur_chroma_power"],
+    allowedTypes: ["number", "string"],
+  },
+  { cliFlag: "--logo-file", keys: ["logoFile", "logo_file"], allowedTypes: ["string"] },
+  { cliFlag: "--logo-width", keys: ["logoWidth", "logo_width"], allowedTypes: ["number", "string"] },
+  { cliFlag: "--logo-margin-x", keys: ["logoMarginX", "logo_margin_x"], allowedTypes: ["number", "string"] },
+  { cliFlag: "--logo-margin-y", keys: ["logoMarginY", "logo_margin_y"], allowedTypes: ["number", "string"] },
+  { cliFlag: "--logo-opacity", keys: ["logoOpacity", "logo_opacity"], allowedTypes: ["number", "string"] },
+  { cliFlag: "--logo-enabled", keys: ["logoEnabled", "logo_enabled"], allowedTypes: ["string"] },
+  { cliFlag: "--original-volume", keys: ["originalVolume", "original_volume"], allowedTypes: ["number", "string"] },
+  {
+    cliFlag: "--narration-volume",
+    keys: ["narrationVolume", "narration_volume"],
+    allowedTypes: ["number", "string"],
+  },
+  { cliFlag: "--speed-video", keys: ["speedVideo", "speed_video"], allowedTypes: ["number", "string"] },
+  { cliFlag: "--edge-tts-voice", keys: ["edgeTtsVoice", "edge_tts_voice"], allowedTypes: ["string"] },
+  { cliFlag: "--edge-tts-rate", keys: ["edgeTtsRate", "edge_tts_rate"], allowedTypes: ["string"] },
+  { cliFlag: "--edge-tts-volume", keys: ["edgeTtsVolume", "edge_tts_volume"], allowedTypes: ["string"] },
+  { cliFlag: "--edge-tts-pitch", keys: ["edgeTtsPitch", "edge_tts_pitch"], allowedTypes: ["string"] },
+  { cliFlag: "--auto-speed", keys: ["autoSpeed", "auto_speed"], allowedTypes: ["string"] },
+  {
+    cliFlag: "--step3-auto-rate-trigger-cps",
+    keys: ["step3AutoRateTriggerCharsPerSec", "step3_auto_rate_trigger_chars_per_sec"],
+    allowedTypes: ["number", "string"],
+  },
+  {
+    cliFlag: "--step3-auto-rate-bonus-percent",
+    keys: ["step3AutoRateBonusPercent", "step3_auto_rate_bonus_percent"],
+    allowedTypes: ["number", "string"],
+  },
+  {
+    cliFlag: "--step3-tts-api-timeout-sec",
+    keys: ["step3TtsApiTimeoutSec", "step3_tts_api_timeout_sec"],
+    allowedTypes: ["number", "string"],
+  },
+  {
+    cliFlag: "--step3-tts-max-retry-action",
+    keys: ["step3TtsMaxRetryAction", "step3_tts_max_retry_action"],
+    allowedTypes: ["string"],
+  },
+  { cliFlag: "--translation-context", keys: ["translationContext", "translation_context"], allowedTypes: ["string"] },
+  { cliFlag: "--mode", keys: ["mode", "mode"], allowedTypes: ["string"] },
+  {
+    cliFlag: "--step1-subtitle-source",
+    keys: ["step1SubtitleSource", "step1_subtitle_source"],
+    allowedTypes: ["string"],
+  },
+  {
+    cliFlag: "--easyocr-crop-band-hi",
+    keys: ["easyOcrCropBandHi", "easy_ocr_crop_band_hi"],
+    allowedTypes: ["number", "string"],
+  },
+  {
+    cliFlag: "--easyocr-min-duration-ms",
+    keys: ["easyOcrMinDurationMs", "easy_ocr_min_duration_ms"],
+    allowedTypes: ["number", "string"],
+  },
+  {
+    cliFlag: "--easyocr-cleanup-debug-after-step7",
+    keys: ["easyOcrCleanupDebugAfterStep7", "easy_ocr_cleanup_debug_after_step7", "easyocr_cleanup_debug_after_step7"],
+    allowedTypes: ["string"],
+  },
+  {
+    cliFlag: "--easyocr-max-strip-height-ratio",
+    keys: ["easyOcrMaxStripHeightRatio", "easy_ocr_max_strip_height_ratio"],
+    allowedTypes: ["number", "string"],
+  },
+  {
+    cliFlag: "--easyocr-text-skip-defaults",
+    keys: ["easyOcrTextSkipDefaults", "easy_ocr_text_skip_defaults"],
+    allowedTypes: ["string"],
+  },
+  {
+    cliFlag: "--easyocr-text-skip-regexes-json",
+    keys: ["easyOcrTextSkipRegexesJson", "easy_ocr_text_skip_regexes_json", "easyocr_text_skip_regexes_json"],
+    allowedTypes: ["string"],
+  },
+  {
+    cliFlag: "--easyocr-gray-contrast",
+    keys: ["easyOcrGrayContrast", "easy_ocr_gray_contrast"],
+    allowedTypes: ["number", "string"],
+  },
+  {
+    cliFlag: "--easyocr-gray-brightness",
+    keys: ["easyOcrGrayBrightness", "easy_ocr_gray_brightness"],
+    allowedTypes: ["number", "string"],
+  },
+  {
+    cliFlag: "--easyocr-gray-gamma",
+    keys: ["easyOcrGrayGamma", "easy_ocr_gray_gamma"],
+    allowedTypes: ["number", "string"],
+  },
+  {
+    cliFlag: "--step6-hflip",
+    keys: ["step6Hflip", "step6_hflip", "enableFlip", "enable_flip"],
+    allowedTypes: ["string"],
+  },
+  {
+    cliFlag: "--step6-zoom-percent",
+    keys: ["step6ZoomPercent", "step6_zoom_percent"],
+    allowedTypes: ["number", "string"],
+  },
+  {
+    cliFlag: "--step6-eq-saturation",
+    keys: ["step6EqSaturation", "step6_eq_saturation"],
+    allowedTypes: ["number", "string"],
+  },
+  {
+    cliFlag: "--step6-eq-contrast",
+    keys: ["step6EqContrast", "step6_eq_contrast"],
+    allowedTypes: ["number", "string"],
+  },
+];
 
 @Processor(TRANSLATE_QUEUE_NAME)
 export class TranslateProcessor extends WorkerHost {
@@ -286,9 +278,7 @@ export class TranslateProcessor extends WorkerHost {
 
     const scriptBase = basename(absScriptPath);
     const videoBase = basename(videoInputPath);
-    this.logger.log(
-      `Translate python: ${scriptBase} video=${videoBase} steps=[${input.stepNbr.join(",")}]`,
-    );
+    this.logger.log(`Translate python: ${scriptBase} video=${videoBase} steps=[${input.stepNbr.join(",")}]`);
     const startedAt = Date.now();
     const { stdout, stderr } = await new Promise<{ stdout: string; stderr: string }>(
       (resolvePromise, rejectPromise) => {

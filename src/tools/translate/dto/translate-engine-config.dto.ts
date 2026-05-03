@@ -353,7 +353,7 @@ export class TranslateEngineConfigDto {
   @IsOptional()
   @Type(() => Number)
   @IsNumber()
-  easyOcrCropBandLo?: number;
+  easyOcrCropBandHi?: number;
 
   @IsOptional()
   @Type(() => Number)
