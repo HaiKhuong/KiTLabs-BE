@@ -8,7 +8,15 @@ import time
 import asyncio
 import sys
 import traceback
+import warnings
 from pathlib import Path
+
+# PyTorch (EasyOCR / deps): bỏ cảnh báo RNN weights non-contiguous — spam log khi chạy qua BE.
+warnings.filterwarnings(
+    "ignore",
+    message=r".*RNN module weights are not part of single contiguous chunk.*",
+    category=UserWarning,
+)
 
 try:
     from dotenv import load_dotenv
@@ -163,6 +171,8 @@ EASYOCR_FUZZY_THRESHOLD = 80  # % similarity threshold for dedup/merge
 EASYOCR_MIN_DURATION_MS = 100  # minimum subtitle display duration (ms)
 EASYOCR_MERGE_GAP_MS = 200  # merge adjacent similar blocks within this gap (ms)
 EASYOCR_GPU = True
+# Sau Step7: xóa LOG_DIR/step1_ocr và LOG_DIR/easyocr_crop_probe (--easyocr-cleanup-debug-after-step7 off để giữ).
+EASYOCR_CLEANUP_DEBUG_AFTER_STEP7 = True
 
 STEP1_MAX_SUBTITLE_CHARS = 22  # số ký tự tối đa mỗi câu sau tách.
 STEP1_MIN_SUBTITLE_DURATION_MS = 280  # thời gian hiển thị tối thiểu mỗi câu.
@@ -1791,10 +1801,9 @@ def _detect_easyocr_crop_band_hi(video_path, reader, ocr_dir):
     eligible = [hi for hi in candidates if totals[hi] >= thr]
     chosen = min(eligible)
     log(
-        "Step1 OCR: crop auto — "
-        f"điểm tối đa≈{best:.1f} (hi={best_hi:.3f}), "
-        f"chọn hi={chosen:.3f} (band lo={band_lo:.3f}) trong tie-band "
-        f"(≥{EASYOCR_CROP_PROBE_SCORE_TIE_FRAC:.0%} điểm tối đa, {n_frames_used} frame)"
+        "Step1 OCR: crop auto "
+        f"score={best:.1f} hi_best={best_hi:.3f} hi={chosen:.3f} lo={band_lo:.3f} "
+        f"tie={EASYOCR_CROP_PROBE_SCORE_TIE_FRAC:.2f} frames={n_frames_used}"
     )
     if EASYOCR_CROP_PROBE_DEBUG:
         log(
@@ -1839,10 +1848,8 @@ def _step1_ocr_with_easyocr(video_path):
     band_strip_pct = (band_hi - band_lo) * 100.0
     if EASYOCR_SUBTITLE_CROP_AUTO_DETECT:
         log(
-            "Step1 OCR: crop — kết quả áp dụng (sau auto probe): "
-            f"inner_lo={band_lo:.3f}, outer_hi={band_hi:.3f} "
-            f"(dải OCR ~{band_strip_pct:.1f}% chiều cao khung, đo từ đáy lên; "
-            "chi tiết điểm/tie-band xem log [Step1 OCR: crop auto — …] phía trên)."
+            "Step1 OCR: crop apply "
+            f"lo={band_lo:.3f} hi={band_hi:.3f} strip_pct={band_strip_pct:.1f}"
         )
     else:
         log(
@@ -2938,6 +2945,15 @@ def parse_cli_args():
         ),
     )
     parser.add_argument(
+        "--easyocr-cleanup-debug-after-step7",
+        choices=["on", "off"],
+        default="on" if EASYOCR_CLEANUP_DEBUG_AFTER_STEP7 else "off",
+        help=(
+            "on (default): after successful Step7, delete LOG_DIR/step1_ocr and "
+            "LOG_DIR/easyocr_crop_probe. off: keep those folders for inspection."
+        ),
+    )
+    parser.add_argument(
         "--easyocr-fps",
         type=float,
         default=EASYOCR_FPS,
@@ -3293,6 +3309,9 @@ def apply_cli_config(args):
     EASYOCR_CROP_PROBE_EXPORT_ON_FALLBACK = (
         args.easyocr_crop_probe_export_on_fallback == "on"
     )
+    EASYOCR_CLEANUP_DEBUG_AFTER_STEP7 = (
+        args.easyocr_cleanup_debug_after_step7 == "on"
+    )
     EASYOCR_FPS = float(args.easyocr_fps)
     EASYOCR_WORKERS = int(args.easyocr_workers)
     EASYOCR_MIN_CONFIDENCE = float(args.easyocr_min_confidence)
@@ -3339,6 +3358,8 @@ def require_ready(path, label):
 
 def _cleanup_easyocr_artifacts_after_step7():
     """Sau Step7 xong: xóa thư mục tạm EasyOCR (step1_ocr + easyocr_crop_probe dưới LOG_DIR)."""
+    if not EASYOCR_CLEANUP_DEBUG_AFTER_STEP7:
+        return
     for name in ("step1_ocr", "easyocr_crop_probe"):
         path = LOG_DIR / name
         if not path.exists():

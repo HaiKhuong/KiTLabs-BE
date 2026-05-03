@@ -412,6 +412,15 @@ export class TranslateEngineConfigDto {
   @IsNumber()
   easy_ocr_min_duration_ms?: number;
 
+  /** Sau Step7: xóa step1_ocr + easyocr_crop_probe; CLI: on | off */
+  @IsOptional()
+  @IsString()
+  easyOcrCleanupDebugAfterStep7?: string;
+
+  @IsOptional()
+  @IsString()
+  easy_ocr_cleanup_debug_after_step7?: string;
+
   /** Step6 horizontal flip (ffmpeg hflip); CLI: on | off */
   @IsOptional()
   @IsString()

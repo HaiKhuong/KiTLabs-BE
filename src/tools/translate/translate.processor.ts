@@ -166,6 +166,14 @@ const OPTION_MAPPINGS: Array<{
       allowedTypes: ["number", "string"],
     },
     {
+      cliFlag: "--easyocr-cleanup-debug-after-step7",
+      keys: [
+        "easyOcrCleanupDebugAfterStep7",
+        "easy_ocr_cleanup_debug_after_step7",
+      ],
+      allowedTypes: ["string"],
+    },
+    {
       cliFlag: "--step6-hflip",
       keys: ["step6Hflip", "step6_hflip", "enableFlip", "enable_flip"],
       allowedTypes: ["string"],
