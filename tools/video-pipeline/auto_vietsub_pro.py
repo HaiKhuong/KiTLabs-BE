@@ -150,9 +150,9 @@ EASYOCR_LANG = ["ch_sim", "en"]  # EasyOCR language codes
 EASYOCR_SUBTITLE_CROP_BAND_HI = 0.20
 # Số frame mẫu để detect bbox phụ đề (scan full-frame → OCR → lấy lo/hi từ bbox chữ).
 EASYOCR_CROP_PROBE_FRAMES = 12
-# Chỉ lấy frame probe trong 80% giữa video (bỏ đầu/cuối theo tỷ lệ thời lượng).
-EASYOCR_CROP_PROBE_TRIM_HEAD_FRAC = 0.10
-EASYOCR_CROP_PROBE_TRIM_TAIL_FRAC = 0.10
+# Detect crop band: chỉ OCR vùng 80% chiều ngang giữa frame (bỏ 10% trái + 10% phải).
+EASYOCR_CROP_PROBE_H_TRIM_LEFT_FRAC = 0.15
+EASYOCR_CROP_PROBE_H_TRIM_RIGHT_FRAC = 0.15
 EASYOCR_FPS = 2  # frame extraction rate for OCR
 EASYOCR_WORKERS = 4  # parallel OCR threads
 EASYOCR_MIN_CONFIDENCE = 0.5  # discard OCR results below this confidencee
@@ -1440,20 +1440,20 @@ def _easyocr_crop_ffmpeg_vf(band_lo, band_hi):
 
 
 def _easyocr_probe_timestamps_sec(duration_ms, n_frames):
-    """Spread sample times across the middle of the timeline (skip head/tail by trim fracs)."""
+    """Spread sample times across the file; avoid the very last frames."""
     n = max(1, int(n_frames))
-    head = float(EASYOCR_CROP_PROBE_TRIM_HEAD_FRAC)
-    tail = float(EASYOCR_CROP_PROBE_TRIM_TAIL_FRAC)
-    if duration_ms and duration_ms > 0:
+    if duration_ms and duration_ms > 8000:
         d_sec = duration_ms / 1000.0
-        t_lo = max(0.0, d_sec * head)
-        t_hi = max(t_lo + 1e-6, d_sec * (1.0 - tail))
+        cap = max(0.5, d_sec * 0.95)
+        lo_frac, hi_frac = 0.02, 0.90
         if n == 1:
-            return [0.5 * (t_lo + t_hi)]
+            t = max(0.25, d_sec * 0.12)
+            return [min(t, cap)]
         out = []
         for k in range(n):
-            frac = k / (n - 1)
-            out.append(t_lo + (t_hi - t_lo) * frac)
+            frac = lo_frac + (hi_frac - lo_frac) * (k / (n - 1))
+            t = max(0.25, d_sec * frac)
+            out.append(min(t, cap))
         return out
     fixed = [
         0.25,
@@ -1598,8 +1598,9 @@ def _easyocr_tune_timestamp_sec(video_path):
 
 def _detect_easyocr_crop_band(video_path, reader, ocr_dir):
     """
-    Detect subtitle band (lo, hi) bằng cách chạy OCR trên phần đáy full-frame,
-    lấy bbox chữ thực để xác định lo/hi chính xác, sau đó cap theo strip_max.
+    Detect subtitle band (lo, hi) bằng cách chạy OCR trên phần đáy frame,
+    chỉ vùng giữa theo chiều ngang (bỏ mé trái/phải theo EASYOCR_CROP_PROBE_H_TRIM_*),
+    lấy bbox chữ để xác định lo/hi, sau đó cap theo strip_max.
 
     lo/hi tính từ đáy frame (0 = sát đáy, 1 = đỉnh frame).
     Fallback: hi = EASYOCR_SUBTITLE_CROP_BAND_HI, lo = hi - strip_max.
@@ -1637,8 +1638,17 @@ def _detect_easyocr_crop_band(video_path, reader, ocr_dir):
         ih, iw = img.shape[:2]
         if ih < 40 or iw < 40:
             continue
+        h_l = float(EASYOCR_CROP_PROBE_H_TRIM_LEFT_FRAC)
+        h_r = float(EASYOCR_CROP_PROBE_H_TRIM_RIGHT_FRAC)
+        x0 = int(round(iw * h_l))
+        x1 = int(round(iw * (1.0 - h_r)))
+        x0 = max(0, min(x0, iw - 2))
+        x1 = max(x0 + 2, min(x1, iw))
+        img_roi = img[:, x0:x1]
+        if img_roi.shape[1] < 40:
+            continue
         scan_top = int(ih * (1.0 - SCAN_HI))
-        scan_strip = img[scan_top:, :]
+        scan_strip = img_roi[scan_top:, :]
         gray = _preprocess_easyocr_strip_like_pipeline(scan_strip)
         try:
             results = reader.readtext(gray, detail=1)
