@@ -170,6 +170,7 @@ const OPTION_MAPPINGS: Array<{
       keys: [
         "easyOcrCleanupDebugAfterStep7",
         "easy_ocr_cleanup_debug_after_step7",
+        "easyocr_cleanup_debug_after_step7",
       ],
       allowedTypes: ["string"],
     },
@@ -406,7 +407,7 @@ export class TranslateProcessor extends WorkerHost {
 
   /**
    * Skip echoing chunks that only contain DB_STATUS lines (already persisted).
-   * Truncate long lines for shorter Nest / journald output.
+   * Echo full text (no truncation / ellipsis) so long CLI JSON and logs stay intact.
    */
   private clipPythonStreamForNestLog(chunk: string): string | null {
     const trimmed = chunk.trimEnd();
@@ -417,8 +418,7 @@ export class TranslateProcessor extends WorkerHost {
     if (lines.length > 0 && lines.every((l) => l.trimStart().startsWith("DB_STATUS|"))) {
       return null;
     }
-    const maxLen = 380;
-    return trimmed.length > maxLen ? `${trimmed.slice(0, maxLen)}…` : trimmed;
+    return trimmed;
   }
 
   private resolveVideoInputPath(engineConfig: Record<string, unknown>): string {

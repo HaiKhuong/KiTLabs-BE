@@ -421,6 +421,11 @@ export class TranslateEngineConfigDto {
   @IsString()
   easy_ocr_cleanup_debug_after_step7?: string;
 
+  /** Alias snake (không gạch easy_ocr): cùng ý nghĩa với easyOcrCleanupDebugAfterStep7 */
+  @IsOptional()
+  @IsString()
+  easyocr_cleanup_debug_after_step7?: string;
+
   /** Step6 horizontal flip (ffmpeg hflip); CLI: on | off */
   @IsOptional()
   @IsString()
