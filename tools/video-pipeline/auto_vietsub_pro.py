@@ -1415,6 +1415,12 @@ def _step1_transcribe_with_whisper(video_path):
 EASYOCR_REFINE_TOP_MARGIN_MIN_FRAC = 0.06
 # Sau refine bbox: không hạ hi quá thấp (sàn ~2% chiều cao khung cho dải hi−lo).
 EASYOCR_REFINE_MIN_STRIP_HEIGHT_RATIO = 0.02
+# Siết inner lo: cửa sổ [lo0, gate_hi] có text → lo0+5% → +2.5% lặp đến khi mất text (1 frame mẫu).
+EASYOCR_LO_TIGHTEN_ENABLED = True
+EASYOCR_LO_TIGHTEN_GATE_HI = 0.20
+EASYOCR_LO_TIGHTEN_FIRST_JUMP = 0.05
+EASYOCR_LO_TIGHTEN_STEP = 0.025
+EASYOCR_LO_TIGHTEN_MIN_STRIP = 0.02
 
 
 def _easyocr_crop_outer_hi_candidates(band_lo):
@@ -1899,15 +1905,7 @@ def _refine_easyocr_band_hi_by_bbox(reader, video_path, band_lo, band_hi, scratc
     """
     import cv2
 
-    try:
-        duration_ms = int(get_media_duration_ms(video_path) or 0)
-    except Exception:
-        duration_ms = 0
-    t_sec = 1.0
-    if duration_ms > 0:
-        d = duration_ms / 1000.0
-        t_sec = min(max(d * 0.12, 0.25), max(d - 0.1, 0.25))
-        t_sec = min(t_sec, 120.0)
+    t_sec = _easyocr_tune_timestamp_sec(video_path)
     try:
         run_command(
             [
@@ -1985,6 +1983,141 @@ def _refine_easyocr_band_hi_by_bbox(reader, video_path, band_lo, band_hi, scratc
     return float(hi_new)
 
 
+def _easyocr_tune_timestamp_sec(video_path):
+    """Thời điểm lấy 1 frame mẫu (crop tune / bbox / lo-tighten)."""
+    try:
+        duration_ms = int(get_media_duration_ms(video_path) or 0)
+    except Exception:
+        duration_ms = 0
+    t_sec = 1.0
+    if duration_ms > 0:
+        d = duration_ms / 1000.0
+        t_sec = min(max(d * 0.12, 0.25), max(d - 0.1, 0.25))
+        t_sec = min(t_sec, 120.0)
+    return t_sec
+
+
+def _easyocr_strip_has_confident_text(reader, gray_u8):
+    """Có ít nhất một dòng OCR đạt EASYOCR_MIN_CONFIDENCE (dùng cho gate / siết lo)."""
+    try:
+        results = reader.readtext(gray_u8, detail=1)
+    except Exception:
+        return False
+    for item in results:
+        if not item or len(item) < 3:
+            continue
+        text = str(item[1] or "").strip()
+        if not text:
+            continue
+        if float(item[2]) >= float(EASYOCR_MIN_CONFIDENCE):
+            return True
+    return False
+
+
+def _tighten_easyocr_band_lo_progressive(reader, video_path, band_lo0, band_hi, scratch_png):
+    """
+    Cố định hi (đã probe/cap). Nếu dải rộng [lo0, max(hi, 0.2)] có text đủ tin cậy:
+    thử nâng lo: bước đầu +0.05, sau đó +0.025 mỗi bước cho đến khi không còn text → giữ lo tốt nhất.
+    """
+    import cv2
+
+    if not EASYOCR_LO_TIGHTEN_ENABLED:
+        return band_lo0
+    lo0 = float(band_lo0)
+    hi_ref = float(band_hi)
+    if hi_ref <= lo0 + float(EASYOCR_LO_TIGHTEN_MIN_STRIP) + 1e-9:
+        return band_lo0
+    gate_hi = max(hi_ref, float(EASYOCR_LO_TIGHTEN_GATE_HI))
+    if gate_hi <= lo0 + 1e-9:
+        return band_lo0
+
+    t_sec = _easyocr_tune_timestamp_sec(video_path)
+    try:
+        run_command(
+            [
+                FFMPEG_BIN,
+                "-y",
+                "-ss",
+                f"{t_sec:.3f}",
+                "-i",
+                str(video_path),
+                "-vframes",
+                "1",
+                "-q:v",
+                "2",
+                str(scratch_png),
+            ],
+            "EasyOCR lo-tighten sample frame",
+        )
+    except Exception:
+        return band_lo0
+    if not scratch_png.is_file() or scratch_png.stat().st_size < 32:
+        try:
+            scratch_png.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return band_lo0
+    img = cv2.imread(str(scratch_png))
+    try:
+        scratch_png.unlink(missing_ok=True)
+    except OSError:
+        pass
+    if img is None or img.size == 0:
+        return band_lo0
+
+    strip_gate = _easyocr_crop_band_strip_bgr(img, lo0, gate_hi)
+    if strip_gate is None or strip_gate.size == 0:
+        return band_lo0
+    gray_gate = _preprocess_easyocr_strip_like_pipeline(strip_gate)
+    if not _easyocr_strip_has_confident_text(reader, gray_gate):
+        return band_lo0
+
+    min_strip = float(EASYOCR_LO_TIGHTEN_MIN_STRIP)
+    fj = float(EASYOCR_LO_TIGHTEN_FIRST_JUMP)
+    st = float(EASYOCR_LO_TIGHTEN_STEP)
+    best_lo = lo0
+
+    def _lo_has_text(lo_a):
+        if lo_a >= hi_ref - min_strip - 1e-9:
+            return False
+        strip_a = _easyocr_crop_band_strip_bgr(img, lo_a, hi_ref)
+        if strip_a is None or strip_a.size == 0:
+            return False
+        gray_a = _preprocess_easyocr_strip_like_pipeline(strip_a)
+        return _easyocr_strip_has_confident_text(reader, gray_a)
+
+    lo_try = lo0 + fj
+    if lo_try < hi_ref - min_strip - 1e-9 and _lo_has_text(lo_try):
+        best_lo = lo_try
+    elif best_lo <= lo0 + 1e-9:
+        lo_x = lo0 + st
+        while lo_x < min(lo0 + fj, hi_ref - min_strip - 1e-9):
+            if _lo_has_text(lo_x):
+                best_lo = lo_x
+                break
+            lo_x += st
+
+    if best_lo <= lo0 + 1e-9:
+        return lo0
+
+    while True:
+        lo_next = best_lo + st
+        if lo_next >= hi_ref - min_strip - 1e-9:
+            break
+        if not _lo_has_text(lo_next):
+            break
+        best_lo = lo_next
+
+    if best_lo > lo0 + 1e-6:
+        log(
+            "Step1 OCR: crop lo tighten "
+            f"lo {lo0:.3f} → {best_lo:.3f} hi={hi_ref:.3f} "
+            f"strip_pct={(hi_ref - best_lo) * 100:.1f} "
+            f"(gate_hi={gate_hi:.2f}, first+{fj:.2f} then+{st:.2f})"
+        )
+    return float(best_lo)
+
+
 def _step1_ocr_with_easyocr(video_path):
     """Step1: extract subtitles via EasyOCR on the cropped subtitle region."""
     log("Step1: OCR (EasyOCR)…")
@@ -2036,6 +2169,20 @@ def _step1_ocr_with_easyocr(video_path):
         band_hi = band_lo + strip_max
         log(
             "Step1 OCR: crop strip height capped (after bbox refine) "
+            f"(max={strip_max * 100:.1f}% frame): hi {prev_hi:.3f} → {band_hi:.3f}"
+        )
+    band_lo = _tighten_easyocr_band_lo_progressive(
+        reader,
+        video_path,
+        band_lo,
+        band_hi,
+        ocr_dir / "__lo_tighten_sample.png",
+    )
+    if strip_max > 0 and band_hi > band_lo + strip_max + 1e-9:
+        prev_hi = band_hi
+        band_hi = band_lo + strip_max
+        log(
+            "Step1 OCR: crop strip height capped (after lo tighten) "
             f"(max={strip_max * 100:.1f}% frame): hi {prev_hi:.3f} → {band_hi:.3f}"
         )
     if band_hi <= band_lo + 1e-9:
