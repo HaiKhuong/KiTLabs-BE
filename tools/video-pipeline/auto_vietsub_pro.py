@@ -138,8 +138,8 @@ STEP1_CONDITION_ON_PREVIOUS_TEXT = (
 
 # EasyOCR config (STEP1_SUBTITLE_SOURCE = "easyocr")
 EASYOCR_LANG = ["ch_sim", "en"]  # EasyOCR language codes
-# Manual crop / fallback when auto-detect finds no OCR signal on probe frames.
-EASYOCR_SUBTITLE_CROP_RATIO = 0.1
+# Manual crop / fallback when auto-detect finds no OCR signal on probe frames (default 15%).
+EASYOCR_SUBTITLE_CROP_RATIO = 0.15
 # Auto: thử nhiều ratio trên nhiều frame mẫu (hard-sub đáy thường ~5–15% chiều cao).
 EASYOCR_SUBTITLE_CROP_AUTO_DETECT = True
 EASYOCR_CROP_PROBE_MIN = 0.05
@@ -150,6 +150,8 @@ EASYOCR_CROP_PROBE_FRAMES = 12
 EASYOCR_CROP_PROBE_SCORE_TIE_FRAC = 0.92
 # Bật --easyocr-crop-probe-debug on: log timeline probe, điểm theo từng frame/ratio, tổng hợp.
 EASYOCR_CROP_PROBE_DEBUG = False
+# Bật --easyocr-crop-probe-export on: copy các frame probe full PNG + probe_meta.json vào LOG_DIR/easyocr_crop_probe/…
+EASYOCR_CROP_PROBE_EXPORT = False
 EASYOCR_FPS = 2  # frame extraction rate for OCR
 EASYOCR_WORKERS = 4  # parallel OCR threads
 EASYOCR_MIN_CONFIDENCE = 0.5  # discard OCR results below this confidence
@@ -1514,6 +1516,27 @@ def _format_crop_probe_totals_line(totals, top_n=8):
     return ", ".join(f"r={a:.2f}:{b:.2f}" for a, b in ranked)
 
 
+def _safe_easyocr_probe_dir_name(stem, max_len=100):
+    s = re.sub(r"[^\w\-.]+", "_", str(stem), flags=re.UNICODE).strip("._")
+    s = s[:max_len] if s else "video"
+    return s or "video"
+
+
+def _write_easyocr_probe_export_meta(export_dir, video_path, duration_ms, planned_times):
+    exported = sorted(export_dir.glob("probe_*.png")) if export_dir else []
+    payload = {
+        "video": str(video_path),
+        "duration_ms": duration_ms,
+        "probe_times_sec": [round(t, 4) for t in planned_times],
+        "exported_png": [p.name for p in exported],
+    }
+    p = export_dir / "probe_meta.json"
+    p.write_text(
+        json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+
+
 def _detect_easyocr_crop_ratio(video_path, reader, ocr_dir):
     """
     Chọn tỷ lệ crop đáy bằng EasyOCR trên vài frame đầy đủ: thử các ratio trong
@@ -1563,9 +1586,22 @@ def _detect_easyocr_crop_ratio(video_path, reader, ocr_dir):
             f"{', '.join(p.name for p in frame_paths)}"
         )
 
+    export_dir = None
+    if EASYOCR_CROP_PROBE_EXPORT:
+        stem = _safe_easyocr_probe_dir_name(Path(video_path).stem)
+        stamp = time.strftime("%Y%m%d_%H%M%S")
+        export_dir = LOG_DIR / "easyocr_crop_probe" / f"{stem}_{stamp}"
+        export_dir.mkdir(parents=True, exist_ok=True)
+        log(f"Step1 OCR: crop probe — export frame mẫu (full PNG) → {export_dir}")
+
     totals = {r: 0.0 for r in candidates}
     n_frames_used = 0
     for fp in frame_paths:
+        if export_dir is not None and fp.exists():
+            try:
+                shutil.copy2(fp, export_dir / fp.name)
+            except OSError as e:
+                log(f"Step1 OCR: crop probe export copy failed ({fp.name}): {e}")
         img = cv2.imread(str(fp))
         if img is None:
             if EASYOCR_CROP_PROBE_DEBUG:
@@ -1617,6 +1653,14 @@ def _detect_easyocr_crop_ratio(video_path, reader, ocr_dir):
             fp.unlink()
         except OSError:
             pass
+
+    if export_dir is not None:
+        try:
+            _write_easyocr_probe_export_meta(
+                export_dir, video_path, duration_ms, planned_times
+            )
+        except OSError as e:
+            log(f"Step1 OCR: crop probe export meta failed: {e}")
 
     shutil.rmtree(probe_dir, ignore_errors=True)
 
@@ -2744,6 +2788,15 @@ def parse_cli_args():
         ),
     )
     parser.add_argument(
+        "--easyocr-crop-probe-export",
+        choices=["on", "off"],
+        default="on" if EASYOCR_CROP_PROBE_EXPORT else "off",
+        help=(
+            "on: save full-frame crop probe PNGs under LOG_DIR/easyocr_crop_probe/<stem>_<timestamp>/ "
+            "plus probe_meta.json (timeline). No effect when --easyocr-crop-auto off."
+        ),
+    )
+    parser.add_argument(
         "--easyocr-fps",
         type=float,
         default=EASYOCR_FPS,
@@ -2969,6 +3022,7 @@ def apply_cli_config(args):
     global EASYOCR_SUBTITLE_CROP_RATIO
     global EASYOCR_SUBTITLE_CROP_AUTO_DETECT
     global EASYOCR_CROP_PROBE_DEBUG
+    global EASYOCR_CROP_PROBE_EXPORT
     global EASYOCR_FPS
     global EASYOCR_WORKERS
     global EASYOCR_MIN_CONFIDENCE
@@ -3077,6 +3131,7 @@ def apply_cli_config(args):
     EASYOCR_SUBTITLE_CROP_RATIO = float(args.easyocr_crop_ratio)
     EASYOCR_SUBTITLE_CROP_AUTO_DETECT = args.easyocr_crop_auto == "on"
     EASYOCR_CROP_PROBE_DEBUG = args.easyocr_crop_probe_debug == "on"
+    EASYOCR_CROP_PROBE_EXPORT = args.easyocr_crop_probe_export == "on"
     EASYOCR_FPS = float(args.easyocr_fps)
     EASYOCR_WORKERS = int(args.easyocr_workers)
     EASYOCR_MIN_CONFIDENCE = float(args.easyocr_min_confidence)
