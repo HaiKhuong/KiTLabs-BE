@@ -1478,13 +1478,22 @@ def _easyocr_probe_timestamps_sec(duration_ms, n_frames):
     return fixed[:n]
 
 
+def _easyocr_probe_extract_h_crop_vf():
+    """crop ngang giữa frame: bỏ trái/phải theo EASYOCR_CROP_PROBE_H_TRIM_* (dùng khi trích probe)."""
+    hl = max(0.0, min(0.49, float(EASYOCR_CROP_PROBE_H_TRIM_LEFT_FRAC)))
+    hr = max(0.0, min(0.49, float(EASYOCR_CROP_PROBE_H_TRIM_RIGHT_FRAC)))
+    wfrac = max(0.02, 1.0 - hl - hr)
+    return f"crop=iw*{wfrac:.6f}:ih:iw*{hl:.6f}:0"
+
+
 def _extract_easyocr_probe_frames(video_path, out_dir, n_frames):
-    """Save full-frame PNGs for crop-ratio scoring."""
+    """Lưu PNG probe đã crop ngang theo EASYOCR_CROP_PROBE_H_TRIM_* (cùng vùng OCR crop detect)."""
     import cv2
 
     out_dir.mkdir(parents=True, exist_ok=True)
     duration_ms = get_media_duration_ms(video_path)
     times = _easyocr_probe_timestamps_sec(duration_ms, n_frames)
+    probe_vf = _easyocr_probe_extract_h_crop_vf()
     paths = []
     for i, t in enumerate(times):
         p = out_dir / f"probe_{i:02d}.png"
@@ -1496,6 +1505,8 @@ def _extract_easyocr_probe_frames(video_path, out_dir, n_frames):
                 f"{t:.3f}",
                 "-i",
                 str(video_path),
+                "-vf",
+                probe_vf,
                 "-vframes",
                 "1",
                 "-q:v",
@@ -1598,8 +1609,8 @@ def _easyocr_tune_timestamp_sec(video_path):
 
 def _detect_easyocr_crop_band(video_path, reader, ocr_dir):
     """
-    Detect subtitle band (lo, hi) bằng cách chạy OCR trên phần đáy frame,
-    chỉ vùng giữa theo chiều ngang (bỏ mé trái/phải theo EASYOCR_CROP_PROBE_H_TRIM_*),
+    Detect subtitle band (lo, hi) bằng cách chạy OCR trên phần đáy frame probe
+    (probe PNG đã crop ngang trong ffmpeg theo EASYOCR_CROP_PROBE_H_TRIM_*),
     lấy bbox chữ để xác định lo/hi, sau đó cap theo strip_max.
 
     lo/hi tính từ đáy frame (0 = sát đáy, 1 = đỉnh frame).
@@ -1638,17 +1649,8 @@ def _detect_easyocr_crop_band(video_path, reader, ocr_dir):
         ih, iw = img.shape[:2]
         if ih < 40 or iw < 40:
             continue
-        h_l = float(EASYOCR_CROP_PROBE_H_TRIM_LEFT_FRAC)
-        h_r = float(EASYOCR_CROP_PROBE_H_TRIM_RIGHT_FRAC)
-        x0 = int(round(iw * h_l))
-        x1 = int(round(iw * (1.0 - h_r)))
-        x0 = max(0, min(x0, iw - 2))
-        x1 = max(x0 + 2, min(x1, iw))
-        img_roi = img[:, x0:x1]
-        if img_roi.shape[1] < 40:
-            continue
         scan_top = int(ih * (1.0 - SCAN_HI))
-        scan_strip = img_roi[scan_top:, :]
+        scan_strip = img[scan_top:, :]
         gray = _preprocess_easyocr_strip_like_pipeline(scan_strip)
         try:
             results = reader.readtext(gray, detail=1)
