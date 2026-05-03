@@ -146,9 +146,8 @@ STEP1_CONDITION_ON_PREVIOUS_TEXT = (
 
 # EasyOCR config (STEP1_SUBTITLE_SOURCE = "easyocr")
 EASYOCR_LANG = ["ch_sim", "en"]  # EasyOCR language codes
-# Crop dải phụ đề đáy: khoảng theo % chiều cao tính **từ đáy khung** lên (0 = sát đáy).
-# inner < outer: chỉ lấy dải từ mốc inner đến outer (vd 10%→15% = bỏ 10% sát đáy, không lấy 0→10%).
-EASYOCR_SUBTITLE_CROP_BAND_LO = 0.05
+# Giới hạn cao nhất của dải phụ đề (% từ đáy frame); phụ đề thường ≤ 20% từ đáy.
+EASYOCR_SUBTITLE_CROP_BAND_HI = 0.20
 # Số frame mẫu để detect bbox phụ đề (scan full-frame → OCR → lấy lo/hi từ bbox chữ).
 EASYOCR_CROP_PROBE_FRAMES = 12
 EASYOCR_FPS = 2  # frame extraction rate for OCR
@@ -1604,15 +1603,15 @@ def _detect_easyocr_crop_band(video_path, reader, ocr_dir):
     """
     import cv2
 
-    lo_floor = float(EASYOCR_SUBTITLE_CROP_BAND_LO)
+    hi_max = float(EASYOCR_SUBTITLE_CROP_BAND_HI)
     strip_max = float(EASYOCR_MAX_STRIP_HEIGHT_RATIO or 0.05)
-    fallback_lo = lo_floor
-    fallback_hi = lo_floor + strip_max
+    fallback_hi = hi_max
+    fallback_lo = max(0.0, fallback_hi - strip_max)
 
-    SCAN_HI = 0.4   # quét 35% đáy frame để bắt hết phụ đề
+    SCAN_HI = 0.4    # quét 40% đáy frame để bắt hết phụ đề
     PAD = 0.015      # padding quanh bbox (1.5% chiều cao frame) — đủ cho descender/ascender
-    # Box có đáy (lo) quá cao so với lo_floor → khả năng watermark/logo, không phải phụ đề đáy.
-    LO_OUTLIER_MAX = lo_floor + 0.12
+    # Box có hi quá cao (xa đáy) → khả năng watermark góc trên, không phải phụ đề đáy.
+    HI_OUTLIER_MIN = hi_max + 0.05
 
     probe_dir = ocr_dir / "probe_src"
     shutil.rmtree(probe_dir, ignore_errors=True)
@@ -1669,7 +1668,12 @@ def _detect_easyocr_crop_band(video_path, reader, ocr_dir):
             y_bot_frame = scan_top + y_bot_in_scan
             hi_cand = (ih - y_top_frame) / ih
             lo_cand = max(0.0, (ih - y_bot_frame) / ih)
-            if lo_cand > LO_OUTLIER_MAX:
+            if hi_cand > HI_OUTLIER_MIN:
+                log(
+                    f"Step1 OCR: crop detect [{fp.name}] skip watermark top "
+                    f"hi={hi_cand:.3f} > max={HI_OUTLIER_MIN:.3f} "
+                    f'conf={conf_f:.2f} "{text_s[:20]}"'
+                )
                 continue
             all_hi.append(hi_cand)
             all_lo.append(lo_cand)
