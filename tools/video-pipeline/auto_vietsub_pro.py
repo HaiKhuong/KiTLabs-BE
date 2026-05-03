@@ -139,15 +139,17 @@ STEP1_CONDITION_ON_PREVIOUS_TEXT = (
 # EasyOCR config (STEP1_SUBTITLE_SOURCE = "easyocr")
 EASYOCR_LANG = ["ch_sim", "en"]  # EasyOCR language codes
 # Manual crop / fallback when auto-detect finds no OCR signal on probe frames.
-EASYOCR_SUBTITLE_CROP_RATIO = 0.15
-# Auto: thử nhiều ratio trên vài frame mẫu (hard-sub đáy thường ~5–20% chiều cao).
+EASYOCR_SUBTITLE_CROP_RATIO = 0.1
+# Auto: thử nhiều ratio trên nhiều frame mẫu (hard-sub đáy thường ~5–15% chiều cao).
 EASYOCR_SUBTITLE_CROP_AUTO_DETECT = True
 EASYOCR_CROP_PROBE_MIN = 0.05
 EASYOCR_CROP_PROBE_MAX = 0.15
 EASYOCR_CROP_PROBE_STEP = 0.01
-EASYOCR_CROP_PROBE_FRAMES = 6
+EASYOCR_CROP_PROBE_FRAMES = 12
 # Chọn ratio nhỏ nhất vẫn đạt >= tie_frac điểm của ratio tốt nhất (vừa khít vùng chữ).
 EASYOCR_CROP_PROBE_SCORE_TIE_FRAC = 0.92
+# Bật --easyocr-crop-probe-debug on: log timeline probe, điểm theo từng frame/ratio, tổng hợp.
+EASYOCR_CROP_PROBE_DEBUG = False
 EASYOCR_FPS = 2  # frame extraction rate for OCR
 EASYOCR_WORKERS = 4  # parallel OCR threads
 EASYOCR_MIN_CONFIDENCE = 0.5  # discard OCR results below this confidence
@@ -1383,20 +1385,41 @@ def _easyocr_crop_ratio_candidates():
 
 def _easyocr_probe_timestamps_sec(duration_ms, n_frames):
     """Spread sample times across the file; avoid the very last frames."""
+    n = max(1, int(n_frames))
     if duration_ms and duration_ms > 8000:
         d_sec = duration_ms / 1000.0
-        raw = [
-            max(0.25, d_sec * 0.02),
-            d_sec * 0.10,
-            d_sec * 0.25,
-            d_sec * 0.42,
-            d_sec * 0.58,
-            d_sec * 0.75,
-        ]
         cap = max(0.5, d_sec * 0.95)
-        return [min(t, cap) for t in raw][:n_frames]
-    fixed = [0.25, 1.0, 2.5, 5.0, 8.0, 12.0, 20.0, 35.0]
-    return fixed[:n_frames]
+        lo_frac, hi_frac = 0.02, 0.90
+        if n == 1:
+            t = max(0.25, d_sec * 0.12)
+            return [min(t, cap)]
+        out = []
+        for k in range(n):
+            frac = lo_frac + (hi_frac - lo_frac) * (k / (n - 1))
+            t = max(0.25, d_sec * frac)
+            out.append(min(t, cap))
+        return out
+    fixed = [
+        0.25,
+        0.5,
+        0.85,
+        1.2,
+        1.8,
+        2.5,
+        3.5,
+        5.0,
+        6.5,
+        8.0,
+        10.0,
+        12.0,
+        15.0,
+        20.0,
+        28.0,
+        38.0,
+        50.0,
+        65.0,
+    ]
+    return fixed[:n]
 
 
 def _extract_easyocr_probe_frames(video_path, out_dir, n_frames):
@@ -1450,13 +1473,14 @@ def _preprocess_easyocr_strip_like_pipeline(bgr_strip):
 
 
 def _score_easyocr_strip(reader, gray_u8):
-    """Return (weighted_score, char_count) for one strip image."""
+    """Return (weighted_score, char_count, text_preview) for one strip image."""
     try:
         results = reader.readtext(gray_u8, detail=1)
     except Exception:
-        return 0.0, 0
+        return 0.0, 0, ""
     total = 0.0
     chars = 0
+    snippets = []
     h = float(gray_u8.shape[0])
     for bbox, text, conf in results:
         t = (text or "").strip()
@@ -1478,7 +1502,16 @@ def _score_easyocr_strip(reader, gray_u8):
         w = max(len(t), 1)
         total += float(conf) * w * pos_w
         chars += len(t)
-    return total, chars
+        snippets.append(t[:40].replace("\n", " "))
+    preview = " | ".join(snippets[:4])
+    if len(preview) > 160:
+        preview = preview[:157] + "..."
+    return total, chars, preview
+
+
+def _format_crop_probe_totals_line(totals, top_n=8):
+    ranked = sorted(totals.items(), key=lambda kv: -kv[1])[:top_n]
+    return ", ".join(f"r={a:.2f}:{b:.2f}" for a, b in ranked)
 
 
 def _detect_easyocr_crop_ratio(video_path, reader, ocr_dir):
@@ -1489,6 +1522,22 @@ def _detect_easyocr_crop_ratio(video_path, reader, ocr_dir):
     """
     probe_dir = ocr_dir / "probe_src"
     shutil.rmtree(probe_dir, ignore_errors=True)
+
+    duration_ms = get_media_duration_ms(video_path)
+    planned_times = _easyocr_probe_timestamps_sec(
+        duration_ms, EASYOCR_CROP_PROBE_FRAMES
+    )
+    candidates = _easyocr_crop_ratio_candidates()
+    if EASYOCR_CROP_PROBE_DEBUG:
+        log(
+            "Step1 OCR: crop debug — "
+            f"duration_ms={duration_ms}, "
+            f"probe_times_s={[round(t, 3) for t in planned_times]}, "
+            f"r∈[{EASYOCR_CROP_PROBE_MIN:.2f},{EASYOCR_CROP_PROBE_MAX:.2f}] "
+            f"step={EASYOCR_CROP_PROBE_STEP:g} ({len(candidates)} candidates), "
+            f"min_conf={EASYOCR_MIN_CONFIDENCE}"
+        )
+
     frame_paths = _extract_easyocr_probe_frames(
         video_path, probe_dir, EASYOCR_CROP_PROBE_FRAMES
     )
@@ -1498,27 +1547,72 @@ def _detect_easyocr_crop_ratio(video_path, reader, ocr_dir):
             "Step1 OCR: crop auto — không lấy được frame mẫu, dùng "
             f"EASYOCR_SUBTITLE_CROP_RATIO={EASYOCR_SUBTITLE_CROP_RATIO:.3f}"
         )
+        if EASYOCR_CROP_PROBE_DEBUG:
+            log(
+                "Step1 OCR: crop debug — extract thất bại "
+                f"(planned {len(planned_times)} mốc thời gian)."
+            )
         return float(EASYOCR_SUBTITLE_CROP_RATIO)
 
     import cv2
 
-    candidates = _easyocr_crop_ratio_candidates()
+    if EASYOCR_CROP_PROBE_DEBUG:
+        log(
+            "Step1 OCR: crop debug — "
+            f"đã lấy {len(frame_paths)} frame: "
+            f"{', '.join(p.name for p in frame_paths)}"
+        )
+
     totals = {r: 0.0 for r in candidates}
+    n_frames_used = 0
     for fp in frame_paths:
         img = cv2.imread(str(fp))
         if img is None:
+            if EASYOCR_CROP_PROBE_DEBUG:
+                log(f"Step1 OCR: crop debug — bỏ qua (imread None): {fp.name}")
+            try:
+                fp.unlink()
+            except OSError:
+                pass
             continue
         ih, iw = img.shape[:2]
         if ih < 40 or iw < 40:
+            if EASYOCR_CROP_PROBE_DEBUG:
+                log(
+                    "Step1 OCR: crop debug — bỏ qua (quá nhỏ): "
+                    f"{fp.name} {iw}x{ih}"
+                )
+            try:
+                fp.unlink()
+            except OSError:
+                pass
             continue
+        n_frames_used += 1
+        row = {}
+        row_preview = {}
         for r in candidates:
             crop_h = max(8, int(round(ih * r)))
             strip = img[ih - crop_h : ih, :]
             if strip.size == 0:
                 continue
             gray = _preprocess_easyocr_strip_like_pipeline(strip)
-            sc, _ = _score_easyocr_strip(reader, gray)
+            sc, nch, prv = _score_easyocr_strip(reader, gray)
             totals[r] += sc
+            row[r] = sc
+            row_preview[r] = (nch, prv)
+        if EASYOCR_CROP_PROBE_DEBUG and row:
+            top = sorted(row.items(), key=lambda kv: -kv[1])[:5]
+            parts = []
+            for rr, sc in top:
+                nch, prv = row_preview.get(rr, (0, ""))
+                tail = f" ch={nch}" if nch else ""
+                if prv:
+                    tail += f' txt="{prv}"'
+                parts.append(f"r={rr:.2f}:{sc:.1f}{tail}")
+            log(
+                "Step1 OCR: crop debug — "
+                f"{fp.name} {iw}x{ih} | " + "; ".join(parts)
+            )
         try:
             fp.unlink()
         except OSError:
@@ -1533,6 +1627,17 @@ def _detect_easyocr_crop_ratio(video_path, reader, ocr_dir):
             "Step1 OCR: crop auto — không có tín hiệu OCR trên frame mẫu, dùng "
             f"fallback={EASYOCR_SUBTITLE_CROP_RATIO:.3f}"
         )
+        log(
+            "Step1 OCR: crop hint — "
+            f"frames_probe={len(frame_paths)}, frames_scored={n_frames_used}, "
+            f"duration_ms={duration_ms}, "
+            f"totals_top={_format_crop_probe_totals_line(totals, top_n=6)}"
+        )
+        if EASYOCR_CROP_PROBE_DEBUG:
+            log(
+                "Step1 OCR: crop debug — full totals: "
+                + _format_crop_probe_totals_line(totals, top_n=len(candidates))
+            )
         return float(EASYOCR_SUBTITLE_CROP_RATIO)
 
     thr = best * EASYOCR_CROP_PROBE_SCORE_TIE_FRAC
@@ -1542,8 +1647,15 @@ def _detect_easyocr_crop_ratio(video_path, reader, ocr_dir):
         "Step1 OCR: crop auto — "
         f"điểm tối đa≈{best:.1f} (r={best_r:.3f}), "
         f"chọn r={chosen:.3f} trong tie-band "
-        f"(≥{EASYOCR_CROP_PROBE_SCORE_TIE_FRAC:.0%} điểm tối đa, {len(frame_paths)} frame)"
+        f"(≥{EASYOCR_CROP_PROBE_SCORE_TIE_FRAC:.0%} điểm tối đa, {n_frames_used} frame)"
     )
+    if EASYOCR_CROP_PROBE_DEBUG:
+        log(
+            "Step1 OCR: crop debug — "
+            f"tie_thr={thr:.2f}, eligible={[round(x, 3) for x in eligible]}, "
+            f"frames_scored={n_frames_used}, "
+            f"totals_top={_format_crop_probe_totals_line(totals, top_n=len(candidates))}"
+        )
     return float(chosen)
 
 
@@ -2623,6 +2735,15 @@ def parse_cli_args():
         ),
     )
     parser.add_argument(
+        "--easyocr-crop-probe-debug",
+        choices=["on", "off"],
+        default="on" if EASYOCR_CROP_PROBE_DEBUG else "off",
+        help=(
+            "on: verbose logs for crop-ratio auto-detect (timeline, per-frame top ratios, totals). "
+            "off: default; on OCR failure a short hint line is still logged."
+        ),
+    )
+    parser.add_argument(
         "--easyocr-fps",
         type=float,
         default=EASYOCR_FPS,
@@ -2847,6 +2968,7 @@ def apply_cli_config(args):
     global EASYOCR_LANG
     global EASYOCR_SUBTITLE_CROP_RATIO
     global EASYOCR_SUBTITLE_CROP_AUTO_DETECT
+    global EASYOCR_CROP_PROBE_DEBUG
     global EASYOCR_FPS
     global EASYOCR_WORKERS
     global EASYOCR_MIN_CONFIDENCE
@@ -2954,6 +3076,7 @@ def apply_cli_config(args):
         EASYOCR_LANG = [s.strip() for s in args.easyocr_lang.split(",") if s.strip()]
     EASYOCR_SUBTITLE_CROP_RATIO = float(args.easyocr_crop_ratio)
     EASYOCR_SUBTITLE_CROP_AUTO_DETECT = args.easyocr_crop_auto == "on"
+    EASYOCR_CROP_PROBE_DEBUG = args.easyocr_crop_probe_debug == "on"
     EASYOCR_FPS = float(args.easyocr_fps)
     EASYOCR_WORKERS = int(args.easyocr_workers)
     EASYOCR_MIN_CONFIDENCE = float(args.easyocr_min_confidence)
