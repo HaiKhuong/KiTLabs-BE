@@ -1562,6 +1562,17 @@ def _safe_easyocr_probe_dir_name(stem, max_len=100):
     return s or "video"
 
 
+def _copy_file_relaxed(src: Path, dst: Path):
+    """
+    Sao chép nội dung file, tránh shutil.copy2 (metadata/mtime) gây EPERM trên
+    một số volume (NFS, FUSE, bind-mount Docker, v.v.).
+    """
+    try:
+        shutil.copyfile(str(src), str(dst))
+    except OSError:
+        dst.write_bytes(src.read_bytes())
+
+
 def _write_easyocr_probe_export_meta(export_dir, video_path, duration_ms, planned_times):
     exported = sorted(export_dir.glob("probe_*.png")) if export_dir else []
     payload = {
@@ -1672,7 +1683,7 @@ def _detect_easyocr_crop_band_hi(video_path, reader, ocr_dir):
     for fp in frame_paths:
         if export_dir is not None and fp.exists():
             try:
-                shutil.copy2(fp, export_dir / fp.name)
+                _copy_file_relaxed(fp, export_dir / fp.name)
             except OSError as e:
                 log(f"Step1 OCR: crop probe export copy failed ({fp.name}): {e}")
         img = cv2.imread(str(fp))
@@ -1823,6 +1834,21 @@ def _step1_ocr_with_easyocr(video_path):
     if band_hi <= band_lo + 1e-9:
         raise RuntimeError(
             f"Step1 OCR: invalid crop band lo={band_lo} hi={band_hi} (need hi > lo)."
+        )
+
+    band_strip_pct = (band_hi - band_lo) * 100.0
+    if EASYOCR_SUBTITLE_CROP_AUTO_DETECT:
+        log(
+            "Step1 OCR: crop — kết quả áp dụng (sau auto probe): "
+            f"inner_lo={band_lo:.3f}, outer_hi={band_hi:.3f} "
+            f"(dải OCR ~{band_strip_pct:.1f}% chiều cao khung, đo từ đáy lên; "
+            "chi tiết điểm/tie-band xem log [Step1 OCR: crop auto — …] phía trên)."
+        )
+    else:
+        log(
+            "Step1 OCR: crop — band cố định (--easyocr-crop-auto off): "
+            f"inner_lo={band_lo:.3f}, outer_hi={band_hi:.3f} "
+            f"(dải ~{band_strip_pct:.1f}% chiều cao khung)."
         )
 
     frames_dir.mkdir(parents=True, exist_ok=True)
