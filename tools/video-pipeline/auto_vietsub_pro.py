@@ -3115,6 +3115,30 @@ def parse_cli_args():
     return parser.parse_args()
 
 
+def _log_parsed_cli_args(args):
+    """Log resolved argparse values (one line, stable key order; long strings truncated)."""
+
+    def _fmt_val(v, max_len=200):
+        if v is None:
+            return "None"
+        if isinstance(v, bytes):
+            s = v.decode("utf-8", errors="replace")
+        elif isinstance(v, str):
+            s = v
+        else:
+            return repr(v)
+        if len(s) > max_len:
+            s = s[:max_len] + "…"
+        return repr(s)
+
+    d = vars(args)
+    keys = sorted(d.keys())
+    if "video" in d:
+        keys = ["video"] + [k for k in keys if k != "video"]
+    parts = [f"{k}={_fmt_val(d[k])}" for k in keys]
+    log("CLI args: " + " ".join(parts))
+
+
 def apply_cli_config(args):
     global WHISPER_LANGUAGE
     global STEP1_SUBTITLE_SOURCE
@@ -3531,6 +3555,7 @@ def run_pipeline(video, step_arg=None):
 
 if __name__ == "__main__":
     args = parse_cli_args()
+    _log_parsed_cli_args(args)
     apply_cli_config(args)
     try:
         run_pipeline(args.video, args.step)
