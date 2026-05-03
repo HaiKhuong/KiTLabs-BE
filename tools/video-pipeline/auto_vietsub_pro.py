@@ -150,7 +150,7 @@ EASYOCR_LANG = ["ch_sim", "en"]  # EasyOCR language codes
 # inner < outer: chỉ lấy dải từ mốc inner đến outer (vd 10%→15% = bỏ 10% sát đáy, không lấy 0→10%).
 EASYOCR_SUBTITLE_CROP_BAND_LO = 0.05
 # Số frame mẫu để detect bbox phụ đề (scan full-frame → OCR → lấy lo/hi từ bbox chữ).
-EASYOCR_CROP_PROBE_FRAMES = 5
+EASYOCR_CROP_PROBE_FRAMES = 12
 EASYOCR_FPS = 2  # frame extraction rate for OCR
 EASYOCR_WORKERS = 4  # parallel OCR threads
 EASYOCR_MIN_CONFIDENCE = 0.5  # discard OCR results below this confidence
