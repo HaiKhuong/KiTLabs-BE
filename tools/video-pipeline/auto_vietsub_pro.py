@@ -150,6 +150,9 @@ EASYOCR_LANG = ["ch_sim", "en"]  # EasyOCR language codes
 EASYOCR_SUBTITLE_CROP_BAND_HI = 0.20
 # Số frame mẫu để detect bbox phụ đề (scan full-frame → OCR → lấy lo/hi từ bbox chữ).
 EASYOCR_CROP_PROBE_FRAMES = 12
+# Chỉ lấy frame probe trong 80% giữa video (bỏ đầu/cuối theo tỷ lệ thời lượng).
+EASYOCR_CROP_PROBE_TRIM_HEAD_FRAC = 0.10
+EASYOCR_CROP_PROBE_TRIM_TAIL_FRAC = 0.10
 EASYOCR_FPS = 2  # frame extraction rate for OCR
 EASYOCR_WORKERS = 4  # parallel OCR threads
 EASYOCR_MIN_CONFIDENCE = 0.5  # discard OCR results below this confidencee
@@ -1437,20 +1440,20 @@ def _easyocr_crop_ffmpeg_vf(band_lo, band_hi):
 
 
 def _easyocr_probe_timestamps_sec(duration_ms, n_frames):
-    """Spread sample times across the file; avoid the very last frames."""
+    """Spread sample times across the middle of the timeline (skip head/tail by trim fracs)."""
     n = max(1, int(n_frames))
-    if duration_ms and duration_ms > 8000:
+    head = float(EASYOCR_CROP_PROBE_TRIM_HEAD_FRAC)
+    tail = float(EASYOCR_CROP_PROBE_TRIM_TAIL_FRAC)
+    if duration_ms and duration_ms > 0:
         d_sec = duration_ms / 1000.0
-        cap = max(0.5, d_sec * 0.95)
-        lo_frac, hi_frac = 0.02, 0.90
+        t_lo = max(0.0, d_sec * head)
+        t_hi = max(t_lo + 1e-6, d_sec * (1.0 - tail))
         if n == 1:
-            t = max(0.25, d_sec * 0.12)
-            return [min(t, cap)]
+            return [0.5 * (t_lo + t_hi)]
         out = []
         for k in range(n):
-            frac = lo_frac + (hi_frac - lo_frac) * (k / (n - 1))
-            t = max(0.25, d_sec * frac)
-            out.append(min(t, cap))
+            frac = k / (n - 1)
+            out.append(t_lo + (t_hi - t_lo) * frac)
         return out
     fixed = [
         0.25,
