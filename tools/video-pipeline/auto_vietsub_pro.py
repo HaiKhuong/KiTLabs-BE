@@ -1614,7 +1614,7 @@ def _detect_easyocr_crop_band(video_path, reader, ocr_dir):
     """
     Detect subtitle band (lo, hi) bằng cách chạy OCR trên phần đáy frame probe
     (probe PNG đã crop ngang trong ffmpeg theo EASYOCR_CROP_PROBE_H_TRIM_*),
-    lấy bbox chữ để xác định lo/hi, sau đó cap theo strip_max.
+    lấy bbox chữ để xác định lo/hi; hi từ phân vị bbox (p95+PAD), lo = hi − strip_max nếu strip_max > 0.
 
     lo/hi tính từ đáy frame (0 = sát đáy, 1 = đỉnh frame).
     Fallback: hi = EASYOCR_SUBTITLE_CROP_BAND_HI, lo = hi - strip_max.
@@ -1643,8 +1643,6 @@ def _detect_easyocr_crop_band(video_path, reader, ocr_dir):
         shutil.rmtree(debug_probe_dir, ignore_errors=True)
         log(f"Step1 OCR: crop detect — không lấy được frame mẫu, fallback lo={fallback_lo:.3f} hi={fallback_hi:.3f}")
         return fallback_lo, fallback_hi
-
-    log(f"Step1 OCR: crop probe debug → {debug_probe_dir}")
 
     all_lo: list[float] = []
     all_hi: list[float] = []
@@ -1735,8 +1733,9 @@ def _detect_easyocr_crop_band(video_path, reader, ocr_dir):
         f"n={n}"
     )
 
-    if strip_max > 0 and det_hi > det_lo + strip_max + 1e-9:
-        det_hi = det_lo + strip_max
+    # Neo theo mé ngoài (hi từ bbox): độ cao dải ≤ strip_max ⇒ lo = hi − strip_max (không kéo hi xuống theo p5).
+    if strip_max > 0:
+        det_lo = max(lo_floor, det_hi - strip_max)
 
     if det_hi <= det_lo + 1e-9:
         log(f"Step1 OCR: crop detect — dải không hợp lệ sau tính toán, fallback lo={fallback_lo:.3f} hi={fallback_hi:.3f}")
