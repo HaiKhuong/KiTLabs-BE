@@ -171,7 +171,7 @@ EASYOCR_TEXT_SKIP_REGEXES_JSON = "[]"
 _EASYOCR_SKIP_COMPILED = []  # list[re.Pattern], rebuild trong apply_cli_config
 
 EASYOCR_BUILTIN_SKIP_REGEXES = (
-    r"(?i)^\s*(订阅|点赞|收藏|分享|转发)\s*$",
+    r"(?i)^\s*(订阅|点赞|收藏|分享|转发|AlCheng动漫)\s*$",
     r"(?i)^\s*会员\s*\d*\s*$",
     r"(?i)^\s*温馨提示\s*$",
     r"^\s*\d{1,2}:\d{2}(:\d{2})?\s*[-–~至]\s*\d{1,2}:\d{2}(:\d{2})?\s*$",
@@ -1609,8 +1609,10 @@ def _detect_easyocr_crop_band(video_path, reader, ocr_dir):
     fallback_lo = lo_floor
     fallback_hi = lo_floor + strip_max
 
-    SCAN_HI = 0.35  # quét 35% đáy frame để bắt hết phụ đề
-    PAD = 0.008     # padding quanh bbox (% chiều cao frame)
+    SCAN_HI = 0.35   # quét 35% đáy frame để bắt hết phụ đề
+    PAD = 0.008      # padding quanh bbox (% chiều cao frame)
+    # Box có đáy (lo) quá cao so với lo_floor → khả năng watermark/logo, không phải phụ đề đáy.
+    LO_OUTLIER_MAX = lo_floor + 0.12
 
     probe_dir = ocr_dir / "probe_src"
     shutil.rmtree(probe_dir, ignore_errors=True)
@@ -1654,6 +1656,12 @@ def _detect_easyocr_crop_band(video_path, reader, ocr_dir):
                 continue
             if not text_s:
                 continue
+            if _easyocr_should_skip_merged_text(text_s):
+                log(
+                    f"Step1 OCR: crop detect [{fp.name}] skip regex watermark "
+                    f'conf={conf_f:.2f} "{text_s[:30]}"'
+                )
+                continue
             ys = [float(pt[1]) for pt in box]
             y_top_in_scan = min(ys)
             y_bot_in_scan = max(ys)
@@ -1661,6 +1669,13 @@ def _detect_easyocr_crop_band(video_path, reader, ocr_dir):
             y_bot_frame = scan_top + y_bot_in_scan
             hi_cand = (ih - y_top_frame) / ih
             lo_cand = max(0.0, (ih - y_bot_frame) / ih)
+            if lo_cand > LO_OUTLIER_MAX:
+                log(
+                    f"Step1 OCR: crop detect [{fp.name}] skip watermark "
+                    f"lo={lo_cand:.3f} > max={LO_OUTLIER_MAX:.3f} "
+                    f'conf={conf_f:.2f} "{text_s[:20]}"'
+                )
+                continue
             all_hi.append(hi_cand)
             all_lo.append(lo_cand)
             frame_boxes.append((conf_f, text_s, lo_cand, hi_cand))
