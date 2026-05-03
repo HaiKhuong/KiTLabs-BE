@@ -3205,6 +3205,7 @@ def apply_cli_config(args):
     global EASYOCR_MIN_DURATION_MS
     global EASYOCR_FUZZY_THRESHOLD
     global EASYOCR_GPU
+    global EASYOCR_CLEANUP_DEBUG_AFTER_STEP7
 
     SUBTITLE_FONT = args.subtitle_font
     SUBTITLE_FONTSIZE = args.subtitle_fontsize
