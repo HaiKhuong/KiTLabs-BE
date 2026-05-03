@@ -1599,7 +1599,7 @@ def _detect_easyocr_crop_band(video_path, reader, ocr_dir):
     lấy bbox chữ thực để xác định lo/hi chính xác, sau đó cap theo strip_max.
 
     lo/hi tính từ đáy frame (0 = sát đáy, 1 = đỉnh frame).
-    Fallback: lo = EASYOCR_SUBTITLE_CROP_BAND_LO, hi = lo + strip_max.
+    Fallback: hi = EASYOCR_SUBTITLE_CROP_BAND_HI, lo = hi - strip_max.
     """
     import cv2
 
@@ -1612,6 +1612,7 @@ def _detect_easyocr_crop_band(video_path, reader, ocr_dir):
     PAD = 0.015      # padding quanh bbox (1.5% chiều cao frame) — đủ cho descender/ascender
     # Box có hi quá cao (xa đáy) → khả năng watermark góc trên, không phải phụ đề đáy.
     HI_OUTLIER_MIN = hi_max + 0.05
+    lo_floor = 0.0   # giới hạn dưới của lo (sát đáy frame)
 
     probe_dir = ocr_dir / "probe_src"
     shutil.rmtree(probe_dir, ignore_errors=True)
@@ -2806,11 +2807,11 @@ def parse_cli_args():
         help="Comma-separated EasyOCR language codes. Example: ch_sim,en (default).",
     )
     parser.add_argument(
-        "--easyocr-crop-band-lo",
+        "--easyocr-crop-band-hi",
         type=float,
-        default=EASYOCR_SUBTITLE_CROP_BAND_LO,
+        default=EASYOCR_SUBTITLE_CROP_BAND_HI,
         help=(
-            "EasyOCR crop: inner edge from bottom as fraction of frame height (default 0.10). "
+            "EasyOCR crop: outer edge (high limit) from bottom as fraction of frame height (default 0.20). "
             "Band is pixels between band-lo and band-hi from the frame bottom."
         ),
     )
@@ -3109,7 +3110,7 @@ def apply_cli_config(args):
     global STEP1_LOGPROB_THRESHOLD
     global STEP1_CONDITION_ON_PREVIOUS_TEXT
     global EASYOCR_LANG
-    global EASYOCR_SUBTITLE_CROP_BAND_LO
+    global EASYOCR_SUBTITLE_CROP_BAND_HI
     global EASYOCR_FPS
     global EASYOCR_WORKERS
     global EASYOCR_MIN_CONFIDENCE
@@ -3223,7 +3224,7 @@ def apply_cli_config(args):
 
     if args.easyocr_lang:
         EASYOCR_LANG = [s.strip() for s in args.easyocr_lang.split(",") if s.strip()]
-    EASYOCR_SUBTITLE_CROP_BAND_LO = float(args.easyocr_crop_band_lo)
+    EASYOCR_SUBTITLE_CROP_BAND_HI = float(args.easyocr_crop_band_hi)
     EASYOCR_CLEANUP_DEBUG_AFTER_STEP7 = (
         args.easyocr_cleanup_debug_after_step7 == "on"
     )
