@@ -149,22 +149,8 @@ EASYOCR_LANG = ["ch_sim", "en"]  # EasyOCR language codes
 # Crop dải phụ đề đáy: khoảng theo % chiều cao tính **từ đáy khung** lên (0 = sát đáy).
 # inner < outer: chỉ lấy dải từ mốc inner đến outer (vd 10%→15% = bỏ 10% sát đáy, không lấy 0→10%).
 EASYOCR_SUBTITLE_CROP_BAND_LO = 0.05
-EASYOCR_SUBTITLE_CROP_BAND_HI = 0.20
-# Auto: quét outer hi (cạnh xa đáy hơn) với inner cố định = EASYOCR_SUBTITLE_CROP_BAND_LO.
-EASYOCR_SUBTITLE_CROP_AUTO_DETECT = True
-# Quét outer hi từ ~7.5% khung (với lo=0.05 → dải tối thiểu ~2.5%); trước đây min 11% → dải tối thiểu ~6%.
-EASYOCR_CROP_PROBE_OUTER_MIN = 0.075
-EASYOCR_CROP_PROBE_OUTER_MAX = 0.20
-EASYOCR_CROP_PROBE_STEP = 0.005
-EASYOCR_CROP_PROBE_FRAMES = 12
-# Chọn ratio nhỏ nhất vẫn đạt >= tie_frac điểm của ratio tốt nhất (vừa khít vùng chữ).
-EASYOCR_CROP_PROBE_SCORE_TIE_FRAC = 0.92
-# Bật --easyocr-crop-probe-debug on: log timeline probe, điểm theo từng frame / outer hi, tổng hợp.
-EASYOCR_CROP_PROBE_DEBUG = False
-# Bật --easyocr-crop-probe-export on: mỗi lần probe đều copy PNG + probe_meta.json vào LOG_DIR/easyocr_crop_probe/…
-EASYOCR_CROP_PROBE_EXPORT = False
-# Khi auto probe không có điểm OCR: tự extract lại PNG + meta (không cần --easyocr-crop-probe-export).
-EASYOCR_CROP_PROBE_EXPORT_ON_FALLBACK = True
+# Số frame mẫu để detect bbox phụ đề (scan full-frame → OCR → lấy lo/hi từ bbox chữ).
+EASYOCR_CROP_PROBE_FRAMES = 5
 EASYOCR_FPS = 2  # frame extraction rate for OCR
 EASYOCR_WORKERS = 4  # parallel OCR threads
 EASYOCR_MIN_CONFIDENCE = 0.5  # discard OCR results below this confidence
@@ -1411,30 +1397,10 @@ def _step1_transcribe_with_whisper(video_path):
     return srt_path
 
 
-# Chỉ siết hi theo bbox nếu phía trên dải crop còn khoảng trống ≥ tỷ lệ này (tránh cắt nhầm khi chữ full dải).
-EASYOCR_REFINE_TOP_MARGIN_MIN_FRAC = 0.06
-# Sau refine bbox: không hạ hi quá thấp (sàn ~2% chiều cao khung cho dải hi−lo).
-EASYOCR_REFINE_MIN_STRIP_HEIGHT_RATIO = 0.02
-# Siết inner lo: cửa sổ [lo0, gate_hi] có text → lo0+5% → +2.5% lặp đến khi mất text (1 frame mẫu).
-EASYOCR_LO_TIGHTEN_ENABLED = True
-EASYOCR_LO_TIGHTEN_GATE_HI = 0.20
-EASYOCR_LO_TIGHTEN_FIRST_JUMP = 0.05
-EASYOCR_LO_TIGHTEN_STEP = 0.025
-EASYOCR_LO_TIGHTEN_MIN_STRIP = 0.02
 
 
-def _easyocr_crop_outer_hi_candidates(band_lo):
-    """Các mức outer (từ đáy) để chấm điểm; inner = band_lo, dải có độ cao (hi - band_lo)."""
-    out = []
-    hi = max(
-        EASYOCR_CROP_PROBE_OUTER_MIN,
-        float(band_lo) + EASYOCR_CROP_PROBE_STEP,
-    )
-    while hi <= EASYOCR_CROP_PROBE_OUTER_MAX + 1e-9:
-        if hi > float(band_lo) + 1e-9:
-            out.append(round(hi, 4))
-        hi += EASYOCR_CROP_PROBE_STEP
-    return out
+
+
 
 
 def _easyocr_crop_band_strip_bgr(img_bgr, band_lo, band_hi):
@@ -1564,295 +1530,7 @@ def _preprocess_easyocr_strip_like_pipeline(bgr_strip):
     return np.clip(x, 0, 255).astype(np.uint8)
 
 
-def _score_easyocr_strip(reader, gray_u8):
-    """Return (weighted_score, char_count, text_preview) for one strip image."""
-    try:
-        results = reader.readtext(gray_u8, detail=1)
-    except Exception:
-        return 0.0, 0, ""
-    total = 0.0
-    chars = 0
-    snippets = []
-    h = float(gray_u8.shape[0])
-    for bbox, text, conf in results:
-        t = (text or "").strip()
-        if not t or conf < EASYOCR_MIN_CONFIDENCE:
-            continue
-        try:
-            ys = [float(p[1]) for p in bbox]
-            cy = sum(ys) / max(len(ys), 1)
-            # Hardsub đáy: chữ thường nằm phía trên của dải crop (cy nhỏ hơn).
-            cy_n = cy / max(h, 1.0)
-            if cy_n <= 0.52:
-                pos_w = 1.06
-            elif cy_n >= 0.88:
-                pos_w = 0.94
-            else:
-                pos_w = 1.0
-        except Exception:
-            pos_w = 1.0
-        w = max(len(t), 1)
-        total += float(conf) * w * pos_w
-        chars += len(t)
-        snippets.append(t[:40].replace("\n", " "))
-    preview = " | ".join(snippets[:4])
-    if len(preview) > 160:
-        preview = preview[:157] + "..."
-    return total, chars, preview
 
-
-def _format_crop_probe_totals_line(totals, top_n=8):
-    ranked = sorted(totals.items(), key=lambda kv: -kv[1])[:top_n]
-    return ", ".join(f"hi={a:.2f}:{b:.2f}" for a, b in ranked)
-
-
-def _safe_easyocr_probe_dir_name(stem, max_len=100):
-    s = re.sub(r"[^\w\-.]+", "_", str(stem), flags=re.UNICODE).strip("._")
-    s = s[:max_len] if s else "video"
-    return s or "video"
-
-
-def _copy_file_relaxed(src: Path, dst: Path):
-    """
-    Sao chép nội dung file, tránh shutil.copy2 (metadata/mtime) gây EPERM trên
-    một số volume (NFS, FUSE, bind-mount Docker, v.v.).
-    """
-    try:
-        shutil.copyfile(str(src), str(dst))
-    except OSError:
-        dst.write_bytes(src.read_bytes())
-
-
-def _write_easyocr_probe_export_meta(export_dir, video_path, duration_ms, planned_times):
-    exported = sorted(export_dir.glob("probe_*.png")) if export_dir else []
-    payload = {
-        "video": str(video_path),
-        "duration_ms": duration_ms,
-        "probe_times_sec": [round(t, 4) for t in planned_times],
-        "exported_png": [p.name for p in exported],
-        "band_lo": float(EASYOCR_SUBTITLE_CROP_BAND_LO),
-        "band_hi_default": float(EASYOCR_SUBTITLE_CROP_BAND_HI),
-    }
-    p = export_dir / "probe_meta.json"
-    p.write_text(
-        json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
-        encoding="utf-8",
-    )
-
-
-def _export_easyocr_probe_frames_to_dir(
-    video_path, out_dir, duration_ms, planned_times, log_label
-):
-    """Extract full-frame probe PNGs into out_dir and write probe_meta.json."""
-    out_dir.mkdir(parents=True, exist_ok=True)
-    paths = _extract_easyocr_probe_frames(
-        video_path, out_dir, EASYOCR_CROP_PROBE_FRAMES
-    )
-    try:
-        _write_easyocr_probe_export_meta(out_dir, video_path, duration_ms, planned_times)
-    except OSError as e:
-        log(f"Step1 OCR: crop probe export meta failed: {e}")
-    log(
-        f"Step1 OCR: crop probe — {log_label} → {out_dir} "
-        f"({len(paths)} PNG, LOG_DIR={LOG_DIR})"
-    )
-    return paths
-
-
-def _detect_easyocr_crop_band_hi(video_path, reader, ocr_dir):
-    """
-    Chọn cạnh **outer** (hi, tính từ đáy khung) cho dải crop [band_lo, hi],
-    band_lo = EASYOCR_SUBTITLE_CROP_BAND_LO. Quét hi theo EASYOCR_CROP_PROBE_OUTER_*.
-    """
-    probe_dir = ocr_dir / "probe_src"
-    shutil.rmtree(probe_dir, ignore_errors=True)
-
-    duration_ms = get_media_duration_ms(video_path)
-    planned_times = _easyocr_probe_timestamps_sec(
-        duration_ms, EASYOCR_CROP_PROBE_FRAMES
-    )
-    band_lo = float(EASYOCR_SUBTITLE_CROP_BAND_LO)
-    candidates = _easyocr_crop_outer_hi_candidates(band_lo)
-    if not candidates:
-        hi_fb = max(
-            band_lo + EASYOCR_CROP_PROBE_STEP,
-            float(EASYOCR_SUBTITLE_CROP_BAND_HI),
-        )
-        if hi_fb > 1.0:
-            hi_fb = 1.0
-        if hi_fb <= band_lo + 1e-9:
-            hi_fb = min(1.0, band_lo + 0.05)
-        candidates = [hi_fb]
-    if EASYOCR_CROP_PROBE_DEBUG:
-        log(
-            "Step1 OCR: crop debug — "
-            f"duration_ms={duration_ms}, "
-            f"probe_times_s={[round(t, 3) for t in planned_times]}, "
-            f"band_lo={band_lo:.3f} (từ đáy), scan outer hi∈"
-            f"[{EASYOCR_CROP_PROBE_OUTER_MIN:.2f},{EASYOCR_CROP_PROBE_OUTER_MAX:.2f}] "
-            f"step={EASYOCR_CROP_PROBE_STEP:g} ({len(candidates)} candidates), "
-            f"min_conf={EASYOCR_MIN_CONFIDENCE}"
-        )
-
-    frame_paths = _extract_easyocr_probe_frames(
-        video_path, probe_dir, EASYOCR_CROP_PROBE_FRAMES
-    )
-    if not frame_paths:
-        shutil.rmtree(probe_dir, ignore_errors=True)
-        log(
-            "Step1 OCR: crop auto — không lấy được frame mẫu, dùng "
-            f"fallback band lo/hi={EASYOCR_SUBTITLE_CROP_BAND_LO:.3f}/"
-            f"{EASYOCR_SUBTITLE_CROP_BAND_HI:.3f}"
-        )
-        if EASYOCR_CROP_PROBE_DEBUG:
-            log(
-                "Step1 OCR: crop debug — extract thất bại "
-                f"(planned {len(planned_times)} mốc thời gian)."
-            )
-        return float(EASYOCR_SUBTITLE_CROP_BAND_HI)
-
-    import cv2
-
-    if EASYOCR_CROP_PROBE_DEBUG:
-        log(
-            "Step1 OCR: crop debug — "
-            f"đã lấy {len(frame_paths)} frame: "
-            f"{', '.join(p.name for p in frame_paths)}"
-        )
-
-    export_dir = None
-    if EASYOCR_CROP_PROBE_EXPORT:
-        stem = _safe_easyocr_probe_dir_name(Path(video_path).stem)
-        stamp = time.strftime("%Y%m%d_%H%M%S")
-        export_dir = LOG_DIR / "easyocr_crop_probe" / f"{stem}_{stamp}"
-        export_dir.mkdir(parents=True, exist_ok=True)
-        log(f"Step1 OCR: crop probe — export frame mẫu (full PNG) → {export_dir}")
-
-    totals = {hi: 0.0 for hi in candidates}
-    n_frames_used = 0
-    for fp in frame_paths:
-        if export_dir is not None and fp.exists():
-            try:
-                _copy_file_relaxed(fp, export_dir / fp.name)
-            except OSError as e:
-                log(f"Step1 OCR: crop probe export copy failed ({fp.name}): {e}")
-        img = cv2.imread(str(fp))
-        if img is None:
-            if EASYOCR_CROP_PROBE_DEBUG:
-                log(f"Step1 OCR: crop debug — bỏ qua (imread None): {fp.name}")
-            try:
-                fp.unlink()
-            except OSError:
-                pass
-            continue
-        ih, iw = img.shape[:2]
-        if ih < 40 or iw < 40:
-            if EASYOCR_CROP_PROBE_DEBUG:
-                log(
-                    "Step1 OCR: crop debug — bỏ qua (quá nhỏ): "
-                    f"{fp.name} {iw}x{ih}"
-                )
-            try:
-                fp.unlink()
-            except OSError:
-                pass
-            continue
-        n_frames_used += 1
-        row = {}
-        row_preview = {}
-        for hi in candidates:
-            strip = _easyocr_crop_band_strip_bgr(img, band_lo, hi)
-            if strip is None or strip.size == 0:
-                continue
-            gray = _preprocess_easyocr_strip_like_pipeline(strip)
-            sc, nch, prv = _score_easyocr_strip(reader, gray)
-            totals[hi] += sc
-            row[hi] = sc
-            row_preview[hi] = (nch, prv)
-        if EASYOCR_CROP_PROBE_DEBUG and row:
-            top = sorted(row.items(), key=lambda kv: -kv[1])[:5]
-            parts = []
-            for rr, sc in top:
-                nch, prv = row_preview.get(rr, (0, ""))
-                tail = f" ch={nch}" if nch else ""
-                if prv:
-                    tail += f' txt="{prv}"'
-                parts.append(f"hi={rr:.2f}:{sc:.1f}{tail}")
-            log(
-                "Step1 OCR: crop debug — "
-                f"{fp.name} {iw}x{ih} | " + "; ".join(parts)
-            )
-        try:
-            fp.unlink()
-        except OSError:
-            pass
-
-    if export_dir is not None:
-        try:
-            _write_easyocr_probe_export_meta(
-                export_dir, video_path, duration_ms, planned_times
-            )
-        except OSError as e:
-            log(f"Step1 OCR: crop probe export meta failed: {e}")
-
-    shutil.rmtree(probe_dir, ignore_errors=True)
-
-    best_hi = max(totals, key=totals.get)
-    best = totals[best_hi]
-    if best <= 1e-9:
-        log(
-            "Step1 OCR: crop auto — không có tín hiệu OCR trên frame mẫu, dùng "
-            f"fallback band lo/hi={EASYOCR_SUBTITLE_CROP_BAND_LO:.3f}/"
-            f"{EASYOCR_SUBTITLE_CROP_BAND_HI:.3f}"
-        )
-        log(
-            "Step1 OCR: crop hint — "
-            f"frames_probe={len(frame_paths)}, frames_scored={n_frames_used}, "
-            f"duration_ms={duration_ms}, "
-            f"totals_top={_format_crop_probe_totals_line(totals, top_n=6)}"
-        )
-        if EASYOCR_CROP_PROBE_DEBUG:
-            log(
-                "Step1 OCR: crop debug — full totals: "
-                + _format_crop_probe_totals_line(totals, top_n=len(candidates))
-            )
-        if export_dir is None and EASYOCR_CROP_PROBE_EXPORT_ON_FALLBACK:
-            stem = _safe_easyocr_probe_dir_name(Path(video_path).stem)
-            stamp = time.strftime("%Y%m%d_%H%M%S")
-            fb_dir = LOG_DIR / "easyocr_crop_probe" / f"{stem}_{stamp}_no_ocr_signal"
-            LOG_DIR.mkdir(parents=True, exist_ok=True)
-            _export_easyocr_probe_frames_to_dir(
-                video_path,
-                fb_dir,
-                duration_ms,
-                planned_times,
-                "export frame mẫu (probe không có OCR, fallback)",
-            )
-        elif export_dir is None and not EASYOCR_CROP_PROBE_EXPORT_ON_FALLBACK:
-            log(
-                "Step1 OCR: crop hint — không ghi PNG: bật "
-                "--easyocr-crop-probe-export on hoặc "
-                "--easyocr-crop-probe-export-on-fallback on "
-                f"(LOG_DIR sẽ có thư mục easyocr_crop_probe; hiện LOG_DIR={LOG_DIR})"
-            )
-        return float(EASYOCR_SUBTITLE_CROP_BAND_HI)
-
-    thr = best * EASYOCR_CROP_PROBE_SCORE_TIE_FRAC
-    eligible = [hi for hi in candidates if totals[hi] >= thr]
-    chosen = min(eligible)
-    log(
-        "Step1 OCR: crop auto "
-        f"score={best:.1f} hi_best={best_hi:.3f} hi={chosen:.3f} lo={band_lo:.3f} "
-        f"tie={EASYOCR_CROP_PROBE_SCORE_TIE_FRAC:.2f} frames={n_frames_used}"
-    )
-    if EASYOCR_CROP_PROBE_DEBUG:
-        log(
-            "Step1 OCR: crop debug — "
-            f"tie_thr={thr:.2f}, eligible={[round(x, 3) for x in eligible]}, "
-            f"frames_scored={n_frames_used}, "
-            f"totals_top={_format_crop_probe_totals_line(totals, top_n=len(candidates))}"
-        )
-    return float(chosen)
 
 
 def _rebuild_easyocr_skip_regexes():
@@ -1898,93 +1576,10 @@ def _easyocr_should_skip_merged_text(text):
 _rebuild_easyocr_skip_regexes()
 
 
-def _refine_easyocr_band_hi_by_bbox(reader, video_path, band_lo, band_hi, scratch_png):
-    """
-    Một frame mẫu: nếu phía trên vùng đã crop vẫn còn nhiều nền trống (bbox chữ thấp trong dải),
-    hạ hi để siết dải về gần chiều cao chữ thực (+ padding).
-    """
-    import cv2
-
-    t_sec = _easyocr_tune_timestamp_sec(video_path)
-    try:
-        run_command(
-            [
-                FFMPEG_BIN,
-                "-y",
-                "-ss",
-                f"{t_sec:.3f}",
-                "-i",
-                str(video_path),
-                "-vframes",
-                "1",
-                "-q:v",
-                "2",
-                str(scratch_png),
-            ],
-            "EasyOCR bbox-refine sample frame",
-        )
-    except Exception:
-        return band_hi
-    if not scratch_png.is_file() or scratch_png.stat().st_size < 32:
-        try:
-            scratch_png.unlink(missing_ok=True)
-        except OSError:
-            pass
-        return band_hi
-    img = cv2.imread(str(scratch_png))
-    try:
-        scratch_png.unlink(missing_ok=True)
-    except OSError:
-        pass
-    if img is None or img.size == 0:
-        return band_hi
-    ih, _iw = img.shape[:2]
-    if ih < 16:
-        return band_hi
-    strip = _easyocr_crop_band_strip_bgr(img, band_lo, band_hi)
-    if strip is None or strip.size == 0:
-        return band_hi
-    strip_h = strip.shape[0]
-    gray = _preprocess_easyocr_strip_like_pipeline(strip)
-    try:
-        results = reader.readtext(gray, detail=1)
-    except Exception:
-        return band_hi
-    ys = []
-    for item in results:
-        if not item or len(item) < 3:
-            continue
-        box, text, conf = item[0], item[1], item[2]
-        if float(conf) < float(EASYOCR_MIN_CONFIDENCE):
-            continue
-        if not str(text or "").strip():
-            continue
-        for pt in box:
-            ys.append(float(pt[1]))
-    if len(ys) < 2:
-        return band_hi
-    y_min = min(ys)
-    if y_min < strip_h * float(EASYOCR_REFINE_TOP_MARGIN_MIN_FRAC):
-        return band_hi
-    pad = max(2, int(0.015 * strip_h))
-    y_top = max(0.0, y_min - pad)
-    new_strip_px = strip_h - y_top
-    if new_strip_px < strip_h * 0.42:
-        return band_hi
-    hi_new = band_lo + (new_strip_px / float(ih))
-    hi_floor = band_lo + float(EASYOCR_REFINE_MIN_STRIP_HEIGHT_RATIO)
-    hi_new = min(float(band_hi), max(hi_floor, hi_new))
-    if hi_new >= float(band_hi) - 1e-6:
-        return band_hi
-    log(
-        "Step1 OCR: crop bbox refine "
-        f"hi {band_hi:.3f} → {hi_new:.3f} strip_pct={(hi_new - band_lo) * 100:.1f}"
-    )
-    return float(hi_new)
 
 
 def _easyocr_tune_timestamp_sec(video_path):
-    """Thời điểm lấy 1 frame mẫu (crop tune / bbox / lo-tighten)."""
+    """Thời điểm lấy 1 frame mẫu (detect crop band)."""
     try:
         duration_ms = int(get_media_duration_ms(video_path) or 0)
     except Exception:
@@ -1997,125 +1592,96 @@ def _easyocr_tune_timestamp_sec(video_path):
     return t_sec
 
 
-def _easyocr_strip_has_confident_text(reader, gray_u8):
-    """Có ít nhất một dòng OCR đạt EASYOCR_MIN_CONFIDENCE (dùng cho gate / siết lo)."""
-    try:
-        results = reader.readtext(gray_u8, detail=1)
-    except Exception:
-        return False
-    for item in results:
-        if not item or len(item) < 3:
-            continue
-        text = str(item[1] or "").strip()
-        if not text:
-            continue
-        if float(item[2]) >= float(EASYOCR_MIN_CONFIDENCE):
-            return True
-    return False
 
 
-def _tighten_easyocr_band_lo_progressive(reader, video_path, band_lo0, band_hi, scratch_png):
+def _detect_easyocr_crop_band(video_path, reader, ocr_dir):
     """
-    Cố định hi (đã probe/cap). Nếu dải rộng [lo0, max(hi, 0.2)] có text đủ tin cậy:
-    thử nâng lo: bước đầu +0.05, sau đó +0.025 mỗi bước cho đến khi không còn text → giữ lo tốt nhất.
+    Detect subtitle band (lo, hi) bằng cách chạy OCR trên phần đáy full-frame,
+    lấy bbox chữ thực để xác định lo/hi chính xác, sau đó cap theo strip_max.
+
+    lo/hi tính từ đáy frame (0 = sát đáy, 1 = đỉnh frame).
+    Fallback: lo = EASYOCR_SUBTITLE_CROP_BAND_LO, hi = lo + strip_max.
     """
     import cv2
 
-    if not EASYOCR_LO_TIGHTEN_ENABLED:
-        return band_lo0
-    lo0 = float(band_lo0)
-    hi_ref = float(band_hi)
-    if hi_ref <= lo0 + float(EASYOCR_LO_TIGHTEN_MIN_STRIP) + 1e-9:
-        return band_lo0
-    gate_hi = max(hi_ref, float(EASYOCR_LO_TIGHTEN_GATE_HI))
-    if gate_hi <= lo0 + 1e-9:
-        return band_lo0
+    lo_floor = float(EASYOCR_SUBTITLE_CROP_BAND_LO)
+    strip_max = float(EASYOCR_MAX_STRIP_HEIGHT_RATIO or 0.05)
+    fallback_lo = lo_floor
+    fallback_hi = lo_floor + strip_max
 
-    t_sec = _easyocr_tune_timestamp_sec(video_path)
-    try:
-        run_command(
-            [
-                FFMPEG_BIN,
-                "-y",
-                "-ss",
-                f"{t_sec:.3f}",
-                "-i",
-                str(video_path),
-                "-vframes",
-                "1",
-                "-q:v",
-                "2",
-                str(scratch_png),
-            ],
-            "EasyOCR lo-tighten sample frame",
-        )
-    except Exception:
-        return band_lo0
-    if not scratch_png.is_file() or scratch_png.stat().st_size < 32:
+    SCAN_HI = 0.35  # quét 35% đáy frame để bắt hết phụ đề
+    PAD = 0.008     # padding quanh bbox (% chiều cao frame)
+
+    probe_dir = ocr_dir / "probe_src"
+    shutil.rmtree(probe_dir, ignore_errors=True)
+    frame_paths = _extract_easyocr_probe_frames(video_path, probe_dir, EASYOCR_CROP_PROBE_FRAMES)
+    if not frame_paths:
+        log(f"Step1 OCR: crop detect — không lấy được frame mẫu, fallback lo={fallback_lo:.3f} hi={fallback_hi:.3f}")
+        return fallback_lo, fallback_hi
+
+    all_lo: list[float] = []
+    all_hi: list[float] = []
+    for fp in frame_paths:
+        img = cv2.imread(str(fp))
         try:
-            scratch_png.unlink(missing_ok=True)
+            fp.unlink()
         except OSError:
             pass
-        return band_lo0
-    img = cv2.imread(str(scratch_png))
-    try:
-        scratch_png.unlink(missing_ok=True)
-    except OSError:
-        pass
-    if img is None or img.size == 0:
-        return band_lo0
+        if img is None:
+            continue
+        ih, iw = img.shape[:2]
+        if ih < 40 or iw < 40:
+            continue
+        scan_top = int(ih * (1.0 - SCAN_HI))
+        scan_strip = img[scan_top:, :]
+        gray = _preprocess_easyocr_strip_like_pipeline(scan_strip)
+        try:
+            results = reader.readtext(gray, detail=1)
+        except Exception:
+            continue
+        for item in results:
+            if not item or len(item) < 3:
+                continue
+            box, text, conf = item[0], item[1], item[2]
+            if float(conf) < float(EASYOCR_MIN_CONFIDENCE):
+                continue
+            if not str(text or "").strip():
+                continue
+            ys = [float(pt[1]) for pt in box]
+            y_top_in_scan = min(ys)
+            y_bot_in_scan = max(ys)
+            y_top_frame = scan_top + y_top_in_scan
+            y_bot_frame = scan_top + y_bot_in_scan
+            hi_cand = (ih - y_top_frame) / ih
+            lo_cand = max(0.0, (ih - y_bot_frame) / ih)
+            all_hi.append(hi_cand)
+            all_lo.append(lo_cand)
 
-    strip_gate = _easyocr_crop_band_strip_bgr(img, lo0, gate_hi)
-    if strip_gate is None or strip_gate.size == 0:
-        return band_lo0
-    gray_gate = _preprocess_easyocr_strip_like_pipeline(strip_gate)
-    if not _easyocr_strip_has_confident_text(reader, gray_gate):
-        return band_lo0
+    shutil.rmtree(probe_dir, ignore_errors=True)
 
-    min_strip = float(EASYOCR_LO_TIGHTEN_MIN_STRIP)
-    fj = float(EASYOCR_LO_TIGHTEN_FIRST_JUMP)
-    st = float(EASYOCR_LO_TIGHTEN_STEP)
-    best_lo = lo0
+    if not all_hi:
+        log(f"Step1 OCR: crop detect — không tìm thấy text, fallback lo={fallback_lo:.3f} hi={fallback_hi:.3f}")
+        return fallback_lo, fallback_hi
 
-    def _lo_has_text(lo_a):
-        if lo_a >= hi_ref - min_strip - 1e-9:
-            return False
-        strip_a = _easyocr_crop_band_strip_bgr(img, lo_a, hi_ref)
-        if strip_a is None or strip_a.size == 0:
-            return False
-        gray_a = _preprocess_easyocr_strip_like_pipeline(strip_a)
-        return _easyocr_strip_has_confident_text(reader, gray_a)
+    n = len(all_hi)
+    all_hi_s = sorted(all_hi)
+    all_lo_s = sorted(all_lo)
+    det_hi = all_hi_s[min(n - 1, int(n * 0.90))] + PAD
+    det_lo = max(lo_floor, all_lo_s[max(0, int(n * 0.10))] - PAD)
+    det_hi = min(1.0, det_hi)
 
-    lo_try = lo0 + fj
-    if lo_try < hi_ref - min_strip - 1e-9 and _lo_has_text(lo_try):
-        best_lo = lo_try
-    elif best_lo <= lo0 + 1e-9:
-        lo_x = lo0 + st
-        while lo_x < min(lo0 + fj, hi_ref - min_strip - 1e-9):
-            if _lo_has_text(lo_x):
-                best_lo = lo_x
-                break
-            lo_x += st
+    if strip_max > 0 and det_hi > det_lo + strip_max + 1e-9:
+        det_hi = det_lo + strip_max
 
-    if best_lo <= lo0 + 1e-9:
-        return lo0
+    if det_hi <= det_lo + 1e-9:
+        log(f"Step1 OCR: crop detect — dải không hợp lệ sau tính toán, fallback lo={fallback_lo:.3f} hi={fallback_hi:.3f}")
+        return fallback_lo, fallback_hi
 
-    while True:
-        lo_next = best_lo + st
-        if lo_next >= hi_ref - min_strip - 1e-9:
-            break
-        if not _lo_has_text(lo_next):
-            break
-        best_lo = lo_next
-
-    if best_lo > lo0 + 1e-6:
-        log(
-            "Step1 OCR: crop lo tighten "
-            f"lo {lo0:.3f} → {best_lo:.3f} hi={hi_ref:.3f} "
-            f"strip_pct={(hi_ref - best_lo) * 100:.1f} "
-            f"(gate_hi={gate_hi:.2f}, first+{fj:.2f} then+{st:.2f})"
-        )
-    return float(best_lo)
+    log(
+        f"Step1 OCR: crop detect lo={det_lo:.3f} hi={det_hi:.3f} "
+        f"strip_pct={(det_hi - det_lo) * 100:.1f} n_boxes={n}"
+    )
+    return det_lo, det_hi
 
 
 def _step1_ocr_with_easyocr(video_path):
@@ -2143,53 +1709,16 @@ def _step1_ocr_with_easyocr(video_path):
         f"brightness={EASYOCR_GRAY_BRIGHTNESS:.3f} "
         f"gamma={EASYOCR_GRAY_GAMMA:.3f}"
     )
-    band_lo = float(EASYOCR_SUBTITLE_CROP_BAND_LO)
-    band_hi = (
-        _detect_easyocr_crop_band_hi(video_path, reader, ocr_dir)
-        if EASYOCR_SUBTITLE_CROP_AUTO_DETECT
-        else float(EASYOCR_SUBTITLE_CROP_BAND_HI)
-    )
-    strip_max = float(EASYOCR_MAX_STRIP_HEIGHT_RATIO or 0)
-    # Siết bbox / lo trên hi probe TRƯỚC khi cap strip — nếu cap quá sớm (hi = lo + strip_max)
-    # thì lo+0.05 trùng hi → lo-tighten không chạy được.
-    band_hi = _refine_easyocr_band_hi_by_bbox(
-        reader,
-        video_path,
-        band_lo,
-        band_hi,
-        ocr_dir / "__bbox_refine_sample.png",
-    )
-    band_lo = _tighten_easyocr_band_lo_progressive(
-        reader,
-        video_path,
-        band_lo,
-        band_hi,
-        ocr_dir / "__lo_tighten_sample.png",
-    )
-    if strip_max > 0 and band_hi > band_lo + strip_max + 1e-9:
-        prev_hi = band_hi
-        band_hi = band_lo + strip_max
-        log(
-            "Step1 OCR: crop strip height capped "
-            f"(max={strip_max * 100:.1f}% frame): hi {prev_hi:.3f} → {band_hi:.3f}"
-        )
+    band_lo, band_hi = _detect_easyocr_crop_band(video_path, reader, ocr_dir)
     if band_hi <= band_lo + 1e-9:
         raise RuntimeError(
             f"Step1 OCR: invalid crop band lo={band_lo} hi={band_hi} (need hi > lo)."
         )
 
-    band_strip_pct = (band_hi - band_lo) * 100.0
-    if EASYOCR_SUBTITLE_CROP_AUTO_DETECT:
-        log(
-            "Step1 OCR: crop apply "
-            f"lo={band_lo:.3f} hi={band_hi:.3f} strip_pct={band_strip_pct:.1f}"
-        )
-    else:
-        log(
-            "Step1 OCR: crop — band cố định (--easyocr-crop-auto off): "
-            f"inner_lo={band_lo:.3f}, outer_hi={band_hi:.3f} "
-            f"(dải ~{band_strip_pct:.1f}% chiều cao khung)."
-        )
+    log(
+        "Step1 OCR: crop apply "
+        f"lo={band_lo:.3f} hi={band_hi:.3f} strip_pct={(band_hi - band_lo) * 100:.1f}"
+    )
 
     frames_dir.mkdir(parents=True, exist_ok=True)
 
@@ -3251,53 +2780,6 @@ def parse_cli_args():
         ),
     )
     parser.add_argument(
-        "--easyocr-crop-band-hi",
-        type=float,
-        default=EASYOCR_SUBTITLE_CROP_BAND_HI,
-        help=(
-            "EasyOCR crop: outer edge from bottom (default 0.15). Must be > band-lo. "
-            "Example 0.10/0.15 = only the 5%% strip above the bottom 10%%, not 0–15%%."
-        ),
-    )
-    parser.add_argument(
-        "--easyocr-crop-auto",
-        choices=["on", "off"],
-        default="on" if EASYOCR_SUBTITLE_CROP_AUTO_DETECT else "off",
-        help=(
-            "on: probe frames and pick outer band-hi (inner=fixed --easyocr-crop-band-lo) via EasyOCR; "
-            "off: use --easyocr-crop-band-lo and --easyocr-crop-band-hi only."
-        ),
-    )
-    parser.add_argument(
-        "--easyocr-crop-probe-debug",
-        choices=["on", "off"],
-        default="on" if EASYOCR_CROP_PROBE_DEBUG else "off",
-        help=(
-            "on: verbose logs for crop-band auto-detect (timeline, per-frame top outer hi, totals). "
-            "off: default; on OCR failure a short hint line is still logged."
-        ),
-    )
-    parser.add_argument(
-        "--easyocr-crop-probe-export",
-        choices=["on", "off"],
-        default="on" if EASYOCR_CROP_PROBE_EXPORT else "off",
-        help=(
-            "on: every crop probe run also saves full-frame PNGs under "
-            "LOG_DIR/easyocr_crop_probe/<stem>_<timestamp>/ plus probe_meta.json. "
-            "No effect when --easyocr-crop-auto off."
-        ),
-    )
-    parser.add_argument(
-        "--easyocr-crop-probe-export-on-fallback",
-        choices=["on", "off"],
-        default="on" if EASYOCR_CROP_PROBE_EXPORT_ON_FALLBACK else "off",
-        help=(
-            "on (default): when auto probe finds no OCR score, re-extract probe PNGs into "
-            "LOG_DIR/easyocr_crop_probe/<stem>_<ts>_no_ocr_signal/ for debugging. "
-            "off: only save when --easyocr-crop-probe-export on."
-        ),
-    )
-    parser.add_argument(
         "--easyocr-cleanup-debug-after-step7",
         choices=["on", "off"],
         default="on" if EASYOCR_CLEANUP_DEBUG_AFTER_STEP7 else "off",
@@ -3593,11 +3075,6 @@ def apply_cli_config(args):
     global STEP1_CONDITION_ON_PREVIOUS_TEXT
     global EASYOCR_LANG
     global EASYOCR_SUBTITLE_CROP_BAND_LO
-    global EASYOCR_SUBTITLE_CROP_BAND_HI
-    global EASYOCR_SUBTITLE_CROP_AUTO_DETECT
-    global EASYOCR_CROP_PROBE_DEBUG
-    global EASYOCR_CROP_PROBE_EXPORT
-    global EASYOCR_CROP_PROBE_EXPORT_ON_FALLBACK
     global EASYOCR_FPS
     global EASYOCR_WORKERS
     global EASYOCR_MIN_CONFIDENCE
@@ -3711,21 +3188,7 @@ def apply_cli_config(args):
 
     if args.easyocr_lang:
         EASYOCR_LANG = [s.strip() for s in args.easyocr_lang.split(",") if s.strip()]
-    blo = float(args.easyocr_crop_band_lo)
-    bhi = float(args.easyocr_crop_band_hi)
-    if not (0.0 <= blo < bhi <= 1.0):
-        raise ValueError(
-            "easyocr crop band: need 0 <= band_lo < band_hi <= 1 "
-            f"(got --easyocr-crop-band-lo={blo} --easyocr-crop-band-hi={bhi})"
-        )
-    EASYOCR_SUBTITLE_CROP_BAND_LO = blo
-    EASYOCR_SUBTITLE_CROP_BAND_HI = bhi
-    EASYOCR_SUBTITLE_CROP_AUTO_DETECT = args.easyocr_crop_auto == "on"
-    EASYOCR_CROP_PROBE_DEBUG = args.easyocr_crop_probe_debug == "on"
-    EASYOCR_CROP_PROBE_EXPORT = args.easyocr_crop_probe_export == "on"
-    EASYOCR_CROP_PROBE_EXPORT_ON_FALLBACK = (
-        args.easyocr_crop_probe_export_on_fallback == "on"
-    )
+    EASYOCR_SUBTITLE_CROP_BAND_LO = float(args.easyocr_crop_band_lo)
     EASYOCR_CLEANUP_DEBUG_AFTER_STEP7 = (
         args.easyocr_cleanup_debug_after_step7 == "on"
     )

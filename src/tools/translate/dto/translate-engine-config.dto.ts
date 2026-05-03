@@ -363,48 +363,6 @@ export class TranslateEngineConfigDto {
   @IsOptional()
   @Type(() => Number)
   @IsNumber()
-  easyOcrCropBandHi?: number;
-
-  @IsOptional()
-  @Type(() => Number)
-  @IsNumber()
-  easy_ocr_crop_band_hi?: number;
-
-  @IsOptional()
-  @IsString()
-  easyOcrCropAuto?: string;
-
-  @IsOptional()
-  @IsString()
-  easy_ocr_crop_auto?: string;
-
-  @IsOptional()
-  @IsString()
-  easyOcrCropProbeDebug?: string;
-
-  @IsOptional()
-  @IsString()
-  easy_ocr_crop_probe_debug?: string;
-
-  @IsOptional()
-  @IsString()
-  easyOcrCropProbeExport?: string;
-
-  @IsOptional()
-  @IsString()
-  easy_ocr_crop_probe_export?: string;
-
-  @IsOptional()
-  @IsString()
-  easyOcrCropProbeExportOnFallback?: string;
-
-  @IsOptional()
-  @IsString()
-  easy_ocr_crop_probe_export_on_fallback?: string;
-
-  @IsOptional()
-  @Type(() => Number)
-  @IsNumber()
   easyOcrMinDurationMs?: number;
 
   @IsOptional()
