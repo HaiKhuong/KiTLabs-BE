@@ -138,9 +138,16 @@ STEP1_CONDITION_ON_PREVIOUS_TEXT = (
 
 # EasyOCR config (STEP1_SUBTITLE_SOURCE = "easyocr")
 EASYOCR_LANG = ["ch_sim", "en"]  # EasyOCR language codes
-EASYOCR_SUBTITLE_CROP_RATIO = (
-    0.25  # bottom fraction of frame to crop as subtitle region
-)
+# Manual crop / fallback when auto-detect finds no OCR signal on probe frames.
+EASYOCR_SUBTITLE_CROP_RATIO = 0.15
+# Auto: thử nhiều ratio trên vài frame mẫu (hard-sub đáy thường ~5–20% chiều cao).
+EASYOCR_SUBTITLE_CROP_AUTO_DETECT = True
+EASYOCR_CROP_PROBE_MIN = 0.05
+EASYOCR_CROP_PROBE_MAX = 0.15
+EASYOCR_CROP_PROBE_STEP = 0.01
+EASYOCR_CROP_PROBE_FRAMES = 6
+# Chọn ratio nhỏ nhất vẫn đạt >= tie_frac điểm của ratio tốt nhất (vừa khít vùng chữ).
+EASYOCR_CROP_PROBE_SCORE_TIE_FRAC = 0.92
 EASYOCR_FPS = 2  # frame extraction rate for OCR
 EASYOCR_WORKERS = 4  # parallel OCR threads
 EASYOCR_MIN_CONFIDENCE = 0.5  # discard OCR results below this confidence
@@ -1365,6 +1372,181 @@ def _step1_transcribe_with_whisper(video_path):
     return srt_path
 
 
+def _easyocr_crop_ratio_candidates():
+    out = []
+    r = EASYOCR_CROP_PROBE_MIN
+    while r <= EASYOCR_CROP_PROBE_MAX + 1e-9:
+        out.append(round(r, 4))
+        r += EASYOCR_CROP_PROBE_STEP
+    return out
+
+
+def _easyocr_probe_timestamps_sec(duration_ms, n_frames):
+    """Spread sample times across the file; avoid the very last frames."""
+    if duration_ms and duration_ms > 8000:
+        d_sec = duration_ms / 1000.0
+        raw = [
+            max(0.25, d_sec * 0.02),
+            d_sec * 0.10,
+            d_sec * 0.25,
+            d_sec * 0.42,
+            d_sec * 0.58,
+            d_sec * 0.75,
+        ]
+        cap = max(0.5, d_sec * 0.95)
+        return [min(t, cap) for t in raw][:n_frames]
+    fixed = [0.25, 1.0, 2.5, 5.0, 8.0, 12.0, 20.0, 35.0]
+    return fixed[:n_frames]
+
+
+def _extract_easyocr_probe_frames(video_path, out_dir, n_frames):
+    """Save full-frame PNGs for crop-ratio scoring."""
+    import cv2
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    duration_ms = get_media_duration_ms(video_path)
+    times = _easyocr_probe_timestamps_sec(duration_ms, n_frames)
+    paths = []
+    for i, t in enumerate(times):
+        p = out_dir / f"probe_{i:02d}.png"
+        run_command(
+            [
+                FFMPEG_BIN,
+                "-y",
+                "-ss",
+                f"{t:.3f}",
+                "-i",
+                str(video_path),
+                "-vframes",
+                "1",
+                "-q:v",
+                "2",
+                str(p),
+            ],
+            f"EasyOCR crop probe frame {i} @ {t:.2f}s",
+        )
+        if p.exists() and p.stat().st_size > 0:
+            img = cv2.imread(str(p))
+            if img is not None and img.size > 0:
+                paths.append(p)
+            else:
+                try:
+                    p.unlink(missing_ok=True)
+                except TypeError:
+                    if p.exists():
+                        p.unlink()
+    return paths
+
+
+def _preprocess_easyocr_strip_like_pipeline(bgr_strip):
+    """Approximate ffmpeg format=gray,eq=contrast=2:brightness=0.05 for scoring."""
+    import cv2
+    import numpy as np
+
+    gray = cv2.cvtColor(bgr_strip, cv2.COLOR_BGR2GRAY)
+    x = gray.astype(np.float32)
+    x = (x - 128.0) * 2.0 + 128.0 + 0.05 * 255.0
+    return np.clip(x, 0, 255).astype(np.uint8)
+
+
+def _score_easyocr_strip(reader, gray_u8):
+    """Return (weighted_score, char_count) for one strip image."""
+    try:
+        results = reader.readtext(gray_u8, detail=1)
+    except Exception:
+        return 0.0, 0
+    total = 0.0
+    chars = 0
+    h = float(gray_u8.shape[0])
+    for bbox, text, conf in results:
+        t = (text or "").strip()
+        if not t or conf < EASYOCR_MIN_CONFIDENCE:
+            continue
+        try:
+            ys = [float(p[1]) for p in bbox]
+            cy = sum(ys) / max(len(ys), 1)
+            # Hardsub đáy: chữ thường nằm phía trên của dải crop (cy nhỏ hơn).
+            cy_n = cy / max(h, 1.0)
+            if cy_n <= 0.52:
+                pos_w = 1.06
+            elif cy_n >= 0.88:
+                pos_w = 0.94
+            else:
+                pos_w = 1.0
+        except Exception:
+            pos_w = 1.0
+        w = max(len(t), 1)
+        total += float(conf) * w * pos_w
+        chars += len(t)
+    return total, chars
+
+
+def _detect_easyocr_crop_ratio(video_path, reader, ocr_dir):
+    """
+    Chọn tỷ lệ crop đáy bằng EasyOCR trên vài frame đầy đủ: thử các ratio trong
+    [EASYOCR_CROP_PROBE_MIN, EASYOCR_CROP_PROBE_MAX], chọn dải vừa khít trong
+    ngưỡng tie so với điểm tốt nhất.
+    """
+    probe_dir = ocr_dir / "probe_src"
+    shutil.rmtree(probe_dir, ignore_errors=True)
+    frame_paths = _extract_easyocr_probe_frames(
+        video_path, probe_dir, EASYOCR_CROP_PROBE_FRAMES
+    )
+    if not frame_paths:
+        shutil.rmtree(probe_dir, ignore_errors=True)
+        log(
+            "Step1 OCR: crop auto — không lấy được frame mẫu, dùng "
+            f"EASYOCR_SUBTITLE_CROP_RATIO={EASYOCR_SUBTITLE_CROP_RATIO:.3f}"
+        )
+        return float(EASYOCR_SUBTITLE_CROP_RATIO)
+
+    import cv2
+
+    candidates = _easyocr_crop_ratio_candidates()
+    totals = {r: 0.0 for r in candidates}
+    for fp in frame_paths:
+        img = cv2.imread(str(fp))
+        if img is None:
+            continue
+        ih, iw = img.shape[:2]
+        if ih < 40 or iw < 40:
+            continue
+        for r in candidates:
+            crop_h = max(8, int(round(ih * r)))
+            strip = img[ih - crop_h : ih, :]
+            if strip.size == 0:
+                continue
+            gray = _preprocess_easyocr_strip_like_pipeline(strip)
+            sc, _ = _score_easyocr_strip(reader, gray)
+            totals[r] += sc
+        try:
+            fp.unlink()
+        except OSError:
+            pass
+
+    shutil.rmtree(probe_dir, ignore_errors=True)
+
+    best_r = max(totals, key=totals.get)
+    best = totals[best_r]
+    if best <= 1e-9:
+        log(
+            "Step1 OCR: crop auto — không có tín hiệu OCR trên frame mẫu, dùng "
+            f"fallback={EASYOCR_SUBTITLE_CROP_RATIO:.3f}"
+        )
+        return float(EASYOCR_SUBTITLE_CROP_RATIO)
+
+    thr = best * EASYOCR_CROP_PROBE_SCORE_TIE_FRAC
+    eligible = [r for r in candidates if totals[r] >= thr]
+    chosen = min(eligible)
+    log(
+        "Step1 OCR: crop auto — "
+        f"điểm tối đa≈{best:.1f} (r={best_r:.3f}), "
+        f"chọn r={chosen:.3f} trong tie-band "
+        f"(≥{EASYOCR_CROP_PROBE_SCORE_TIE_FRAC:.0%} điểm tối đa, {len(frame_paths)} frame)"
+    )
+    return float(chosen)
+
+
 def _step1_ocr_with_easyocr(video_path):
     """Step1: extract subtitles via EasyOCR on the cropped subtitle region."""
     log("Step1: OCR (EasyOCR)…")
@@ -1381,11 +1563,18 @@ def _step1_ocr_with_easyocr(video_path):
     ocr_dir = LOG_DIR / "step1_ocr"
     frames_dir = ocr_dir / "frames"
     shutil.rmtree(ocr_dir, ignore_errors=True)
+    ocr_dir.mkdir(parents=True, exist_ok=True)
+
+    reader = easyocr.Reader(EASYOCR_LANG, gpu=EASYOCR_GPU)
+    if EASYOCR_SUBTITLE_CROP_AUTO_DETECT:
+        crop_ratio = _detect_easyocr_crop_ratio(video_path, reader, ocr_dir)
+    else:
+        crop_ratio = float(EASYOCR_SUBTITLE_CROP_RATIO)
+
     frames_dir.mkdir(parents=True, exist_ok=True)
 
     # --- 1. Crop subtitle region + preprocess (grayscale + contrast boost) ---
     crop_video = ocr_dir / "cropped.mp4"
-    crop_ratio = EASYOCR_SUBTITLE_CROP_RATIO
     run_command(
         [
             FFMPEG_BIN,
@@ -1428,7 +1617,6 @@ def _step1_ocr_with_easyocr(video_path):
         raise RuntimeError("Step1 OCR: no frames extracted.")
 
     # --- 3. OCR with EasyOCR (parallel ThreadPoolExecutor) ---
-    reader = easyocr.Reader(EASYOCR_LANG, gpu=EASYOCR_GPU)
     frame_interval_sec = 1.0 / EASYOCR_FPS
 
     def ocr_frame(idx_path):
@@ -2420,7 +2608,19 @@ def parse_cli_args():
         "--easyocr-crop-ratio",
         type=float,
         default=EASYOCR_SUBTITLE_CROP_RATIO,
-        help="Fraction of frame height to crop from bottom as subtitle area (default 0.25).",
+        help=(
+            "Fraction of frame height to crop from bottom when --easyocr-crop-auto off, "
+            "or fallback when auto-detect finds no text on probe frames (default from config)."
+        ),
+    )
+    parser.add_argument(
+        "--easyocr-crop-auto",
+        choices=["on", "off"],
+        default="on" if EASYOCR_SUBTITLE_CROP_AUTO_DETECT else "off",
+        help=(
+            "on: probe several frames and pick crop ratio in ~5–20%% height via EasyOCR scores; "
+            "off: use --easyocr-crop-ratio only."
+        ),
     )
     parser.add_argument(
         "--easyocr-fps",
@@ -2646,6 +2846,7 @@ def apply_cli_config(args):
     global STEP1_CONDITION_ON_PREVIOUS_TEXT
     global EASYOCR_LANG
     global EASYOCR_SUBTITLE_CROP_RATIO
+    global EASYOCR_SUBTITLE_CROP_AUTO_DETECT
     global EASYOCR_FPS
     global EASYOCR_WORKERS
     global EASYOCR_MIN_CONFIDENCE
@@ -2752,6 +2953,7 @@ def apply_cli_config(args):
     if args.easyocr_lang:
         EASYOCR_LANG = [s.strip() for s in args.easyocr_lang.split(",") if s.strip()]
     EASYOCR_SUBTITLE_CROP_RATIO = float(args.easyocr_crop_ratio)
+    EASYOCR_SUBTITLE_CROP_AUTO_DETECT = args.easyocr_crop_auto == "on"
     EASYOCR_FPS = float(args.easyocr_fps)
     EASYOCR_WORKERS = int(args.easyocr_workers)
     EASYOCR_MIN_CONFIDENCE = float(args.easyocr_min_confidence)
