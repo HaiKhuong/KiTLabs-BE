@@ -426,6 +426,72 @@ export class TranslateEngineConfigDto {
   @IsString()
   easyocr_cleanup_debug_after_step7?: string;
 
+  /** Cap độ cao dải OCR (hi−lo), 0–1 (vd 0.05 = 5% chiều cao khung); 0 = tắt */
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  easyOcrMaxStripHeightRatio?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  easy_ocr_max_strip_height_ratio?: number;
+
+  /** Bật regex skip mặc định (watermark/UI); CLI on | off */
+  @IsOptional()
+  @IsString()
+  easyOcrTextSkipDefaults?: string;
+
+  @IsOptional()
+  @IsString()
+  easy_ocr_text_skip_defaults?: string;
+
+  /** JSON array string: regex full-match block OCR sau clean */
+  @IsOptional()
+  @IsString()
+  easyOcrTextSkipRegexesJson?: string;
+
+  @IsOptional()
+  @IsString()
+  easy_ocr_text_skip_regexes_json?: string;
+
+  @IsOptional()
+  @IsString()
+  easyocr_text_skip_regexes_json?: string;
+
+  /** OCR crop: ffmpeg grayscale eq contrast */
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  easyOcrGrayContrast?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  easy_ocr_gray_contrast?: number;
+
+  /** OCR crop: grayscale brightness (~-1..1); âm làm tối, giảm watermark sáng */
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  easyOcrGrayBrightness?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  easy_ocr_gray_brightness?: number;
+
+  /** OCR crop: grayscale gamma; >1 tối midtone nhẹ */
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  easyOcrGrayGamma?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  easy_ocr_gray_gamma?: number;
+
   /** Step6 horizontal flip (ffmpeg hflip); CLI: on | off */
   @IsOptional()
   @IsString()

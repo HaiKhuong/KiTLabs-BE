@@ -175,6 +175,40 @@ const OPTION_MAPPINGS: Array<{
       allowedTypes: ["string"],
     },
     {
+      cliFlag: "--easyocr-max-strip-height-ratio",
+      keys: ["easyOcrMaxStripHeightRatio", "easy_ocr_max_strip_height_ratio"],
+      allowedTypes: ["number", "string"],
+    },
+    {
+      cliFlag: "--easyocr-text-skip-defaults",
+      keys: ["easyOcrTextSkipDefaults", "easy_ocr_text_skip_defaults"],
+      allowedTypes: ["string"],
+    },
+    {
+      cliFlag: "--easyocr-text-skip-regexes-json",
+      keys: [
+        "easyOcrTextSkipRegexesJson",
+        "easy_ocr_text_skip_regexes_json",
+        "easyocr_text_skip_regexes_json",
+      ],
+      allowedTypes: ["string"],
+    },
+    {
+      cliFlag: "--easyocr-gray-contrast",
+      keys: ["easyOcrGrayContrast", "easy_ocr_gray_contrast"],
+      allowedTypes: ["number", "string"],
+    },
+    {
+      cliFlag: "--easyocr-gray-brightness",
+      keys: ["easyOcrGrayBrightness", "easy_ocr_gray_brightness"],
+      allowedTypes: ["number", "string"],
+    },
+    {
+      cliFlag: "--easyocr-gray-gamma",
+      keys: ["easyOcrGrayGamma", "easy_ocr_gray_gamma"],
+      allowedTypes: ["number", "string"],
+    },
+    {
       cliFlag: "--step6-hflip",
       keys: ["step6Hflip", "step6_hflip", "enableFlip", "enable_flip"],
       allowedTypes: ["string"],

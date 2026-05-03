@@ -171,6 +171,24 @@ EASYOCR_FUZZY_THRESHOLD = 80  # % similarity threshold for dedup/merge
 EASYOCR_MIN_DURATION_MS = 100  # minimum subtitle display duration (ms)
 EASYOCR_MERGE_GAP_MS = 200  # merge adjacent similar blocks within this gap (ms)
 EASYOCR_GPU = True
+# Sau crop dải đáy: grayscale + ffmpeg eq (cùng tham số cho probe-score OpenCV).
+# brightness âm (vd -0.06 … -0.12) làm tối, thường giúp giảm dính watermark/logo sáng; gamma>1 tối midtone.
+EASYOCR_GRAY_CONTRAST = 2.0
+EASYOCR_GRAY_BRIGHTNESS = 0.05
+EASYOCR_GRAY_GAMMA = 1.0
+# Giới hạn độ cao dải OCR (hi−lo) so với chiều cao khung; 0 = không chặn (vd 0.05 = tối đa 5%).
+EASYOCR_MAX_STRIP_HEIGHT_RATIO = 0.0
+# Bỏ qua block SRT sau merge nếu fullmatch regex (sau clean_text).
+EASYOCR_TEXT_SKIP_DEFAULTS_ON = True
+EASYOCR_TEXT_SKIP_REGEXES_JSON = "[]"
+_EASYOCR_SKIP_COMPILED = []  # list[re.Pattern], rebuild trong apply_cli_config
+
+EASYOCR_BUILTIN_SKIP_REGEXES = (
+    r"(?i)^\s*(订阅|点赞|收藏|分享|转发)\s*$",
+    r"(?i)^\s*会员\s*\d*\s*$",
+    r"(?i)^\s*温馨提示\s*$",
+    r"^\s*\d{1,2}:\d{2}(:\d{2})?\s*[-–~至]\s*\d{1,2}:\d{2}(:\d{2})?\s*$",
+)
 # Sau Step7: xóa LOG_DIR/step1_ocr và LOG_DIR/easyocr_crop_probe (--easyocr-cleanup-debug-after-step7 off để giữ).
 EASYOCR_CLEANUP_DEBUG_AFTER_STEP7 = True
 
@@ -1026,6 +1044,8 @@ def build_visual_transform_filters():
     zp = float(STEP6_ZOOM_PERCENT)
     if zp > 0.01:
         zf = 1.0 + zp / 100.0
+        # Lý do khung có thể lệch vài pixel (vd 2560→2558): scale làm tròn iw*zf / ih*zf
+        # sang số nguyên; crop dùng iw/zf trên kích thước đã scale nên (iw*zf)/zf ≠ iw.
         parts.append(f"scale=iw*{zf:.6f}:ih*{zf:.6f}")
         parts.append(f"crop=iw/{zf:.6f}:ih/{zf:.6f}:(iw-ow)/2:(ih-oh)/2")
     parts.append(
@@ -1429,9 +1449,12 @@ def _easyocr_crop_ffmpeg_vf(band_lo, band_hi):
         raise ValueError("easyocr crop band: need band_hi > band_lo")
     dh = hi - lo
     y_from_top = 1.0 - hi
+    c = float(EASYOCR_GRAY_CONTRAST)
+    b = float(EASYOCR_GRAY_BRIGHTNESS)
+    g = float(EASYOCR_GRAY_GAMMA)
     return (
         f"crop=iw:ih*{dh:.6f}:0:ih*{y_from_top:.6f},"
-        "format=gray,eq=contrast=2:brightness=0.05"
+        f"format=gray,eq=contrast={c:.6f}:brightness={b:.6f}:gamma={g:.6f}"
     )
 
 
@@ -1514,13 +1537,17 @@ def _extract_easyocr_probe_frames(video_path, out_dir, n_frames):
 
 
 def _preprocess_easyocr_strip_like_pipeline(bgr_strip):
-    """Approximate ffmpeg format=gray,eq=contrast=2:brightness=0.05 for scoring."""
+    """Xấp xỉ cùng eq grayscale (gamma → contrast → brightness) như _easyocr_crop_ffmpeg_vf."""
     import cv2
     import numpy as np
 
     gray = cv2.cvtColor(bgr_strip, cv2.COLOR_BGR2GRAY)
-    x = gray.astype(np.float32)
-    x = (x - 128.0) * 2.0 + 128.0 + 0.05 * 255.0
+    x = gray.astype(np.float32) / 255.0
+    g = max(float(EASYOCR_GRAY_GAMMA), 0.01)
+    x = np.power(np.clip(x, 0, 1), 1.0 / g) * 255.0
+    c = float(EASYOCR_GRAY_CONTRAST)
+    b = float(EASYOCR_GRAY_BRIGHTNESS)
+    x = (x - 128.0) * c + 128.0 + b * 255.0
     return np.clip(x, 0, 255).astype(np.uint8)
 
 
@@ -1815,6 +1842,49 @@ def _detect_easyocr_crop_band_hi(video_path, reader, ocr_dir):
     return float(chosen)
 
 
+def _rebuild_easyocr_skip_regexes():
+    global _EASYOCR_SKIP_COMPILED
+    patterns = []
+    if EASYOCR_TEXT_SKIP_DEFAULTS_ON:
+        patterns.extend(EASYOCR_BUILTIN_SKIP_REGEXES)
+    raw = (EASYOCR_TEXT_SKIP_REGEXES_JSON or "").strip()
+    if raw and raw != "[]":
+        try:
+            extra = json.loads(raw)
+        except json.JSONDecodeError as e:
+            log(f"Step1 OCR: easyocr-text-skip-regexes-json invalid JSON: {e}")
+            extra = []
+        if isinstance(extra, list):
+            for item in extra:
+                s = str(item).strip()
+                if s:
+                    patterns.append(s)
+    compiled = []
+    for p in patterns:
+        try:
+            compiled.append(re.compile(p))
+        except re.error as e:
+            log(f"Step1 OCR: skip-regex compile failed for {p!r}: {e}")
+    _EASYOCR_SKIP_COMPILED = compiled
+
+
+def _easyocr_should_skip_merged_text(text):
+    """True nếu block (đã gộp) fullmatch một trong các regex skip."""
+    t = re.sub(r"\s+", " ", (text or "").strip())
+    if not t:
+        return True
+    for cre in _EASYOCR_SKIP_COMPILED:
+        try:
+            if cre.fullmatch(t):
+                return True
+        except re.error:
+            continue
+    return False
+
+
+_rebuild_easyocr_skip_regexes()
+
+
 def _step1_ocr_with_easyocr(video_path):
     """Step1: extract subtitles via EasyOCR on the cropped subtitle region."""
     log("Step1: OCR (EasyOCR)…")
@@ -1834,12 +1904,26 @@ def _step1_ocr_with_easyocr(video_path):
     ocr_dir.mkdir(parents=True, exist_ok=True)
 
     reader = easyocr.Reader(EASYOCR_LANG, gpu=EASYOCR_GPU)
+    log(
+        "Step1 OCR: gray eq (crop) "
+        f"contrast={EASYOCR_GRAY_CONTRAST:.3f} "
+        f"brightness={EASYOCR_GRAY_BRIGHTNESS:.3f} "
+        f"gamma={EASYOCR_GRAY_GAMMA:.3f}"
+    )
     band_lo = float(EASYOCR_SUBTITLE_CROP_BAND_LO)
     band_hi = (
         _detect_easyocr_crop_band_hi(video_path, reader, ocr_dir)
         if EASYOCR_SUBTITLE_CROP_AUTO_DETECT
         else float(EASYOCR_SUBTITLE_CROP_BAND_HI)
     )
+    strip_max = float(EASYOCR_MAX_STRIP_HEIGHT_RATIO or 0)
+    if strip_max > 0 and band_hi > band_lo + strip_max + 1e-9:
+        prev_hi = band_hi
+        band_hi = band_lo + strip_max
+        log(
+            "Step1 OCR: crop strip height capped "
+            f"(max={strip_max * 100:.1f}% frame): hi {prev_hi:.3f} → {band_hi:.3f}"
+        )
     if band_hi <= band_lo + 1e-9:
         raise RuntimeError(
             f"Step1 OCR: invalid crop band lo={band_lo} hi={band_hi} (need hi > lo)."
@@ -1972,16 +2056,30 @@ def _step1_ocr_with_easyocr(video_path):
     if not merged:
         raise RuntimeError("Step1 OCR: no subtitle groups after dedup.")
 
+    kept = []
+    skipped = 0
+    for start, end, text in merged:
+        if _easyocr_should_skip_merged_text(text):
+            skipped += 1
+            continue
+        kept.append((start, end, text))
+    if skipped:
+        log(f"Step1 OCR: skipped {skipped} block(s) (regex full-match after clean)")
+    if not kept:
+        raise RuntimeError(
+            "Step1 OCR: all subtitle blocks were removed by regex skip filter."
+        )
+
     # --- 6. Export SRT ---
     srt_path = get_zh_srt_path()
     with open(srt_path, "w", encoding="utf8") as f:
-        for i, (start, end, text) in enumerate(merged, 1):
+        for i, (start, end, text) in enumerate(kept, 1):
             if (end - start) * 1000 < EASYOCR_MIN_DURATION_MS:
                 end = start + EASYOCR_MIN_DURATION_MS / 1000.0
             f.write(f"{i}\n")
             f.write(f"{fmt_time(start)} --> {fmt_time(end)}\n")
             f.write(f"{text}\n\n")
-    log(f"Step1: OCR done — {len(merged)} blocks.")
+    log(f"Step1: OCR done — {len(kept)} blocks (after skip filter).")
     return srt_path
 
 
@@ -2696,6 +2794,12 @@ def step5_convert_ass(srt_path):
 def step6_render(video_path, ass_path):
     log("Step6: render + subs…")
     out = VIDEO_DIR / f"{WORK_NAME}_vs_tm.mp4"
+    if STEP6_VISUAL_TRANSFORM_ENABLED and float(STEP6_ZOOM_PERCENT) > 0.01:
+        zf = 1.0 + float(STEP6_ZOOM_PERCENT) / 100.0
+        log(
+            "Step6: zoom active — output W/H can differ slightly from input "
+            f"(integer scale then crop by zf={zf:.4f}; set --step6-zoom-percent 0 to keep size)."
+        )
     subtitle_filter = build_subtitle_filter(ass_path)
     logo_path = None
     if LOGO_ENABLED:
@@ -2954,6 +3058,32 @@ def parse_cli_args():
         ),
     )
     parser.add_argument(
+        "--easyocr-max-strip-height-ratio",
+        type=float,
+        default=EASYOCR_MAX_STRIP_HEIGHT_RATIO,
+        help=(
+            "Cap OCR band height (hi-lo) to this fraction of frame height; 0 disables. "
+            "Example 0.05 limits strip to 5%% of frame even if auto probe picks a taller band."
+        ),
+    )
+    parser.add_argument(
+        "--easyocr-text-skip-defaults",
+        choices=["on", "off"],
+        default="on" if EASYOCR_TEXT_SKIP_DEFAULTS_ON else "off",
+        help=(
+            "on: apply built-in regex skip list (short UI/watermark lines). "
+            "off: only patterns from --easyocr-text-skip-regexes-json."
+        ),
+    )
+    parser.add_argument(
+        "--easyocr-text-skip-regexes-json",
+        default=None,
+        help=(
+            "JSON array of extra regex strings; each must full-match a merged OCR block "
+            "after clean (see built-ins when --easyocr-text-skip-defaults on)."
+        ),
+    )
+    parser.add_argument(
         "--easyocr-fps",
         type=float,
         default=EASYOCR_FPS,
@@ -2988,6 +3118,27 @@ def parse_cli_args():
         choices=["on", "off"],
         default="on" if EASYOCR_GPU else "off",
         help="Enable GPU for EasyOCR inference (default on).",
+    )
+    parser.add_argument(
+        "--easyocr-gray-contrast",
+        type=float,
+        default=EASYOCR_GRAY_CONTRAST,
+        help="OCR crop: grayscale eq contrast (default 2). Lower if dialogue text is too faint.",
+    )
+    parser.add_argument(
+        "--easyocr-gray-brightness",
+        type=float,
+        default=EASYOCR_GRAY_BRIGHTNESS,
+        help=(
+            "OCR crop: grayscale eq brightness (ffmpeg, about -1..1). "
+            "Negative (e.g. -0.08) darkens the strip to reduce bright logo/watermark pickup."
+        ),
+    )
+    parser.add_argument(
+        "--easyocr-gray-gamma",
+        type=float,
+        default=EASYOCR_GRAY_GAMMA,
+        help="OCR crop: grayscale eq gamma; >1 darkens midtones slightly (can soften flat white marks).",
     )
     parser.add_argument(
         "--mode",
@@ -3205,7 +3356,13 @@ def apply_cli_config(args):
     global EASYOCR_MIN_DURATION_MS
     global EASYOCR_FUZZY_THRESHOLD
     global EASYOCR_GPU
+    global EASYOCR_GRAY_CONTRAST
+    global EASYOCR_GRAY_BRIGHTNESS
+    global EASYOCR_GRAY_GAMMA
     global EASYOCR_CLEANUP_DEBUG_AFTER_STEP7
+    global EASYOCR_MAX_STRIP_HEIGHT_RATIO
+    global EASYOCR_TEXT_SKIP_DEFAULTS_ON
+    global EASYOCR_TEXT_SKIP_REGEXES_JSON
 
     SUBTITLE_FONT = args.subtitle_font
     SUBTITLE_FONTSIZE = args.subtitle_fontsize
@@ -3324,12 +3481,31 @@ def apply_cli_config(args):
     EASYOCR_CLEANUP_DEBUG_AFTER_STEP7 = (
         args.easyocr_cleanup_debug_after_step7 == "on"
     )
+    mstrip = float(getattr(args, "easyocr_max_strip_height_ratio", 0) or 0)
+    if mstrip > 1.0 and mstrip <= 100.0:
+        mstrip = mstrip / 100.0
+    EASYOCR_MAX_STRIP_HEIGHT_RATIO = max(0.0, min(1.0, mstrip))
+    EASYOCR_TEXT_SKIP_DEFAULTS_ON = getattr(
+        args, "easyocr_text_skip_defaults", "on"
+    ) == "on"
+    rj = getattr(args, "easyocr_text_skip_regexes_json", None)
+    EASYOCR_TEXT_SKIP_REGEXES_JSON = (
+        str(rj).strip() if rj is not None and str(rj).strip() else "[]"
+    )
+    _rebuild_easyocr_skip_regexes()
     EASYOCR_FPS = float(args.easyocr_fps)
     EASYOCR_WORKERS = int(args.easyocr_workers)
     EASYOCR_MIN_CONFIDENCE = float(args.easyocr_min_confidence)
     EASYOCR_MIN_DURATION_MS = max(1, int(args.easyocr_min_duration_ms))
     EASYOCR_FUZZY_THRESHOLD = float(args.easyocr_fuzzy_threshold)
     EASYOCR_GPU = args.easyocr_gpu == "on"
+    EASYOCR_GRAY_CONTRAST = max(0.01, float(getattr(args, "easyocr_gray_contrast", EASYOCR_GRAY_CONTRAST)))
+    EASYOCR_GRAY_BRIGHTNESS = float(
+        getattr(args, "easyocr_gray_brightness", EASYOCR_GRAY_BRIGHTNESS)
+    )
+    EASYOCR_GRAY_GAMMA = max(
+        0.01, float(getattr(args, "easyocr_gray_gamma", EASYOCR_GRAY_GAMMA))
+    )
 
 
 def parse_step_range(step_arg, min_step=1, max_step=6):
