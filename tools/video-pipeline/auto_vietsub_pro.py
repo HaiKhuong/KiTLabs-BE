@@ -150,7 +150,7 @@ EASYOCR_LANG = ["ch_sim", "en"]  # EasyOCR language codes
 EASYOCR_SUBTITLE_CROP_BAND_HI = 0.20
 # Số frame mẫu để detect bbox phụ đề (scan full-frame → OCR → lấy lo/hi từ bbox chữ).
 EASYOCR_CROP_PROBE_FRAMES = 12
-# Detect crop band: chỉ OCR vùng 80% chiều ngang giữa frame (bỏ 10% trái + 10% phải).
+# Crop ngang (probe + cropped.mp4 Step1): bỏ mé trái/phải trước khi OCR.
 EASYOCR_CROP_PROBE_H_TRIM_LEFT_FRAC = 0.15
 EASYOCR_CROP_PROBE_H_TRIM_RIGHT_FRAC = 0.15
 EASYOCR_FPS = 2  # frame extraction rate for OCR
@@ -178,7 +178,7 @@ EASYOCR_BUILTIN_SKIP_REGEXES = (
     r"(?i)^\s*温馨提示\s*$",
     r"^\s*\d{1,2}:\d{2}(:\d{2})?\s*[-–~至]\s*\d{1,2}:\d{2}(:\d{2})?\s*$",
 )
-# Sau Step7: xóa LOG_DIR/step1_ocr và LOG_DIR/easyocr_crop_probe (--easyocr-cleanup-debug-after-step7 off để giữ).
+# Sau Step7: xóa LOG_DIR/step1_ocr và LOG_DIR/easyocr_crop_probe (probe_*.png debug crop detect; off để giữ).
 EASYOCR_CLEANUP_DEBUG_AFTER_STEP7 = True
 
 STEP1_MAX_SUBTITLE_CHARS = 22  # số ký tự tối đa mỗi câu sau tách.
@@ -1423,7 +1423,7 @@ def _easyocr_crop_band_strip_bgr(img_bgr, band_lo, band_hi):
 
 
 def _easyocr_crop_ffmpeg_vf(band_lo, band_hi):
-    """filter crop cho dải đáy [band_lo, band_hi] từ đáy (inner→outer)."""
+    """Dải đáy [band_lo, band_hi] → crop ngang theo H_TRIM_* → grayscale + eq (cropped.mp4 Step1)."""
     lo = float(band_lo)
     hi = float(band_hi)
     if hi <= lo + 1e-9:
@@ -1433,8 +1433,11 @@ def _easyocr_crop_ffmpeg_vf(band_lo, band_hi):
     c = float(EASYOCR_GRAY_CONTRAST)
     b = float(EASYOCR_GRAY_BRIGHTNESS)
     g = float(EASYOCR_GRAY_GAMMA)
+    vert = f"crop=iw:ih*{dh:.6f}:0:ih*{y_from_top:.6f}"
+    htrim = _easyocr_h_trim_crop_vf()
     return (
-        f"crop=iw:ih*{dh:.6f}:0:ih*{y_from_top:.6f},"
+        f"{vert},"
+        f"{htrim},"
         f"format=gray,eq=contrast={c:.6f}:brightness={b:.6f}:gamma={g:.6f}"
     )
 
@@ -1478,8 +1481,8 @@ def _easyocr_probe_timestamps_sec(duration_ms, n_frames):
     return fixed[:n]
 
 
-def _easyocr_probe_extract_h_crop_vf():
-    """crop ngang giữa frame: bỏ trái/phải theo EASYOCR_CROP_PROBE_H_TRIM_* (dùng khi trích probe)."""
+def _easyocr_h_trim_crop_vf():
+    """Filter crop ngang: bỏ trái/phải theo EASYOCR_CROP_PROBE_H_TRIM_* (probe PNG + dải trong cropped.mp4)."""
     hl = max(0.0, min(0.49, float(EASYOCR_CROP_PROBE_H_TRIM_LEFT_FRAC)))
     hr = max(0.0, min(0.49, float(EASYOCR_CROP_PROBE_H_TRIM_RIGHT_FRAC)))
     wfrac = max(0.02, 1.0 - hl - hr)
@@ -1493,7 +1496,7 @@ def _extract_easyocr_probe_frames(video_path, out_dir, n_frames):
     out_dir.mkdir(parents=True, exist_ok=True)
     duration_ms = get_media_duration_ms(video_path)
     times = _easyocr_probe_timestamps_sec(duration_ms, n_frames)
-    probe_vf = _easyocr_probe_extract_h_crop_vf()
+    probe_vf = _easyocr_h_trim_crop_vf()
     paths = []
     for i, t in enumerate(times):
         p = out_dir / f"probe_{i:02d}.png"
@@ -1631,10 +1634,17 @@ def _detect_easyocr_crop_band(video_path, reader, ocr_dir):
 
     probe_dir = ocr_dir / "probe_src"
     shutil.rmtree(probe_dir, ignore_errors=True)
+    debug_probe_dir = LOG_DIR / "easyocr_crop_probe"
+    shutil.rmtree(debug_probe_dir, ignore_errors=True)
+    debug_probe_dir.mkdir(parents=True, exist_ok=True)
+
     frame_paths = _extract_easyocr_probe_frames(video_path, probe_dir, EASYOCR_CROP_PROBE_FRAMES)
     if not frame_paths:
+        shutil.rmtree(debug_probe_dir, ignore_errors=True)
         log(f"Step1 OCR: crop detect — không lấy được frame mẫu, fallback lo={fallback_lo:.3f} hi={fallback_hi:.3f}")
         return fallback_lo, fallback_hi
+
+    log(f"Step1 OCR: crop probe debug → {debug_probe_dir}")
 
     all_lo: list[float] = []
     all_hi: list[float] = []
@@ -1649,6 +1659,10 @@ def _detect_easyocr_crop_band(video_path, reader, ocr_dir):
         ih, iw = img.shape[:2]
         if ih < 40 or iw < 40:
             continue
+        try:
+            cv2.imwrite(str(debug_probe_dir / fp.name), img)
+        except Exception:
+            pass
         scan_top = int(ih * (1.0 - SCAN_HI))
         scan_strip = img[scan_top:, :]
         gray = _preprocess_easyocr_strip_like_pipeline(scan_strip)
