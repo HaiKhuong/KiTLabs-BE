@@ -10,5 +10,9 @@ tqdm
 easyocr
 opencv-python-headless
 
-# Optional — ViXTTS / Viet-xtts-v2 (STEP3_TTS_ENGINE=vixtts):
-# coqui-tts huggingface_hub underthesea vinorm
+# ViXTTS (coqui-tts): transformers>=5.1 gỡ isin_mps_friendly — TTS import lỗi; giữ <5.1.
+transformers>=4.40,<5.1
+coqui-tts
+huggingface_hub
+underthesea
+vinorm
