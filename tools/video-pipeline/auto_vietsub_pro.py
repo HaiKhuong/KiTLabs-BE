@@ -1749,6 +1749,20 @@ def _detect_easyocr_crop_band(video_path, reader, ocr_dir):
     return det_lo, det_hi
 
 
+def _easyocr_readtext_sort_for_join(results):
+    """Sort bbox top→bottom, left→right so joined text order is stable across frames."""
+    if not results:
+        return results
+
+    def key_fn(item):
+        bbox = item[0]
+        ys = [float(p[1]) for p in bbox]
+        xs = [float(p[0]) for p in bbox]
+        return (sum(ys) / max(len(ys), 1), sum(xs) / max(len(xs), 1))
+
+    return sorted(results, key=key_fn)
+
+
 def _step1_ocr_with_easyocr(video_path):
     """Step1: extract subtitles via EasyOCR on the cropped subtitle region."""
     log("Step1: OCR (EasyOCR)…")
@@ -1835,6 +1849,7 @@ def _step1_ocr_with_easyocr(video_path):
         timestamp_sec = idx * frame_interval_sec
         try:
             results = reader.readtext(str(fpath), detail=1)
+            results = _easyocr_readtext_sort_for_join(results)
             texts = [
                 t.strip()
                 for _bbox, t, conf in results
@@ -1869,6 +1884,20 @@ def _step1_ocr_with_easyocr(video_path):
     def fuzzy_sim(a, b):
         return SequenceMatcher(None, a, b).ratio() * 100
 
+    def same_subtitle_line(prev: str, curr: str) -> bool:
+        """Cùng một dòng phụ đề giữa hai frame: fuzzy đủ cao, hoặc chuỗi mở rộng/đè (OCR từng phần)."""
+        if fuzzy_sim(prev, curr) >= EASYOCR_FUZZY_THRESHOLD:
+            return True
+        a, b = prev.strip(), curr.strip()
+        if len(a) < 2 or len(b) < 2:
+            return False
+        if a.startswith(b) or b.startswith(a):
+            return True
+        shorter, longer = (a, b) if len(a) <= len(b) else (b, a)
+        if len(shorter) >= 4 and shorter in longer:
+            return True
+        return False
+
     cleaned = [(ts, clean_text(text)) for ts, text in raw_results]
     cleaned = [(ts, text) for ts, text in cleaned if text]
 
@@ -1879,8 +1908,10 @@ def _step1_ocr_with_easyocr(video_path):
     # First pass: extend same-subtitle groups frame by frame
     groups = []  # each entry: [start_sec, end_sec, text]
     for ts, text in cleaned:
-        if groups and fuzzy_sim(groups[-1][2], text) >= EASYOCR_FUZZY_THRESHOLD:
+        if groups and same_subtitle_line(groups[-1][2], text):
             groups[-1][1] = ts + frame_interval_sec
+            if len(text) > len(groups[-1][2]):
+                groups[-1][2] = text
         else:
             groups.append([ts, ts + frame_interval_sec, text])
 
@@ -1889,10 +1920,12 @@ def _step1_ocr_with_easyocr(video_path):
     for block in groups:
         if (
             merged
-            and fuzzy_sim(merged[-1][2], block[2]) >= EASYOCR_FUZZY_THRESHOLD
+            and same_subtitle_line(merged[-1][2], block[2])
             and (block[0] - merged[-1][1]) * 1000 <= EASYOCR_MERGE_GAP_MS
         ):
             merged[-1][1] = block[1]
+            if len(block[2]) > len(merged[-1][2]):
+                merged[-1][2] = block[2]
         else:
             merged.append(list(block))
 
