@@ -1576,16 +1576,21 @@ def _extract_easyocr_probe_frames(video_path, out_dir, n_frames):
     return paths
 
 
-def _preprocess_easyocr_strip_like_pipeline(bgr_strip):
-    """Xấp xỉ cùng pipeline như _easyocr_crop_ffmpeg_vf cho probe crop-band.
+def _preprocess_easyocr_strip_like_pipeline(bgr_strip, for_probe: bool = False):
+    """Preprocess dải ảnh BGR trước khi đưa vào EasyOCR.
 
-    - luma_suppress > 0: đè Y (YUV) → trả BGR (màu), không grayscale.
-    - luma_suppress = 0: grayscale + eq + histeq/unsharp/negate.
+    for_probe=True  (bước detect band easyocr_crop_probe):
+        Luôn dùng grayscale + eq để OCR xác định bbox chính xác trên ảnh gốc.
+        Không áp luma suppress — tránh mất vị trí chữ khi Y=0.
+
+    for_probe=False (bước trích frame từ cropped.mp4):
+        Nếu EASYOCR_LUMA_SUPPRESS > 0 → đè Y trong YUV, trả BGR màu.
+        Nếu = 0 → grayscale + eq + histeq/unsharp/negate.
     """
     import cv2
     import numpy as np
 
-    ls = max(0.0, min(1.0, float(EASYOCR_LUMA_SUPPRESS or 0.0)))
+    ls = 0.0 if for_probe else max(0.0, min(1.0, float(EASYOCR_LUMA_SUPPRESS or 0.0)))
     if ls > 1e-9:
         y_factor = max(0.0, 1.0 - ls)
         ycrcb = cv2.cvtColor(bgr_strip, cv2.COLOR_BGR2YCrCb).astype(np.float32)
@@ -1593,7 +1598,7 @@ def _preprocess_easyocr_strip_like_pipeline(bgr_strip):
         out_bgr = cv2.cvtColor(ycrcb.astype(np.uint8), cv2.COLOR_YCrCb2BGR)
         return out_bgr
 
-    # Chế độ mặc định: grayscale + eq
+    # Grayscale + eq (probe luôn dùng nhánh này)
     gray = cv2.cvtColor(bgr_strip, cv2.COLOR_BGR2GRAY)
     x = gray.astype(np.float32) / 255.0
     g = max(float(EASYOCR_GRAY_GAMMA), 0.01)
@@ -1743,7 +1748,7 @@ def _detect_easyocr_crop_band(video_path, reader, ocr_dir):
             pass
         scan_top = int(ih * (1.0 - SCAN_HI))
         scan_strip = img[scan_top:, :]
-        gray = _preprocess_easyocr_strip_like_pipeline(scan_strip)
+        gray = _preprocess_easyocr_strip_like_pipeline(scan_strip, for_probe=True)
         try:
             results = reader.readtext(gray, detail=1)
         except Exception:
