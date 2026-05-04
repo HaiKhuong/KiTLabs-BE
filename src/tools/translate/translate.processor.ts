@@ -161,6 +161,11 @@ const OPTION_MAPPINGS: Array<{
     allowedTypes: ["string"],
   },
   {
+    cliFlag: "--easyocr-white-thresh",
+    keys: ["easyOcrWhiteThresh", "easy_ocr_white_thresh"],
+    allowedTypes: ["number", "string"],
+  },
+  {
     cliFlag: "--easyocr-luma-suppress",
     keys: ["easyOcrLumaSuppress", "easy_ocr_luma_suppress"],
     allowedTypes: ["number", "string"],

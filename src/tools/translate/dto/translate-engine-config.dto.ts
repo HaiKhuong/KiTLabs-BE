@@ -417,7 +417,22 @@ export class TranslateEngineConfigDto {
   @IsString()
   easyocr_text_skip_regexes_json?: string;
 
-  /** Suppress Y (luma) 0..1 trước OCR: giữ màu R/G/B, đè Y xuống thấp trong YUV. 1.0 = Y=0 (chroma-only). */
+  /** Grayscale binary threshold (0=off, 1..254): pixel >= thresh → trắng (255), còn lại → đen. Chữ trắng / nền đen. Gợi ý: 180. */
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  @Max(254)
+  easyOcrWhiteThresh?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  @Max(254)
+  easy_ocr_white_thresh?: number;
+
+  /** Suppress Y (luma) 0..1 trước OCR: giữ màu R/G/B, đè Y xuống thấp trong YUV. 1.0 = Y=0 (chroma-only). Bỏ qua nếu easyOcrWhiteThresh > 0. */
   @IsOptional()
   @Type(() => Number)
   @IsNumber()

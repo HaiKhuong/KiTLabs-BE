@@ -168,7 +168,11 @@ EASYOCR_GRAY_BRIGHTNESS = 0.05
 EASYOCR_GRAY_GAMMA = 1.0
 # Luma suppression trước khi trích frame OCR (0 = tắt, 1.0 = Y=0 hoàn toàn — chỉ còn chênh lệch màu Cb/Cr).
 # Khi > 0: giữ màu RGB (bỏ format=gray), đè Y xuống thấp trong YUV, chuyển về RGB → EasyOCR nhận ảnh màu.
-EASYOCR_LUMA_SUPPRESS = 1.0
+EASYOCR_LUMA_SUPPRESS = 0.0
+# White extraction threshold (0 = tắt). Khi > 0: ảnh grayscale → pixel >= thresh thành trắng, còn lại thành đen.
+# Cho ra ảnh nhị phân: chữ trắng thành trắng, nền về đen hoàn toàn → EasyOCR đọc rất chính xác.
+# Ưu tiên cao hơn luma_suppress. Khuyến nghị: 160..200 (vd 180). Chỉ áp cho cropped.mp4, không probe.
+EASYOCR_WHITE_THRESH = 0
 # Sau format=gray,eq=…: làm phẳng nền / tách chữ (0 = tắt). Đồng bộ probe OpenCV.
 EASYOCR_HISTEQ_STRENGTH = 0.0  # 0..1 → ffmpeg histeq=strength=…; OpenCV blend equalizeHist
 EASYOCR_GRAY_INVERT = False  # negate luma (thử với chữ trắng nền tối)
@@ -1466,15 +1470,21 @@ def _easyocr_crop_ffmpeg_vf(band_lo, band_hi):
     vert = f"crop=iw:ih*{dh:.6f}:0:ih*{y_from_top:.6f}"
     htrim = _easyocr_h_trim_crop_vf()
 
+    # Ưu tiên 1: white_thresh — ảnh nhị phân (chữ trắng=255, nền=0)
+    wt = int(EASYOCR_WHITE_THRESH or 0)
+    if wt > 0:
+        wt = max(0, min(254, wt))
+        thresh_vf = f"format=gray,lut=y='if(gt(val\\,{wt}),255,0)'"
+        return f"{vert},{htrim},{thresh_vf}"
+
+    # Ưu tiên 2: luma-suppress — đè Y trong YUV, giữ chênh lệch màu Cb/Cr
     ls = max(0.0, min(1.0, float(EASYOCR_LUMA_SUPPRESS or 0.0)))
     if ls > 1e-9:
-        # Chế độ luma-suppress: Y bị đè xuống, R/G/B giữ nguyên chênh lệch màu
         y_factor = max(0.0, 1.0 - ls)
-        # lutyuv hoạt động trên yuv444p; clip(val*factor,0,255) giảm Y từng pixel
         luma_vf = f"format=yuv444p,lutyuv=y='clip(val*{y_factor:.6f}\\,0\\,255)',format=rgb24"
         return f"{vert},{htrim},{luma_vf}"
 
-    # Chế độ mặc định: grayscale + eq
+    # Mặc định: grayscale + eq
     c = float(EASYOCR_GRAY_CONTRAST)
     b = float(EASYOCR_GRAY_BRIGHTNESS)
     g = float(EASYOCR_GRAY_GAMMA)
@@ -1590,15 +1600,25 @@ def _preprocess_easyocr_strip_like_pipeline(bgr_strip, for_probe: bool = False):
     import cv2
     import numpy as np
 
-    ls = 0.0 if for_probe else max(0.0, min(1.0, float(EASYOCR_LUMA_SUPPRESS or 0.0)))
-    if ls > 1e-9:
-        y_factor = max(0.0, 1.0 - ls)
-        ycrcb = cv2.cvtColor(bgr_strip, cv2.COLOR_BGR2YCrCb).astype(np.float32)
-        ycrcb[:, :, 0] = np.clip(ycrcb[:, :, 0] * y_factor, 0, 255)
-        out_bgr = cv2.cvtColor(ycrcb.astype(np.uint8), cv2.COLOR_YCrCb2BGR)
-        return out_bgr
+    if not for_probe:
+        # Ưu tiên 1: white_thresh — ảnh nhị phân chữ trắng / nền đen
+        wt = int(EASYOCR_WHITE_THRESH or 0)
+        if wt > 0:
+            wt = max(0, min(254, wt))
+            gray_raw = cv2.cvtColor(bgr_strip, cv2.COLOR_BGR2GRAY)
+            _, out = cv2.threshold(gray_raw, wt, 255, cv2.THRESH_BINARY)
+            return out
 
-    # Grayscale + eq (probe luôn dùng nhánh này)
+        # Ưu tiên 2: luma-suppress — đè Y trong YUV, giữ màu Cb/Cr
+        ls = max(0.0, min(1.0, float(EASYOCR_LUMA_SUPPRESS or 0.0)))
+        if ls > 1e-9:
+            y_factor = max(0.0, 1.0 - ls)
+            ycrcb = cv2.cvtColor(bgr_strip, cv2.COLOR_BGR2YCrCb).astype(np.float32)
+            ycrcb[:, :, 0] = np.clip(ycrcb[:, :, 0] * y_factor, 0, 255)
+            out_bgr = cv2.cvtColor(ycrcb.astype(np.uint8), cv2.COLOR_YCrCb2BGR)
+            return out_bgr
+
+    # Grayscale + eq (probe luôn dùng nhánh này; OCR dùng khi white_thresh=0 và luma_suppress=0)
     gray = cv2.cvtColor(bgr_strip, cv2.COLOR_BGR2GRAY)
     x = gray.astype(np.float32) / 255.0
     g = max(float(EASYOCR_GRAY_GAMMA), 0.01)
@@ -3088,13 +3108,23 @@ def parse_cli_args():
         help="Enable GPU for EasyOCR inference (default on).",
     )
     parser.add_argument(
+        "--easyocr-white-thresh",
+        type=int,
+        default=EASYOCR_WHITE_THRESH,
+        help=(
+            "0..254 (default 0 = off): grayscale binary threshold để trích chữ trắng. "
+            "Pixel >= thresh → trắng (255), còn lại → đen (0). Cho ra ảnh nhị phân rõ chữ. "
+            "Ưu tiên hơn --easyocr-luma-suppress. Gợi ý: 160..200 (vd 180)."
+        ),
+    )
+    parser.add_argument(
         "--easyocr-luma-suppress",
         type=float,
         default=EASYOCR_LUMA_SUPPRESS,
         help=(
-            "0..1 (default 1.0 = Y=0, maximum suppression): crush luma before OCR frame extraction. "
+            "0..1 (default 0 = off): crush luma trước OCR frame extraction. "
             "R/G/B color differences preserved; frames stay COLOR (no grayscale). "
-            "Set to 0 to revert to legacy grayscale+eq pipeline."
+            "Bị bỏ qua nếu --easyocr-white-thresh > 0."
         ),
     )
     parser.add_argument(
@@ -3352,6 +3382,7 @@ def apply_cli_config(args):
     global EASYOCR_MIN_DURATION_MS
     global EASYOCR_FUZZY_THRESHOLD
     global EASYOCR_GPU
+    global EASYOCR_WHITE_THRESH
     global EASYOCR_LUMA_SUPPRESS
     global EASYOCR_GRAY_CONTRAST
     global EASYOCR_GRAY_BRIGHTNESS
@@ -3488,6 +3519,9 @@ def apply_cli_config(args):
         EASYOCR_FPS = 1000.0 / float(EASYOCR_MIN_DURATION_MS)
     EASYOCR_FUZZY_THRESHOLD = float(args.easyocr_fuzzy_threshold)
     EASYOCR_GPU = args.easyocr_gpu == "on"
+    EASYOCR_WHITE_THRESH = max(
+        0, min(254, int(getattr(args, "easyocr_white_thresh", EASYOCR_WHITE_THRESH)))
+    )
     EASYOCR_LUMA_SUPPRESS = max(
         0.0, min(1.0, float(getattr(args, "easyocr_luma_suppress", EASYOCR_LUMA_SUPPRESS)))
     )
@@ -3504,13 +3538,16 @@ def apply_cli_config(args):
     )
     EASYOCR_GRAY_INVERT = getattr(args, "easyocr_gray_invert", "off") == "on"
     EASYOCR_UNSHARP = str(getattr(args, "easyocr_unsharp", EASYOCR_UNSHARP) or "").strip()
-    _mode_str = (
-        f"luma_suppress={EASYOCR_LUMA_SUPPRESS:.3f} (color frames)"
-        if EASYOCR_LUMA_SUPPRESS > 1e-9
-        else f"gray_eq contrast={EASYOCR_GRAY_CONTRAST:.3f} brightness={EASYOCR_GRAY_BRIGHTNESS:.3f} "
-             f"gamma={EASYOCR_GRAY_GAMMA:.3f} histeq={EASYOCR_HISTEQ_STRENGTH} "
-             f"gray_invert={'on' if EASYOCR_GRAY_INVERT else 'off'} unsharp={EASYOCR_UNSHARP or 'off'}"
-    )
+    if EASYOCR_WHITE_THRESH > 0:
+        _mode_str = f"white_thresh={EASYOCR_WHITE_THRESH} (binary: white text / black bg)"
+    elif EASYOCR_LUMA_SUPPRESS > 1e-9:
+        _mode_str = f"luma_suppress={EASYOCR_LUMA_SUPPRESS:.3f} (color frames)"
+    else:
+        _mode_str = (
+            f"gray_eq contrast={EASYOCR_GRAY_CONTRAST:.3f} brightness={EASYOCR_GRAY_BRIGHTNESS:.3f} "
+            f"gamma={EASYOCR_GRAY_GAMMA:.3f} histeq={EASYOCR_HISTEQ_STRENGTH} "
+            f"gray_invert={'on' if EASYOCR_GRAY_INVERT else 'off'} unsharp={EASYOCR_UNSHARP or 'off'}"
+        )
     log(
         "Step1 OCR config: "
         f"easyocr_min_duration_ms={EASYOCR_MIN_DURATION_MS} "
