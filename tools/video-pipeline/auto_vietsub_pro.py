@@ -171,8 +171,8 @@ EASYOCR_GRAY_GAMMA = 1.0
 EASYOCR_LUMA_SUPPRESS = 0.0
 # White extraction threshold (0 = tắt). Khi > 0: ảnh grayscale → pixel >= thresh thành trắng, còn lại thành đen.
 # Cho ra ảnh nhị phân: chữ trắng thành trắng, nền về đen hoàn toàn → EasyOCR đọc rất chính xác.
-# Ưu tiên cao hơn luma_suppress. Khuyến nghị: 160..200 (vd 180). Chỉ áp cho cropped.mp4, không probe.
-EASYOCR_WHITE_THRESH = 0
+# Ưu tiên cao hơn luma_suppress. Khuyến nghị: 160..200. Chỉ áp cho cropped.mp4, không probe.
+EASYOCR_WHITE_THRESH = 180
 # Sau format=gray,eq=…: làm phẳng nền / tách chữ (0 = tắt). Đồng bộ probe OpenCV.
 EASYOCR_HISTEQ_STRENGTH = 0.0  # 0..1 → ffmpeg histeq=strength=…; OpenCV blend equalizeHist
 EASYOCR_GRAY_INVERT = False  # negate luma (thử với chữ trắng nền tối)
