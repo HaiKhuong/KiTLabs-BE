@@ -30,6 +30,8 @@ from tqdm import tqdm
 # CONFIG
 # ==============================
 
+SCRIPT_DIR = Path(__file__).resolve().parent
+
 WHISPER_MODEL = "large-v3"
 WHISPER_LANGUAGE = "zh"
 STEP1_SUBTITLE_SOURCE = "embedded"
@@ -38,6 +40,15 @@ EDGE_TTS_VOICE = "vi-VN-HoaiMyNeural"
 EDGE_TTS_RATE = "+30%"
 EDGE_TTS_VOLUME = "+10%"
 EDGE_TTS_PITCH = "+20Hz"
+# Step3 TTS: edge = Microsoft Edge TTS; vixtts = local XTTS (viXTTS / Viet-xtts-v2 checkpoint, cần GPU/CPU + coqui-tts).
+STEP3_TTS_ENGINE = "vixtts"
+# Thư mục chứa model.pth, config.json, vocab.json (và speakers_xtts.pth — tự tải từ coqui/XTTS-v2 nếu thiếu).
+VIXTTS_MODEL_DIR = str(SCRIPT_DIR / "voice")
+# Giọng mẫu ~6s: WAV dùng trực tiếp; mp3/m4a/… tự convert trong logs/ (bắt buộc khi STEP3_TTS_ENGINE=vixtts).
+VIXTTS_SPEAKER_WAV = str(SCRIPT_DIR / "voice" / "sample.mp3")
+VIXTTS_LANG = "vi"
+VIXTTS_USE_DEEPSPEED = False
+VIXTTS_NORMALIZE_TEXT = True
 STEP3_AUTO_RATE_ENABLED = True
 TRANSLATION_CONTEXT = ""  # Custom translation context for Gemini prompt
 STEP3_AUTO_RATE_TRIGGER_CHARS_PER_SEC = 14.0
@@ -58,7 +69,6 @@ PROCESSBAR_LOG_ENABLED = False
 STEP3_TTS_BORROW_GAP = False
 # Optional: set absolute ffmpeg.exe path here if needed.
 FFMPEG_PATH = ""
-SCRIPT_DIR = Path(__file__).resolve().parent
 
 WORK_ROOT = Path("/mnt/c/Users/haikh/Videos/VideoVietsub/videos")
 WORK_NAME = "default"
@@ -945,7 +955,7 @@ def _step3_prune_voice_checkpoint_missing_wavs(done_set, srt_path, chunk_dir, bl
 
 
 def _step3_load_voice_checkpoint(srt_path, chunk_dir, block_count):
-    """Trả về set chỉ số i (enumerate blocks) đã có WAV để bỏ qua edge-tts."""
+    """Trả về set chỉ số i (enumerate blocks) đã có WAV để bỏ qua bước TTS."""
     json_path, _ = _step3_voice_checkpoint_paths(chunk_dir)
     if not json_path.is_file():
         return set()
@@ -965,6 +975,8 @@ def _step3_load_voice_checkpoint(srt_path, chunk_dir, block_count):
         return set()
     if int(data.get("block_count", -1)) != int(block_count):
         return set()
+    if str(data.get("tts_engine") or "edge") != str(STEP3_TTS_ENGINE):
+        return set()
     raw = data.get("done_block_indices") or []
     return {int(x) for x in raw if 0 <= int(x) < block_count}
 
@@ -979,6 +991,7 @@ def _step3_save_voice_checkpoint(srt_path, chunk_dir, blocks, done_indices):
         return
     payload = {
         "version": 1,
+        "tts_engine": str(STEP3_TTS_ENGINE or "vixtts"),
         "srt_path_resolved": sp,
         "srt_mtime": mtime,
         "block_count": len(blocks),
@@ -2354,30 +2367,254 @@ def step2_translate_srt(srt_path):
 # TTS generate voice directly from SRT (chunked)
 # ==============================
 
+_vixtts_model_singleton = None
+_vixtts_model_dir_loaded = None
+
+
+def _vixtts_calculate_keep_len(text, lang):
+    """Giới hạn độ dài wav cho câu tiếng Việt rất ngắn (theo gợi ý viXTTS). -1 = không cắt."""
+    if lang in ("ja", "zh-cn", "zh"):
+        return -1
+    word_count = len(str(text or "").split())
+    num_punct = str(text or "").count(".") + str(text or "").count("!")
+    num_punct += str(text or "").count("?") + str(text or "").count(",")
+    if word_count < 5:
+        return 15000 * word_count + 2000 * num_punct
+    if word_count < 10:
+        return 13000 * word_count + 2000 * num_punct
+    return -1
+
+
+def _vixtts_normalize_text_vi(text):
+    if not VIXTTS_NORMALIZE_TEXT:
+        return text
+    try:
+        from vinorm import TTSnorm
+    except ImportError:
+        return text
+    t = (
+        TTSnorm(str(text or ""), unknown=False, lower=False, rule=True)
+        .replace("..", ".")
+        .replace("!.", "!")
+        .replace("?.", "?")
+        .replace(" .", ".")
+        .replace(" ,", ",")
+        .replace('"', "")
+        .replace("'", "")
+        .replace("AI", "Ây Ai")
+        .replace("A.I", "Ây Ai")
+    )
+    return t
+
+
+def _vixtts_sentence_split(text, lang):
+    t = str(text or "").strip()
+    if not t:
+        return []
+    if lang in ("ja", "zh-cn", "zh"):
+        return [s for s in t.split("。") if s.strip()]
+    try:
+        from underthesea import sent_tokenize
+
+        return [s for s in sent_tokenize(t) if str(s).strip()]
+    except Exception:
+        return [t]
+
+
+def _vixtts_prepare_speaker_reference(speaker_in: Path, cache_dir: Path) -> Path:
+    """Trả về đường dẫn WAV dùng cho conditioning: .wav giữ nguyên; mp3/m4a/… convert ffmpeg."""
+    p = Path(speaker_in).expanduser().resolve()
+    if not p.is_file():
+        raise FileNotFoundError(f"ViXTTS: không tìm thấy file giọng mẫu: {p}")
+    suf = p.suffix.lower()
+    if suf == ".wav":
+        return p
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    out_wav = cache_dir / "vixtts_speaker_ref_converted.wav"
+    run_command(
+        [
+            FFMPEG_BIN,
+            "-y",
+            "-i",
+            str(p),
+            "-ac",
+            "1",
+            "-ar",
+            "24000",
+            "-c:a",
+            "pcm_s16le",
+            str(out_wav),
+        ],
+        f"ViXTTS: chuyển giọng mẫu {p.suffix} → WAV 24kHz mono",
+    )
+    return out_wav.resolve()
+
+
+def _vixtts_ensure_speakers_xtts(model_dir: Path):
+    """Checkpoint HF Viet-xtts-v2 thường thiếu speakers_xtts.pth — lấy từ coqui/XTTS-v2."""
+    target = model_dir / "speakers_xtts.pth"
+    if target.is_file():
+        return target
+    try:
+        from huggingface_hub import hf_hub_download
+    except ImportError as e:
+        raise RuntimeError(
+            "ViXTTS: thiếu speakers_xtts.pth trong model dir và không cài huggingface_hub "
+            "(pip install huggingface_hub)."
+        ) from e
+    log("ViXTTS: tải speakers_xtts.pth từ coqui/XTTS-v2…")
+    hf_hub_download(
+        repo_id="coqui/XTTS-v2",
+        filename="speakers_xtts.pth",
+        local_dir=str(model_dir),
+    )
+    if not target.is_file():
+        raise FileNotFoundError(f"ViXTTS: không tạo được {target}")
+    return target
+
+
+def _vixtts_load_model(model_dir: Path, use_deepspeed: bool):
+    global _vixtts_model_singleton, _vixtts_model_dir_loaded
+    import torch
+
+    d = str(model_dir.resolve())
+    if _vixtts_model_singleton is not None and _vixtts_model_dir_loaded == d:
+        return _vixtts_model_singleton
+    try:
+        from TTS.tts.configs.xtts_config import XttsConfig
+        from TTS.tts.models.xtts import Xtts
+    except ImportError as e:
+        raise RuntimeError(
+            "ViXTTS cần gói Coqui TTS (pip install coqui-tts). "
+            "Một số checkpoint có thể cần fork TTS tương thích — xem model card."
+        ) from e
+    for name in ("model.pth", "config.json", "vocab.json"):
+        p = model_dir / name
+        if not p.is_file():
+            raise FileNotFoundError(f"ViXTTS: thiếu file trong model dir: {p}")
+    _vixtts_ensure_speakers_xtts(model_dir)
+    cfg_path = model_dir / "config.json"
+    config = XttsConfig()
+    config.load_json(str(cfg_path))
+    model = Xtts.init_from_config(config)
+    model.load_checkpoint(
+        config, checkpoint_dir=str(model_dir), use_deepspeed=bool(use_deepspeed)
+    )
+
+    if torch.cuda.is_available():
+        model.cuda()
+        log("ViXTTS: dùng CUDA.")
+    else:
+        log("ViXTTS: CUDA không có — chạy CPU (chậm).")
+    _vixtts_model_singleton = model
+    _vixtts_model_dir_loaded = d
+    return model
+
+
+def _vixtts_synthesize_to_file(
+    model,
+    text,
+    lang,
+    out_wav: Path,
+    gpt_cond_latent,
+    speaker_embedding,
+):
+    import torch
+    import torchaudio
+
+    tts_text = str(text or "").strip()
+    if lang == "vi" and VIXTTS_NORMALIZE_TEXT:
+        tts_text = _vixtts_normalize_text_vi(tts_text)
+    sentences = _vixtts_sentence_split(tts_text, lang)
+    if not sentences:
+        raise ValueError("ViXTTS: text rỗng sau tách câu.")
+    wav_chunks = []
+    for sentence in sentences:
+        st = str(sentence).strip()
+        if not st:
+            continue
+
+        wav_chunk = model.inference(
+            text=st,
+            language=lang,
+            gpt_cond_latent=gpt_cond_latent,
+            speaker_embedding=speaker_embedding,
+            temperature=0.3,
+            length_penalty=1.0,
+            repetition_penalty=10.0,
+            top_k=30,
+            top_p=0.85,
+            enable_text_splitting=True,
+        )
+        wav = wav_chunk["wav"]
+        keep_len = _vixtts_calculate_keep_len(st, lang)
+        if keep_len is not None and int(keep_len) > 0:
+            wav = wav[: int(keep_len)]
+        wav_chunks.append(torch.tensor(wav, dtype=torch.float32))
+    if not wav_chunks:
+        raise ValueError("ViXTTS: không sinh được chunk âm thanh.")
+    wave_tensor = torch.cat(wav_chunks, dim=0).unsqueeze(0)
+    out_wav.parent.mkdir(parents=True, exist_ok=True)
+    torchaudio.save(str(out_wav), wave_tensor, 24000)
+
 
 def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
-    log("Step3: edge-tts (timeline SRT)…")
-    import edge_tts
+    use_vixtts = str(STEP3_TTS_ENGINE or "vixtts").strip().lower() == "vixtts"
+    vixtts_model = None
+    vixtts_lang = "vi"
+    vixtts_latents = None
+    vixtts_spk = None
 
-    async def _generate_edge_tts_mp3(text, out_path, rate):
-        communicate = edge_tts.Communicate(
-            text=text,
-            voice=EDGE_TTS_VOICE,
-            rate=rate,
-            volume=EDGE_TTS_VOLUME,
-            pitch=EDGE_TTS_PITCH,
+    if use_vixtts:
+        log("Step3: ViXTTS / XTTS-vi (timeline SRT)…")
+        md = Path(str(VIXTTS_MODEL_DIR or "").strip()).expanduser()
+        vixtts_spk = Path(str(VIXTTS_SPEAKER_WAV or "").strip()).expanduser()
+        if not str(VIXTTS_MODEL_DIR or "").strip():
+            raise ValueError("ViXTTS: cần --vixtts-model-dir (thư mục checkpoint).")
+        if not md.is_dir():
+            raise FileNotFoundError(f"ViXTTS: model dir không tồn tại: {md}")
+        if not str(VIXTTS_SPEAKER_WAV or "").strip() or not vixtts_spk.is_file():
+            raise FileNotFoundError(
+                f"ViXTTS: cần --vixtts-speaker-wav (file giọng mẫu, WAV hoặc MP3/…): {vixtts_spk}"
+            )
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        vixtts_spk_orig = vixtts_spk.name
+        vixtts_spk = _vixtts_prepare_speaker_reference(vixtts_spk, LOG_DIR)
+        vixtts_model = _vixtts_load_model(md, VIXTTS_USE_DEEPSPEED)
+        vixtts_lang = str(VIXTTS_LANG or "vi").strip() or "vi"
+        vixtts_latents = vixtts_model.get_conditioning_latents(
+            audio_path=str(vixtts_spk),
+            gpt_cond_len=vixtts_model.config.gpt_cond_len,
+            max_ref_length=vixtts_model.config.max_ref_len,
+            sound_norm_refs=vixtts_model.config.sound_norm_refs,
         )
-        out = str(out_path)
-        timeout_sec = float(STEP3_TTS_API_TIMEOUT_SEC)
-        if timeout_sec <= 0:
-            await communicate.save(out)
-        else:
-            try:
-                await asyncio.wait_for(communicate.save(out), timeout=timeout_sec)
-            except asyncio.TimeoutError as exc:
-                raise TimeoutError(
-                    f"edge-tts request timed out after {timeout_sec:.1f}s"
-                ) from exc
+        log(
+            "ViXTTS: đã tính conditioning từ giọng mẫu "
+            f"{vixtts_spk_orig} → {vixtts_spk.name}"
+        )
+    else:
+        log("Step3: edge-tts (timeline SRT)…")
+        import edge_tts
+
+        async def _generate_edge_tts_mp3(text, out_path, rate):
+            communicate = edge_tts.Communicate(
+                text=text,
+                voice=EDGE_TTS_VOICE,
+                rate=rate,
+                volume=EDGE_TTS_VOLUME,
+                pitch=EDGE_TTS_PITCH,
+            )
+            out = str(out_path)
+            timeout_sec = float(STEP3_TTS_API_TIMEOUT_SEC)
+            if timeout_sec <= 0:
+                await communicate.save(out)
+            else:
+                try:
+                    await asyncio.wait_for(communicate.save(out), timeout=timeout_sec)
+                except asyncio.TimeoutError as exc:
+                    raise TimeoutError(
+                        f"edge-tts request timed out after {timeout_sec:.1f}s"
+                    ) from exc
 
     with open(srt_path, encoding="utf8") as f:
         blocks = parse_srt(f.read())
@@ -2470,7 +2707,8 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
             )
             continue
 
-        raw_audio_path = chunk_dir / f"raw_{i:04d}.mp3"
+        raw_ext = "wav" if use_vixtts else "mp3"
+        raw_audio_path = chunk_dir / f"raw_{i:04d}.{raw_ext}"
         final_seg_path = chunk_dir / f"part_{i:04d}.wav"
 
         if (
@@ -2485,11 +2723,25 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
             current_time_ms = start_ms + int(seg_ms)
             continue
 
+        gpt_lat, spk_emb = vixtts_latents if use_vixtts else (None, None)
+
         def run_tts(rate):
             sleep_ms = max(0, int(STEP3_TTS_REQUEST_SLEEP_MS))
             if sleep_ms > 0:
                 time.sleep(sleep_ms / 1000.0)
-            asyncio.run(_generate_edge_tts_mp3(subtitle_text, raw_audio_path, rate))
+            if use_vixtts:
+                _vixtts_synthesize_to_file(
+                    vixtts_model,
+                    subtitle_text,
+                    vixtts_lang,
+                    raw_audio_path,
+                    gpt_lat,
+                    spk_emb,
+                )
+            else:
+                asyncio.run(
+                    _generate_edge_tts_mp3(subtitle_text, raw_audio_path, rate)
+                )
 
         tts_rate, _ = resolve_dynamic_tts_rate(subtitle_text, subtitle_duration_ms)
         subtitle_idx = block.get("index", i + 1)
@@ -2516,7 +2768,12 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
             continue
 
         raw_segment_ms = get_media_duration_ms(raw_audio_path)
-        if STEP3_AUTO_RATE_ENABLED and raw_segment_ms and subtitle_duration_ms > 220:
+        if (
+            (not use_vixtts)
+            and STEP3_AUTO_RATE_ENABLED
+            and raw_segment_ms
+            and subtitle_duration_ms > 220
+        ):
             stretch_pre = raw_segment_ms / float(subtitle_duration_ms)
             if stretch_pre > 1.12:
                 pushed_ms = int(subtitle_duration_ms / min(stretch_pre, 1.85))
@@ -2645,7 +2902,7 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
             "copy",
             str(audio_path),
         ],
-        "Concatenate edge-tts timeline segments",
+        "Concatenate Step3 TTS timeline segments",
     )
     return audio_path
 
@@ -3296,6 +3553,39 @@ def parse_cli_args():
     parser.add_argument("--edge-tts-volume", default=EDGE_TTS_VOLUME)
     parser.add_argument("--edge-tts-pitch", default=EDGE_TTS_PITCH)
     parser.add_argument(
+        "--step3-tts-engine",
+        choices=["edge", "vixtts"],
+        default=STEP3_TTS_ENGINE,
+        help="Mặc định vixtts. edge=Microsoft Edge TTS; vixtts=local XTTS (model/speaker mặc định thư mục voice/ cạnh script).",
+    )
+    parser.add_argument(
+        "--vixtts-model-dir",
+        default=VIXTTS_MODEL_DIR,
+        help="Thư mục checkpoint: model.pth, config.json, vocab.json (speakers_xtts.pth tự tải nếu thiếu).",
+    )
+    parser.add_argument(
+        "--vixtts-speaker-wav",
+        default=VIXTTS_SPEAKER_WAV,
+        help="File giọng mẫu ~6s (WAV dùng trực tiếp; mp3/m4a/flac/… tự chuyển WAV 24kHz trong logs/). Bắt buộc khi --step3-tts-engine vixtts.",
+    )
+    parser.add_argument(
+        "--vixtts-lang",
+        default=VIXTTS_LANG,
+        help="Mã ngôn ngữ XTTS (mặc định vi).",
+    )
+    parser.add_argument(
+        "--vixtts-use-deepspeed",
+        choices=["on", "off"],
+        default="on" if VIXTTS_USE_DEEPSPEED else "off",
+        help="DeepSpeed inference (cần cài deepspeed; mặc định off).",
+    )
+    parser.add_argument(
+        "--vixtts-normalize-text",
+        choices=["on", "off"],
+        default="on" if VIXTTS_NORMALIZE_TEXT else "off",
+        help="Chuẩn hoá tiếng Việt với vinorm (cần pip install vinorm; off=giữ text sau sanitize).",
+    )
+    parser.add_argument(
         "--auto-speed",
         choices=["on", "off"],
         default="on" if STEP3_AUTO_RATE_ENABLED else "off",
@@ -3323,7 +3613,7 @@ def parse_cli_args():
         "--step3-tts-api-timeout-sec",
         type=float,
         default=STEP3_TTS_API_TIMEOUT_SEC,
-        help="Per-request timeout for edge-tts (save). 0 disables timeout.",
+        help="Per-request timeout cho edge-tts (save). ViXTTS chạy sync trên main thread — tham số này không áp dụng; 0=tắt (edge).",
     )
     parser.add_argument(
         "--step3-tts-max-retry-action",
@@ -3335,7 +3625,7 @@ def parse_cli_args():
         "--step3-voice-resume",
         choices=["on", "off"],
         default="on" if STEP3_VOICE_RESUME else "off",
-        help="on=đọc/ghi checkpoint trong logs/tts_chunks; chỉ gọi edge-tts cho segment chưa trong list + chưa có part_XXXX.wav (tiết kiệm rate).",
+        help="on=đọc/ghi checkpoint trong logs/tts_chunks; chỉ gọi TTS cho segment chưa trong list + chưa có part_XXXX.wav (tiết kiệm rate).",
     )
     parser.add_argument(
         "--translation-context",
@@ -3414,6 +3704,12 @@ def apply_cli_config(args):
     global SPEED_VIDEO
     global STEP4_MERGE_SPEED
     global EDGE_TTS_VOICE
+    global STEP3_TTS_ENGINE
+    global VIXTTS_MODEL_DIR
+    global VIXTTS_SPEAKER_WAV
+    global VIXTTS_LANG
+    global VIXTTS_USE_DEEPSPEED
+    global VIXTTS_NORMALIZE_TEXT
     global STEP3_AUTO_RATE_ENABLED
     global STEP3_AUTO_RATE_TRIGGER_CHARS_PER_SEC
     global STEP3_AUTO_RATE_BONUS_PERCENT
@@ -3510,6 +3806,12 @@ def apply_cli_config(args):
     EDGE_TTS_RATE = resolve_base_tts_rate(args.edge_tts_rate)
     EDGE_TTS_VOLUME = args.edge_tts_volume
     EDGE_TTS_PITCH = args.edge_tts_pitch
+    STEP3_TTS_ENGINE = str(args.step3_tts_engine or "vixtts").strip().lower() or "vixtts"
+    VIXTTS_MODEL_DIR = str(args.vixtts_model_dir or "").strip()
+    VIXTTS_SPEAKER_WAV = str(args.vixtts_speaker_wav or "").strip()
+    VIXTTS_LANG = str(args.vixtts_lang or "vi").strip() or "vi"
+    VIXTTS_USE_DEEPSPEED = args.vixtts_use_deepspeed == "on"
+    VIXTTS_NORMALIZE_TEXT = args.vixtts_normalize_text == "on"
     STEP3_AUTO_RATE_ENABLED = args.auto_speed == "on"
     STEP3_AUTO_RATE_TRIGGER_CHARS_PER_SEC = float(args.step3_auto_rate_trigger_cps)
     STEP3_AUTO_RATE_BONUS_PERCENT = int(args.step3_auto_rate_bonus_percent)

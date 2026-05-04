@@ -31,4 +31,6 @@ tools/video-pipeline/venv/
 tools/video-pipeline/workspace/
 tools/video-pipeline/**/*.log
 
+tools/video-pipeline/voice/model.pth
+
 .cursor

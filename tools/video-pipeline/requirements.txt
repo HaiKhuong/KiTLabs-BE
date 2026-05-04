@@ -9,3 +9,6 @@ edge-tts
 tqdm
 easyocr
 opencv-python-headless
+
+# Optional — ViXTTS / Viet-xtts-v2 (STEP3_TTS_ENGINE=vixtts):
+# coqui-tts huggingface_hub underthesea vinorm

@@ -102,6 +102,32 @@ const OPTION_MAPPINGS: Array<{
   { cliFlag: "--edge-tts-rate", keys: ["edgeTtsRate", "edge_tts_rate"], allowedTypes: ["string"] },
   { cliFlag: "--edge-tts-volume", keys: ["edgeTtsVolume", "edge_tts_volume"], allowedTypes: ["string"] },
   { cliFlag: "--edge-tts-pitch", keys: ["edgeTtsPitch", "edge_tts_pitch"], allowedTypes: ["string"] },
+  {
+    cliFlag: "--step3-tts-engine",
+    keys: ["step3TtsEngine", "step3_tts_engine"],
+    allowedTypes: ["string"],
+  },
+  {
+    cliFlag: "--vixtts-model-dir",
+    keys: ["vixttsModelDir", "vixtts_model_dir"],
+    allowedTypes: ["string"],
+  },
+  {
+    cliFlag: "--vixtts-speaker-wav",
+    keys: ["vixttsSpeakerWav", "vixtts_speaker_wav"],
+    allowedTypes: ["string"],
+  },
+  { cliFlag: "--vixtts-lang", keys: ["vixttsLang", "vixtts_lang"], allowedTypes: ["string"] },
+  {
+    cliFlag: "--vixtts-use-deepspeed",
+    keys: ["vixttsUseDeepspeed", "vixtts_use_deepspeed"],
+    allowedTypes: ["string"],
+  },
+  {
+    cliFlag: "--vixtts-normalize-text",
+    keys: ["vixttsNormalizeText", "vixtts_normalize_text"],
+    allowedTypes: ["string"],
+  },
   { cliFlag: "--auto-speed", keys: ["autoSpeed", "auto_speed"], allowedTypes: ["string"] },
   {
     cliFlag: "--step3-auto-rate-trigger-cps",
