@@ -2,9 +2,10 @@ faster-whisper==1.2.1
 python-dotenv>=1.0.0
 google-genai
 ctranslate2>=4.0,<5
-torch
+# PyTorch 2.9+ ép dùng torchcodec (libtorchcodec + FFmpeg) — dễ lỗi trên Linux; Coqui+ViXTTS ổn với torch<2.9.
+torch>=2.2,<2.9
 torchvision
-torchaudio
+torchaudio>=2.2,<2.9
 edge-tts
 tqdm
 easyocr
@@ -12,8 +13,8 @@ opencv-python-headless
 
 # ViXTTS (coqui-tts): transformers>=5.1 gỡ isin_mps_friendly — TTS import lỗi; giữ <5.1.
 transformers>=4.40,<5.1
-# PyTorch 2.9+: Coqui cần torchcodec (extra [codec]).
-coqui-tts[codec]
+# Không dùng coqui-tts[codec] khi torch<2.9 (tránh libtorchcodec / FFmpeg shared).
+coqui-tts
 huggingface_hub
 underthesea
 vinorm
