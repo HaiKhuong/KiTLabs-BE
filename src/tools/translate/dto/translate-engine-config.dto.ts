@@ -417,6 +417,45 @@ export class TranslateEngineConfigDto {
   @IsString()
   easyocr_text_skip_regexes_json?: string;
 
+  /** Confidence floor cho rescue (default 0.003): frame có conf >= floor nhưng < minConfidence sẽ được xem xét rescue bởi cluster voting. */
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  easyOcrLowConfFloor?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  easy_ocr_low_conf_floor?: number;
+
+  /** Số frame lân cận để vote rescue (default 8). */
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  easyOcrBridgeFrames?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  easy_ocr_bridge_frames?: number;
+
+  /** Số frame tương đồng tối thiểu để rescue 1 frame low-conf (default 3). */
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(1)
+  easyOcrBridgeMinMatch?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(1)
+  easy_ocr_bridge_min_match?: number;
+
   /** Grayscale binary threshold (0=off, 1..254): pixel >= thresh → trắng (255), còn lại → đen. Chữ trắng / nền đen. Gợi ý: 180. */
   @IsOptional()
   @Type(() => Number)

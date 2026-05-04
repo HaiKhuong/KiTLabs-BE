@@ -161,6 +161,21 @@ const OPTION_MAPPINGS: Array<{
     allowedTypes: ["string"],
   },
   {
+    cliFlag: "--easyocr-low-conf-floor",
+    keys: ["easyOcrLowConfFloor", "easy_ocr_low_conf_floor"],
+    allowedTypes: ["number", "string"],
+  },
+  {
+    cliFlag: "--easyocr-bridge-frames",
+    keys: ["easyOcrBridgeFrames", "easy_ocr_bridge_frames"],
+    allowedTypes: ["number", "string"],
+  },
+  {
+    cliFlag: "--easyocr-bridge-min-match",
+    keys: ["easyOcrBridgeMinMatch", "easy_ocr_bridge_min_match"],
+    allowedTypes: ["number", "string"],
+  },
+  {
     cliFlag: "--easyocr-white-thresh",
     keys: ["easyOcrWhiteThresh", "easy_ocr_white_thresh"],
     allowedTypes: ["number", "string"],

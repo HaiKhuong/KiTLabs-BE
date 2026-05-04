@@ -156,7 +156,10 @@ EASYOCR_CROP_PROBE_H_TRIM_RIGHT_FRAC = 0.15
 # Khi không override --easyocr-fps: FPS = 1000 / EASYOCR_MIN_DURATION_MS (lưới thời gian trùng bước min cue).
 EASYOCR_FPS = 2  # mặc định đồng bộ với EASYOCR_MIN_DURATION_MS = 500
 EASYOCR_WORKERS = 4  # parallel OCR threads
-EASYOCR_MIN_CONFIDENCE = 0.5  # discard OCR results below this confidencee
+EASYOCR_MIN_CONFIDENCE = 0.5  # discard OCR results below this confidence
+EASYOCR_LOW_CONF_FLOOR = 0.003  # ngưỡng tối thiểu để xem xét rescue (dưới mức này bỏ hoàn toàn)
+EASYOCR_BRIDGE_FRAMES = 8  # số frame lân cận để vote trong rescue cluster
+EASYOCR_BRIDGE_MIN_MATCH = 3  # số frame tương đồng tối thiểu để rescue 1 frame low-conf
 EASYOCR_FUZZY_THRESHOLD = 80  # % similarity threshold for dedup/merge
 EASYOCR_MIN_DURATION_MS = 500  # minimum SRT cue (ms); đồng thời quyết định bước lấy mẫu OCR nếu không truyền --easyocr-fps
 EASYOCR_MERGE_GAP_MS = 200  # merge adjacent similar blocks within this gap (ms)
@@ -172,7 +175,7 @@ EASYOCR_LUMA_SUPPRESS = 0.0
 # White extraction threshold (0 = tắt). Khi > 0: ảnh grayscale → pixel >= thresh thành trắng, còn lại thành đen.
 # Cho ra ảnh nhị phân: chữ trắng thành trắng, nền về đen hoàn toàn → EasyOCR đọc rất chính xác.
 # Ưu tiên cao hơn luma_suppress. Khuyến nghị: 160..200. Chỉ áp cho cropped.mp4, không probe.
-EASYOCR_WHITE_THRESH = 180
+EASYOCR_WHITE_THRESH = 0
 # Sau format=gray,eq=…: làm phẳng nền / tách chữ (0 = tắt). Đồng bộ probe OpenCV.
 EASYOCR_HISTEQ_STRENGTH = 0.0  # 0..1 → ffmpeg histeq=strength=…; OpenCV blend equalizeHist
 EASYOCR_GRAY_INVERT = False  # negate luma (thử với chữ trắng nền tối)
@@ -1986,6 +1989,7 @@ def _step1_ocr_with_easyocr(video_path):
             debug_row["raw_readtext_order"] = _serialize_easyocr_boxes(results)
             sorted_results = _easyocr_readtext_sort_for_join(results)
             debug_row["sorted_reading_order"] = _serialize_easyocr_boxes(sorted_results)
+            # High-confidence texts (pass threshold normally)
             texts = [
                 t.strip()
                 for _bbox, t, conf in sorted_results
@@ -1993,12 +1997,20 @@ def _step1_ocr_with_easyocr(video_path):
             ]
             joined = " ".join(texts)
             debug_row["joined_after_filter"] = joined
-            return timestamp_sec, joined, debug_row
+            # Low-confidence rescue candidates (above floor but below threshold)
+            low_texts = [
+                t.strip()
+                for _bbox, t, conf in sorted_results
+                if EASYOCR_LOW_CONF_FLOOR <= conf < EASYOCR_MIN_CONFIDENCE and t.strip()
+            ]
+            low_joined = " ".join(low_texts)
+            return timestamp_sec, joined, low_joined, debug_row
         except Exception as exc:
             debug_row["error"] = str(exc)
-            return timestamp_sec, "", debug_row
+            return timestamp_sec, "", "", debug_row
 
     raw_results = []
+    low_conf_candidates = []  # (timestamp_sec, text) for rescue evaluation
     frame_ocr_debug_rows = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=EASYOCR_WORKERS) as pool:
         indexed = list(enumerate(frame_files))
@@ -2008,10 +2020,36 @@ def _step1_ocr_with_easyocr(video_path):
             total=len(futures),
             desc="EasyOCR frames",
         ):
-            ts, text, dbg = fut.result()
+            ts, text, low_text, dbg = fut.result()
             frame_ocr_debug_rows.append(dbg)
             if text:
                 raw_results.append((ts, text))
+            elif low_text:
+                low_conf_candidates.append((ts, low_text))
+
+    # Low-confidence rescue: nếu >= BRIDGE_MIN_MATCH frame lân cận (trong BRIDGE_FRAMES bước)
+    # có text tương đồng >= FUZZY_THRESHOLD%, frame đó được kéo vào raw_results.
+    if low_conf_candidates and EASYOCR_BRIDGE_MIN_MATCH > 0:
+        from difflib import SequenceMatcher as _SM
+        all_candidates = sorted(raw_results + low_conf_candidates, key=lambda x: x[0])
+        high_conf_ts = {ts for ts, _ in raw_results}
+        rescued_count = 0
+        for ts, text in low_conf_candidates:
+            window_start = ts - EASYOCR_BRIDGE_FRAMES * frame_interval_sec
+            window_end   = ts + EASYOCR_BRIDGE_FRAMES * frame_interval_sec
+            neighbors = [
+                tx for t, tx in all_candidates
+                if window_start <= t <= window_end and t != ts
+            ]
+            match_count = sum(
+                1 for tx in neighbors
+                if _SM(None, text, tx).ratio() * 100 >= EASYOCR_FUZZY_THRESHOLD
+            )
+            if match_count >= EASYOCR_BRIDGE_MIN_MATCH:
+                raw_results.append((ts, text))
+                rescued_count += 1
+        if rescued_count:
+            log(f"Step1 OCR: rescued {rescued_count} low-confidence frame(s) via cluster voting.")
 
     raw_results.sort(key=lambda x: x[0])
     frame_ocr_debug_rows.sort(key=lambda r: r["frame_index"])
@@ -3108,6 +3146,33 @@ def parse_cli_args():
         help="Enable GPU for EasyOCR inference (default on).",
     )
     parser.add_argument(
+        "--easyocr-low-conf-floor",
+        type=float,
+        default=EASYOCR_LOW_CONF_FLOOR,
+        help=(
+            f"Confidence floor cho rescue (default {EASYOCR_LOW_CONF_FLOOR}): "
+            "frame có conf >= floor nhưng < min-confidence sẽ được xem xét rescue."
+        ),
+    )
+    parser.add_argument(
+        "--easyocr-bridge-frames",
+        type=int,
+        default=EASYOCR_BRIDGE_FRAMES,
+        help=(
+            f"Số frame lân cận để vote rescue (default {EASYOCR_BRIDGE_FRAMES}). "
+            "Xét trong cửa sổ ±N frame quanh frame cần rescue."
+        ),
+    )
+    parser.add_argument(
+        "--easyocr-bridge-min-match",
+        type=int,
+        default=EASYOCR_BRIDGE_MIN_MATCH,
+        help=(
+            f"Số frame tương đồng tối thiểu để rescue (default {EASYOCR_BRIDGE_MIN_MATCH}). "
+            "Nếu >= N frame lân cận có text >=fuzzy-threshold%% giống → rescue."
+        ),
+    )
+    parser.add_argument(
         "--easyocr-white-thresh",
         type=int,
         default=EASYOCR_WHITE_THRESH,
@@ -3382,6 +3447,9 @@ def apply_cli_config(args):
     global EASYOCR_MIN_DURATION_MS
     global EASYOCR_FUZZY_THRESHOLD
     global EASYOCR_GPU
+    global EASYOCR_LOW_CONF_FLOOR
+    global EASYOCR_BRIDGE_FRAMES
+    global EASYOCR_BRIDGE_MIN_MATCH
     global EASYOCR_WHITE_THRESH
     global EASYOCR_LUMA_SUPPRESS
     global EASYOCR_GRAY_CONTRAST
@@ -3519,6 +3587,15 @@ def apply_cli_config(args):
         EASYOCR_FPS = 1000.0 / float(EASYOCR_MIN_DURATION_MS)
     EASYOCR_FUZZY_THRESHOLD = float(args.easyocr_fuzzy_threshold)
     EASYOCR_GPU = args.easyocr_gpu == "on"
+    EASYOCR_LOW_CONF_FLOOR = max(
+        0.0, float(getattr(args, "easyocr_low_conf_floor", EASYOCR_LOW_CONF_FLOOR))
+    )
+    EASYOCR_BRIDGE_FRAMES = max(
+        0, int(getattr(args, "easyocr_bridge_frames", EASYOCR_BRIDGE_FRAMES))
+    )
+    EASYOCR_BRIDGE_MIN_MATCH = max(
+        1, int(getattr(args, "easyocr_bridge_min_match", EASYOCR_BRIDGE_MIN_MATCH))
+    )
     EASYOCR_WHITE_THRESH = max(
         0, min(254, int(getattr(args, "easyocr_white_thresh", EASYOCR_WHITE_THRESH)))
     )
