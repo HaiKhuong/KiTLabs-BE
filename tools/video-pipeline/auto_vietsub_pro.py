@@ -153,11 +153,12 @@ EASYOCR_CROP_PROBE_FRAMES = 12
 # Crop ngang (probe + cropped.mp4 Step1): bỏ mé trái/phải trước khi OCR.
 EASYOCR_CROP_PROBE_H_TRIM_LEFT_FRAC = 0.15
 EASYOCR_CROP_PROBE_H_TRIM_RIGHT_FRAC = 0.15
-EASYOCR_FPS = 2  # frame extraction rate for OCR
+# Khi không override --easyocr-fps: FPS = 1000 / EASYOCR_MIN_DURATION_MS (lưới thời gian trùng bước min cue).
+EASYOCR_FPS = 2  # mặc định đồng bộ với EASYOCR_MIN_DURATION_MS = 500
 EASYOCR_WORKERS = 4  # parallel OCR threads
 EASYOCR_MIN_CONFIDENCE = 0.5  # discard OCR results below this confidencee
 EASYOCR_FUZZY_THRESHOLD = 80  # % similarity threshold for dedup/merge
-EASYOCR_MIN_DURATION_MS = 100  # minimum subtitle display duration (ms)
+EASYOCR_MIN_DURATION_MS = 500  # minimum SRT cue (ms); đồng thời quyết định bước lấy mẫu OCR nếu không truyền --easyocr-fps
 EASYOCR_MERGE_GAP_MS = 200  # merge adjacent similar blocks within this gap (ms)
 EASYOCR_GPU = True
 # Sau crop dải đáy: grayscale + ffmpeg eq (cùng tham số cho probe-score OpenCV).
@@ -2638,10 +2639,6 @@ def step6_render(video_path, ass_path):
     out = VIDEO_DIR / f"{WORK_NAME}_vs_tm.mp4"
     if STEP6_VISUAL_TRANSFORM_ENABLED and float(STEP6_ZOOM_PERCENT) > 0.01:
         zf = 1.0 + float(STEP6_ZOOM_PERCENT) / 100.0
-        log(
-            "Step6: zoom active — output W/H can differ slightly from input "
-            f"(integer scale then crop by zf={zf:.4f}; set --step6-zoom-percent 0 to keep size)."
-        )
     subtitle_filter = build_subtitle_filter(ass_path)
     logo_path = None
     if LOGO_ENABLED:
@@ -2881,8 +2878,12 @@ def parse_cli_args():
     parser.add_argument(
         "--easyocr-fps",
         type=float,
-        default=EASYOCR_FPS,
-        help="Frame extraction rate for EasyOCR (default 2).",
+        default=None,
+        help=(
+            "Override EasyOCR ffmpeg fps filter (frames/sec). When omitted, uses "
+            "1000 / --easyocr-min-duration-ms so the OCR timeline step matches the min cue length "
+            "(e.g. 500 ms → 2 FPS, 100 ms → 10 FPS)."
+        ),
     )
     parser.add_argument(
         "--easyocr-workers",
@@ -2900,7 +2901,10 @@ def parse_cli_args():
         "--easyocr-min-duration-ms",
         type=int,
         default=EASYOCR_MIN_DURATION_MS,
-        help="EasyOCR: minimum SRT cue duration (ms) after merge (default 500). Lower = shorter cues allowed.",
+        help=(
+            "EasyOCR: minimum SRT cue duration (ms) after merge; also sets extract FPS to "
+            "1000/this (unless --easyocr-fps is set). Shorter value = denser frame sampling."
+        ),
     )
     parser.add_argument(
         "--easyocr-fuzzy-threshold",
@@ -3268,10 +3272,19 @@ def apply_cli_config(args):
         str(rj).strip() if rj is not None and str(rj).strip() else "[]"
     )
     _rebuild_easyocr_skip_regexes()
-    EASYOCR_FPS = float(args.easyocr_fps)
     EASYOCR_WORKERS = int(args.easyocr_workers)
     EASYOCR_MIN_CONFIDENCE = float(args.easyocr_min_confidence)
     EASYOCR_MIN_DURATION_MS = max(1, int(args.easyocr_min_duration_ms))
+    if args.easyocr_fps is not None:
+        EASYOCR_FPS = max(0.01, float(args.easyocr_fps))
+    else:
+        EASYOCR_FPS = 1000.0 / float(EASYOCR_MIN_DURATION_MS)
+    log(
+        "Step1 OCR config: "
+        f"easyocr_min_duration_ms={EASYOCR_MIN_DURATION_MS} "
+        f"easyocr_fps={EASYOCR_FPS:.4g} "
+        f"({'override' if args.easyocr_fps is not None else '1000/min-duration'})"
+    )
     EASYOCR_FUZZY_THRESHOLD = float(args.easyocr_fuzzy_threshold)
     EASYOCR_GPU = args.easyocr_gpu == "on"
     EASYOCR_GRAY_CONTRAST = max(0.01, float(getattr(args, "easyocr_gray_contrast", EASYOCR_GRAY_CONTRAST)))
