@@ -166,6 +166,10 @@ EASYOCR_GPU = True
 EASYOCR_GRAY_CONTRAST = 2.0
 EASYOCR_GRAY_BRIGHTNESS = 0.05
 EASYOCR_GRAY_GAMMA = 1.0
+# Luma preset (mặc định giảm nền mạnh): dùng khi --easyocr-gray-source=luma
+EASYOCR_LUMA_DEFAULT_CONTRAST = 2.4
+EASYOCR_LUMA_DEFAULT_BRIGHTNESS = -0.12
+EASYOCR_LUMA_DEFAULT_GAMMA = 1.12
 # Source before grayscale: luma (mặc định) hoặc lấy thẳng một channel màu.
 EASYOCR_GRAY_SOURCE = "luma"  # luma|red|green|blue
 # Khi gray-source=luma: nhân kênh đỏ trước grayscale để tách chữ trắng/viền đỏ.
@@ -3088,23 +3092,29 @@ def parse_cli_args():
     parser.add_argument(
         "--easyocr-gray-contrast",
         type=float,
-        default=EASYOCR_GRAY_CONTRAST,
-        help="OCR crop: grayscale eq contrast (default 2). Lower if dialogue text is too faint.",
+        default=None,
+        help=(
+            "OCR crop: grayscale eq contrast. If omitted and gray-source=luma, uses "
+            f"{EASYOCR_LUMA_DEFAULT_CONTRAST} (stronger background suppression)."
+        ),
     )
     parser.add_argument(
         "--easyocr-gray-brightness",
         type=float,
-        default=EASYOCR_GRAY_BRIGHTNESS,
+        default=None,
         help=(
             "OCR crop: grayscale eq brightness (ffmpeg, about -1..1). "
-            "Negative (e.g. -0.08) darkens the strip to reduce bright logo/watermark pickup."
+            "If omitted and gray-source=luma, auto-uses negative value to darken strip."
         ),
     )
     parser.add_argument(
         "--easyocr-gray-gamma",
         type=float,
-        default=EASYOCR_GRAY_GAMMA,
-        help="OCR crop: grayscale eq gamma; >1 darkens midtones slightly (can soften flat white marks).",
+        default=None,
+        help=(
+            "OCR crop: grayscale eq gamma. If omitted and gray-source=luma, uses >1 "
+            "to darken midtones for white subtitle extraction."
+        ),
     )
     parser.add_argument(
         "--easyocr-gray-source",
@@ -3497,16 +3507,44 @@ def apply_cli_config(args):
     )
     EASYOCR_FUZZY_THRESHOLD = float(args.easyocr_fuzzy_threshold)
     EASYOCR_GPU = args.easyocr_gpu == "on"
-    EASYOCR_GRAY_CONTRAST = max(0.01, float(getattr(args, "easyocr_gray_contrast", EASYOCR_GRAY_CONTRAST)))
-    EASYOCR_GRAY_BRIGHTNESS = float(
-        getattr(args, "easyocr_gray_brightness", EASYOCR_GRAY_BRIGHTNESS)
-    )
-    EASYOCR_GRAY_GAMMA = max(
-        0.01, float(getattr(args, "easyocr_gray_gamma", EASYOCR_GRAY_GAMMA))
-    )
     EASYOCR_GRAY_SOURCE = str(getattr(args, "easyocr_gray_source", EASYOCR_GRAY_SOURCE) or "luma").strip().lower()
     if EASYOCR_GRAY_SOURCE not in ("luma", "red", "green", "blue"):
         EASYOCR_GRAY_SOURCE = "luma"
+    raw_c = getattr(args, "easyocr_gray_contrast", None)
+    raw_b = getattr(args, "easyocr_gray_brightness", None)
+    raw_g = getattr(args, "easyocr_gray_gamma", None)
+    if EASYOCR_GRAY_SOURCE == "luma":
+        EASYOCR_GRAY_CONTRAST = (
+            max(0.01, float(raw_c))
+            if raw_c is not None
+            else float(EASYOCR_LUMA_DEFAULT_CONTRAST)
+        )
+        EASYOCR_GRAY_BRIGHTNESS = (
+            float(raw_b)
+            if raw_b is not None
+            else float(EASYOCR_LUMA_DEFAULT_BRIGHTNESS)
+        )
+        EASYOCR_GRAY_GAMMA = (
+            max(0.01, float(raw_g))
+            if raw_g is not None
+            else float(EASYOCR_LUMA_DEFAULT_GAMMA)
+        )
+    else:
+        EASYOCR_GRAY_CONTRAST = (
+            max(0.01, float(raw_c))
+            if raw_c is not None
+            else float(EASYOCR_GRAY_CONTRAST)
+        )
+        EASYOCR_GRAY_BRIGHTNESS = (
+            float(raw_b)
+            if raw_b is not None
+            else float(EASYOCR_GRAY_BRIGHTNESS)
+        )
+        EASYOCR_GRAY_GAMMA = (
+            max(0.01, float(raw_g))
+            if raw_g is not None
+            else float(EASYOCR_GRAY_GAMMA)
+        )
     EASYOCR_RED_GAIN = max(
         0.01,
         min(5.0, float(getattr(args, "easyocr_red_gain", EASYOCR_RED_GAIN))),
