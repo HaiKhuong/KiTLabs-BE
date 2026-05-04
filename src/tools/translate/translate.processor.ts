@@ -161,6 +161,11 @@ const OPTION_MAPPINGS: Array<{
     allowedTypes: ["string"],
   },
   {
+    cliFlag: "--easyocr-luma-suppress",
+    keys: ["easyOcrLumaSuppress", "easy_ocr_luma_suppress"],
+    allowedTypes: ["number", "string"],
+  },
+  {
     cliFlag: "--easyocr-gray-contrast",
     keys: ["easyOcrGrayContrast", "easy_ocr_gray_contrast"],
     allowedTypes: ["number", "string"],
@@ -173,16 +178,6 @@ const OPTION_MAPPINGS: Array<{
   {
     cliFlag: "--easyocr-gray-gamma",
     keys: ["easyOcrGrayGamma", "easy_ocr_gray_gamma"],
-    allowedTypes: ["number", "string"],
-  },
-  {
-    cliFlag: "--easyocr-gray-source",
-    keys: ["easyOcrGraySource", "easy_ocr_gray_source"],
-    allowedTypes: ["string"],
-  },
-  {
-    cliFlag: "--easyocr-red-gain",
-    keys: ["easyOcrRedGain", "easy_ocr_red_gain"],
     allowedTypes: ["number", "string"],
   },
   {

@@ -417,6 +417,21 @@ export class TranslateEngineConfigDto {
   @IsString()
   easyocr_text_skip_regexes_json?: string;
 
+  /** Suppress Y (luma) 0..1 trước OCR: giữ màu R/G/B, đè Y xuống thấp trong YUV. 1.0 = Y=0 (chroma-only). */
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  @Max(1)
+  easyOcrLumaSuppress?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  @Max(1)
+  easy_ocr_luma_suppress?: number;
+
   /** OCR crop: ffmpeg grayscale eq contrast */
   @IsOptional()
   @Type(() => Number)
@@ -449,32 +464,6 @@ export class TranslateEngineConfigDto {
   @Type(() => Number)
   @IsNumber()
   easy_ocr_gray_gamma?: number;
-
-  /** Nguồn channel trước grayscale eq: luma (mặc định) hoặc red/green/blue */
-  @IsOptional()
-  @IsIn(["luma", "red", "green", "blue"])
-  @IsString()
-  easyOcrGraySource?: string;
-
-  @IsOptional()
-  @IsIn(["luma", "red", "green", "blue"])
-  @IsString()
-  easy_ocr_gray_source?: string;
-
-  /** Khi gray-source=luma: nhân kênh đỏ trước grayscale (0.01..5) */
-  @IsOptional()
-  @Type(() => Number)
-  @IsNumber()
-  @Min(0.01)
-  @Max(5)
-  easyOcrRedGain?: number;
-
-  @IsOptional()
-  @Type(() => Number)
-  @IsNumber()
-  @Min(0.01)
-  @Max(5)
-  easy_ocr_red_gain?: number;
 
   /** Sau eq: ffmpeg histeq strength 0..1 (0 tắt); phẳng nền, tách chữ */
   @IsOptional()

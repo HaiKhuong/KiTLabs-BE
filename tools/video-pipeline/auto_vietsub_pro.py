@@ -166,14 +166,9 @@ EASYOCR_GPU = True
 EASYOCR_GRAY_CONTRAST = 2.0
 EASYOCR_GRAY_BRIGHTNESS = 0.05
 EASYOCR_GRAY_GAMMA = 1.0
-# Luma preset (mặc định giảm nền mạnh): dùng khi --easyocr-gray-source=luma
-EASYOCR_LUMA_DEFAULT_CONTRAST = 2.4
-EASYOCR_LUMA_DEFAULT_BRIGHTNESS = -0.12
-EASYOCR_LUMA_DEFAULT_GAMMA = 1.12
-# Source before grayscale: luma (mặc định) hoặc lấy thẳng một channel màu.
-EASYOCR_GRAY_SOURCE = "luma"  # luma|red|green|blue
-# Khi gray-source=luma: nhân kênh đỏ trước grayscale để tách chữ trắng/viền đỏ.
-EASYOCR_RED_GAIN = 1.0
+# Luma suppression trước khi trích frame OCR (0 = tắt, 1.0 = Y=0 hoàn toàn — chỉ còn chênh lệch màu Cb/Cr).
+# Khi > 0: giữ màu RGB (bỏ format=gray), đè Y xuống thấp trong YUV, chuyển về RGB → EasyOCR nhận ảnh màu.
+EASYOCR_LUMA_SUPPRESS = 1.0
 # Sau format=gray,eq=…: làm phẳng nền / tách chữ (0 = tắt). Đồng bộ probe OpenCV.
 EASYOCR_HISTEQ_STRENGTH = 0.0  # 0..1 → ffmpeg histeq=strength=…; OpenCV blend equalizeHist
 EASYOCR_GRAY_INVERT = False  # negate luma (thử với chữ trắng nền tối)
@@ -1454,39 +1449,39 @@ def _easyocr_ffmpeg_gray_post_eq_suffix():
     return ("," + ",".join(parts)) if parts else ""
 
 
-def _easyocr_ffmpeg_gray_source_prefix():
-    src = str(EASYOCR_GRAY_SOURCE or "luma").strip().lower()
-    rg = max(0.01, min(5.0, float(EASYOCR_RED_GAIN or 1.0)))
-    if src == "red":
-        return "extractplanes=r,"
-    if src == "green":
-        return "extractplanes=g,"
-    if src == "blue":
-        return "extractplanes=b,"
-    if abs(rg - 1.0) > 1e-9:
-        return f"lutrgb=r='clip(val*{rg:.6f},0,255)',"
-    return ""
-
-
 def _easyocr_crop_ffmpeg_vf(band_lo, band_hi):
-    """Dải đáy [band_lo, band_hi] → crop ngang theo H_TRIM_* → gray-source + eq (+ histeq/unsharp/negate)."""
+    """Dải đáy [band_lo, band_hi] → crop ngang → preprocess → cropped.mp4 cho EasyOCR.
+
+    Hai chế độ:
+    - luma_suppress = 0 (mặc định): grayscale + eq + post-filter (histeq/unsharp/negate).
+    - luma_suppress > 0         : giữ màu RGB, đè Y trong YUV xuống thấp rồi chuyển về rgb24.
+                                  Bỏ format=gray, EasyOCR nhận frame màu.
+    """
     lo = float(band_lo)
     hi = float(band_hi)
     if hi <= lo + 1e-9:
         raise ValueError("easyocr crop band: need band_hi > band_lo")
     dh = hi - lo
     y_from_top = 1.0 - hi
+    vert = f"crop=iw:ih*{dh:.6f}:0:ih*{y_from_top:.6f}"
+    htrim = _easyocr_h_trim_crop_vf()
+
+    ls = max(0.0, min(1.0, float(EASYOCR_LUMA_SUPPRESS or 0.0)))
+    if ls > 1e-9:
+        # Chế độ luma-suppress: Y bị đè xuống, R/G/B giữ nguyên chênh lệch màu
+        y_factor = max(0.0, 1.0 - ls)
+        # lutyuv hoạt động trên yuv444p; clip(val*factor,0,255) giảm Y từng pixel
+        luma_vf = f"format=yuv444p,lutyuv=y='clip(val*{y_factor:.6f}\\,0\\,255)',format=rgb24"
+        return f"{vert},{htrim},{luma_vf}"
+
+    # Chế độ mặc định: grayscale + eq
     c = float(EASYOCR_GRAY_CONTRAST)
     b = float(EASYOCR_GRAY_BRIGHTNESS)
     g = float(EASYOCR_GRAY_GAMMA)
-    vert = f"crop=iw:ih*{dh:.6f}:0:ih*{y_from_top:.6f}"
-    htrim = _easyocr_h_trim_crop_vf()
-    gray_source = _easyocr_ffmpeg_gray_source_prefix()
     post = _easyocr_ffmpeg_gray_post_eq_suffix()
     return (
         f"{vert},"
         f"{htrim},"
-        f"{gray_source}"
         f"format=gray,eq=contrast={c:.6f}:brightness={b:.6f}:gamma={g:.6f}"
         f"{post}"
     )
@@ -1582,26 +1577,24 @@ def _extract_easyocr_probe_frames(video_path, out_dir, n_frames):
 
 
 def _preprocess_easyocr_strip_like_pipeline(bgr_strip):
-    """Xấp xỉ cùng pipeline gray-source + eq + histeq / unsharp / negate như cropped.mp4 Step1."""
+    """Xấp xỉ cùng pipeline như _easyocr_crop_ffmpeg_vf cho probe crop-band.
+
+    - luma_suppress > 0: đè Y (YUV) → trả BGR (màu), không grayscale.
+    - luma_suppress = 0: grayscale + eq + histeq/unsharp/negate.
+    """
     import cv2
     import numpy as np
 
-    src = str(EASYOCR_GRAY_SOURCE or "luma").strip().lower()
-    if src == "red":
-        gray = bgr_strip[:, :, 2]
-    elif src == "green":
-        gray = bgr_strip[:, :, 1]
-    elif src == "blue":
-        gray = bgr_strip[:, :, 0]
-    else:
-        rg = max(0.01, min(5.0, float(EASYOCR_RED_GAIN or 1.0)))
-        if abs(rg - 1.0) > 1e-9:
-            bgr_work = bgr_strip.astype(np.float32)
-            bgr_work[:, :, 2] = np.clip(bgr_work[:, :, 2] * rg, 0, 255)
-            bgr_work = bgr_work.astype(np.uint8)
-        else:
-            bgr_work = bgr_strip
-        gray = cv2.cvtColor(bgr_work, cv2.COLOR_BGR2GRAY)
+    ls = max(0.0, min(1.0, float(EASYOCR_LUMA_SUPPRESS or 0.0)))
+    if ls > 1e-9:
+        y_factor = max(0.0, 1.0 - ls)
+        ycrcb = cv2.cvtColor(bgr_strip, cv2.COLOR_BGR2YCrCb).astype(np.float32)
+        ycrcb[:, :, 0] = np.clip(ycrcb[:, :, 0] * y_factor, 0, 255)
+        out_bgr = cv2.cvtColor(ycrcb.astype(np.uint8), cv2.COLOR_YCrCb2BGR)
+        return out_bgr
+
+    # Chế độ mặc định: grayscale + eq
+    gray = cv2.cvtColor(bgr_strip, cv2.COLOR_BGR2GRAY)
     x = gray.astype(np.float32) / 255.0
     g = max(float(EASYOCR_GRAY_GAMMA), 0.01)
     x = np.power(np.clip(x, 0, 1), 1.0 / g) * 255.0
@@ -3090,43 +3083,35 @@ def parse_cli_args():
         help="Enable GPU for EasyOCR inference (default on).",
     )
     parser.add_argument(
+        "--easyocr-luma-suppress",
+        type=float,
+        default=EASYOCR_LUMA_SUPPRESS,
+        help=(
+            "0..1 (default 1.0 = Y=0, maximum suppression): crush luma before OCR frame extraction. "
+            "R/G/B color differences preserved; frames stay COLOR (no grayscale). "
+            "Set to 0 to revert to legacy grayscale+eq pipeline."
+        ),
+    )
+    parser.add_argument(
         "--easyocr-gray-contrast",
         type=float,
-        default=None,
-        help=(
-            "OCR crop: grayscale eq contrast. If omitted and gray-source=luma, uses "
-            f"{EASYOCR_LUMA_DEFAULT_CONTRAST} (stronger background suppression)."
-        ),
+        default=EASYOCR_GRAY_CONTRAST,
+        help="OCR crop: grayscale eq contrast (default 2). Lower if dialogue text is too faint.",
     )
     parser.add_argument(
         "--easyocr-gray-brightness",
         type=float,
-        default=None,
+        default=EASYOCR_GRAY_BRIGHTNESS,
         help=(
             "OCR crop: grayscale eq brightness (ffmpeg, about -1..1). "
-            "If omitted and gray-source=luma, auto-uses negative value to darken strip."
+            "Negative (e.g. -0.08) darkens the strip to reduce bright logo/watermark pickup."
         ),
     )
     parser.add_argument(
         "--easyocr-gray-gamma",
         type=float,
-        default=None,
-        help=(
-            "OCR crop: grayscale eq gamma. If omitted and gray-source=luma, uses >1 "
-            "to darken midtones for white subtitle extraction."
-        ),
-    )
-    parser.add_argument(
-        "--easyocr-gray-source",
-        choices=["luma", "red", "green", "blue"],
-        default=EASYOCR_GRAY_SOURCE,
-        help="Channel source before grayscale eq: luma (default) or single color channel.",
-    )
-    parser.add_argument(
-        "--easyocr-red-gain",
-        type=float,
-        default=EASYOCR_RED_GAIN,
-        help="When --easyocr-gray-source=luma: multiply red channel before grayscale (0.01..5.0).",
+        default=EASYOCR_GRAY_GAMMA,
+        help="OCR crop: grayscale eq gamma; >1 darkens midtones slightly (can soften flat white marks).",
     )
     parser.add_argument(
         "--easyocr-histeq-strength",
@@ -3362,11 +3347,10 @@ def apply_cli_config(args):
     global EASYOCR_MIN_DURATION_MS
     global EASYOCR_FUZZY_THRESHOLD
     global EASYOCR_GPU
+    global EASYOCR_LUMA_SUPPRESS
     global EASYOCR_GRAY_CONTRAST
     global EASYOCR_GRAY_BRIGHTNESS
     global EASYOCR_GRAY_GAMMA
-    global EASYOCR_GRAY_SOURCE
-    global EASYOCR_RED_GAIN
     global EASYOCR_HISTEQ_STRENGTH
     global EASYOCR_GRAY_INVERT
     global EASYOCR_UNSHARP
@@ -3497,57 +3481,17 @@ def apply_cli_config(args):
         EASYOCR_FPS = max(0.01, float(args.easyocr_fps))
     else:
         EASYOCR_FPS = 1000.0 / float(EASYOCR_MIN_DURATION_MS)
-    log(
-        "Step1 OCR config: "
-        f"easyocr_min_duration_ms={EASYOCR_MIN_DURATION_MS} "
-        f"easyocr_fps={EASYOCR_FPS:.4g} "
-        f"histeq={EASYOCR_HISTEQ_STRENGTH} gray_invert={'on' if EASYOCR_GRAY_INVERT else 'off'} "
-        f"unsharp={EASYOCR_UNSHARP or 'off'} "
-        f"({'override' if args.easyocr_fps is not None else '1000/min-duration'})"
-    )
     EASYOCR_FUZZY_THRESHOLD = float(args.easyocr_fuzzy_threshold)
     EASYOCR_GPU = args.easyocr_gpu == "on"
-    EASYOCR_GRAY_SOURCE = str(getattr(args, "easyocr_gray_source", EASYOCR_GRAY_SOURCE) or "luma").strip().lower()
-    if EASYOCR_GRAY_SOURCE not in ("luma", "red", "green", "blue"):
-        EASYOCR_GRAY_SOURCE = "luma"
-    raw_c = getattr(args, "easyocr_gray_contrast", None)
-    raw_b = getattr(args, "easyocr_gray_brightness", None)
-    raw_g = getattr(args, "easyocr_gray_gamma", None)
-    if EASYOCR_GRAY_SOURCE == "luma":
-        EASYOCR_GRAY_CONTRAST = (
-            max(0.01, float(raw_c))
-            if raw_c is not None
-            else float(EASYOCR_LUMA_DEFAULT_CONTRAST)
-        )
-        EASYOCR_GRAY_BRIGHTNESS = (
-            float(raw_b)
-            if raw_b is not None
-            else float(EASYOCR_LUMA_DEFAULT_BRIGHTNESS)
-        )
-        EASYOCR_GRAY_GAMMA = (
-            max(0.01, float(raw_g))
-            if raw_g is not None
-            else float(EASYOCR_LUMA_DEFAULT_GAMMA)
-        )
-    else:
-        EASYOCR_GRAY_CONTRAST = (
-            max(0.01, float(raw_c))
-            if raw_c is not None
-            else float(EASYOCR_GRAY_CONTRAST)
-        )
-        EASYOCR_GRAY_BRIGHTNESS = (
-            float(raw_b)
-            if raw_b is not None
-            else float(EASYOCR_GRAY_BRIGHTNESS)
-        )
-        EASYOCR_GRAY_GAMMA = (
-            max(0.01, float(raw_g))
-            if raw_g is not None
-            else float(EASYOCR_GRAY_GAMMA)
-        )
-    EASYOCR_RED_GAIN = max(
-        0.01,
-        min(5.0, float(getattr(args, "easyocr_red_gain", EASYOCR_RED_GAIN))),
+    EASYOCR_LUMA_SUPPRESS = max(
+        0.0, min(1.0, float(getattr(args, "easyocr_luma_suppress", EASYOCR_LUMA_SUPPRESS)))
+    )
+    EASYOCR_GRAY_CONTRAST = max(0.01, float(getattr(args, "easyocr_gray_contrast", EASYOCR_GRAY_CONTRAST)))
+    EASYOCR_GRAY_BRIGHTNESS = float(
+        getattr(args, "easyocr_gray_brightness", EASYOCR_GRAY_BRIGHTNESS)
+    )
+    EASYOCR_GRAY_GAMMA = max(
+        0.01, float(getattr(args, "easyocr_gray_gamma", EASYOCR_GRAY_GAMMA))
     )
     EASYOCR_HISTEQ_STRENGTH = max(
         0.0,
@@ -3555,11 +3499,19 @@ def apply_cli_config(args):
     )
     EASYOCR_GRAY_INVERT = getattr(args, "easyocr_gray_invert", "off") == "on"
     EASYOCR_UNSHARP = str(getattr(args, "easyocr_unsharp", EASYOCR_UNSHARP) or "").strip()
+    _mode_str = (
+        f"luma_suppress={EASYOCR_LUMA_SUPPRESS:.3f} (color frames)"
+        if EASYOCR_LUMA_SUPPRESS > 1e-9
+        else f"gray_eq contrast={EASYOCR_GRAY_CONTRAST:.3f} brightness={EASYOCR_GRAY_BRIGHTNESS:.3f} "
+             f"gamma={EASYOCR_GRAY_GAMMA:.3f} histeq={EASYOCR_HISTEQ_STRENGTH} "
+             f"gray_invert={'on' if EASYOCR_GRAY_INVERT else 'off'} unsharp={EASYOCR_UNSHARP or 'off'}"
+    )
     log(
-        "Step1 OCR tone: "
-        f"gray_source={EASYOCR_GRAY_SOURCE} red_gain={EASYOCR_RED_GAIN:.3f} "
-        f"contrast={EASYOCR_GRAY_CONTRAST:.3f} brightness={EASYOCR_GRAY_BRIGHTNESS:.3f} "
-        f"gamma={EASYOCR_GRAY_GAMMA:.3f}"
+        "Step1 OCR config: "
+        f"easyocr_min_duration_ms={EASYOCR_MIN_DURATION_MS} "
+        f"easyocr_fps={EASYOCR_FPS:.4g} "
+        f"{_mode_str} "
+        f"({'override' if args.easyocr_fps is not None else '1000/min-duration'})"
     )
 
 
