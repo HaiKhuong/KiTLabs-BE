@@ -450,6 +450,32 @@ export class TranslateEngineConfigDto {
   @IsNumber()
   easy_ocr_gray_gamma?: number;
 
+  /** Nguồn channel trước grayscale eq: luma (mặc định) hoặc red/green/blue */
+  @IsOptional()
+  @IsIn(["luma", "red", "green", "blue"])
+  @IsString()
+  easyOcrGraySource?: string;
+
+  @IsOptional()
+  @IsIn(["luma", "red", "green", "blue"])
+  @IsString()
+  easy_ocr_gray_source?: string;
+
+  /** Khi gray-source=luma: nhân kênh đỏ trước grayscale (0.01..5) */
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0.01)
+  @Max(5)
+  easyOcrRedGain?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0.01)
+  @Max(5)
+  easy_ocr_red_gain?: number;
+
   /** Sau eq: ffmpeg histeq strength 0..1 (0 tắt); phẳng nền, tách chữ */
   @IsOptional()
   @Type(() => Number)

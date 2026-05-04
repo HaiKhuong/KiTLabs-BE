@@ -176,6 +176,16 @@ const OPTION_MAPPINGS: Array<{
     allowedTypes: ["number", "string"],
   },
   {
+    cliFlag: "--easyocr-gray-source",
+    keys: ["easyOcrGraySource", "easy_ocr_gray_source"],
+    allowedTypes: ["string"],
+  },
+  {
+    cliFlag: "--easyocr-red-gain",
+    keys: ["easyOcrRedGain", "easy_ocr_red_gain"],
+    allowedTypes: ["number", "string"],
+  },
+  {
     cliFlag: "--easyocr-histeq-strength",
     keys: ["easyOcrHisteqStrength", "easy_ocr_histeq_strength"],
     allowedTypes: ["number", "string"],
