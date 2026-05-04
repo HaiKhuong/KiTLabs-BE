@@ -166,6 +166,11 @@ EASYOCR_GPU = True
 EASYOCR_GRAY_CONTRAST = 2.0
 EASYOCR_GRAY_BRIGHTNESS = 0.05
 EASYOCR_GRAY_GAMMA = 1.0
+# Sau format=gray,eq=…: làm phẳng nền / tách chữ (0 = tắt). Đồng bộ probe OpenCV.
+EASYOCR_HISTEQ_STRENGTH = 0.0  # 0..1 → ffmpeg histeq=strength=…; OpenCV blend equalizeHist
+EASYOCR_GRAY_INVERT = False  # negate luma (thử với chữ trắng nền tối)
+# Chuỗi tham số ffmpeg unsharp (không gồm tiền tố "unsharp="), vd 5:5:0.85:5:5:0.0 — rỗng = tắt
+EASYOCR_UNSHARP = ""
 # Giới hạn độ cao dải OCR (hi−lo) so với chiều cao khung; 0 = không chặn (vd 0.05 = tối đa 5%).
 EASYOCR_MAX_STRIP_HEIGHT_RATIO = 0.05
 # Bỏ qua block SRT sau merge nếu fullmatch regex (sau clean_text).
@@ -1423,8 +1428,26 @@ def _easyocr_crop_band_strip_bgr(img_bgr, band_lo, band_hi):
     return img_bgr[top : top + h, :]
 
 
+def _easyocr_ffmpeg_gray_post_eq_suffix():
+    """Thêm sau eq grayscale: histeq / unsharp / negate — giúp chữ nổi, nền dễ tách."""
+    parts = []
+    hs = float(EASYOCR_HISTEQ_STRENGTH or 0.0)
+    if hs > 1e-9:
+        hs = max(0.0, min(1.0, hs))
+        parts.append(f"histeq=strength={hs:.6f}")
+    us = (EASYOCR_UNSHARP or "").strip()
+    if us and us.lower() not in ("0", "off", "none", "false"):
+        if re.fullmatch(r"[-\d.:]+", us):
+            parts.append(f"unsharp={us}")
+        else:
+            log(f"Step1 OCR: bỏ qua --easyocr-unsharp (ký tự không hợp lệ): {us!r}")
+    if EASYOCR_GRAY_INVERT:
+        parts.append("negate")
+    return ("," + ",".join(parts)) if parts else ""
+
+
 def _easyocr_crop_ffmpeg_vf(band_lo, band_hi):
-    """Dải đáy [band_lo, band_hi] → crop ngang theo H_TRIM_* → grayscale + eq (cropped.mp4 Step1)."""
+    """Dải đáy [band_lo, band_hi] → crop ngang theo H_TRIM_* → grayscale + eq (+ histeq/unsharp/negate)."""
     lo = float(band_lo)
     hi = float(band_hi)
     if hi <= lo + 1e-9:
@@ -1436,10 +1459,12 @@ def _easyocr_crop_ffmpeg_vf(band_lo, band_hi):
     g = float(EASYOCR_GRAY_GAMMA)
     vert = f"crop=iw:ih*{dh:.6f}:0:ih*{y_from_top:.6f}"
     htrim = _easyocr_h_trim_crop_vf()
+    post = _easyocr_ffmpeg_gray_post_eq_suffix()
     return (
         f"{vert},"
         f"{htrim},"
         f"format=gray,eq=contrast={c:.6f}:brightness={b:.6f}:gamma={g:.6f}"
+        f"{post}"
     )
 
 
@@ -1533,7 +1558,7 @@ def _extract_easyocr_probe_frames(video_path, out_dir, n_frames):
 
 
 def _preprocess_easyocr_strip_like_pipeline(bgr_strip):
-    """Xấp xỉ cùng eq grayscale (gamma → contrast → brightness) như _easyocr_crop_ffmpeg_vf."""
+    """Xấp xỉ cùng pipeline grayscale + eq + histeq / unsharp / negate như cropped.mp4 Step1."""
     import cv2
     import numpy as np
 
@@ -1544,7 +1569,29 @@ def _preprocess_easyocr_strip_like_pipeline(bgr_strip):
     c = float(EASYOCR_GRAY_CONTRAST)
     b = float(EASYOCR_GRAY_BRIGHTNESS)
     x = (x - 128.0) * c + 128.0 + b * 255.0
-    return np.clip(x, 0, 255).astype(np.uint8)
+    out = np.clip(x, 0, 255).astype(np.uint8)
+
+    hs = float(EASYOCR_HISTEQ_STRENGTH or 0.0)
+    if hs > 1e-9:
+        hs = max(0.0, min(1.0, hs))
+        eqf = cv2.equalizeHist(out)
+        out = cv2.addWeighted(out, 1.0 - hs, eqf, hs, 0)
+
+    us = (EASYOCR_UNSHARP or "").strip()
+    if us and us.lower() not in ("0", "off", "none", "false") and re.fullmatch(r"[-\d.:]+", us):
+        try:
+            parts = [float(p) for p in us.split(":")]
+            amt = float(parts[2]) if len(parts) >= 3 else 0.75
+        except (ValueError, IndexError):
+            amt = 0.75
+        amt = max(0.05, min(2.5, amt))
+        blur = cv2.GaussianBlur(out, (0, 0), sigmaX=1.15)
+        out = cv2.addWeighted(out, 1.0 + amt, blur, -amt, 0)
+        out = np.clip(out, 0, 255).astype(np.uint8)
+
+    if EASYOCR_GRAY_INVERT:
+        out = 255 - out
+    return out
 
 
 
@@ -3025,6 +3072,30 @@ def parse_cli_args():
         help="OCR crop: grayscale eq gamma; >1 darkens midtones slightly (can soften flat white marks).",
     )
     parser.add_argument(
+        "--easyocr-histeq-strength",
+        type=float,
+        default=EASYOCR_HISTEQ_STRENGTH,
+        help=(
+            "After grayscale eq: ffmpeg histeq strength 0..1 (0=off). Flattens background / boosts "
+            "text separation; try 0.25–0.55 on busy scenes. Same blend applied in crop-band probe."
+        ),
+    )
+    parser.add_argument(
+        "--easyocr-gray-invert",
+        choices=["on", "off"],
+        default="on" if EASYOCR_GRAY_INVERT else "off",
+        help="After eq/histeq/unsharp: negate luma (on can help white-stroke subs on dark video).",
+    )
+    parser.add_argument(
+        "--easyocr-unsharp",
+        type=str,
+        default=EASYOCR_UNSHARP or "",
+        help=(
+            "After histeq: ffmpeg unsharp=luma_msize_x:luma_msize_y:luma_amount:... (digits/colons only). "
+            "Example 5:5:0.85:5:5:0.0 — empty/off. Sharpen edges for low-confidence OCR."
+        ),
+    )
+    parser.add_argument(
         "--mode",
         choices=["basic", "advance"],
         default="basic",
@@ -3237,6 +3308,9 @@ def apply_cli_config(args):
     global EASYOCR_GRAY_CONTRAST
     global EASYOCR_GRAY_BRIGHTNESS
     global EASYOCR_GRAY_GAMMA
+    global EASYOCR_HISTEQ_STRENGTH
+    global EASYOCR_GRAY_INVERT
+    global EASYOCR_UNSHARP
     global EASYOCR_CLEANUP_DEBUG_AFTER_STEP7
     global EASYOCR_MAX_STRIP_HEIGHT_RATIO
     global EASYOCR_TEXT_SKIP_DEFAULTS_ON
@@ -3368,6 +3442,8 @@ def apply_cli_config(args):
         "Step1 OCR config: "
         f"easyocr_min_duration_ms={EASYOCR_MIN_DURATION_MS} "
         f"easyocr_fps={EASYOCR_FPS:.4g} "
+        f"histeq={EASYOCR_HISTEQ_STRENGTH} gray_invert={'on' if EASYOCR_GRAY_INVERT else 'off'} "
+        f"unsharp={EASYOCR_UNSHARP or 'off'} "
         f"({'override' if args.easyocr_fps is not None else '1000/min-duration'})"
     )
     EASYOCR_FUZZY_THRESHOLD = float(args.easyocr_fuzzy_threshold)
@@ -3379,6 +3455,12 @@ def apply_cli_config(args):
     EASYOCR_GRAY_GAMMA = max(
         0.01, float(getattr(args, "easyocr_gray_gamma", EASYOCR_GRAY_GAMMA))
     )
+    EASYOCR_HISTEQ_STRENGTH = max(
+        0.0,
+        min(1.0, float(getattr(args, "easyocr_histeq_strength", EASYOCR_HISTEQ_STRENGTH))),
+    )
+    EASYOCR_GRAY_INVERT = getattr(args, "easyocr_gray_invert", "off") == "on"
+    EASYOCR_UNSHARP = str(getattr(args, "easyocr_unsharp", EASYOCR_UNSHARP) or "").strip()
 
 
 def parse_step_range(step_arg, min_step=1, max_step=6):

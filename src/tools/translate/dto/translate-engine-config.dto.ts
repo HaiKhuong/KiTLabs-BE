@@ -1,5 +1,5 @@
 import { Type } from "class-transformer";
-import { IsIn, IsNumber, IsOptional, IsString } from "class-validator";
+import { IsIn, IsNumber, IsOptional, IsString, Max, Min } from "class-validator";
 
 export class TranslateEngineConfigDto {
   @IsOptional()
@@ -449,6 +449,41 @@ export class TranslateEngineConfigDto {
   @Type(() => Number)
   @IsNumber()
   easy_ocr_gray_gamma?: number;
+
+  /** Sau eq: ffmpeg histeq strength 0..1 (0 tắt); phẳng nền, tách chữ */
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  @Max(1)
+  easyOcrHisteqStrength?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  @Max(1)
+  easy_ocr_histeq_strength?: number;
+
+  /** negate luma sau histeq/unsharp; on | off */
+  @IsOptional()
+  @IsIn(["on", "off"])
+  @IsString()
+  easyOcrGrayInvert?: string;
+
+  @IsOptional()
+  @IsIn(["on", "off"])
+  @IsString()
+  easy_ocr_gray_invert?: string;
+
+  /** ffmpeg unsharp=… (chỉ số và dấu : . -), vd 5:5:0.85:5:5:0.0; rỗng = tắt */
+  @IsOptional()
+  @IsString()
+  easyOcrUnsharp?: string;
+
+  @IsOptional()
+  @IsString()
+  easy_ocr_unsharp?: string;
 
   /** Step6 horizontal flip (ffmpeg hflip); CLI: on | off */
   @IsOptional()

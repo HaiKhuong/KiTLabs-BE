@@ -176,6 +176,21 @@ const OPTION_MAPPINGS: Array<{
     allowedTypes: ["number", "string"],
   },
   {
+    cliFlag: "--easyocr-histeq-strength",
+    keys: ["easyOcrHisteqStrength", "easy_ocr_histeq_strength"],
+    allowedTypes: ["number", "string"],
+  },
+  {
+    cliFlag: "--easyocr-gray-invert",
+    keys: ["easyOcrGrayInvert", "easy_ocr_gray_invert"],
+    allowedTypes: ["string"],
+  },
+  {
+    cliFlag: "--easyocr-unsharp",
+    keys: ["easyOcrUnsharp", "easy_ocr_unsharp"],
+    allowedTypes: ["string"],
+  },
+  {
     cliFlag: "--step6-hflip",
     keys: ["step6Hflip", "step6_hflip", "enableFlip", "enable_flip"],
     allowedTypes: ["string"],
