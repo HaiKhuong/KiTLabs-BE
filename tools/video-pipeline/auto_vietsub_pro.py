@@ -179,7 +179,7 @@ EASYOCR_BUILTIN_SKIP_REGEXES = (
     r"(?i)^\s*温馨提示\s*$",
     r"^\s*\d{1,2}:\d{2}(:\d{2})?\s*[-–~至]\s*\d{1,2}:\d{2}(:\d{2})?\s*$",
 )
-# Sau Step7: xóa LOG_DIR/step1_ocr và LOG_DIR/easyocr_crop_probe (probe_*.png debug crop detect; off để giữ).
+# Sau Step7: xóa LOG_DIR/step1_ocr (gồm frame_ocr_raw.jsonl debug OCR theo frame) và easyocr_crop_probe; off để giữ.
 EASYOCR_CLEANUP_DEBUG_AFTER_STEP7 = True
 
 STEP1_MAX_SUBTITLE_CHARS = 22  # số ký tự tối đa mỗi câu sau tách.
@@ -1851,22 +1851,51 @@ def _step1_ocr_with_easyocr(video_path):
     # --- 3. OCR with EasyOCR (parallel ThreadPoolExecutor) ---
     frame_interval_sec = 1.0 / EASYOCR_FPS
 
+    def _serialize_easyocr_boxes(results):
+        """BBox + text + conf (JSON-friendly) — thứ tự theo list `results` truyền vào."""
+        out = []
+        for item in results or []:
+            bbox, t, conf = item[0], item[1], float(item[2])
+            pts = (
+                [[float(p[0]), float(p[1])] for p in bbox]
+                if bbox
+                else []
+            )
+            out.append({"bbox": pts, "text": t, "confidence": conf})
+        return out
+
     def ocr_frame(idx_path):
         idx, fpath = idx_path
         timestamp_sec = idx * frame_interval_sec
+        debug_row = {
+            "frame_index": idx,
+            "frame_png": fpath.name,
+            "timestamp_sec": timestamp_sec,
+            "easyocr_min_confidence": float(EASYOCR_MIN_CONFIDENCE),
+            "raw_readtext_order": [],
+            "sorted_reading_order": [],
+            "joined_after_filter": "",
+            "error": None,
+        }
         try:
             results = reader.readtext(str(fpath), detail=1)
-            results = _easyocr_readtext_sort_for_join(results)
+            debug_row["raw_readtext_order"] = _serialize_easyocr_boxes(results)
+            sorted_results = _easyocr_readtext_sort_for_join(results)
+            debug_row["sorted_reading_order"] = _serialize_easyocr_boxes(sorted_results)
             texts = [
                 t.strip()
-                for _bbox, t, conf in results
+                for _bbox, t, conf in sorted_results
                 if conf >= EASYOCR_MIN_CONFIDENCE and t.strip()
             ]
-            return timestamp_sec, " ".join(texts)
-        except Exception:
-            return timestamp_sec, ""
+            joined = " ".join(texts)
+            debug_row["joined_after_filter"] = joined
+            return timestamp_sec, joined, debug_row
+        except Exception as exc:
+            debug_row["error"] = str(exc)
+            return timestamp_sec, "", debug_row
 
     raw_results = []
+    frame_ocr_debug_rows = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=EASYOCR_WORKERS) as pool:
         indexed = list(enumerate(frame_files))
         futures = {pool.submit(ocr_frame, item): item[0] for item in indexed}
@@ -1875,11 +1904,18 @@ def _step1_ocr_with_easyocr(video_path):
             total=len(futures),
             desc="EasyOCR frames",
         ):
-            ts, text = fut.result()
+            ts, text, dbg = fut.result()
+            frame_ocr_debug_rows.append(dbg)
             if text:
                 raw_results.append((ts, text))
 
     raw_results.sort(key=lambda x: x[0])
+    frame_ocr_debug_rows.sort(key=lambda r: r["frame_index"])
+    ocr_debug_path = ocr_dir / "frame_ocr_raw.jsonl"
+    with open(ocr_debug_path, "w", encoding="utf8") as _df:
+        for row in frame_ocr_debug_rows:
+            _df.write(json.dumps(row, ensure_ascii=False) + "\n")
+    log(f"Step1 OCR: debug raw per frame → {ocr_debug_path} ({len(frame_ocr_debug_rows)} lines)")
 
     # --- 4. Text cleaning ---
     _re_keep = re.compile(r"[\w\s\u4e00-\u9fff\u3000-\u303f\uff00-\uffef]+")
@@ -2893,7 +2929,8 @@ def parse_cli_args():
         choices=["on", "off"],
         default="on" if EASYOCR_CLEANUP_DEBUG_AFTER_STEP7 else "off",
         help=(
-            "on (default): after successful Step7, delete LOG_DIR/step1_ocr and "
+            "on (default): after successful Step7, delete LOG_DIR/step1_ocr "
+            "(frames, cropped.mp4, frame_ocr_raw.jsonl per-frame OCR debug) and "
             "LOG_DIR/easyocr_crop_probe. off: keep those folders for inspection."
         ),
     )
