@@ -1750,7 +1750,12 @@ def _detect_easyocr_crop_band(video_path, reader, ocr_dir):
 
 
 def _easyocr_readtext_sort_for_join(results):
-    """Sort bbox top→bottom, left→right so joined text order is stable across frames."""
+    """Sort bbox for reading order: same text row left→right, then top→bottom.
+
+    EasyOCR often returns multiple boxes when a vertical line splits the line; sorting
+    by bbox *center* (cx, cy) can put the right segment before the left. Using a row
+    bucket on y then **min(x)** fixes that.
+    """
     if not results:
         return results
 
@@ -1758,7 +1763,9 @@ def _easyocr_readtext_sort_for_join(results):
         bbox = item[0]
         ys = [float(p[1]) for p in bbox]
         xs = [float(p[0]) for p in bbox]
-        return (sum(ys) / max(len(ys), 1), sum(xs) / max(len(xs), 1))
+        my = sum(ys) / max(len(ys), 1)
+        row = int(my // 12)  # px bucket: same subtitle line shares row
+        return (row, min(xs))
 
     return sorted(results, key=key_fn)
 
@@ -1885,7 +1892,9 @@ def _step1_ocr_with_easyocr(video_path):
         return SequenceMatcher(None, a, b).ratio() * 100
 
     def same_subtitle_line(prev: str, curr: str) -> bool:
-        """Cùng một dòng phụ đề giữa hai frame: fuzzy đủ cao, hoặc chuỗi mở rộng/đè (OCR từng phần)."""
+        """Cùng một dòng phụ đề giữa hai frame: fuzzy, prefix/substring, hoặc gần cùng multiset ký tự (đảo box / thiếu 1 chữ)."""
+        from collections import Counter
+
         if fuzzy_sim(prev, curr) >= EASYOCR_FUZZY_THRESHOLD:
             return True
         a, b = prev.strip(), curr.strip()
@@ -1896,6 +1905,12 @@ def _step1_ocr_with_easyocr(video_path):
         shorter, longer = (a, b) if len(a) <= len(b) else (b, a)
         if len(shorter) >= 4 and shorter in longer:
             return True
+        # Hai OCR cùng câu nhưng đảo thứ tự khối / khuyết 1 ký tự (vd. vạch dọc chia bbox).
+        maxlen = max(len(a), len(b), 1)
+        if maxlen >= 8 and abs(len(a) - len(b)) <= 2:
+            inter = sum((Counter(a) & Counter(b)).values())
+            if inter / float(maxlen) >= 0.88:
+                return True
         return False
 
     cleaned = [(ts, clean_text(text)) for ts, text in raw_results]
