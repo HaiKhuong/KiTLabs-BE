@@ -12,7 +12,8 @@ opencv-python-headless
 
 # ViXTTS (coqui-tts): transformers>=5.1 gỡ isin_mps_friendly — TTS import lỗi; giữ <5.1.
 transformers>=4.40,<5.1
-coqui-tts
+# PyTorch 2.9+: Coqui cần torchcodec (extra [codec]).
+coqui-tts[codec]
 huggingface_hub
 underthesea
 vinorm
