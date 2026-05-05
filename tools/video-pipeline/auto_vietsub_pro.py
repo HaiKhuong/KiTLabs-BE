@@ -2552,6 +2552,60 @@ def _vixtts_patch_tokenizer_char_limits(model):
         limits[lg] = int(pick)
 
 
+def _vixtts_patch_tokenizer_preprocess(model):
+    """
+    encode(..., lang=…) gọi preprocess_text → multilingual_cleaners dùng _ordinal_re[lang],
+    _abbreviations[lang], … — bản Coqui gốc không có 'vi' → KeyError 'vi' dù đã tắt text splitting.
+    Với mọi mã có trong config.languages nhưng không thuộc bộ cleaner đầy đủ của Coqui, dùng basic_cleaners
+    (lowercase + gộp khoảng trắng); chuỗi vẫn được bọc [vi] trong encode().
+    """
+    if getattr(model, "_vixtts_preprocess_patched", False):
+        return
+    tok = getattr(model, "tokenizer", None)
+    if tok is None:
+        return
+    from types import MethodType
+
+    from TTS.tts.layers.xtts.tokenizer import VoiceBpeTokenizer, basic_cleaners
+
+    cfg = getattr(model, "config", None)
+    extra = {
+        str(x).strip().split("-", 1)[0]
+        for x in (getattr(cfg, "languages", None) or [])
+        if x and str(x).strip()
+    }
+    # Các mã Coqui xử lý sẵn trong VoiceBpeTokenizer.preprocess_text (kể cả ja, hi).
+    stock_full = {
+        "ar",
+        "cs",
+        "de",
+        "en",
+        "es",
+        "fr",
+        "hu",
+        "it",
+        "ja",
+        "hi",
+        "nl",
+        "pl",
+        "pt",
+        "ru",
+        "tr",
+        "zh",
+        "ko",
+    }
+    orig = VoiceBpeTokenizer.preprocess_text
+
+    def preprocess_text(self, txt, lang):
+        lang0 = str(lang).split("-", 1)[0]
+        if lang0 in extra and lang0 not in stock_full:
+            return basic_cleaners(txt)
+        return orig(self, txt, lang)
+
+    tok.preprocess_text = MethodType(preprocess_text, tok)
+    model._vixtts_preprocess_patched = True
+
+
 def _vixtts_load_model(model_dir: Path, use_deepspeed: bool):
     global _vixtts_model_singleton, _vixtts_model_dir_loaded
     import torch
@@ -2582,6 +2636,7 @@ def _vixtts_load_model(model_dir: Path, use_deepspeed: bool):
         config, checkpoint_dir=str(model_dir), use_deepspeed=bool(use_deepspeed)
     )
     _vixtts_patch_tokenizer_char_limits(model)
+    _vixtts_patch_tokenizer_preprocess(model)
 
     if torch.cuda.is_available():
         model.cuda()
