@@ -61,6 +61,9 @@ VIXTTS_NORMALIZE_TEXT = True
 # Nếu bản coqui cũ không nhận `speed`, try/except bỏ qua tham số này.
 # Lưu ý: speed quá cao (>=1.4) thường làm ngữ điệu bị "nhả chữ" và cảm giác cách từ.
 VIXTTS_INFERENCE_SPEED = 1.7
+# Chỉnh cao độ sau khi synth (đơn vị semitone), giữ gần nguyên độ dài bằng asetrate+atempo.
+# 0 = giữ nguyên; dương = cao hơn; âm = trầm hơn.
+VIXTTS_PITCH_SHIFT_SEMITONES = 2
 # Âm lượng: không phải API Coqui; nhân tensor sau inference (1.2 ≈ +20%), clamp [-1,1] rồi mới lưu WAV.
 # Tránh gain quá lớn để giảm clipping/artefact ở cuối câu.
 VIXTTS_OUTPUT_VOLUME_GAIN = 1
@@ -2660,6 +2663,43 @@ def _vixtts_apply_speed_timeline_numpy(wav, speed):
     return out.squeeze().numpy()
 
 
+def _vixtts_apply_pitch_shift_wav_ffmpeg(in_wav: Path, semitones: float) -> None:
+    """
+    Pitch-shift WAV with FFmpeg while approximately preserving duration.
+    Using asetrate -> aresample -> atempo keeps timeline stable for Step3.
+    """
+    st = float(semitones)
+    if abs(st) < 1e-6:
+        return
+    factor = 2.0 ** (st / 12.0)
+    # atempo valid range is [0.5, 2.0], so clamp safe semitone range.
+    if factor <= 0.5 or factor >= 2.0:
+        raise ValueError(
+            "ViXTTS pitch shift ngoài khoảng hỗ trợ (-12..+12 semitones cho filter atempo)."
+        )
+    tmp = in_wav.with_name(f"{in_wav.stem}.pitch_tmp.wav")
+    af = (
+        f"asetrate=24000*{factor:.8f},"
+        f"aresample=24000,"
+        f"atempo={1.0 / factor:.8f}"
+    )
+    run_command(
+        [
+            FFMPEG_BIN,
+            "-y",
+            "-i",
+            str(in_wav),
+            "-af",
+            af,
+            "-c:a",
+            "pcm_s16le",
+            str(tmp),
+        ],
+        "ViXTTS: pitch-shift output wav",
+    )
+    tmp.replace(in_wav)
+
+
 def _vixtts_load_model(model_dir: Path, use_deepspeed: bool):
     global _vixtts_model_singleton, _vixtts_model_dir_loaded
     import torch
@@ -2789,6 +2829,9 @@ def _vixtts_synthesize_to_file(
         torchaudio.save(str(out_wav), wave_tensor, 24000)
     except Exception as e:
         _vixtts_reraise_torchcodec_clarified(e)
+    semitones = float(VIXTTS_PITCH_SHIFT_SEMITONES)
+    if abs(semitones) > 1e-6:
+        _vixtts_apply_pitch_shift_wav_ffmpeg(out_wav, semitones)
 
 
 def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
@@ -3832,6 +3875,12 @@ def parse_cli_args():
         help="Tốc độ ViXTTS (1.0 tự nhiên nhất; >1.3 dễ bị nhả chữ/cách từ).",
     )
     parser.add_argument(
+        "--vixtts-pitch-shift-semitones",
+        type=float,
+        default=VIXTTS_PITCH_SHIFT_SEMITONES,
+        help="Dịch cao độ ViXTTS theo semitone sau khi synth (0=giữ nguyên; âm=trầm hơn; dương=cao hơn; khuyên dùng -2..+2).",
+    )
+    parser.add_argument(
         "--vixtts-output-volume-gain",
         type=float,
         default=VIXTTS_OUTPUT_VOLUME_GAIN,
@@ -3963,6 +4012,7 @@ def apply_cli_config(args):
     global VIXTTS_USE_DEEPSPEED
     global VIXTTS_NORMALIZE_TEXT
     global VIXTTS_INFERENCE_SPEED
+    global VIXTTS_PITCH_SHIFT_SEMITONES
     global VIXTTS_OUTPUT_VOLUME_GAIN
     global STEP3_AUTO_RATE_ENABLED
     global STEP3_AUTO_RATE_TRIGGER_CHARS_PER_SEC
@@ -4067,6 +4117,9 @@ def apply_cli_config(args):
     VIXTTS_USE_DEEPSPEED = args.vixtts_use_deepspeed == "on"
     VIXTTS_NORMALIZE_TEXT = args.vixtts_normalize_text == "on"
     VIXTTS_INFERENCE_SPEED = max(0.5, float(args.vixtts_inference_speed))
+    VIXTTS_PITCH_SHIFT_SEMITONES = max(
+        -12.0, min(12.0, float(args.vixtts_pitch_shift_semitones))
+    )
     VIXTTS_OUTPUT_VOLUME_GAIN = max(0.0, float(args.vixtts_output_volume_gain))
     STEP3_AUTO_RATE_ENABLED = args.auto_speed == "on"
     STEP3_AUTO_RATE_TRIGGER_CHARS_PER_SEC = float(args.step3_auto_rate_trigger_cps)
