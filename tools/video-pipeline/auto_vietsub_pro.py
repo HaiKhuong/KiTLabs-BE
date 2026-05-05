@@ -55,6 +55,13 @@ VIXTTS_SPEAKER_WAV = str(SCRIPT_DIR / "voice" / "sample.mp3")
 VIXTTS_LANG = "vi"
 VIXTTS_USE_DEEPSPEED = False
 VIXTTS_NORMALIZE_TEXT = True
+# Chỉ nhánh ViXTTS (không áp dụng EDGE_TTS_*).
+# Tốc độ: truyền vào Xtts.inference(..., speed=...) — tham số chính thức trong coqui TTS
+# (TTS/tts/models/xtts.py, mặc định speed=1.0; dùng length_scale = 1/speed). 1.1 ≈ nhanh thêm ~10%.
+# Nếu bản coqui cũ không nhận `speed`, try/except bỏ qua tham số này.
+VIXTTS_INFERENCE_SPEED = 1.1
+# Âm lượng: không phải API Coqui; nhân tensor sau inference (1.2 ≈ +20%), clamp [-1,1] rồi mới lưu WAV.
+VIXTTS_OUTPUT_VOLUME_GAIN = 1.2
 STEP3_AUTO_RATE_ENABLED = True
 TRANSLATION_CONTEXT = ""  # Custom translation context for Gemini prompt
 STEP3_AUTO_RATE_TRIGGER_CHARS_PER_SEC = 14.0
@@ -2686,7 +2693,7 @@ def _vixtts_synthesize_to_file(
         if not st:
             continue
 
-        wav_chunk = model.inference(
+        infer_kwargs = dict(
             text=st,
             language=lang,
             gpt_cond_latent=gpt_cond_latent,
@@ -2699,6 +2706,13 @@ def _vixtts_synthesize_to_file(
             # Đã tách câu ở _vixtts_sentence_split; bật True cần char_limits[lang] (vd. thiếu 'vi' trên bản Coqui cũ).
             enable_text_splitting=False,
         )
+        # speed: tham số hợp lệ của Xtts.inference; TypeError nếu fork/phiên bản cũ khác chữ ký.
+        try:
+            wav_chunk = model.inference(
+                **infer_kwargs, speed=float(VIXTTS_INFERENCE_SPEED)
+            )
+        except TypeError:
+            wav_chunk = model.inference(**infer_kwargs)
         wav = wav_chunk["wav"]
         keep_len = _vixtts_calculate_keep_len(st, lang)
         if keep_len is not None and int(keep_len) > 0:
@@ -2707,6 +2721,9 @@ def _vixtts_synthesize_to_file(
     if not wav_chunks:
         raise ValueError("ViXTTS: không sinh được chunk âm thanh.")
     wave_tensor = torch.cat(wav_chunks, dim=0).unsqueeze(0)
+    gain = float(VIXTTS_OUTPUT_VOLUME_GAIN)
+    if gain > 0.0 and gain != 1.0:
+        wave_tensor = (wave_tensor * gain).clamp(-1.0, 1.0)
     out_wav.parent.mkdir(parents=True, exist_ok=True)
     try:
         torchaudio.save(str(out_wav), wave_tensor, 24000)
