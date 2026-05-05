@@ -2371,6 +2371,57 @@ _vixtts_model_singleton = None
 _vixtts_model_dir_loaded = None
 
 
+def _vixtts_parse_torch_major_minor(version_str):
+    """Parse (major, minor) from e.g. '2.10.0+cu128'; None if unparsable."""
+    if not version_str:
+        return None
+    base = str(version_str).split("+", 1)[0].strip()
+    parts = base.split(".")
+    try:
+        major = int(parts[0])
+        minor = int(parts[1]) if len(parts) > 1 else 0
+        return major, minor
+    except (ValueError, IndexError):
+        return None
+
+
+def _vixtts_warn_if_torchcodec_prone():
+    """PyTorch 2.9+ often pulls torchcodec; log a hint before ViXTTS work."""
+    try:
+        import torch
+
+        mm = _vixtts_parse_torch_major_minor(getattr(torch, "__version__", "") or "")
+        if mm is None:
+            return
+        major, minor = mm
+        if major > 2 or (major == 2 and minor >= 9):
+            log(
+                "ViXTTS: PyTorch %s — nếu gặp lỗi libtorchcodec, pin torch/torchaudio<2.9 "
+                "theo tools/video-pipeline/requirements.txt, hoặc cài FFmpeg full-shared (Windows) "
+                "và TorchCodec đúng bảng tương thích PyTorch."
+                % (torch.__version__,)
+            )
+    except Exception:
+        pass
+
+
+def _vixtts_reraise_torchcodec_clarified(exc):
+    """Replace opaque torchcodec load errors with pipeline-specific remediation."""
+    err_l = str(exc).lower()
+    if "torchcodec" in err_l or "libtorchcodec" in err_l:
+        raise RuntimeError(
+            "ViXTTS / Step3: không tải được libtorchcodec (TorchCodec). "
+            "PyTorch 2.9+ thường kích hoạt torchaudio/TorchCodec và cần FFmpeg shared + DLL đúng (Windows: bản full-shared). "
+            "Cách ổn định cho repo này: cài đúng tools/video-pipeline/requirements.txt — "
+            'pip install -U "torch>=2.2,<2.9" "torchaudio>=2.2,<2.9" '
+            "(chọn --index-url wheel CUDA phù hợp nếu dùng GPU). "
+            "Hoặc làm theo bảng phiên bản TorchCodec: "
+            "https://github.com/pytorch/torchcodec#installing-torchcodec\n"
+            f"--- Lỗi gốc ---\n{exc}"
+        ) from exc
+    raise exc
+
+
 def _vixtts_calculate_keep_len(text, lang):
     """Giới hạn độ dài wav cho câu tiếng Việt rất ngắn (theo gợi ý viXTTS). -1 = không cắt."""
     if lang in ("ja", "zh-cn", "zh"):
@@ -2488,6 +2539,8 @@ def _vixtts_load_model(model_dir: Path, use_deepspeed: bool):
             "ViXTTS cần gói Coqui TTS (pip install coqui-tts). "
             "Một số checkpoint có thể cần fork TTS tương thích — xem model card."
         ) from e
+    except Exception as e:
+        _vixtts_reraise_torchcodec_clarified(e)
     for name in ("model.pth", "config.json", "vocab.json"):
         p = model_dir / name
         if not p.is_file():
@@ -2520,7 +2573,11 @@ def _vixtts_synthesize_to_file(
     speaker_embedding,
 ):
     import torch
-    import torchaudio
+
+    try:
+        import torchaudio
+    except Exception as e:
+        _vixtts_reraise_torchcodec_clarified(e)
 
     tts_text = str(text or "").strip()
     if lang == "vi" and VIXTTS_NORMALIZE_TEXT:
@@ -2555,7 +2612,10 @@ def _vixtts_synthesize_to_file(
         raise ValueError("ViXTTS: không sinh được chunk âm thanh.")
     wave_tensor = torch.cat(wav_chunks, dim=0).unsqueeze(0)
     out_wav.parent.mkdir(parents=True, exist_ok=True)
-    torchaudio.save(str(out_wav), wave_tensor, 24000)
+    try:
+        torchaudio.save(str(out_wav), wave_tensor, 24000)
+    except Exception as e:
+        _vixtts_reraise_torchcodec_clarified(e)
 
 
 def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
@@ -2567,6 +2627,7 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
 
     if use_vixtts:
         log("Step3: ViXTTS / XTTS-vi (timeline SRT)…")
+        _vixtts_warn_if_torchcodec_prone()
         md = Path(str(VIXTTS_MODEL_DIR or "").strip()).expanduser()
         vixtts_spk = Path(str(VIXTTS_SPEAKER_WAV or "").strip()).expanduser()
         if not str(VIXTTS_MODEL_DIR or "").strip():
