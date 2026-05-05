@@ -2524,6 +2524,34 @@ def _vixtts_ensure_speakers_xtts(model_dir: Path):
     return target
 
 
+def _vixtts_patch_tokenizer_char_limits(model):
+    """
+    inference(enable_text_splitting=True) dùng tokenizer.char_limits[language].
+    Coqui gốc chỉ liệt kê ~16 ngôn ngữ; checkpoint ViXTTS thêm 'vi' trong config.languages
+    nhưng char_limits thiếu → KeyError 'vi'. Điền thiếu từ config, fallback en/zh.
+    """
+    tok = getattr(model, "tokenizer", None)
+    limits = getattr(tok, "char_limits", None)
+    if not isinstance(limits, dict):
+        return
+    cfg = getattr(model, "config", None)
+    langs = list(getattr(cfg, "languages", None) or [])
+    fallback = int(limits.get("en", 250))
+    for lg in langs:
+        if not lg:
+            continue
+        lg = str(lg).strip()
+        if lg in limits:
+            continue
+        root = lg.split("-", 1)[0]
+        pick = limits.get(root)
+        if pick is None and root == "zh":
+            pick = limits.get("zh")
+        if pick is None:
+            pick = fallback
+        limits[lg] = int(pick)
+
+
 def _vixtts_load_model(model_dir: Path, use_deepspeed: bool):
     global _vixtts_model_singleton, _vixtts_model_dir_loaded
     import torch
@@ -2553,6 +2581,7 @@ def _vixtts_load_model(model_dir: Path, use_deepspeed: bool):
     model.load_checkpoint(
         config, checkpoint_dir=str(model_dir), use_deepspeed=bool(use_deepspeed)
     )
+    _vixtts_patch_tokenizer_char_limits(model)
 
     if torch.cuda.is_available():
         model.cuda()
@@ -2601,7 +2630,8 @@ def _vixtts_synthesize_to_file(
             repetition_penalty=10.0,
             top_k=30,
             top_p=0.85,
-            enable_text_splitting=True,
+            # Đã tách câu ở _vixtts_sentence_split; bật True cần char_limits[lang] (vd. thiếu 'vi' trên bản Coqui cũ).
+            enable_text_splitting=False,
         )
         wav = wav_chunk["wav"]
         keep_len = _vixtts_calculate_keep_len(st, lang)
