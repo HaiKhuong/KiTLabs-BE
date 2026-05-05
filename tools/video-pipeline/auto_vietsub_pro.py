@@ -59,9 +59,9 @@ VIXTTS_NORMALIZE_TEXT = True
 # Tốc độ: truyền vào Xtts.inference(..., speed=...) — tham số chính thức trong coqui TTS
 # (TTS/tts/models/xtts.py, mặc định speed=1.0; dùng length_scale = 1/speed). 1.1 ≈ nhanh thêm ~10%.
 # Nếu bản coqui cũ không nhận `speed`, try/except bỏ qua tham số này.
-VIXTTS_INFERENCE_SPEED = 1.1
+VIXTTS_INFERENCE_SPEED = 1.5
 # Âm lượng: không phải API Coqui; nhân tensor sau inference (1.2 ≈ +20%), clamp [-1,1] rồi mới lưu WAV.
-VIXTTS_OUTPUT_VOLUME_GAIN = 1.2
+VIXTTS_OUTPUT_VOLUME_GAIN = 1.5
 STEP3_AUTO_RATE_ENABLED = True
 TRANSLATION_CONTEXT = ""  # Custom translation context for Gemini prompt
 STEP3_AUTO_RATE_TRIGGER_CHARS_PER_SEC = 14.0
