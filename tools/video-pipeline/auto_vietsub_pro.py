@@ -2624,6 +2624,36 @@ def _vixtts_patch_tokenizer_preprocess(model):
     model._vixtts_preprocess_patched = True
 
 
+def _vixtts_inference_accepts_speed(model):
+    import inspect
+
+    try:
+        sig = inspect.signature(model.inference)
+        return "speed" in sig.parameters
+    except (TypeError, ValueError, AttributeError):
+        return False
+
+
+def _vixtts_apply_speed_timeline_numpy(wav, speed):
+    """
+    speed > 1 => âm ngắn hơn (tương đương ý Xtts: length_scale = 1/speed trên latent).
+    Dùng khi model.inference không có tham số speed hoặc gọi speed=… bị lỗi.
+    """
+    import numpy as np
+    import torch
+    import torch.nn.functional as F
+
+    if wav is None or speed <= 0 or abs(float(speed) - 1.0) < 1e-6:
+        return wav
+    arr = np.asarray(wav, dtype=np.float32).reshape(-1)
+    if arr.size == 0:
+        return wav
+    new_len = max(1, int(round(arr.size / float(speed))))
+    t = torch.from_numpy(arr).view(1, 1, -1)
+    out = F.interpolate(t, size=new_len, mode="linear", align_corners=False)
+    return out.squeeze().numpy()
+
+
 def _vixtts_load_model(model_dir: Path, use_deepspeed: bool):
     global _vixtts_model_singleton, _vixtts_model_dir_loaded
     import torch
@@ -2655,6 +2685,17 @@ def _vixtts_load_model(model_dir: Path, use_deepspeed: bool):
     )
     _vixtts_patch_tokenizer_char_limits(model)
     _vixtts_patch_tokenizer_preprocess(model)
+
+    ok_sp = _vixtts_inference_accepts_speed(model)
+    model._vixtts_inference_accepts_speed_param = ok_sp
+    sp0 = float(VIXTTS_INFERENCE_SPEED)
+    if abs(sp0 - 1.0) > 1e-6:
+        if ok_sp:
+            log(f"ViXTTS: model.inference có tham số speed — đang dùng speed={sp0}.")
+        else:
+            log(
+                f"ViXTTS: model.inference không có speed — áp dụng ×{sp0} bằng nội suy sóng sau sinh."
+            )
 
     if torch.cuda.is_available():
         model.cuda()
@@ -2706,14 +2747,26 @@ def _vixtts_synthesize_to_file(
             # Đã tách câu ở _vixtts_sentence_split; bật True cần char_limits[lang] (vd. thiếu 'vi' trên bản Coqui cũ).
             enable_text_splitting=False,
         )
-        # speed: tham số hợp lệ của Xtts.inference; TypeError nếu fork/phiên bản cũ khác chữ ký.
-        try:
-            wav_chunk = model.inference(
-                **infer_kwargs, speed=float(VIXTTS_INFERENCE_SPEED)
-            )
-        except TypeError:
+        accepts = getattr(model, "_vixtts_inference_accepts_speed_param", None)
+        if accepts is None:
+            accepts = _vixtts_inference_accepts_speed(model)
+            model._vixtts_inference_accepts_speed_param = accepts
+
+        sp = float(VIXTTS_INFERENCE_SPEED)
+        used_api_speed = False
+        if accepts and abs(sp - 1.0) > 1e-6:
+            try:
+                wav_chunk = model.inference(**infer_kwargs, speed=sp)
+                used_api_speed = True
+            except TypeError as e:
+                log(f"ViXTTS: inference(speed={sp}) lỗi ({e}); nội suy sóng.")
+                wav_chunk = model.inference(**infer_kwargs)
+        else:
             wav_chunk = model.inference(**infer_kwargs)
+
         wav = wav_chunk["wav"]
+        if not used_api_speed and abs(sp - 1.0) > 1e-6:
+            wav = _vixtts_apply_speed_timeline_numpy(wav, sp)
         keep_len = _vixtts_calculate_keep_len(st, lang)
         if keep_len is not None and int(keep_len) > 0:
             wav = wav[: int(keep_len)]
