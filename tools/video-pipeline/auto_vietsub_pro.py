@@ -59,10 +59,11 @@ VIXTTS_NORMALIZE_TEXT = True
 # Tốc độ: truyền vào Xtts.inference(..., speed=...) — tham số chính thức trong coqui TTS
 # (TTS/tts/models/xtts.py, mặc định speed=1.0; dùng length_scale = 1/speed). speed quá cao thường làm clone giọng kém tự nhiên.
 # Nếu bản coqui cũ không nhận `speed`, try/except bỏ qua tham số này.
-VIXTTS_INFERENCE_SPEED = 1.0
+# Lưu ý: speed quá cao (>=1.4) thường làm ngữ điệu bị "nhả chữ" và cảm giác cách từ.
+VIXTTS_INFERENCE_SPEED = 1.7
 # Âm lượng: không phải API Coqui; nhân tensor sau inference (1.2 ≈ +20%), clamp [-1,1] rồi mới lưu WAV.
 # Tránh gain quá lớn để giảm clipping/artefact ở cuối câu.
-VIXTTS_OUTPUT_VOLUME_GAIN = 2
+VIXTTS_OUTPUT_VOLUME_GAIN = 1
 # Lọc phần đuôi artefact nhẹ trước khi pad/trim theo timeline.
 VIXTTS_TRIM_TRAILING_SILENCE = True
 VIXTTS_TRAILING_SILENCE_MIN_MS = 120
@@ -138,7 +139,7 @@ STEP6_EQ_CONTRAST = 1.03
 # ffmpeg unsharp: luma WxH:amount:chroma WxH:amount
 STEP6_UNSHARP = "5:5:0.8:3:3:0.0"
 ORIGINAL_AUDIO_VOLUME = 0.1
-NARRATION_AUDIO_VOLUME = 1.0
+NARRATION_AUDIO_VOLUME = 1.5
 # Step4: tốc độ trước khi merge (1.0 = copy video, không setpts). Đổi tốc 0.97 nên dùng --speed-video ở Step7.
 STEP4_MERGE_SPEED = 1.0
 # Step7: sau render phụ đề (_vs_tm), áp dụng setpts + atempo lên file cuối (vd 0.97 = chậm ~3%).
@@ -3825,6 +3826,18 @@ def parse_cli_args():
         help="Chuẩn hoá tiếng Việt với vinorm (cần pip install vinorm; off=giữ text sau sanitize).",
     )
     parser.add_argument(
+        "--vixtts-inference-speed",
+        type=float,
+        default=VIXTTS_INFERENCE_SPEED,
+        help="Tốc độ ViXTTS (1.0 tự nhiên nhất; >1.3 dễ bị nhả chữ/cách từ).",
+    )
+    parser.add_argument(
+        "--vixtts-output-volume-gain",
+        type=float,
+        default=VIXTTS_OUTPUT_VOLUME_GAIN,
+        help="Gain output WAV của ViXTTS trước khi lưu (1.0=giữ nguyên, 1.3~1.6 thường đủ lớn; quá cao dễ clip).",
+    )
+    parser.add_argument(
         "--auto-speed",
         choices=["on", "off"],
         default="on" if STEP3_AUTO_RATE_ENABLED else "off",
@@ -3949,6 +3962,8 @@ def apply_cli_config(args):
     global VIXTTS_LANG
     global VIXTTS_USE_DEEPSPEED
     global VIXTTS_NORMALIZE_TEXT
+    global VIXTTS_INFERENCE_SPEED
+    global VIXTTS_OUTPUT_VOLUME_GAIN
     global STEP3_AUTO_RATE_ENABLED
     global STEP3_AUTO_RATE_TRIGGER_CHARS_PER_SEC
     global STEP3_AUTO_RATE_BONUS_PERCENT
@@ -4051,6 +4066,8 @@ def apply_cli_config(args):
     VIXTTS_LANG = str(args.vixtts_lang or "vi").strip() or "vi"
     VIXTTS_USE_DEEPSPEED = args.vixtts_use_deepspeed == "on"
     VIXTTS_NORMALIZE_TEXT = args.vixtts_normalize_text == "on"
+    VIXTTS_INFERENCE_SPEED = max(0.5, float(args.vixtts_inference_speed))
+    VIXTTS_OUTPUT_VOLUME_GAIN = max(0.0, float(args.vixtts_output_volume_gain))
     STEP3_AUTO_RATE_ENABLED = args.auto_speed == "on"
     STEP3_AUTO_RATE_TRIGGER_CHARS_PER_SEC = float(args.step3_auto_rate_trigger_cps)
     STEP3_AUTO_RATE_BONUS_PERCENT = int(args.step3_auto_rate_bonus_percent)
