@@ -51,17 +51,22 @@ STEP3_TTS_ENGINE = "vixtts"
 # Thư mục chứa model.pth, config.json, vocab.json (và speakers_xtts.pth — tự tải từ coqui/XTTS-v2 nếu thiếu).
 VIXTTS_MODEL_DIR = str(SCRIPT_DIR / "voice")
 # Giọng mẫu ~6s: WAV dùng trực tiếp; mp3/m4a/… tự convert trong logs/ (bắt buộc khi STEP3_TTS_ENGINE=vixtts).
-VIXTTS_SPEAKER_WAV = str(SCRIPT_DIR / "voice" / "sample.mp3")
+VIXTTS_SPEAKER_WAV = str(SCRIPT_DIR / "voice" / "samples_nu-luu-loat.wav")
 VIXTTS_LANG = "vi"
 VIXTTS_USE_DEEPSPEED = False
 VIXTTS_NORMALIZE_TEXT = True
 # Chỉ nhánh ViXTTS (không áp dụng EDGE_TTS_*).
 # Tốc độ: truyền vào Xtts.inference(..., speed=...) — tham số chính thức trong coqui TTS
-# (TTS/tts/models/xtts.py, mặc định speed=1.0; dùng length_scale = 1/speed). 1.1 ≈ nhanh thêm ~10%.
+# (TTS/tts/models/xtts.py, mặc định speed=1.0; dùng length_scale = 1/speed). speed quá cao thường làm clone giọng kém tự nhiên.
 # Nếu bản coqui cũ không nhận `speed`, try/except bỏ qua tham số này.
-VIXTTS_INFERENCE_SPEED = 1.75
+VIXTTS_INFERENCE_SPEED = 1.0
 # Âm lượng: không phải API Coqui; nhân tensor sau inference (1.2 ≈ +20%), clamp [-1,1] rồi mới lưu WAV.
+# Tránh gain quá lớn để giảm clipping/artefact ở cuối câu.
 VIXTTS_OUTPUT_VOLUME_GAIN = 2
+# Lọc phần đuôi artefact nhẹ trước khi pad/trim theo timeline.
+VIXTTS_TRIM_TRAILING_SILENCE = True
+VIXTTS_TRAILING_SILENCE_MIN_MS = 120
+VIXTTS_TRAILING_SILENCE_THRESHOLD_DB = -42
 STEP3_AUTO_RATE_ENABLED = True
 TRANSLATION_CONTEXT = ""  # Custom translation context for Gemini prompt
 STEP3_AUTO_RATE_TRIGGER_CHARS_PER_SEC = 14.0
@@ -2739,11 +2744,12 @@ def _vixtts_synthesize_to_file(
             language=lang,
             gpt_cond_latent=gpt_cond_latent,
             speaker_embedding=speaker_embedding,
-            temperature=0.3,
+            # Sampling "vừa phải" giúp giữ chất giọng ổn định nhưng bớt phát âm cứng/sai vần.
+            temperature=0.6,
             length_penalty=1.0,
-            repetition_penalty=10.0,
-            top_k=30,
-            top_p=0.85,
+            repetition_penalty=2.2,
+            top_k=50,
+            top_p=0.9,
             # Đã tách câu ở _vixtts_sentence_split; bật True cần char_limits[lang] (vd. thiếu 'vi' trên bản Coqui cũ).
             enable_text_splitting=False,
         )
@@ -3046,6 +3052,12 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
             raw_segment_ms = subtitle_duration_ms
 
         fit_filters = []
+        if use_vixtts and VIXTTS_TRIM_TRAILING_SILENCE:
+            stop_dur = max(0.02, float(VIXTTS_TRAILING_SILENCE_MIN_MS) / 1000.0)
+            stop_thr = float(VIXTTS_TRAILING_SILENCE_THRESHOLD_DB)
+            fit_filters.append(
+                f"silenceremove=stop_periods=-1:stop_duration={stop_dur:.3f}:stop_threshold={stop_thr:.1f}dB"
+            )
         if raw_segment_ms > max_fit_ms:
             stretch_factor = raw_segment_ms / float(max_fit_ms)
             if stretch_factor > 1.02:
