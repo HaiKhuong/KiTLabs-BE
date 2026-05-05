@@ -51,7 +51,7 @@ STEP3_TTS_ENGINE = "vixtts"
 # Thư mục chứa model.pth, config.json, vocab.json (và speakers_xtts.pth — tự tải từ coqui/XTTS-v2 nếu thiếu).
 VIXTTS_MODEL_DIR = str(SCRIPT_DIR / "voice")
 # Giọng mẫu ~6s: WAV dùng trực tiếp; mp3/m4a/… tự convert trong logs/ (bắt buộc khi STEP3_TTS_ENGINE=vixtts).
-VIXTTS_SPEAKER_WAV = str(SCRIPT_DIR / "voice" / "samples_nu-luu-loat.wav")
+VIXTTS_SPEAKER_WAV = str(SCRIPT_DIR / "voice" / "sample.mp3")
 VIXTTS_LANG = "vi"
 VIXTTS_USE_DEEPSPEED = False
 VIXTTS_NORMALIZE_TEXT = True
