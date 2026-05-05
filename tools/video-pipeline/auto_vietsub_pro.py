@@ -17,6 +17,12 @@ warnings.filterwarnings(
     message=r".*RNN module weights are not part of single contiguous chunk.*",
     category=UserWarning,
 )
+# torchaudio: StreamingMediaDecoder deprecated (chuyển TorchCodec) — spam khi torchaudio.save (Step3 ViXTTS).
+warnings.filterwarnings(
+    "ignore",
+    message=r".*StreamingMediaDecoder has been deprecated.*",
+    category=UserWarning,
+)
 
 try:
     from dotenv import load_dotenv
