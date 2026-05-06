@@ -69,8 +69,9 @@ VIXTTS_PITCH_SHIFT_SEMITONES = 2
 VIXTTS_OUTPUT_VOLUME_GAIN = 1
 # Lọc phần đuôi artefact nhẹ trước khi pad/trim theo timeline.
 VIXTTS_TRIM_TRAILING_SILENCE = True
-VIXTTS_TRAILING_SILENCE_MIN_MS = 120
-VIXTTS_TRAILING_SILENCE_THRESHOLD_DB = -42
+# stop_duration nhỏ hơn + ngưỡng cao hơn (ít âm hơn) => cắt đuôi nhiễu/nhồi sau XTTS tích cực hơn.
+VIXTTS_TRAILING_SILENCE_MIN_MS = 80
+VIXTTS_TRAILING_SILENCE_THRESHOLD_DB = -36
 STEP3_AUTO_RATE_ENABLED = True
 TRANSLATION_CONTEXT = ""  # Custom translation context for Gemini prompt
 STEP3_AUTO_RATE_TRIGGER_CHARS_PER_SEC = 14.0
@@ -142,7 +143,7 @@ STEP6_EQ_CONTRAST = 1.03
 # ffmpeg unsharp: luma WxH:amount:chroma WxH:amount
 STEP6_UNSHARP = "5:5:0.8:3:3:0.0"
 ORIGINAL_AUDIO_VOLUME = 0.1
-NARRATION_AUDIO_VOLUME = 1.5
+NARRATION_AUDIO_VOLUME = 1
 # Step4: tốc độ trước khi merge (1.0 = copy video, không setpts). Đổi tốc 0.97 nên dùng --speed-video ở Step7.
 STEP4_MERGE_SPEED = 1.0
 # Step7: sau render phụ đề (_vs_tm), áp dụng setpts + atempo lên file cuối (vd 0.97 = chậm ~3%).
@@ -2454,8 +2455,77 @@ def _vixtts_calculate_keep_len(text, lang):
     if word_count < 5:
         return 15000 * word_count + 2000 * num_punct
     if word_count < 10:
-        return 13000 * word_count + 2000 * num_punct
-    return -1
+        # Hệ số thấp hơn trước: giảm đoạn đuôi model hay sinh thêm sau khi đã đọc xong.
+        return 10500 * word_count + 2000 * num_punct
+    # Câu dài: giới hạn mềm (~50s tối đa) để tránh model kéo đuôi vô hạn.
+    return min(1_200_000, 9800 * word_count + 2500 * num_punct)
+
+
+def _vixtts_trim_trailing_hallucination_numpy(wav, sr=24000):
+    """
+    Cắt đuôi sau khung RMS cuối cùng đủ lớn (XTTS/viXTTS hay thêm tiếng lạ / nhồi sau nội dung).
+    Dùng mức tham chiếu từ ~88% frame đầu để tránh kéo ngưỡng bởi đuôi nhiễu.
+
+    An toàn: ngưỡng hơi thấp + pad đuôi dài hơn để khỏi cắt nhầm vần cuối nhỏ; chỉ cắt khi
+    phần bỏ đi đủ dài (coi là đuôi rác), tránh “cạo” vài chục ms gây cảm giác gẫy/rung.
+    """
+    import numpy as np
+
+    arr = np.asarray(wav, dtype=np.float64).reshape(-1)
+    n = int(arr.size)
+    if n < int(sr * 0.12):
+        return wav
+
+    win = max(16, int(round(sr * 0.020)))
+    hop = max(8, int(round(sr * 0.010)))
+    energies = []
+    centers = []
+    for start in range(0, n - win + 1, hop):
+        seg = arr[start : start + win]
+        energies.append(float(np.sqrt(np.mean(seg * seg) + 1e-12)))
+        centers.append(start + win // 2)
+    energies = np.array(energies, dtype=np.float64)
+    if energies.size < 4:
+        return wav
+
+    ref_end = max(1, int(energies.size * 0.88))
+    ref = energies[:ref_end]
+    peak = float(np.max(ref)) if ref.size else float(np.max(energies))
+    med = float(np.median(ref)) if ref.size else float(np.median(energies))
+    # Thấp hơn một chút so với bản trước: vần kéo / hơi cuối câu vẫn được coi là “còn lời”.
+    thresh = max(peak * 0.085, med * 2.45, 2e-4)
+
+    last_hi = -1
+    for i in range(energies.size - 1, -1, -1):
+        if energies[i] > thresh:
+            last_hi = i
+            break
+    if last_hi < 0:
+        return wav
+
+    # Pad sau RMS cuối: chừa decay tự nhiên của âm cuối câu.
+    end_sample = int(centers[last_hi] + round(sr * 0.078))
+    end_sample = min(n, max(end_sample, int(sr * 0.12)))
+
+    min_keep = max(int(sr * 0.25), int(n * 0.22))
+    if end_sample < min_keep:
+        return wav
+    if end_sample >= n - int(sr * 0.012):
+        return wav
+
+    waste = n - end_sample
+    # Chỉ cắt nếu đuôi bỏ đi đủ dài — tránh cắt lẹ vào câu hợp lệ chỉ để tiết kiệm vài ms.
+    if waste < int(sr * 0.14):
+        return wav
+
+    out = arr[:end_sample].astype(np.float32)
+    # Fade dài hơn một chút, giảm cảm giác gẫy ở mép cắt.
+    fade = min(int(round(sr * 0.024)), max(2, out.size // 10))
+    if fade > 1 and out.size > fade + 8:
+        ramp = np.linspace(1.0, 0.0, fade, endpoint=False, dtype=np.float32)
+        out = out.copy()
+        out[-fade:] *= ramp
+    return out
 
 
 def _vixtts_normalize_text_vi(text):
@@ -2467,12 +2537,12 @@ def _vixtts_normalize_text_vi(text):
         return text
     t = (
         TTSnorm(str(text or ""), unknown=False, lower=False, rule=True)
-        .replace("..", ".")
-        .replace("...", ".")
-        .replace("!.", "!")
-        .replace("?.", "?")
-        .replace(" .", ".")
-        .replace(" ,", ",")
+        .replace("..", "")
+        .replace("...", "")
+        .replace("!.", "")
+        .replace("?.", "")
+        .replace(" .", "")
+        .replace(" ,", "")
         .replace('"', "")
         .replace("'", "")
         .replace("AI", "Ây Ai")
@@ -2762,6 +2832,7 @@ def _vixtts_synthesize_to_file(
     gpt_cond_latent,
     speaker_embedding,
 ):
+    import numpy as np
     import torch
 
     try:
@@ -2817,13 +2888,19 @@ def _vixtts_synthesize_to_file(
         wav = wav_chunk["wav"]
         if not used_api_speed and abs(sp - 1.0) > 1e-6:
             wav = _vixtts_apply_speed_timeline_numpy(wav, sp)
+        if hasattr(wav, "detach"):
+            wav = wav.detach().cpu().numpy()
+        wav = np.asarray(wav, dtype=np.float32).reshape(-1)
         keep_len = _vixtts_calculate_keep_len(st, lang)
         if keep_len is not None and int(keep_len) > 0:
             wav = wav[: int(keep_len)]
+        wav = _vixtts_trim_trailing_hallucination_numpy(wav, sr=24000)
         wav_chunks.append(torch.tensor(wav, dtype=torch.float32))
     if not wav_chunks:
         raise ValueError("ViXTTS: không sinh được chunk âm thanh.")
-    wave_tensor = torch.cat(wav_chunks, dim=0).unsqueeze(0)
+    merged = torch.cat(wav_chunks, dim=0).numpy().astype(np.float32, copy=False)
+    merged = _vixtts_trim_trailing_hallucination_numpy(merged, sr=24000)
+    wave_tensor = torch.from_numpy(np.asarray(merged, dtype=np.float32)).unsqueeze(0)
     gain = float(VIXTTS_OUTPUT_VOLUME_GAIN)
     if gain > 0.0 and gain != 1.0:
         wave_tensor = (wave_tensor * gain).clamp(-1.0, 1.0)
