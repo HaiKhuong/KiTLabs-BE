@@ -2481,8 +2481,6 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
         )
     elif use_omnivoice:
         log("Step3: OmniVoice Vietnamese (timeline SRT)…")
-        from omnivoice_tts import ensure_voice_clone_prompt
-
         _omni_mid = str(OMNIVOICE_MODEL_ID or "").strip()
         if not _omni_mid:
             raise ValueError("OmniVoice: cần --omnivoice-model-id (HF repo id).")
@@ -2494,15 +2492,13 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
         LOG_DIR.mkdir(parents=True, exist_ok=True)
         omni_ref_prepared = prepare_speaker_reference(spk, LOG_DIR)
         omni_device = _omnivoice_resolve_device_map(str(OMNIVOICE_DEVICE_MAP or ""))
-        ensure_voice_clone_prompt(
-            ref_audio=omni_ref_prepared,
-            ref_text=str(OMNIVOICE_REF_TEXT or ""),
-            model_id=_omni_mid,
-            device_map=omni_device,
-            dtype_str=str(OMNIVOICE_DTYPE or "float16").strip() or "float16",
-        )
+        if not str(OMNIVOICE_REF_TEXT or "").strip():
+            raise ValueError(
+                "OmniVoice: cần --omnivoice-ref-text (transcript của giọng mẫu). "
+                "Để trống sẽ kích hoạt auto ASR và có thể kéo TorchCodec/FFmpeg runtime."
+            )
         log(
-            "OmniVoice: đã tạo voice clone prompt từ "
+            "OmniVoice: đã chuẩn bị giọng mẫu "
             f"{spk.name} → {Path(omni_ref_prepared).name} (device={omni_device})"
         )
     else:

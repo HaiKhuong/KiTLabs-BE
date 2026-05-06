@@ -7,6 +7,7 @@ Tham khảo: https://huggingface.co/splendor1811/omnivoice-vietnamese
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any, Optional, Tuple
 
@@ -16,6 +17,22 @@ _session_model_key: Optional[Tuple[str, str, str]] = None
 # Cache prompt theo (resolved ref_audio, ref_text)
 _session_prompt: Optional[Any] = None
 _session_prompt_key: Optional[Tuple[str, str]] = None
+
+
+def _resolve_hf_token() -> str:
+    # Ưu tiên HF_TOKEN; fallback các tên env phổ biến.
+    token = (
+        os.getenv("HF_TOKEN")
+        or os.getenv("HUGGINGFACE_HUB_TOKEN")
+        or os.getenv("HUGGING_FACE_HUB_TOKEN")
+        or ""
+    )
+    token = str(token).strip()
+    if token:
+        # Đồng bộ để các lib HF downstream dùng cùng token.
+        os.environ.setdefault("HF_TOKEN", token)
+        os.environ.setdefault("HUGGINGFACE_HUB_TOKEN", token)
+    return token
 
 
 def reset_omnivoice_session() -> None:
@@ -65,11 +82,29 @@ def _get_model(*, model_id: str, device_map: str, dtype_str: str):
     _session_prompt_key = None
 
     dtype = _resolve_dtype(dt)
-    _session_model = OmniVoice.from_pretrained(
-        mid,
+    hf_token = _resolve_hf_token()
+    load_kwargs = dict(
         device_map=dev,
         dtype=dtype,
     )
+    if hf_token:
+        # Một số bản nhận `token`, số khác nhận `use_auth_token`.
+        load_kwargs["token"] = hf_token
+    try:
+        _session_model = OmniVoice.from_pretrained(
+            mid,
+            **load_kwargs,
+        )
+    except TypeError:
+        if hf_token:
+            load_kwargs.pop("token", None)
+            load_kwargs["use_auth_token"] = hf_token
+            _session_model = OmniVoice.from_pretrained(
+                mid,
+                **load_kwargs,
+            )
+        else:
+            raise
     _session_model_key = key
     return _session_model
 
