@@ -2468,6 +2468,7 @@ def _vixtts_normalize_text_vi(text):
     t = (
         TTSnorm(str(text or ""), unknown=False, lower=False, rule=True)
         .replace("..", ".")
+        .replace("...", ".")
         .replace("!.", "!")
         .replace("?.", "?")
         .replace(" .", ".")
@@ -2771,6 +2772,8 @@ def _vixtts_synthesize_to_file(
     tts_text = str(text or "").strip()
     if lang == "vi" and VIXTTS_NORMALIZE_TEXT:
         tts_text = _vixtts_normalize_text_vi(tts_text)
+    # ViXTTS: luôn lowercase nội dung trước khi inference (ổn định phát âm, không thêm cờ cấu hình).
+    tts_text = str(tts_text or "").lower()
     sentences = _vixtts_sentence_split(tts_text, lang)
     if not sentences:
         raise ValueError("ViXTTS: text rỗng sau tách câu.")
