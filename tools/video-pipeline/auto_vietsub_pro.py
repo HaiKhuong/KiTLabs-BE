@@ -84,7 +84,7 @@ VIXTTS_TRAILING_SILENCE_THRESHOLD_DB = -42
 # OmniVoice (splendor1811/omnivoice-vietnamese): ref_text nên là transcript khớp ref_audio.
 OMNIVOICE_MODEL_ID = "k2-fsa/OmniVoice"
 OMNIVOICE_REF_WAV = str(SCRIPT_DIR / "voice" / "sample.wav")
-OMNIVOICE_REF_TEXT = ""
+OMNIVOICE_REF_TEXT = "Hôm nay, tôi thực hiện bản thu này để huấn luyện AI mô phỏng giọng nói của mình. Việc phát âm chuẩn các âm như chờ sờ cùng các thanh hỏi, thanh ngã là cực kỳ quan trọng. Tôi hy vọng rằng công nghệ sẽ giúp xóa bỏ khoảng cách, mang lại những trải nghiệm giao tiếp mượt mà, tràn đầy cảm xúc, tự nhiên như khi chúng ta đang trò chuyện trực tiếp với nhau ngoài đời thực. Đây là một trải nghiệm thực sự rất thú vị."
 OMNIVOICE_DEVICE_MAP = ""  # rỗng = tự chọn cuda:0 hoặc cpu
 OMNIVOICE_DTYPE = "float16"  # float16 | float32 | bfloat16
 OMNIVOICE_LANGUAGE = "vietnamese"
