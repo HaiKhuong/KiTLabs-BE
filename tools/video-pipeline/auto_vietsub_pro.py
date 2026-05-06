@@ -82,7 +82,7 @@ VIXTTS_TRIM_TRAILING_SILENCE = True
 VIXTTS_TRAILING_SILENCE_MIN_MS = 120
 VIXTTS_TRAILING_SILENCE_THRESHOLD_DB = -42
 # OmniVoice (splendor1811/omnivoice-vietnamese): ref_text nên là transcript khớp ref_audio.
-OMNIVOICE_MODEL_ID = "splendor1811/omnivoice-vietnamese"
+OMNIVOICE_MODEL_ID = "k2-fsa/OmniVoice"
 OMNIVOICE_REF_WAV = str(SCRIPT_DIR / "voice" / "sample.wav")
 OMNIVOICE_REF_TEXT = ""
 OMNIVOICE_DEVICE_MAP = ""  # rỗng = tự chọn cuda:0 hoặc cpu

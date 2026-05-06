@@ -116,22 +116,21 @@ def synthesize_to_wav(
     Dùng cached model + voice prompt khi ref_audio/ref_text/model không đổi.
     """
     try:
+        import numpy as np
+        import soundfile as sf
         import torch
-        import torchaudio
     except ImportError as e:
-        raise RuntimeError("OmniVoice: cần torch + torchaudio để lưu WAV.") from e
+        raise RuntimeError(
+            "OmniVoice: cần torch + soundfile để lưu WAV (pip install soundfile)."
+        ) from e
 
     out = Path(out_wav)
     out.parent.mkdir(parents=True, exist_ok=True)
 
     model = _get_model(model_id=model_id, device_map=device_map, dtype_str=dtype_str)
-    voice_prompt = ensure_voice_clone_prompt(
-        ref_audio=ref_audio,
-        ref_text=ref_text,
-        model_id=model_id,
-        device_map=device_map,
-        dtype_str=dtype_str,
-    )
+    ref_audio_path = str(Path(ref_audio).resolve())
+    if not Path(ref_audio_path).is_file():
+        raise FileNotFoundError(f"OmniVoice: không tìm thấy ref_audio: {ref_audio_path}")
 
     t = str(text or "").strip()
     if not t:
@@ -139,9 +138,15 @@ def synthesize_to_wav(
 
     gen_kw: dict = dict(
         text=t,
-        language=str(language or "vietnamese").strip() or "vietnamese",
-        voice_clone_prompt=voice_prompt,
+        ref_audio=ref_audio_path,
     )
+    rt = str(ref_text or "").strip()
+    if rt:
+        gen_kw["ref_text"] = rt
+
+    lang = str(language or "").strip()
+    if lang:
+        gen_kw["language"] = lang
     if (
         num_step is not None
         and guidance_scale is not None
@@ -158,36 +163,30 @@ def synthesize_to_wav(
             # Một số phiên bản có thể khác tên / không có class — gọi generate mặc định.
             pass
 
-    audio = model.generate(**gen_kw)
-    # Model card có ví dụ audio[0], nhưng kiểu trả về có thể khác giữa versions
-    # (Tensor/ndarray/list; mono/stereo; [T] hoặc [B,T] hoặc [B,C,T]).
-    if isinstance(audio, torch.Tensor):
-        wave = audio
-    elif isinstance(audio, (list, tuple)) and len(audio) > 0:
+    try:
+        audio = model.generate(**gen_kw)
+    except TypeError:
+        # Một số bản OmniVoice không nhận language / generation_config.
+        slim_kw = {"text": t, "ref_audio": ref_audio_path}
+        if rt:
+            slim_kw["ref_text"] = rt
+        audio = model.generate(**slim_kw)
+
+    # Theo mẫu official: audio là list[np.ndarray] shape (T,) at 24kHz.
+    if isinstance(audio, (list, tuple)) and len(audio) > 0:
         wave = audio[0]
     else:
         wave = audio
 
-    if not isinstance(wave, torch.Tensor):
-        wave = torch.as_tensor(wave)
-
-    # Chuẩn hoá về [channels, time] để torchaudio.save dùng được.
-    if wave.ndim == 0:
-        wave = wave.unsqueeze(0).unsqueeze(0)
-    elif wave.ndim == 1:
-        wave = wave.unsqueeze(0)  # [T] -> [1, T]
-    elif wave.ndim == 2:
-        # Có thể là [B, T] hoặc [C, T]. Nếu batch đầu > 1, lấy sample đầu.
-        if wave.shape[0] > 8 and wave.shape[1] <= 8:
-            wave = wave.transpose(0, 1)
+    if isinstance(wave, torch.Tensor):
+        wave_np = wave.detach().to(dtype=torch.float32).cpu().numpy()
     else:
-        # [B, C, T] / [B, T, C] -> lấy batch đầu, rồi đưa về [C, T]
-        wave = wave[0]
-        if wave.ndim == 2 and wave.shape[-1] <= 8 and wave.shape[0] > 8:
-            wave = wave.transpose(0, 1)
+        wave_np = np.asarray(wave, dtype=np.float32)
 
-    if wave.ndim != 2:
-        raise RuntimeError(f"OmniVoice: shape audio không hợp lệ để lưu WAV: {tuple(wave.shape)}")
+    if wave_np.ndim == 0:
+        raise RuntimeError("OmniVoice: audio output rỗng/không hợp lệ (scalar).")
+    if wave_np.ndim > 1:
+        # Giữ theo mẫu out mono: [T]. Nếu có batch/channel thì dẹt về 1 chiều.
+        wave_np = wave_np.reshape(-1)
 
-    wave = wave.detach().to(dtype=torch.float32).cpu().contiguous()
-    torchaudio.save(str(out), wave, 24000)
+    sf.write(str(out), wave_np, 24000)
