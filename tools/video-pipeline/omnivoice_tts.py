@@ -116,9 +116,10 @@ def synthesize_to_wav(
     Dùng cached model + voice prompt khi ref_audio/ref_text/model không đổi.
     """
     try:
+        import torch
         import torchaudio
     except ImportError as e:
-        raise RuntimeError("OmniVoice: cần torchaudio để lưu WAV.") from e
+        raise RuntimeError("OmniVoice: cần torch + torchaudio để lưu WAV.") from e
 
     out = Path(out_wav)
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -158,6 +159,35 @@ def synthesize_to_wav(
             pass
 
     audio = model.generate(**gen_kw)
-    # Model card: torchaudio.save("output.wav", audio[0], 24000)
-    wave = audio[0]
+    # Model card có ví dụ audio[0], nhưng kiểu trả về có thể khác giữa versions
+    # (Tensor/ndarray/list; mono/stereo; [T] hoặc [B,T] hoặc [B,C,T]).
+    if isinstance(audio, torch.Tensor):
+        wave = audio
+    elif isinstance(audio, (list, tuple)) and len(audio) > 0:
+        wave = audio[0]
+    else:
+        wave = audio
+
+    if not isinstance(wave, torch.Tensor):
+        wave = torch.as_tensor(wave)
+
+    # Chuẩn hoá về [channels, time] để torchaudio.save dùng được.
+    if wave.ndim == 0:
+        wave = wave.unsqueeze(0).unsqueeze(0)
+    elif wave.ndim == 1:
+        wave = wave.unsqueeze(0)  # [T] -> [1, T]
+    elif wave.ndim == 2:
+        # Có thể là [B, T] hoặc [C, T]. Nếu batch đầu > 1, lấy sample đầu.
+        if wave.shape[0] > 8 and wave.shape[1] <= 8:
+            wave = wave.transpose(0, 1)
+    else:
+        # [B, C, T] / [B, T, C] -> lấy batch đầu, rồi đưa về [C, T]
+        wave = wave[0]
+        if wave.ndim == 2 and wave.shape[-1] <= 8 and wave.shape[0] > 8:
+            wave = wave.transpose(0, 1)
+
+    if wave.ndim != 2:
+        raise RuntimeError(f"OmniVoice: shape audio không hợp lệ để lưu WAV: {tuple(wave.shape)}")
+
+    wave = wave.detach().to(dtype=torch.float32).cpu().contiguous()
     torchaudio.save(str(out), wave, 24000)

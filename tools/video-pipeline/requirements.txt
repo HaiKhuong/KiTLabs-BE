@@ -11,10 +11,8 @@ tqdm
 easyocr
 opencv-python-headless
 
-# ViXTTS (coqui-tts): transformers>=5.1 gỡ isin_mps_friendly — TTS import lỗi; giữ <5.1.
-transformers>=4.40,<5.1
-# Không dùng coqui-tts[codec] khi torch<2.9 (tránh libtorchcodec / FFmpeg shared).
-coqui-tts
+# OmniVoice yêu cầu transformers>=5.3.0.
+transformers>=5.3.0
 huggingface_hub
 underthesea
 vinorm
