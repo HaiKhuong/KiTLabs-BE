@@ -5,7 +5,6 @@ import re
 import shutil
 import subprocess
 import time
-import asyncio
 import sys
 import traceback
 import warnings
@@ -32,6 +31,16 @@ except ImportError:
 from google import genai
 from tqdm import tqdm
 
+from step3_vixtts_edge import (
+    configure_step3_vixtts_edge,
+    prepare_speaker_reference,
+    run_edge_tts_mp3_save,
+    tts_normalize_vi,
+    vixtts_load_model,
+    vixtts_synthesize_to_file,
+    warn_if_vixtts_torchcodec_prone,
+)
+
 # ==============================
 # CONFIG
 # ==============================
@@ -46,7 +55,8 @@ EDGE_TTS_VOICE = "vi-VN-HoaiMyNeural"
 EDGE_TTS_RATE = "+30%"
 EDGE_TTS_VOLUME = "+10%"
 EDGE_TTS_PITCH = "+20Hz"
-# Step3 TTS: edge = Microsoft Edge TTS; vixtts = local XTTS (viXTTS / Viet-xtts-v2 checkpoint, cần GPU/CPU + coqui-tts).
+# Step3 TTS: edge = Microsoft Edge TTS; vixtts = local XTTS (viXTTS / Viet-xtts-v2 checkpoint, cần GPU/CPU + coqui-tts);
+# omnivoice = OmniVoice Vietnamese (pip install omnivoice, GPU khuyến nghị).
 STEP3_TTS_ENGINE = "vixtts"
 # Thư mục chứa model.pth, config.json, vocab.json (và speakers_xtts.pth — tự tải từ coqui/XTTS-v2 nếu thiếu).
 VIXTTS_MODEL_DIR = str(SCRIPT_DIR / "voice")
@@ -71,6 +81,19 @@ VIXTTS_OUTPUT_VOLUME_GAIN = 1
 VIXTTS_TRIM_TRAILING_SILENCE = True
 VIXTTS_TRAILING_SILENCE_MIN_MS = 120
 VIXTTS_TRAILING_SILENCE_THRESHOLD_DB = -42
+# OmniVoice (splendor1811/omnivoice-vietnamese): ref_text nên là transcript khớp ref_audio.
+OMNIVOICE_MODEL_ID = "splendor1811/omnivoice-vietnamese"
+OMNIVOICE_REF_WAV = str(SCRIPT_DIR / "voice" / "sample.wav")
+OMNIVOICE_REF_TEXT = ""
+OMNIVOICE_DEVICE_MAP = ""  # rỗng = tự chọn cuda:0 hoặc cpu
+OMNIVOICE_DTYPE = "float16"  # float16 | float32 | bfloat16
+OMNIVOICE_LANGUAGE = "vietnamese"
+OMNIVOICE_NUM_STEP = 8
+OMNIVOICE_GUIDANCE_SCALE = 2.0
+OMNIVOICE_NORMALIZE_TEXT = False
+OMNIVOICE_TRIM_TRAILING_SILENCE = True
+OMNIVOICE_TRAILING_SILENCE_MIN_MS = 120
+OMNIVOICE_TRAILING_SILENCE_THRESHOLD_DB = -42
 STEP3_AUTO_RATE_ENABLED = True
 TRANSLATION_CONTEXT = ""  # Custom translation context for Gemini prompt
 STEP3_AUTO_RATE_TRIGGER_CHARS_PER_SEC = 14.0
@@ -2387,466 +2410,50 @@ def step2_translate_srt(srt_path):
 # ==============================
 # STEP 3
 # TTS generate voice directly from SRT (chunked)
+# ViXTTS + Edge: step3_vixtts_edge.py
 # ==============================
 
-_vixtts_model_singleton = None
-_vixtts_model_dir_loaded = None
 
-
-def _vixtts_parse_torch_major_minor(version_str):
-    """Parse (major, minor) from e.g. '2.10.0+cu128'; None if unparsable."""
-    if not version_str:
-        return None
-    base = str(version_str).split("+", 1)[0].strip()
-    parts = base.split(".")
-    try:
-        major = int(parts[0])
-        minor = int(parts[1]) if len(parts) > 1 else 0
-        return major, minor
-    except (ValueError, IndexError):
-        return None
-
-
-def _vixtts_warn_if_torchcodec_prone():
-    """PyTorch 2.9+ often pulls torchcodec; log a hint before ViXTTS work."""
-    try:
-        import torch
-
-        mm = _vixtts_parse_torch_major_minor(getattr(torch, "__version__", "") or "")
-        if mm is None:
-            return
-        major, minor = mm
-        if major > 2 or (major == 2 and minor >= 9):
-            log(
-                "ViXTTS: PyTorch %s — nếu gặp lỗi libtorchcodec, pin torch/torchaudio<2.9 "
-                "theo tools/video-pipeline/requirements.txt, hoặc cài FFmpeg full-shared (Windows) "
-                "và TorchCodec đúng bảng tương thích PyTorch."
-                % (torch.__version__,)
-            )
-    except Exception:
-        pass
-
-
-def _vixtts_reraise_torchcodec_clarified(exc):
-    """Replace opaque torchcodec load errors with pipeline-specific remediation."""
-    err_l = str(exc).lower()
-    if "torchcodec" in err_l or "libtorchcodec" in err_l:
-        raise RuntimeError(
-            "ViXTTS / Step3: không tải được libtorchcodec (TorchCodec). "
-            "PyTorch 2.9+ thường kích hoạt torchaudio/TorchCodec và cần FFmpeg shared + DLL đúng (Windows: bản full-shared). "
-            "Cách ổn định cho repo này: cài đúng tools/video-pipeline/requirements.txt — "
-            'pip install -U "torch>=2.2,<2.9" "torchaudio>=2.2,<2.9" '
-            "(chọn --index-url wheel CUDA phù hợp nếu dùng GPU). "
-            "Hoặc làm theo bảng phiên bản TorchCodec: "
-            "https://github.com/pytorch/torchcodec#installing-torchcodec\n"
-            f"--- Lỗi gốc ---\n{exc}"
-        ) from exc
-    raise exc
-
-
-def _vixtts_calculate_keep_len(text, lang):
-    """Giới hạn độ dài wav cho câu tiếng Việt rất ngắn (theo gợi ý viXTTS). -1 = không cắt."""
-    if lang in ("ja", "zh-cn", "zh"):
-        return -1
-    word_count = len(str(text or "").split())
-    num_punct = str(text or "").count(".") + str(text or "").count("!")
-    num_punct += str(text or "").count("?") + str(text or "").count(",")
-    if word_count < 5:
-        return 15000 * word_count + 2000 * num_punct
-    if word_count < 10:
-        return 13000 * word_count + 2000 * num_punct
-    return -1
-
-
-def _vixtts_normalize_text_vi(text):
-    if not VIXTTS_NORMALIZE_TEXT:
-        return text
-    try:
-        from vinorm import TTSnorm
-    except ImportError:
-        return text
-    t = (
-        TTSnorm(str(text or ""), unknown=False, lower=False, rule=True)
-        .replace("..", "")
-        .replace("...", "")
-        .replace("!.", "")
-        .replace("?.", "")
-        .replace(" .", "")
-        .replace(" ,", "")
-        .replace('"', "")
-        .replace("'", "")
-        .replace("AI", "Ây Ai")
-        .replace("A.I", "Ây Ai")
-    )
-    return t
-
-
-def _vixtts_sentence_split(text, lang):
-    t = str(text or "").strip()
-    if not t:
-        return []
-    if lang in ("ja", "zh-cn", "zh"):
-        return [s for s in t.split("。") if s.strip()]
-    try:
-        from underthesea import sent_tokenize
-
-        return [s for s in sent_tokenize(t) if str(s).strip()]
-    except Exception:
-        return [t]
-
-
-def _vixtts_prepare_speaker_reference(speaker_in: Path, cache_dir: Path) -> Path:
-    """Trả về đường dẫn WAV dùng cho conditioning: .wav giữ nguyên; mp3/m4a/… convert ffmpeg."""
-    p = Path(speaker_in).expanduser().resolve()
-    if not p.is_file():
-        raise FileNotFoundError(f"ViXTTS: không tìm thấy file giọng mẫu: {p}")
-    suf = p.suffix.lower()
-    if suf == ".wav":
-        return p
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    out_wav = cache_dir / "vixtts_speaker_ref_converted.wav"
-    run_command(
-        [
-            FFMPEG_BIN,
-            "-y",
-            "-i",
-            str(p),
-            "-ac",
-            "1",
-            "-ar",
-            "24000",
-            "-c:a",
-            "pcm_s16le",
-            str(out_wav),
-        ],
-        f"ViXTTS: chuyển giọng mẫu {p.suffix} → WAV 24kHz mono",
-    )
-    return out_wav.resolve()
-
-
-def _vixtts_ensure_speakers_xtts(model_dir: Path):
-    """Checkpoint HF Viet-xtts-v2 thường thiếu speakers_xtts.pth — lấy từ coqui/XTTS-v2."""
-    target = model_dir / "speakers_xtts.pth"
-    if target.is_file():
-        return target
-    try:
-        from huggingface_hub import hf_hub_download
-    except ImportError as e:
-        raise RuntimeError(
-            "ViXTTS: thiếu speakers_xtts.pth trong model dir và không cài huggingface_hub "
-            "(pip install huggingface_hub)."
-        ) from e
-    log("ViXTTS: tải speakers_xtts.pth từ coqui/XTTS-v2…")
-    hf_hub_download(
-        repo_id="coqui/XTTS-v2",
-        filename="speakers_xtts.pth",
-        local_dir=str(model_dir),
-    )
-    if not target.is_file():
-        raise FileNotFoundError(f"ViXTTS: không tạo được {target}")
-    return target
-
-
-def _vixtts_patch_tokenizer_char_limits(model):
-    """
-    inference(enable_text_splitting=True) dùng tokenizer.char_limits[language].
-    Coqui gốc chỉ liệt kê ~16 ngôn ngữ; checkpoint ViXTTS thêm 'vi' trong config.languages
-    nhưng char_limits thiếu → KeyError 'vi'. Điền thiếu từ config, fallback en/zh.
-    """
-    tok = getattr(model, "tokenizer", None)
-    limits = getattr(tok, "char_limits", None)
-    if not isinstance(limits, dict):
-        return
-    cfg = getattr(model, "config", None)
-    langs = list(getattr(cfg, "languages", None) or [])
-    fallback = int(limits.get("en", 250))
-    for lg in langs:
-        if not lg:
-            continue
-        lg = str(lg).strip()
-        if lg in limits:
-            continue
-        root = lg.split("-", 1)[0]
-        pick = limits.get(root)
-        if pick is None and root == "zh":
-            pick = limits.get("zh")
-        if pick is None:
-            pick = fallback
-        limits[lg] = int(pick)
-
-
-def _vixtts_basic_text_clean(txt):
-    """Giống Coqui basic_cleaners (lowercase + gộp khoảng trắng); không import từ TTS (một số bản không export)."""
-    t = str(txt or "").lower()
-    t = re.sub(r"\s+", " ", t)
-    return t.strip()
-
-
-def _vixtts_patch_tokenizer_preprocess(model):
-    """
-    encode(..., lang=…) gọi preprocess_text → multilingual_cleaners dùng _ordinal_re[lang],
-    _abbreviations[lang], … — bản Coqui gốc không có 'vi' → KeyError 'vi' dù đã tắt text splitting.
-    Với mọi mã có trong config.languages nhưng không thuộc bộ cleaner đầy đủ của Coqui, dùng _vixtts_basic_text_clean
-    (lowercase + gộp khoảng trắng); chuỗi vẫn được bọc [vi] trong encode().
-    """
-    if getattr(model, "_vixtts_preprocess_patched", False):
-        return
-    tok = getattr(model, "tokenizer", None)
-    if tok is None:
-        return
-    from types import MethodType
-
-    cfg = getattr(model, "config", None)
-    extra = {
-        str(x).strip().split("-", 1)[0]
-        for x in (getattr(cfg, "languages", None) or [])
-        if x and str(x).strip()
-    }
-    # Các mã Coqui xử lý sẵn trong VoiceBpeTokenizer.preprocess_text (kể cả ja, hi).
-    stock_full = {
-        "ar",
-        "cs",
-        "de",
-        "en",
-        "es",
-        "fr",
-        "hu",
-        "it",
-        "ja",
-        "hi",
-        "nl",
-        "pl",
-        "pt",
-        "ru",
-        "tr",
-        "zh",
-        "ko",
-    }
-    orig = type(tok).preprocess_text
-
-    def preprocess_text(self, txt, lang):
-        lang0 = str(lang).split("-", 1)[0]
-        if lang0 in extra and lang0 not in stock_full:
-            return _vixtts_basic_text_clean(txt)
-        return orig(self, txt, lang)
-
-    tok.preprocess_text = MethodType(preprocess_text, tok)
-    model._vixtts_preprocess_patched = True
-
-
-def _vixtts_inference_accepts_speed(model):
-    import inspect
-
-    try:
-        sig = inspect.signature(model.inference)
-        return "speed" in sig.parameters
-    except (TypeError, ValueError, AttributeError):
-        return False
-
-
-def _vixtts_apply_speed_timeline_numpy(wav, speed):
-    """
-    speed > 1 => âm ngắn hơn (tương đương ý Xtts: length_scale = 1/speed trên latent).
-    Dùng khi model.inference không có tham số speed hoặc gọi speed=… bị lỗi.
-    """
-    import numpy as np
-    import torch
-    import torch.nn.functional as F
-
-    if wav is None or speed <= 0 or abs(float(speed) - 1.0) < 1e-6:
-        return wav
-    arr = np.asarray(wav, dtype=np.float32).reshape(-1)
-    if arr.size == 0:
-        return wav
-    new_len = max(1, int(round(arr.size / float(speed))))
-    t = torch.from_numpy(arr).view(1, 1, -1)
-    out = F.interpolate(t, size=new_len, mode="linear", align_corners=False)
-    return out.squeeze().numpy()
-
-
-def _vixtts_apply_pitch_shift_wav_ffmpeg(in_wav: Path, semitones: float) -> None:
-    """
-    Pitch-shift WAV with FFmpeg while approximately preserving duration.
-    Using asetrate -> aresample -> atempo keeps timeline stable for Step3.
-    """
-    st = float(semitones)
-    if abs(st) < 1e-6:
-        return
-    factor = 2.0 ** (st / 12.0)
-    # atempo valid range is [0.5, 2.0], so clamp safe semitone range.
-    if factor <= 0.5 or factor >= 2.0:
-        raise ValueError(
-            "ViXTTS pitch shift ngoài khoảng hỗ trợ (-12..+12 semitones cho filter atempo)."
-        )
-    tmp = in_wav.with_name(f"{in_wav.stem}.pitch_tmp.wav")
-    af = (
-        f"asetrate=24000*{factor:.8f},"
-        f"aresample=24000,"
-        f"atempo={1.0 / factor:.8f}"
-    )
-    run_command(
-        [
-            FFMPEG_BIN,
-            "-y",
-            "-i",
-            str(in_wav),
-            "-af",
-            af,
-            "-c:a",
-            "pcm_s16le",
-            str(tmp),
-        ],
-        "ViXTTS: pitch-shift output wav",
-    )
-    tmp.replace(in_wav)
-
-
-def _vixtts_load_model(model_dir: Path, use_deepspeed: bool):
-    global _vixtts_model_singleton, _vixtts_model_dir_loaded
+def _omnivoice_resolve_device_map(raw: str) -> str:
+    r = str(raw or "").strip()
+    if r:
+        return r
     import torch
 
-    d = str(model_dir.resolve())
-    if _vixtts_model_singleton is not None and _vixtts_model_dir_loaded == d:
-        return _vixtts_model_singleton
-    try:
-        from TTS.tts.configs.xtts_config import XttsConfig
-        from TTS.tts.models.xtts import Xtts
-    except ImportError as e:
-        raise RuntimeError(
-            "ViXTTS cần gói Coqui TTS (pip install coqui-tts). "
-            "Một số checkpoint có thể cần fork TTS tương thích — xem model card."
-        ) from e
-    except Exception as e:
-        _vixtts_reraise_torchcodec_clarified(e)
-    for name in ("model.pth", "config.json", "vocab.json"):
-        p = model_dir / name
-        if not p.is_file():
-            raise FileNotFoundError(f"ViXTTS: thiếu file trong model dir: {p}")
-    _vixtts_ensure_speakers_xtts(model_dir)
-    cfg_path = model_dir / "config.json"
-    config = XttsConfig()
-    config.load_json(str(cfg_path))
-    model = Xtts.init_from_config(config)
-    model.load_checkpoint(
-        config, checkpoint_dir=str(model_dir), use_deepspeed=bool(use_deepspeed)
-    )
-    _vixtts_patch_tokenizer_char_limits(model)
-    _vixtts_patch_tokenizer_preprocess(model)
-
-    ok_sp = _vixtts_inference_accepts_speed(model)
-    model._vixtts_inference_accepts_speed_param = ok_sp
-    sp0 = float(VIXTTS_INFERENCE_SPEED)
-    if abs(sp0 - 1.0) > 1e-6:
-        if ok_sp:
-            log(f"ViXTTS: model.inference có tham số speed — đang dùng speed={sp0}.")
-        else:
-            log(
-                f"ViXTTS: model.inference không có speed — áp dụng ×{sp0} bằng nội suy sóng sau sinh."
-            )
-
-    if torch.cuda.is_available():
-        model.cuda()
-        log("ViXTTS: dùng CUDA.")
-    else:
-        log("ViXTTS: CUDA không có — chạy CPU (chậm).")
-    _vixtts_model_singleton = model
-    _vixtts_model_dir_loaded = d
-    return model
-
-
-def _vixtts_synthesize_to_file(
-    model,
-    text,
-    lang,
-    out_wav: Path,
-    gpt_cond_latent,
-    speaker_embedding,
-):
-    import torch
-
-    try:
-        import torchaudio
-    except Exception as e:
-        _vixtts_reraise_torchcodec_clarified(e)
-
-    tts_text = str(text or "").strip()
-    if lang == "vi" and VIXTTS_NORMALIZE_TEXT:
-        tts_text = _vixtts_normalize_text_vi(tts_text)
-    # ViXTTS: luôn lowercase nội dung trước khi inference (ổn định phát âm, không thêm cờ cấu hình).
-    tts_text = str(tts_text or "").lower()
-    sentences = _vixtts_sentence_split(tts_text, lang)
-    if not sentences:
-        raise ValueError("ViXTTS: text rỗng sau tách câu.")
-    wav_chunks = []
-    for sentence in sentences:
-        st = str(sentence).strip()
-        if not st:
-            continue
-
-        infer_kwargs = dict(
-            text=st,
-            language=lang,
-            gpt_cond_latent=gpt_cond_latent,
-            speaker_embedding=speaker_embedding,
-            # Sampling "vừa phải" giúp giữ chất giọng ổn định nhưng bớt phát âm cứng/sai vần.
-            temperature=0.6,
-            length_penalty=1.0,
-            repetition_penalty=2.2,
-            top_k=50,
-            top_p=0.9,
-            # Đã tách câu ở _vixtts_sentence_split; bật True cần char_limits[lang] (vd. thiếu 'vi' trên bản Coqui cũ).
-            enable_text_splitting=False,
-        )
-        accepts = getattr(model, "_vixtts_inference_accepts_speed_param", None)
-        if accepts is None:
-            accepts = _vixtts_inference_accepts_speed(model)
-            model._vixtts_inference_accepts_speed_param = accepts
-
-        sp = float(VIXTTS_INFERENCE_SPEED)
-        used_api_speed = False
-        if accepts and abs(sp - 1.0) > 1e-6:
-            try:
-                wav_chunk = model.inference(**infer_kwargs, speed=sp)
-                used_api_speed = True
-            except TypeError as e:
-                log(f"ViXTTS: inference(speed={sp}) lỗi ({e}); nội suy sóng.")
-                wav_chunk = model.inference(**infer_kwargs)
-        else:
-            wav_chunk = model.inference(**infer_kwargs)
-
-        wav = wav_chunk["wav"]
-        if not used_api_speed and abs(sp - 1.0) > 1e-6:
-            wav = _vixtts_apply_speed_timeline_numpy(wav, sp)
-        keep_len = _vixtts_calculate_keep_len(st, lang)
-        if keep_len is not None and int(keep_len) > 0:
-            wav = wav[: int(keep_len)]
-        wav_chunks.append(torch.tensor(wav, dtype=torch.float32))
-    if not wav_chunks:
-        raise ValueError("ViXTTS: không sinh được chunk âm thanh.")
-    wave_tensor = torch.cat(wav_chunks, dim=0).unsqueeze(0)
-    gain = float(VIXTTS_OUTPUT_VOLUME_GAIN)
-    if gain > 0.0 and gain != 1.0:
-        wave_tensor = (wave_tensor * gain).clamp(-1.0, 1.0)
-    out_wav.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        torchaudio.save(str(out_wav), wave_tensor, 24000)
-    except Exception as e:
-        _vixtts_reraise_torchcodec_clarified(e)
-    semitones = float(VIXTTS_PITCH_SHIFT_SEMITONES)
-    if abs(semitones) > 1e-6:
-        _vixtts_apply_pitch_shift_wav_ffmpeg(out_wav, semitones)
+    return "cuda:0" if torch.cuda.is_available() else "cpu"
 
 
 def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
-    use_vixtts = str(STEP3_TTS_ENGINE or "vixtts").strip().lower() == "vixtts"
+    eng = str(STEP3_TTS_ENGINE or "vixtts").strip().lower()
+    if eng not in ("edge", "vixtts", "omnivoice"):
+        raise ValueError(f"Step3: --step3-tts-engine không hợp lệ: {eng!r}")
+    use_vixtts = eng == "vixtts"
+    use_omnivoice = eng == "omnivoice"
+    use_edge = eng == "edge"
     vixtts_model = None
     vixtts_lang = "vi"
     vixtts_latents = None
     vixtts_spk = None
+    omni_ref_prepared = None
+    omni_device = None
+
+    configure_step3_vixtts_edge(
+        log=log,
+        run_command=run_command,
+        ffmpeg_bin=FFMPEG_BIN,
+        vixtts_normalize_text=VIXTTS_NORMALIZE_TEXT,
+        vixtts_inference_speed=VIXTTS_INFERENCE_SPEED,
+        vixtts_output_volume_gain=VIXTTS_OUTPUT_VOLUME_GAIN,
+        vixtts_pitch_shift_semitones=VIXTTS_PITCH_SHIFT_SEMITONES,
+        edge_tts_voice=EDGE_TTS_VOICE,
+        edge_tts_volume=EDGE_TTS_VOLUME,
+        edge_tts_pitch=EDGE_TTS_PITCH,
+        step3_tts_api_timeout_sec=STEP3_TTS_API_TIMEOUT_SEC,
+    )
 
     if use_vixtts:
         log("Step3: ViXTTS / XTTS-vi (timeline SRT)…")
-        _vixtts_warn_if_torchcodec_prone()
+        warn_if_vixtts_torchcodec_prone()
         md = Path(str(VIXTTS_MODEL_DIR or "").strip()).expanduser()
         vixtts_spk = Path(str(VIXTTS_SPEAKER_WAV or "").strip()).expanduser()
         if not str(VIXTTS_MODEL_DIR or "").strip():
@@ -2859,8 +2466,8 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
             )
         LOG_DIR.mkdir(parents=True, exist_ok=True)
         vixtts_spk_orig = vixtts_spk.name
-        vixtts_spk = _vixtts_prepare_speaker_reference(vixtts_spk, LOG_DIR)
-        vixtts_model = _vixtts_load_model(md, VIXTTS_USE_DEEPSPEED)
+        vixtts_spk = prepare_speaker_reference(vixtts_spk, LOG_DIR)
+        vixtts_model = vixtts_load_model(md, VIXTTS_USE_DEEPSPEED)
         vixtts_lang = str(VIXTTS_LANG or "vi").strip() or "vi"
         vixtts_latents = vixtts_model.get_conditioning_latents(
             audio_path=str(vixtts_spk),
@@ -2872,29 +2479,35 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
             "ViXTTS: đã tính conditioning từ giọng mẫu "
             f"{vixtts_spk_orig} → {vixtts_spk.name}"
         )
-    else:
-        log("Step3: edge-tts (timeline SRT)…")
-        import edge_tts
+    elif use_omnivoice:
+        log("Step3: OmniVoice Vietnamese (timeline SRT)…")
+        from omnivoice_tts import ensure_voice_clone_prompt
 
-        async def _generate_edge_tts_mp3(text, out_path, rate):
-            communicate = edge_tts.Communicate(
-                text=text,
-                voice=EDGE_TTS_VOICE,
-                rate=rate,
-                volume=EDGE_TTS_VOLUME,
-                pitch=EDGE_TTS_PITCH,
+        _omni_mid = str(OMNIVOICE_MODEL_ID or "").strip()
+        if not _omni_mid:
+            raise ValueError("OmniVoice: cần --omnivoice-model-id (HF repo id).")
+        spk = Path(str(OMNIVOICE_REF_WAV or "").strip()).expanduser()
+        if not str(OMNIVOICE_REF_WAV or "").strip() or not spk.is_file():
+            raise FileNotFoundError(
+                f"OmniVoice: cần --omnivoice-ref-wav (giọng mẫu): {spk}"
             )
-            out = str(out_path)
-            timeout_sec = float(STEP3_TTS_API_TIMEOUT_SEC)
-            if timeout_sec <= 0:
-                await communicate.save(out)
-            else:
-                try:
-                    await asyncio.wait_for(communicate.save(out), timeout=timeout_sec)
-                except asyncio.TimeoutError as exc:
-                    raise TimeoutError(
-                        f"edge-tts request timed out after {timeout_sec:.1f}s"
-                    ) from exc
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        omni_ref_prepared = prepare_speaker_reference(spk, LOG_DIR)
+        omni_device = _omnivoice_resolve_device_map(str(OMNIVOICE_DEVICE_MAP or ""))
+        ensure_voice_clone_prompt(
+            ref_audio=omni_ref_prepared,
+            ref_text=str(OMNIVOICE_REF_TEXT or ""),
+            model_id=_omni_mid,
+            device_map=omni_device,
+            dtype_str=str(OMNIVOICE_DTYPE or "float16").strip() or "float16",
+        )
+        log(
+            "OmniVoice: đã tạo voice clone prompt từ "
+            f"{spk.name} → {Path(omni_ref_prepared).name} (device={omni_device})"
+        )
+    else:
+        assert use_edge
+        log("Step3: edge-tts (timeline SRT)…")
 
     with open(srt_path, encoding="utf8") as f:
         blocks = parse_srt(f.read())
@@ -2987,7 +2600,7 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
             )
             continue
 
-        raw_ext = "wav" if use_vixtts else "mp3"
+        raw_ext = "wav" if (use_vixtts or use_omnivoice) else "mp3"
         raw_audio_path = chunk_dir / f"raw_{i:04d}.{raw_ext}"
         final_seg_path = chunk_dir / f"part_{i:04d}.wav"
 
@@ -3010,7 +2623,7 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
             if sleep_ms > 0:
                 time.sleep(sleep_ms / 1000.0)
             if use_vixtts:
-                _vixtts_synthesize_to_file(
+                vixtts_synthesize_to_file(
                     vixtts_model,
                     subtitle_text,
                     vixtts_lang,
@@ -3018,10 +2631,28 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
                     gpt_lat,
                     spk_emb,
                 )
-            else:
-                asyncio.run(
-                    _generate_edge_tts_mp3(subtitle_text, raw_audio_path, rate)
+            elif use_omnivoice:
+                from omnivoice_tts import synthesize_to_wav
+
+                tts_omni = tts_normalize_vi(subtitle_text, OMNIVOICE_NORMALIZE_TEXT)
+                tts_omni = str(tts_omni or "").lower()
+                ns = int(OMNIVOICE_NUM_STEP)
+                gs = float(OMNIVOICE_GUIDANCE_SCALE)
+                synthesize_to_wav(
+                    text=tts_omni,
+                    out_wav=raw_audio_path,
+                    ref_audio=omni_ref_prepared,
+                    ref_text=str(OMNIVOICE_REF_TEXT or ""),
+                    model_id=str(OMNIVOICE_MODEL_ID or "").strip(),
+                    device_map=omni_device,
+                    dtype_str=str(OMNIVOICE_DTYPE or "float16").strip() or "float16",
+                    language=str(OMNIVOICE_LANGUAGE or "vietnamese").strip()
+                    or "vietnamese",
+                    num_step=ns if ns > 0 else None,
+                    guidance_scale=gs if ns > 0 else None,
                 )
+            else:
+                run_edge_tts_mp3_save(subtitle_text, raw_audio_path, rate)
 
         tts_rate, _ = resolve_dynamic_tts_rate(subtitle_text, subtitle_duration_ms)
         subtitle_idx = block.get("index", i + 1)
@@ -3050,6 +2681,7 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
         raw_segment_ms = get_media_duration_ms(raw_audio_path)
         if (
             (not use_vixtts)
+            and (not use_omnivoice)
             and STEP3_AUTO_RATE_ENABLED
             and raw_segment_ms
             and subtitle_duration_ms > 220
@@ -3102,6 +2734,14 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
         if use_vixtts and VIXTTS_TRIM_TRAILING_SILENCE:
             stop_dur = max(0.02, float(VIXTTS_TRAILING_SILENCE_MIN_MS) / 1000.0)
             stop_thr = float(VIXTTS_TRAILING_SILENCE_THRESHOLD_DB)
+            fit_filters.append(
+                f"silenceremove=stop_periods=-1:stop_duration={stop_dur:.3f}:stop_threshold={stop_thr:.1f}dB"
+            )
+        elif use_omnivoice and OMNIVOICE_TRIM_TRAILING_SILENCE:
+            stop_dur = max(
+                0.02, float(OMNIVOICE_TRAILING_SILENCE_MIN_MS) / 1000.0
+            )
+            stop_thr = float(OMNIVOICE_TRAILING_SILENCE_THRESHOLD_DB)
             fit_filters.append(
                 f"silenceremove=stop_periods=-1:stop_duration={stop_dur:.3f}:stop_threshold={stop_thr:.1f}dB"
             )
@@ -3840,9 +3480,9 @@ def parse_cli_args():
     parser.add_argument("--edge-tts-pitch", default=EDGE_TTS_PITCH)
     parser.add_argument(
         "--step3-tts-engine",
-        choices=["edge", "vixtts"],
+        choices=["edge", "vixtts", "omnivoice"],
         default=STEP3_TTS_ENGINE,
-        help="Mặc định vixtts. edge=Microsoft Edge TTS; vixtts=local XTTS (model/speaker mặc định thư mục voice/ cạnh script).",
+        help="edge=Edge TTS; vixtts=Coqui XTTS local; omnivoice=OmniVoice Vi (pip install omnivoice, khuyến nghị GPU).",
     )
     parser.add_argument(
         "--vixtts-model-dir",
@@ -3888,6 +3528,54 @@ def parse_cli_args():
         type=float,
         default=VIXTTS_OUTPUT_VOLUME_GAIN,
         help="Gain output WAV của ViXTTS trước khi lưu (1.0=giữ nguyên, 1.3~1.6 thường đủ lớn; quá cao dễ clip).",
+    )
+    parser.add_argument(
+        "--omnivoice-model-id",
+        default=OMNIVOICE_MODEL_ID,
+        help="HF model id (mặc định splendor1811/omnivoice-vietnamese).",
+    )
+    parser.add_argument(
+        "--omnivoice-ref-wav",
+        default=OMNIVOICE_REF_WAV,
+        help="File giọng mẫu cho OmniVoice (WAV/mp3/…; tự convert trong logs/ giống ViXTTS).",
+    )
+    parser.add_argument(
+        "--omnivoice-ref-text",
+        default=OMNIVOICE_REF_TEXT,
+        help="Transcript khớp giọng mẫu (bắt buộc cho chất lượng clone; xem HF model card).",
+    )
+    parser.add_argument(
+        "--omnivoice-device-map",
+        default=OMNIVOICE_DEVICE_MAP,
+        help="Rỗng=tự chọn cuda:0 hoặc cpu; hoặc ví dụ cuda:0, cpu.",
+    )
+    parser.add_argument(
+        "--omnivoice-dtype",
+        default=OMNIVOICE_DTYPE,
+        help="float16 | float32 | bfloat16 (CPU thường ổn hơn với float32).",
+    )
+    parser.add_argument(
+        "--omnivoice-language",
+        default=OMNIVOICE_LANGUAGE,
+        help="Tham số language cho model.generate (mặc định vietnamese).",
+    )
+    parser.add_argument(
+        "--omnivoice-num-step",
+        type=int,
+        default=OMNIVOICE_NUM_STEP,
+        help="Diffusion steps (0=dùng mặc định thư viện, không truyền OmniVoiceGenerationConfig).",
+    )
+    parser.add_argument(
+        "--omnivoice-guidance-scale",
+        type=float,
+        default=OMNIVOICE_GUIDANCE_SCALE,
+        help="Guidance scale khi dùng OmniVoiceGenerationConfig (cùng --omnivoice-num-step > 0).",
+    )
+    parser.add_argument(
+        "--omnivoice-normalize-text",
+        choices=["on", "off"],
+        default="on" if OMNIVOICE_NORMALIZE_TEXT else "off",
+        help="Chuẩn hoá tiếng Việt với vinorm trước khi đọc (cần pip install vinorm).",
     )
     parser.add_argument(
         "--auto-speed",
@@ -4017,6 +3705,15 @@ def apply_cli_config(args):
     global VIXTTS_INFERENCE_SPEED
     global VIXTTS_PITCH_SHIFT_SEMITONES
     global VIXTTS_OUTPUT_VOLUME_GAIN
+    global OMNIVOICE_MODEL_ID
+    global OMNIVOICE_REF_WAV
+    global OMNIVOICE_REF_TEXT
+    global OMNIVOICE_DEVICE_MAP
+    global OMNIVOICE_DTYPE
+    global OMNIVOICE_LANGUAGE
+    global OMNIVOICE_NUM_STEP
+    global OMNIVOICE_GUIDANCE_SCALE
+    global OMNIVOICE_NORMALIZE_TEXT
     global STEP3_AUTO_RATE_ENABLED
     global STEP3_AUTO_RATE_TRIGGER_CHARS_PER_SEC
     global STEP3_AUTO_RATE_BONUS_PERCENT
@@ -4124,6 +3821,15 @@ def apply_cli_config(args):
         -12.0, min(12.0, float(args.vixtts_pitch_shift_semitones))
     )
     VIXTTS_OUTPUT_VOLUME_GAIN = max(0.0, float(args.vixtts_output_volume_gain))
+    OMNIVOICE_MODEL_ID = str(args.omnivoice_model_id or "").strip()
+    OMNIVOICE_REF_WAV = str(args.omnivoice_ref_wav or "").strip()
+    OMNIVOICE_REF_TEXT = str(args.omnivoice_ref_text or "")
+    OMNIVOICE_DEVICE_MAP = str(args.omnivoice_device_map or "")
+    OMNIVOICE_DTYPE = str(args.omnivoice_dtype or "float16").strip() or "float16"
+    OMNIVOICE_LANGUAGE = str(args.omnivoice_language or "vietnamese").strip() or "vietnamese"
+    OMNIVOICE_NUM_STEP = int(args.omnivoice_num_step)
+    OMNIVOICE_GUIDANCE_SCALE = float(args.omnivoice_guidance_scale)
+    OMNIVOICE_NORMALIZE_TEXT = args.omnivoice_normalize_text == "on"
     STEP3_AUTO_RATE_ENABLED = args.auto_speed == "on"
     STEP3_AUTO_RATE_TRIGGER_CHARS_PER_SEC = float(args.step3_auto_rate_trigger_cps)
     STEP3_AUTO_RATE_BONUS_PERCENT = int(args.step3_auto_rate_bonus_percent)

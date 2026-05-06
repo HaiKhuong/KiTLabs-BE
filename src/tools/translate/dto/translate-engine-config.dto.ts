@@ -285,13 +285,13 @@ export class TranslateEngineConfigDto {
   @IsString()
   edge_tts_pitch?: string;
 
-  /** edge | vixtts */
+  /** edge | vixtts | omnivoice */
   @IsOptional()
-  @IsIn(["edge", "vixtts"])
+  @IsIn(["edge", "vixtts", "omnivoice"])
   step3TtsEngine?: string;
 
   @IsOptional()
-  @IsIn(["edge", "vixtts"])
+  @IsIn(["edge", "vixtts", "omnivoice"])
   step3_tts_engine?: string;
 
   @IsOptional()
@@ -333,6 +333,82 @@ export class TranslateEngineConfigDto {
   @IsOptional()
   @IsIn(["on", "off"])
   vixtts_normalize_text?: string;
+
+  @IsOptional()
+  @IsString()
+  omnivoiceModelId?: string;
+
+  @IsOptional()
+  @IsString()
+  omnivoice_model_id?: string;
+
+  @IsOptional()
+  @IsString()
+  omnivoiceRefWav?: string;
+
+  @IsOptional()
+  @IsString()
+  omnivoice_ref_wav?: string;
+
+  @IsOptional()
+  @IsString()
+  omnivoiceRefText?: string;
+
+  @IsOptional()
+  @IsString()
+  omnivoice_ref_text?: string;
+
+  @IsOptional()
+  @IsString()
+  omnivoiceDeviceMap?: string;
+
+  @IsOptional()
+  @IsString()
+  omnivoice_device_map?: string;
+
+  @IsOptional()
+  @IsString()
+  omnivoiceDtype?: string;
+
+  @IsOptional()
+  @IsString()
+  omnivoice_dtype?: string;
+
+  @IsOptional()
+  @IsString()
+  omnivoiceLanguage?: string;
+
+  @IsOptional()
+  @IsString()
+  omnivoice_language?: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  omnivoiceNumStep?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  omnivoice_num_step?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  omnivoiceGuidanceScale?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  omnivoice_guidance_scale?: number;
+
+  @IsOptional()
+  @IsIn(["on", "off"])
+  omnivoiceNormalizeText?: string;
+
+  @IsOptional()
+  @IsIn(["on", "off"])
+  omnivoice_normalize_text?: string;
 
   @IsOptional()
   @IsString()
