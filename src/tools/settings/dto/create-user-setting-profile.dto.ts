@@ -1,5 +1,5 @@
 import { ApiProperty } from "@nestjs/swagger";
-import { IsBoolean, IsOptional, IsString } from "class-validator";
+import { IsBoolean, IsOptional, IsString, IsUrl } from "class-validator";
 
 export class CreateUserSettingProfileDto {
   @ApiProperty({ example: "user-uuid" })
@@ -18,4 +18,9 @@ export class CreateUserSettingProfileDto {
   @IsOptional()
   @IsBoolean()
   isDefault?: boolean;
+
+  @ApiProperty({ example: "https://example.com/profile", required: false })
+  @IsOptional()
+  @IsUrl()
+  directUrl?: string;
 }

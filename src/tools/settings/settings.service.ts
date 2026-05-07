@@ -2,7 +2,6 @@ import { BadRequestException, Injectable } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Repository } from "typeorm";
 
-import { User } from "../users/user.entity";
 import { CreateUserSettingProfileDto } from "./dto/create-user-setting-profile.dto";
 import { UpsertSettingDto } from "./dto/upsert-setting.dto";
 import { UpsertUserSettingDto } from "./dto/upsert-user-setting.dto";
@@ -19,8 +18,6 @@ export class SettingsService {
     private readonly userSettingRepository: Repository<UserSetting>,
     @InjectRepository(UserSettingProfile, "tool")
     private readonly userSettingProfileRepository: Repository<UserSettingProfile>,
-    @InjectRepository(User, "tool")
-    private readonly userRepository: Repository<User>,
   ) {}
 
   async upsertSetting(dto: UpsertSettingDto): Promise<Setting> {
@@ -35,9 +32,8 @@ export class SettingsService {
   }
 
   async upsertUserSetting(dto: UpsertUserSettingDto): Promise<UserSetting> {
-    const user = await this.userRepository.findOne({ where: { id: dto.userId } });
-    if (!user) {
-      throw new BadRequestException("User not found");
+    if (!dto.userId?.trim()) {
+      throw new BadRequestException("userId is required");
     }
 
     const profile = await this.resolveProfile(dto.userId, dto.type, dto.profileId);
@@ -122,12 +118,12 @@ export class SettingsService {
   }
 
   async createUserSettingProfile(dto: CreateUserSettingProfileDto): Promise<UserSettingProfile> {
-    const user = await this.userRepository.findOne({ where: { id: dto.userId } });
-    if (!user) {
-      throw new BadRequestException("User not found");
+    if (!dto.userId?.trim()) {
+      throw new BadRequestException("userId is required");
     }
 
     const name = dto.name.trim();
+    const directUrl = dto.directUrl?.trim() || undefined;
     if (!name) {
       throw new BadRequestException("Profile name is required");
     }
@@ -152,6 +148,7 @@ export class SettingsService {
         type: dto.type,
         name,
         isDefault: dto.isDefault ?? false,
+        directUrl,
       }),
     );
   }
