@@ -338,11 +338,12 @@ def mask_secret(secret, show_prefix=4, show_suffix=4):
 # ==============================
 
 
-def log(message):
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
-    line = f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {message}"
-    with open(LOG_PATH, "a", encoding="utf8") as f:
-        f.write(line + "\n")
+def log(message, *, write_file=True):
+    if write_file:
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        line = f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {message}"
+        with open(LOG_PATH, "a", encoding="utf8") as f:
+            f.write(line + "\n")
     try:
         print(message)
     except UnicodeEncodeError:
@@ -364,7 +365,11 @@ def progressbar(iterable, **kwargs):
 def emit_db_status(step_no, state, message=""):
     """Structured status marker for backend parser."""
     clean_message = str(message or "").replace("\n", " ").strip()
-    log(f"DB_STATUS|step={int(step_no)}|state={state}|message={clean_message}")
+    # Chỉ stdout cho parser BE; không pollute pipeline.log.
+    log(
+        f"DB_STATUS|step={int(step_no)}|state={state}|message={clean_message}",
+        write_file=False,
+    )
 
 
 def file_ready(path):
