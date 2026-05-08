@@ -427,20 +427,6 @@ export class TranslateProcessor extends WorkerHost {
           }
         };
 
-        const handleRuntimeStatus = (chunk: string) => {
-          const matches = [
-            ...chunk.matchAll(/DB_STATUS\|step=(\d+)\|state=(running|completed|failed)\|message=([^\r\n]*)/g),
-          ];
-          for (const matched of matches) {
-            const step = Number(matched[1]);
-            const state = matched[2] as "running" | "completed" | "failed";
-            const message = (matched[3] ?? "").trim();
-            void this.translateService
-              .processRuntimeStatus(input.translateHistoryId, { step, state, message })
-              .catch((err) => this.logger.warn(`Failed to persist runtime status: ${String(err)}`));
-          }
-        };
-
         const echoPythonChunk = (chunk: string, level: "log" | "warn") => {
           const clipped = this.clipPythonStreamForNestLog(chunk);
           if (clipped === null) {
@@ -456,14 +442,12 @@ export class TranslateProcessor extends WorkerHost {
         child.stdout?.on("data", (data: Buffer) => {
           const message = data.toString();
           appendChunk("stdout", message);
-          handleRuntimeStatus(message);
           echoPythonChunk(message, "log");
         });
 
         child.stderr?.on("data", (data: Buffer) => {
           const message = data.toString();
           appendChunk("stderr", message);
-          handleRuntimeStatus(message);
           echoPythonChunk(message, "warn");
         });
 
@@ -485,9 +469,10 @@ export class TranslateProcessor extends WorkerHost {
           this.logger.log(`Python done code=${code ?? "?"} ${elapsedMs}ms`);
 
           if (code !== 0) {
-            const lastStatus = this.extractLatestRuntimeStatus(stdout) ?? this.extractLatestRuntimeStatus(stderr);
-            const statusPart = lastStatus
-              ? ` (last step=${lastStatus.step}, state=${lastStatus.state}${lastStatus.message ? `, message=${lastStatus.message}` : ""})`
+            const stepFailure =
+              this.extractStepFailureMarker(stdout) ?? this.extractStepFailureMarker(stderr);
+            const statusPart = stepFailure
+              ? ` (step=${stepFailure.step}, ${stepFailure.message})`
               : "";
             rejectPromise(
               new Error(
@@ -512,19 +497,32 @@ export class TranslateProcessor extends WorkerHost {
   }
 
   /**
-   * Skip echoing chunks that only contain DB_STATUS lines (already persisted).
-   * Echo full text (no truncation / ellipsis) so long CLI JSON and logs stay intact.
+   * Echo Python stream chunks to Nest logs (trim trailing whitespace only).
    */
   private clipPythonStreamForNestLog(chunk: string): string | null {
     const trimmed = chunk.trimEnd();
     if (!trimmed) {
       return null;
     }
-    const lines = trimmed.split(/\r?\n/).filter((l) => l.trim().length > 0);
-    if (lines.length > 0 && lines.every((l) => l.trimStart().startsWith("DB_STATUS|"))) {
+    return trimmed;
+  }
+
+  /** Parse `[STEP_n_FAILED] ...` from Python pipeline stderr/stdout after non-zero exit. */
+  private extractStepFailureMarker(
+    text: string | undefined,
+  ): { step: number; message: string } | null {
+    if (!text) {
       return null;
     }
-    return trimmed;
+    const matches = [...text.matchAll(/\[STEP_(\d+)_FAILED\]\s*([^\r\n]+)/g)];
+    if (!matches.length) {
+      return null;
+    }
+    const last = matches[matches.length - 1];
+    return {
+      step: Number(last[1]),
+      message: String(last[2] ?? "").trim(),
+    };
   }
 
   private resolveVideoInputPath(engineConfig: Record<string, unknown>): string {
@@ -546,24 +544,6 @@ export class TranslateProcessor extends WorkerHost {
       return null;
     }
     return matched[1].trim();
-  }
-
-  private extractLatestRuntimeStatus(
-    text: string | undefined,
-  ): { step: number; state: "running" | "completed" | "failed"; message: string } | null {
-    if (!text) {
-      return null;
-    }
-    const matches = [...text.matchAll(/DB_STATUS\|step=(\d+)\|state=(running|completed|failed)\|message=([^\r\n]*)/g)];
-    if (!matches.length) {
-      return null;
-    }
-    const last = matches[matches.length - 1];
-    return {
-      step: Number(last[1]),
-      state: last[2] as "running" | "completed" | "failed",
-      message: (last[3] ?? "").trim(),
-    };
   }
 
   private appendOptionalCliOptions(args: string[], engineConfig: Record<string, unknown>): void {

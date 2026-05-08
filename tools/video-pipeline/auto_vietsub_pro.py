@@ -362,22 +362,12 @@ def progressbar(iterable, **kwargs):
     return tqdm(iterable, **kwargs)
 
 
-def emit_db_status(step_no, state, message=""):
-    """Structured status marker for backend parser."""
-    clean_message = str(message or "").replace("\n", " ").strip()
-    # Chỉ stdout cho parser BE; không pollute pipeline.log.
-    log(
-        f"DB_STATUS|step={int(step_no)}|state={state}|message={clean_message}",
-        write_file=False,
-    )
-
-
 def file_ready(path):
     p = Path(path)
     return p.exists() and p.stat().st_size > 0
 
 
-def retry_call(fn, label, max_retry=RETRY_MAX, base_delay=1.5, db_step=None):
+def retry_call(fn, label, max_retry=RETRY_MAX, base_delay=1.5):
     for attempt in range(1, max_retry + 1):
         try:
             return fn()
@@ -388,17 +378,11 @@ def retry_call(fn, label, max_retry=RETRY_MAX, base_delay=1.5, db_step=None):
                     f"{label} failed after {max_retry} attempts: {e}"
                 ) from e
             delay = base_delay
-            if db_step is not None:
-                emit_db_status(
-                    int(db_step),
-                    "running",
-                    f"{label} thử lại ({attempt}/{max_retry})…",
-                )
             time.sleep(delay)
 
 
 def step3_tts_retry(
-    run_fn, label, max_retry=TTS_RETRY_MAX, base_delay=1.5, db_step=None
+    run_fn, label, max_retry=TTS_RETRY_MAX, base_delay=1.5
 ):
     """Chạy TTS với retry. Trả về True nếu thành công; False nếu hết retry và STEP3_TTS_MAX_RETRY_ACTION=='skip'."""
     for attempt in range(1, max_retry + 1):
@@ -415,12 +399,6 @@ def step3_tts_retry(
                     f"{label} failed after {max_retry} attempts: {e}"
                 ) from e
             delay = base_delay
-            if db_step is not None:
-                emit_db_status(
-                    int(db_step),
-                    "running",
-                    f"Step3 TTS thử lại ({attempt}/{max_retry})…",
-                )
             time.sleep(delay)
 
 
@@ -2387,7 +2365,7 @@ def translate_batch_with_gemini(batch, batch_start_index):
         ) from last_error
 
     return retry_call(
-        _call, "Gemini translation", max_retry=GEMINI_RETRY_MAX, db_step=2
+        _call, "Gemini translation", max_retry=GEMINI_RETRY_MAX
     )
 
 
@@ -2662,7 +2640,6 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
             lambda: run_tts(tts_rate),
             tts_retry_label,
             max_retry=TTS_RETRY_MAX,
-            db_step=3,
         )
         if not ok_tts:
             # Im lặng đúng khung SRT [start_ms, end_ms], khớp current_time_ms như nhánh câu rỗng.
@@ -2705,7 +2682,6 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
                             lambda: run_tts(tts_rate),
                             tts_retry_label_2,
                             max_retry=TTS_RETRY_MAX,
-                            db_step=3,
                         )
                         if not ok_tts2:
                             shutil.copyfile(pass2_backup, raw_audio_path)
@@ -4070,13 +4046,9 @@ def run_pipeline(video, step_arg=None):
     last_output = None
 
     def run_step(step_no, step_name, fn):
-        emit_db_status(step_no, "running", f"{step_name} started")
         try:
-            result = fn()
-            emit_db_status(step_no, "completed", f"{step_name} completed")
-            return result
+            return fn()
         except Exception as exc:
-            emit_db_status(step_no, "failed", f"{step_name} failed: {exc}")
             raise RuntimeError(
                 f"[STEP_{step_no}_FAILED] {step_name} failed: {exc}"
             ) from exc
