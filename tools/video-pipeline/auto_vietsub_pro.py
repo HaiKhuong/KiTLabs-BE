@@ -1,5 +1,6 @@
 import argparse
 import json
+import math
 import os
 import re
 import shutil
@@ -457,9 +458,10 @@ def get_media_duration_ms(path):
 
 
 def get_ffprobe_video_dimensions(path):
-    """Kích thước WxH của video stream đầu tiên (None nếu không probe được).
+    """Kích thước WxH (pixel đã giải mã) của video stream đầu tiên (None nếu không probe được).
 
-    Dùng khi crop zoom Step6: tránh lệch ±2 px (vd 2560→2558) do scale/crop chỉ iw/zf trong ffmpeg.
+    Dùng cho zoom Step6: FFmpeg không có filter “zoom” tĩnh chuẩn; scale+crop cần W/H nguyên chính xác
+    (tránh lệch giữa HD / Full HD / 2K khi dùng biểu thức iw/zf).
     """
     if not FFPROBE_BIN:
         return None
@@ -497,6 +499,36 @@ def get_ffprobe_video_dimensions(path):
     except Exception as e:
         log(f"Warning: ffprobe WxH failed for {path}: {e}")
         return None
+
+
+def _step6_zoom_scale_crop_literal_dims(ow, oh, zf):
+    """Zoom tĩnh (phóng rồi crop giữa): trả về scale_w, scale_h, crop_x, crop_y, out_w, out_h.
+
+    - out_w/out_h = ow/oh (giữ nguyên kích thước đầu ra).
+    - scale_* = số chẵn >= nguồn * zf (yuv420 / swscale thân thiện).
+    - crop_x/crop_y chẵn để tránh lệch chroma 4:2:0.
+    """
+    ow = int(ow)
+    oh = int(oh)
+    # yuv420p / H.264: crop ra lẻ dễ lỗi encoder; căn chỉnh theo lưới 2 px (giữ gần nguồn).
+    ow &= ~1
+    oh &= ~1
+    zf = float(zf)
+    if ow <= 1 or oh <= 1 or zf <= 1.0 + 1e-9:
+        return None
+
+    def smallest_even_not_below(x):
+        return max(2, int(math.ceil(float(x) / 2.0)) * 2)
+
+    scaled_w = max(ow, smallest_even_not_below(ow * zf))
+    scaled_h = max(oh, smallest_even_not_below(oh * zf))
+    cx = ((scaled_w - ow) // 2) & ~1
+    cy = ((scaled_h - oh) // 2) & ~1
+    while cx + ow > scaled_w:
+        scaled_w += 2
+    while cy + oh > scaled_h:
+        scaled_h += 2
+    return scaled_w, scaled_h, cx, cy, ow, oh
 
 
 def build_atempo_filter(speed_factor):
@@ -1126,8 +1158,12 @@ def build_subtitle_filter_tail(ass_path):
 def build_visual_transform_filters(src_wh=None):
     """hflip → scale+crop (zoom ~STEP6_ZOOM_PERCENT%) → eq → unsharp. Chuỗi filter không gồm nhãn [0:v].
 
-    Nếu probe được WxH gốc (src_wh): scale/crop pixel-chính xác để giữ đúng tỉ lệ (tránh ±2 px).
-    Nếu thiếu src_wh: giữ fallback iw*zf → crop iw/zf (có thể lệch 1–2 px trên một số độ phân giải).
+    Zoom: FFmpeg chỉ có chuỗi scale+rồi crop giữa; không có “zoom” một lệnh. W/H được tính sẵn từ
+    ffprobe (pixel giải mã, giống iw/ih sau decode) để đầu ra luôn đúng WxH — tránh sai số của
+    crop=iw/ZF kiểu float trên các mode HD / Full HD / 1440p / 2160p.
+
+    Nếu không probe được WxH khi đang bật zoom → bỏ qua zoom (giữ khung như nguồn), không dùng
+    fallback iw*zf đã hay lệch ±1–3 px.
     """
     if not STEP6_VISUAL_TRANSFORM_ENABLED:
         return ""
@@ -1137,22 +1173,24 @@ def build_visual_transform_filters(src_wh=None):
     zp = float(STEP6_ZOOM_PERCENT)
     if zp > 0.01:
         zf = 1.0 + zp / 100.0
-        precise_ok = False
+        applied = False
         if isinstance(src_wh, tuple) and len(src_wh) == 2:
-            ow, oh = int(src_wh[0]), int(src_wh[1])
-            if ow > 1 and oh > 1:
-                scaled_w = max(ow, int(round(ow * zf)))
-                scaled_h = max(oh, int(round(oh * zf)))
-                scaled_w = (scaled_w + 1) // 2 * 2
-                scaled_h = (scaled_h + 1) // 2 * 2
-                cx = max(0, (scaled_w - ow) // 2)
-                cy = max(0, (scaled_h - oh) // 2)
-                parts.append(f"scale={scaled_w}:{scaled_h}:flags=bicubic+accurate_rnd")
+            try:
+                dims = _step6_zoom_scale_crop_literal_dims(src_wh[0], src_wh[1], zf)
+            except (TypeError, ValueError):
+                dims = None
+            if dims:
+                scaled_w, scaled_h, cx, cy, ow, oh = dims
+                parts.append(
+                    f"scale={scaled_w}:{scaled_h}:flags=bicubic+accurate_rnd"
+                )
                 parts.append(f"crop={ow}:{oh}:{cx}:{cy}")
-                precise_ok = True
-        if not precise_ok:
-            parts.append(f"scale=iw*{zf:.6f}:ih*{zf:.6f}")
-            parts.append(f"crop=iw/{zf:.6f}:ih/{zf:.6f}:(iw-ow)/2:(ih-oh)/2")
+                applied = True
+        if not applied:
+            if isinstance(src_wh, tuple) and len(src_wh) == 2:
+                log("Step6 zoom: không áp được scale+crop an toàn từ WxH — bỏ qua zoom.")
+            else:
+                log("Step6 zoom: thiếu WxH ffprobe — bỏ qua zoom.")
     # parts.append(
     #     f"eq=saturation={float(STEP6_EQ_SATURATION):.4f}:contrast={float(STEP6_EQ_CONTRAST):.4f}"
     # )
