@@ -456,6 +456,49 @@ def get_media_duration_ms(path):
         return None
 
 
+def get_ffprobe_video_dimensions(path):
+    """Kích thước WxH của video stream đầu tiên (None nếu không probe được).
+
+    Dùng khi crop zoom Step6: tránh lệch ±2 px (vd 2560→2558) do scale/crop chỉ iw/zf trong ffmpeg.
+    """
+    if not FFPROBE_BIN:
+        return None
+    try:
+        result = subprocess.run(
+            [
+                str(FFPROBE_BIN),
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "stream=width,height",
+                "-of",
+                "csv=p=0:s=x",
+                str(path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
+        )
+        if result.returncode != 0:
+            return None
+        first = (result.stdout or "").strip().splitlines()
+        if not first:
+            return None
+        parts = first[0].strip().split("x")
+        if len(parts) != 2:
+            return None
+        w, h = int(parts[0]), int(parts[1])
+        if w <= 1 or h <= 1:
+            return None
+        return (w, h)
+    except Exception as e:
+        log(f"Warning: ffprobe WxH failed for {path}: {e}")
+        return None
+
+
 def build_atempo_filter(speed_factor):
     # ffmpeg atempo only supports each stage in [0.5, 2.0],
     # so chain multiple stages when speed-up is greater than 2x.
@@ -1080,8 +1123,12 @@ def build_subtitle_filter_tail(ass_path):
     )
 
 
-def build_visual_transform_filters():
-    """hflip → scale+crop (zoom ~STEP6_ZOOM_PERCENT%) → eq → unsharp. Chuỗi filter không gồm nhãn [0:v]."""
+def build_visual_transform_filters(src_wh=None):
+    """hflip → scale+crop (zoom ~STEP6_ZOOM_PERCENT%) → eq → unsharp. Chuỗi filter không gồm nhãn [0:v].
+
+    Nếu probe được WxH gốc (src_wh): scale/crop pixel-chính xác để giữ đúng tỉ lệ (tránh ±2 px).
+    Nếu thiếu src_wh: giữ fallback iw*zf → crop iw/zf (có thể lệch 1–2 px trên một số độ phân giải).
+    """
     if not STEP6_VISUAL_TRANSFORM_ENABLED:
         return ""
     parts = []
@@ -1090,22 +1137,34 @@ def build_visual_transform_filters():
     zp = float(STEP6_ZOOM_PERCENT)
     if zp > 0.01:
         zf = 1.0 + zp / 100.0
-        # Lý do khung có thể lệch vài pixel (vd 2560→2558): scale làm tròn iw*zf / ih*zf
-        # sang số nguyên; crop dùng iw/zf trên kích thước đã scale nên (iw*zf)/zf ≠ iw.
-        parts.append(f"scale=iw*{zf:.6f}:ih*{zf:.6f}")
-        parts.append(f"crop=iw/{zf:.6f}:ih/{zf:.6f}:(iw-ow)/2:(ih-oh)/2")
-    parts.append(
-        f"eq=saturation={float(STEP6_EQ_SATURATION):.4f}:contrast={float(STEP6_EQ_CONTRAST):.4f}"
-    )
+        precise_ok = False
+        if isinstance(src_wh, tuple) and len(src_wh) == 2:
+            ow, oh = int(src_wh[0]), int(src_wh[1])
+            if ow > 1 and oh > 1:
+                scaled_w = max(ow, int(round(ow * zf)))
+                scaled_h = max(oh, int(round(oh * zf)))
+                scaled_w = (scaled_w + 1) // 2 * 2
+                scaled_h = (scaled_h + 1) // 2 * 2
+                cx = max(0, (scaled_w - ow) // 2)
+                cy = max(0, (scaled_h - oh) // 2)
+                parts.append(f"scale={scaled_w}:{scaled_h}:flags=bicubic+accurate_rnd")
+                parts.append(f"crop={ow}:{oh}:{cx}:{cy}")
+                precise_ok = True
+        if not precise_ok:
+            parts.append(f"scale=iw*{zf:.6f}:ih*{zf:.6f}")
+            parts.append(f"crop=iw/{zf:.6f}:ih/{zf:.6f}:(iw-ow)/2:(ih-oh)/2")
+    # parts.append(
+    #     f"eq=saturation={float(STEP6_EQ_SATURATION):.4f}:contrast={float(STEP6_EQ_CONTRAST):.4f}"
+    # )
     parts.append(f"unsharp={STEP6_UNSHARP}")
     return ",".join(parts)
 
 
-def build_subtitle_filter(ass_path):
+def build_subtitle_filter(ass_path, src_wh=None):
     tail = build_subtitle_filter_tail(ass_path)
     if not STEP6_VISUAL_TRANSFORM_ENABLED:
         return tail
-    vt = build_visual_transform_filters()
+    vt = build_visual_transform_filters(src_wh)
     if not vt:
         return tail
     return f"[0:v]{vt},{tail}"
@@ -2894,13 +2953,32 @@ def step4_merge_audio(video_path, voice_path):
     return out
 
 
-def build_step7_speed_command(video_path, part_path, speed, use_gpu, has_audio):
-    """Step7: setpts + atempo; video encode NVENC (GPU) hoặc libx264 (CPU), giống Step6."""
+def build_step7_speed_command(video_path, part_path, speed, use_gpu, has_audio, anchor_wh=None):
+    """Step7: setpts + atempo; video encode NVENC (GPU) hoặc libx264 (CPU), giống Step6.
+
+    anchor_wh: WxH từ ffprobe — sau setpts ép scale=W:H để tránh encoder lệch 1–2 px so với nguồn.
+    """
     meta = ffmpeg_output_metadata_args(part_path)
     if use_gpu:
         v_enc = ["-c:v", "h264_nvenc", "-preset", "p4", "-cq", "23"]
     else:
         v_enc = ["-c:v", "libx264", "-preset", "medium", "-crf", "23"]
+
+    vt = (
+        "[0:v]setpts=PTS/{speed:.6f},scale={w}:{h}:flags=bicubic+accurate_rnd[v]".format(
+            speed=float(speed),
+            w=int(anchor_wh[0]),
+            h=int(anchor_wh[1]),
+        )
+        if (
+            anchor_wh is not None
+            and len(anchor_wh) == 2
+            and int(anchor_wh[0]) > 1
+            and int(anchor_wh[1]) > 1
+        )
+        else f"[0:v]setpts=PTS/{float(speed):.6f}[v]"
+    )
+
     if has_audio:
         atempo_filter = build_atempo_filter(speed)
         return [
@@ -2909,7 +2987,7 @@ def build_step7_speed_command(video_path, part_path, speed, use_gpu, has_audio):
             "-i",
             str(video_path),
             "-filter_complex",
-            f"[0:v]setpts=PTS/{speed:.6f}[v];[0:a]{atempo_filter}[a]",
+            f"{vt};[0:a]{atempo_filter}[a]",
             "-map",
             "[v]",
             "-map",
@@ -2928,7 +3006,7 @@ def build_step7_speed_command(video_path, part_path, speed, use_gpu, has_audio):
         "-i",
         str(video_path),
         "-filter_complex",
-        f"[0:v]setpts=PTS/{speed:.6f}[v]",
+        vt,
         "-map",
         "[v]",
         *v_enc,
@@ -2951,8 +3029,14 @@ def step7_apply_speed(video_path):
     final_out = VIDEO_DIR / f"{WORK_NAME}_vs_tm.mp4"
     part = VIDEO_DIR / f"{WORK_NAME}_vs_tm.mp4.part"
     has_audio = media_has_audio_stream(video_path)
+    anchor_wh = get_ffprobe_video_dimensions(video_path)
     gpu_cmd = build_step7_speed_command(
-        video_path, part, speed, use_gpu=True, has_audio=has_audio
+        video_path,
+        part,
+        speed,
+        use_gpu=True,
+        has_audio=has_audio,
+        anchor_wh=anchor_wh,
     )
     try:
         label = f"Apply speed-video x{speed:.3f}" + (
@@ -2962,7 +3046,12 @@ def step7_apply_speed(video_path):
     except Exception as e:
         log(f"Step7: GPU encode failed → CPU: {e}")
         cpu_cmd = build_step7_speed_command(
-            video_path, part, speed, use_gpu=False, has_audio=has_audio
+            video_path,
+            part,
+            speed,
+            use_gpu=False,
+            has_audio=has_audio,
+            anchor_wh=anchor_wh,
         )
         label = f"Apply speed-video x{speed:.3f}" + (
             "" if has_audio else " (video-only)"
@@ -3023,9 +3112,10 @@ def step5_convert_ass(srt_path):
 def step6_render(video_path, ass_path):
     log("Step6: render + subs…")
     out = VIDEO_DIR / f"{WORK_NAME}_vs_tm.mp4"
+    probe_wh = None
     if STEP6_VISUAL_TRANSFORM_ENABLED and float(STEP6_ZOOM_PERCENT) > 0.01:
-        zf = 1.0 + float(STEP6_ZOOM_PERCENT) / 100.0
-    subtitle_filter = build_subtitle_filter(ass_path)
+        probe_wh = get_ffprobe_video_dimensions(video_path)
+    subtitle_filter = build_subtitle_filter(ass_path, probe_wh)
     logo_path = None
     if LOGO_ENABLED:
         configured_logo = Path(LOGO_FILE)
