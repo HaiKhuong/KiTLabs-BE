@@ -223,8 +223,8 @@ EASYOCR_GPU = True
 # Sau crop dải đáy: grayscale + ffmpeg eq (cùng tham số cho probe-score OpenCV).
 # brightness âm (vd -0.06 … -0.12) làm tối, thường giúp giảm dính watermark/logo sáng; gamma>1 tối midtone.
 EASYOCR_GRAY_CONTRAST = 2.0
-EASYOCR_GRAY_BRIGHTNESS = 0.05
-EASYOCR_GRAY_GAMMA = 1.0
+EASYOCR_GRAY_BRIGHTNESS = -0.15
+EASYOCR_GRAY_GAMMA = 1.2
 # Luma suppression trước khi trích frame OCR (0 = tắt, 1.0 = Y=0 hoàn toàn — chỉ còn chênh lệch màu Cb/Cr).
 # Khi > 0: giữ màu RGB (bỏ format=gray), đè Y xuống thấp trong YUV, chuyển về RGB → EasyOCR nhận ảnh màu.
 EASYOCR_LUMA_SUPPRESS = 0.0
@@ -3355,6 +3355,24 @@ def parse_cli_args():
         ),
     )
     parser.add_argument(
+        "--easyocr-crop-probe-h-trim-left-frac",
+        type=float,
+        default=EASYOCR_CROP_PROBE_H_TRIM_LEFT_FRAC,
+        help=(
+            "EasyOCR horizontal crop: fraction of frame width to discard from the left before OCR probe/strip "
+            "(0–0.49; default matches EASYOCR_CROP_PROBE_H_TRIM_LEFT_FRAC)."
+        ),
+    )
+    parser.add_argument(
+        "--easyocr-crop-probe-h-trim-right-frac",
+        type=float,
+        default=EASYOCR_CROP_PROBE_H_TRIM_RIGHT_FRAC,
+        help=(
+            "EasyOCR horizontal crop: fraction of frame width to discard from the right before OCR probe/strip "
+            "(0–0.49; default matches EASYOCR_CROP_PROBE_H_TRIM_RIGHT_FRAC)."
+        ),
+    )
+    parser.add_argument(
         "--easyocr-cleanup-debug-after-step7",
         choices=["on", "off"],
         default="on" if EASYOCR_CLEANUP_DEBUG_AFTER_STEP7 else "off",
@@ -3428,12 +3446,6 @@ def parse_cli_args():
         help="Similarity %% threshold for fuzzy dedup/merge (default 80).",
     )
     parser.add_argument(
-        "--easyocr-gpu",
-        choices=["on", "off"],
-        default="on" if EASYOCR_GPU else "off",
-        help="Enable GPU for EasyOCR inference (default on).",
-    )
-    parser.add_argument(
         "--easyocr-low-conf-floor",
         type=float,
         default=EASYOCR_LOW_CONF_FLOOR,
@@ -3458,71 +3470,6 @@ def parse_cli_args():
         help=(
             f"Số frame tương đồng tối thiểu để rescue (default {EASYOCR_BRIDGE_MIN_MATCH}). "
             "Nếu >= N frame lân cận có text >=fuzzy-threshold%% giống → rescue."
-        ),
-    )
-    parser.add_argument(
-        "--easyocr-white-thresh",
-        type=int,
-        default=EASYOCR_WHITE_THRESH,
-        help=(
-            "0..254 (default 0 = off): grayscale binary threshold để trích chữ trắng. "
-            "Pixel >= thresh → trắng (255), còn lại → đen (0). Cho ra ảnh nhị phân rõ chữ. "
-            "Ưu tiên hơn --easyocr-luma-suppress. Gợi ý: 160..200 (vd 180)."
-        ),
-    )
-    parser.add_argument(
-        "--easyocr-luma-suppress",
-        type=float,
-        default=EASYOCR_LUMA_SUPPRESS,
-        help=(
-            "0..1 (default 0 = off): crush luma trước OCR frame extraction. "
-            "R/G/B color differences preserved; frames stay COLOR (no grayscale). "
-            "Bị bỏ qua nếu --easyocr-white-thresh > 0."
-        ),
-    )
-    parser.add_argument(
-        "--easyocr-gray-contrast",
-        type=float,
-        default=EASYOCR_GRAY_CONTRAST,
-        help="OCR crop: grayscale eq contrast (default 2). Lower if dialogue text is too faint.",
-    )
-    parser.add_argument(
-        "--easyocr-gray-brightness",
-        type=float,
-        default=EASYOCR_GRAY_BRIGHTNESS,
-        help=(
-            "OCR crop: grayscale eq brightness (ffmpeg, about -1..1). "
-            "Negative (e.g. -0.08) darkens the strip to reduce bright logo/watermark pickup."
-        ),
-    )
-    parser.add_argument(
-        "--easyocr-gray-gamma",
-        type=float,
-        default=EASYOCR_GRAY_GAMMA,
-        help="OCR crop: grayscale eq gamma; >1 darkens midtones slightly (can soften flat white marks).",
-    )
-    parser.add_argument(
-        "--easyocr-histeq-strength",
-        type=float,
-        default=EASYOCR_HISTEQ_STRENGTH,
-        help=(
-            "After grayscale eq: ffmpeg histeq strength 0..1 (0=off). Flattens background / boosts "
-            "text separation; try 0.25–0.55 on busy scenes. Same blend applied in crop-band probe."
-        ),
-    )
-    parser.add_argument(
-        "--easyocr-gray-invert",
-        choices=["on", "off"],
-        default="on" if EASYOCR_GRAY_INVERT else "off",
-        help="After eq/histeq/unsharp: negate luma (on can help white-stroke subs on dark video).",
-    )
-    parser.add_argument(
-        "--easyocr-unsharp",
-        type=str,
-        default=EASYOCR_UNSHARP or "",
-        help=(
-            "After histeq: ffmpeg unsharp=luma_msize_x:luma_msize_y:luma_amount:... (digits/colons only). "
-            "Example 5:5:0.85:5:5:0.0 — empty/off. Sharpen edges for low-confidence OCR."
         ),
     )
     parser.add_argument(
@@ -3988,6 +3935,14 @@ def apply_cli_config(args):
     if args.easyocr_lang:
         EASYOCR_LANG = [s.strip() for s in args.easyocr_lang.split(",") if s.strip()]
     EASYOCR_SUBTITLE_CROP_BAND_HI = float(args.easyocr_crop_band_hi)
+    EASYOCR_CROP_PROBE_H_TRIM_LEFT_FRAC = max(
+        0.0,
+        min(0.49, float(args.easyocr_crop_probe_h_trim_left_frac)),
+    )
+    EASYOCR_CROP_PROBE_H_TRIM_RIGHT_FRAC = max(
+        0.0,
+        min(0.49, float(args.easyocr_crop_probe_h_trim_right_frac)),
+    )
     EASYOCR_CLEANUP_DEBUG_AFTER_STEP7 = (
         args.easyocr_cleanup_debug_after_step7 == "on"
     )
@@ -4011,7 +3966,6 @@ def apply_cli_config(args):
     else:
         EASYOCR_FPS = 1000.0 / float(EASYOCR_MIN_DURATION_MS)
     EASYOCR_FUZZY_THRESHOLD = float(args.easyocr_fuzzy_threshold)
-    EASYOCR_GPU = args.easyocr_gpu == "on"
     EASYOCR_LOW_CONF_FLOOR = max(
         0.0, float(getattr(args, "easyocr_low_conf_floor", EASYOCR_LOW_CONF_FLOOR))
     )
@@ -4021,25 +3975,6 @@ def apply_cli_config(args):
     EASYOCR_BRIDGE_MIN_MATCH = max(
         1, int(getattr(args, "easyocr_bridge_min_match", EASYOCR_BRIDGE_MIN_MATCH))
     )
-    EASYOCR_WHITE_THRESH = max(
-        0, min(254, int(getattr(args, "easyocr_white_thresh", EASYOCR_WHITE_THRESH)))
-    )
-    EASYOCR_LUMA_SUPPRESS = max(
-        0.0, min(1.0, float(getattr(args, "easyocr_luma_suppress", EASYOCR_LUMA_SUPPRESS)))
-    )
-    EASYOCR_GRAY_CONTRAST = max(0.01, float(getattr(args, "easyocr_gray_contrast", EASYOCR_GRAY_CONTRAST)))
-    EASYOCR_GRAY_BRIGHTNESS = float(
-        getattr(args, "easyocr_gray_brightness", EASYOCR_GRAY_BRIGHTNESS)
-    )
-    EASYOCR_GRAY_GAMMA = max(
-        0.01, float(getattr(args, "easyocr_gray_gamma", EASYOCR_GRAY_GAMMA))
-    )
-    EASYOCR_HISTEQ_STRENGTH = max(
-        0.0,
-        min(1.0, float(getattr(args, "easyocr_histeq_strength", EASYOCR_HISTEQ_STRENGTH))),
-    )
-    EASYOCR_GRAY_INVERT = getattr(args, "easyocr_gray_invert", "off") == "on"
-    EASYOCR_UNSHARP = str(getattr(args, "easyocr_unsharp", EASYOCR_UNSHARP) or "").strip()
     if EASYOCR_WHITE_THRESH > 0:
         _mode_str = f"white_thresh={EASYOCR_WHITE_THRESH} (binary: white text / black bg)"
     elif EASYOCR_LUMA_SUPPRESS > 1e-9:

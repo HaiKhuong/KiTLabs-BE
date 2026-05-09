@@ -203,6 +203,16 @@ const OPTION_MAPPINGS: Array<{
     allowedTypes: ["number", "string"],
   },
   {
+    cliFlag: "--easyocr-crop-probe-h-trim-left-frac",
+    keys: ["easyOcrCropProbeHTrimLeftFrac", "easy_ocr_crop_probe_h_trim_left_frac"],
+    allowedTypes: ["number", "string"],
+  },
+  {
+    cliFlag: "--easyocr-crop-probe-h-trim-right-frac",
+    keys: ["easyOcrCropProbeHTrimRightFrac", "easy_ocr_crop_probe_h_trim_right_frac"],
+    allowedTypes: ["number", "string"],
+  },
+  {
     cliFlag: "--easyocr-min-duration-ms",
     keys: ["easyOcrMinDurationMs", "easy_ocr_min_duration_ms"],
     allowedTypes: ["number", "string"],
@@ -241,46 +251,6 @@ const OPTION_MAPPINGS: Array<{
     cliFlag: "--easyocr-bridge-min-match",
     keys: ["easyOcrBridgeMinMatch", "easy_ocr_bridge_min_match"],
     allowedTypes: ["number", "string"],
-  },
-  {
-    cliFlag: "--easyocr-white-thresh",
-    keys: ["easyOcrWhiteThresh", "easy_ocr_white_thresh"],
-    allowedTypes: ["number", "string"],
-  },
-  {
-    cliFlag: "--easyocr-luma-suppress",
-    keys: ["easyOcrLumaSuppress", "easy_ocr_luma_suppress"],
-    allowedTypes: ["number", "string"],
-  },
-  {
-    cliFlag: "--easyocr-gray-contrast",
-    keys: ["easyOcrGrayContrast", "easy_ocr_gray_contrast"],
-    allowedTypes: ["number", "string"],
-  },
-  {
-    cliFlag: "--easyocr-gray-brightness",
-    keys: ["easyOcrGrayBrightness", "easy_ocr_gray_brightness"],
-    allowedTypes: ["number", "string"],
-  },
-  {
-    cliFlag: "--easyocr-gray-gamma",
-    keys: ["easyOcrGrayGamma", "easy_ocr_gray_gamma"],
-    allowedTypes: ["number", "string"],
-  },
-  {
-    cliFlag: "--easyocr-histeq-strength",
-    keys: ["easyOcrHisteqStrength", "easy_ocr_histeq_strength"],
-    allowedTypes: ["number", "string"],
-  },
-  {
-    cliFlag: "--easyocr-gray-invert",
-    keys: ["easyOcrGrayInvert", "easy_ocr_gray_invert"],
-    allowedTypes: ["string"],
-  },
-  {
-    cliFlag: "--easyocr-unsharp",
-    keys: ["easyOcrUnsharp", "easy_ocr_unsharp"],
-    allowedTypes: ["string"],
   },
   {
     cliFlag: "--step6-hflip",

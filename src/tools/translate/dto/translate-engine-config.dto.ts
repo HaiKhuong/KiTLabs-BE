@@ -485,6 +485,36 @@ export class TranslateEngineConfigDto {
   @IsNumber()
   easy_ocr_crop_band_lo?: number;
 
+  /** Crop ngang EasyOCR: tỷ lệ bỏ mé trái (0–0.49), CLI --easyocr-crop-probe-h-trim-left-frac */
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  @Max(0.49)
+  easyOcrCropProbeHTrimLeftFrac?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  @Max(0.49)
+  easy_ocr_crop_probe_h_trim_left_frac?: number;
+
+  /** Crop ngang EasyOCR: tỷ lệ bỏ mé phải (0–0.49), CLI --easyocr-crop-probe-h-trim-right-frac */
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  @Max(0.49)
+  easyOcrCropProbeHTrimRightFrac?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  @Max(0.49)
+  easy_ocr_crop_probe_h_trim_right_frac?: number;
+
   @IsOptional()
   @Type(() => Number)
   @IsNumber()
