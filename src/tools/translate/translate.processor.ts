@@ -107,68 +107,6 @@ const OPTION_MAPPINGS: Array<{
     keys: ["step3TtsEngine", "step3_tts_engine"],
     allowedTypes: ["string"],
   },
-  {
-    cliFlag: "--vixtts-model-dir",
-    keys: ["vixttsModelDir", "vixtts_model_dir"],
-    allowedTypes: ["string"],
-  },
-  {
-    cliFlag: "--vixtts-speaker-wav",
-    keys: ["vixttsSpeakerWav", "vixtts_speaker_wav"],
-    allowedTypes: ["string"],
-  },
-  { cliFlag: "--vixtts-lang", keys: ["vixttsLang", "vixtts_lang"], allowedTypes: ["string"] },
-  {
-    cliFlag: "--vixtts-use-deepspeed",
-    keys: ["vixttsUseDeepspeed", "vixtts_use_deepspeed"],
-    allowedTypes: ["string"],
-  },
-  {
-    cliFlag: "--vixtts-normalize-text",
-    keys: ["vixttsNormalizeText", "vixtts_normalize_text"],
-    allowedTypes: ["string"],
-  },
-  {
-    cliFlag: "--omnivoice-model-id",
-    keys: ["omnivoiceModelId", "omnivoice_model_id"],
-    allowedTypes: ["string"],
-  },
-  {
-    cliFlag: "--omnivoice-ref-wav",
-    keys: ["omnivoiceRefWav", "omnivoice_ref_wav"],
-    allowedTypes: ["string"],
-  },
-  {
-    cliFlag: "--omnivoice-ref-text",
-    keys: ["omnivoiceRefText", "omnivoice_ref_text"],
-    allowedTypes: ["string"],
-  },
-  {
-    cliFlag: "--omnivoice-device-map",
-    keys: ["omnivoiceDeviceMap", "omnivoice_device_map"],
-    allowedTypes: ["string"],
-  },
-  { cliFlag: "--omnivoice-dtype", keys: ["omnivoiceDtype", "omnivoice_dtype"], allowedTypes: ["string"] },
-  {
-    cliFlag: "--omnivoice-language",
-    keys: ["omnivoiceLanguage", "omnivoice_language"],
-    allowedTypes: ["string"],
-  },
-  {
-    cliFlag: "--omnivoice-num-step",
-    keys: ["omnivoiceNumStep", "omnivoice_num_step"],
-    allowedTypes: ["number", "string"],
-  },
-  {
-    cliFlag: "--omnivoice-guidance-scale",
-    keys: ["omnivoiceGuidanceScale", "omnivoice_guidance_scale"],
-    allowedTypes: ["number", "string"],
-  },
-  {
-    cliFlag: "--omnivoice-normalize-text",
-    keys: ["omnivoiceNormalizeText", "omnivoice_normalize_text"],
-    allowedTypes: ["string"],
-  },
   { cliFlag: "--auto-speed", keys: ["autoSpeed", "auto_speed"], allowedTypes: ["string"] },
   {
     cliFlag: "--step3-auto-rate-trigger-cps",

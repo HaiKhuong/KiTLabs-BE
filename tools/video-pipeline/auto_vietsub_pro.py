@@ -161,8 +161,8 @@ LOGO_ENABLED = True
 STEP6_VISUAL_TRANSFORM_ENABLED = True
 STEP6_HFLIP = True
 STEP6_ZOOM_PERCENT = 6.0  # 5–7: phóng nhẹ rồi crop giữa để lệch logo góc
-STEP6_EQ_SATURATION = 1.1
-STEP6_EQ_CONTRAST = 1.03
+STEP6_EQ_SATURATION = 1.0
+STEP6_EQ_CONTRAST = 1.00
 # ffmpeg unsharp: luma WxH:amount:chroma WxH:amount
 STEP6_UNSHARP = "5:5:0.8:3:3:0.0"
 ORIGINAL_AUDIO_VOLUME = 0.1
@@ -179,10 +179,8 @@ OUTPUT_METADATA_TITLE = "Vạn Giới Vietsub"
 OUTPUT_METADATA_ARTIST = "Vạn Giới Vietsub"
 OUTPUT_METADATA_COMMENT = "Vạn Giới Vietsub"
 
-STEP1_VAD_FILTER = True  # Nếu False thì sẽ không dùng 4 key phía dưới
-# Mặc định CLI: --mode basic (nhẹ, giọng nhỏ/ASMR) hoặc --mode advance (khắc khe hơn). Có thể ghi đè từng tham số.
-# Override: --mode, --step1-vad-threshold, --step1-min-silence-ms, --step1-min-speech-ms, --step1-speech-pad-ms,
-#           --step1-no-speech-threshold, --step1-logprob-threshold, --step1-condition-on-previous-text
+STEP1_VAD_FILTER = True  # Nếu False thì sẽ không dùng các ngưỡng VAD/Whisper phía dưới
+# Whisper/VAD: ngưỡng theo --mode basic|advance (STEP1_PROFILES). Không còn override qua CLI.
 STEP1_VAD_THRESHOLD = 0.35  # Silero: xác suất tối thiểu để coi là speech (thấp hơn = nhạy hơn với giọng yếu).
 STEP1_MIN_SILENCE_MS = (
     400  # im lặng tối thiểu (ms) để tách segment VAD (cao = ít tách hơn).
@@ -263,7 +261,7 @@ STEP1_TARGET_CHARS_PER_SEC = (
     5.5  # tốc độ mục tiêu khi siết lại timing câu ngắn (giữ đuôi, cắt đầu).
 )
 
-# Step1 VAD/Whisper presets (--mode basic|advance). Per-flag CLI overrides still win when passed.
+# Step1 VAD/Whisper presets theo --mode basic|advance (không override từng tham số qua CLI).
 STEP1_PROFILES = {
     "basic": {
         "vad_threshold": 0.35,
@@ -1191,9 +1189,9 @@ def build_visual_transform_filters(src_wh=None):
                 log("Step6 zoom: không áp được scale+crop an toàn từ WxH — bỏ qua zoom.")
             else:
                 log("Step6 zoom: thiếu WxH ffprobe — bỏ qua zoom.")
-    # parts.append(
-    #     f"eq=saturation={float(STEP6_EQ_SATURATION):.4f}:contrast={float(STEP6_EQ_CONTRAST):.4f}"
-    # )
+    parts.append(
+        f"eq=saturation={float(STEP6_EQ_SATURATION):.4f}:contrast={float(STEP6_EQ_CONTRAST):.4f}"
+    )
     parts.append(f"unsharp={STEP6_UNSHARP}")
     return ",".join(parts)
 
@@ -2537,12 +2535,12 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
         md = Path(str(VIXTTS_MODEL_DIR or "").strip()).expanduser()
         vixtts_spk = Path(str(VIXTTS_SPEAKER_WAV or "").strip()).expanduser()
         if not str(VIXTTS_MODEL_DIR or "").strip():
-            raise ValueError("ViXTTS: cần --vixtts-model-dir (thư mục checkpoint).")
+            raise ValueError("ViXTTS: cần VIXTTS_MODEL_DIR trong auto_vietsub_pro.py (thư mục checkpoint).")
         if not md.is_dir():
             raise FileNotFoundError(f"ViXTTS: model dir không tồn tại: {md}")
         if not str(VIXTTS_SPEAKER_WAV or "").strip() or not vixtts_spk.is_file():
             raise FileNotFoundError(
-                f"ViXTTS: cần --vixtts-speaker-wav (file giọng mẫu, WAV hoặc MP3/…): {vixtts_spk}"
+                f"ViXTTS: cần VIXTTS_SPEAKER_WAV trong auto_vietsub_pro.py (file giọng mẫu): {vixtts_spk}"
             )
         LOG_DIR.mkdir(parents=True, exist_ok=True)
         vixtts_spk_orig = vixtts_spk.name
@@ -2563,18 +2561,18 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
         log("Step3: OmniVoice Vietnamese (timeline SRT)…")
         _omni_mid = str(OMNIVOICE_MODEL_ID or "").strip()
         if not _omni_mid:
-            raise ValueError("OmniVoice: cần --omnivoice-model-id (HF repo id).")
+            raise ValueError("OmniVoice: cần OMNIVOICE_MODEL_ID trong auto_vietsub_pro.py (HF repo id).")
         spk = Path(str(OMNIVOICE_REF_WAV or "").strip()).expanduser()
         if not str(OMNIVOICE_REF_WAV or "").strip() or not spk.is_file():
             raise FileNotFoundError(
-                f"OmniVoice: cần --omnivoice-ref-wav (giọng mẫu): {spk}"
+                f"OmniVoice: cần OMNIVOICE_REF_WAV (giọng mẫu): {spk}"
             )
         LOG_DIR.mkdir(parents=True, exist_ok=True)
         omni_ref_prepared = prepare_speaker_reference(spk, LOG_DIR)
         omni_device = _omnivoice_resolve_device_map(str(OMNIVOICE_DEVICE_MAP or ""))
         if not str(OMNIVOICE_REF_TEXT or "").strip():
             raise ValueError(
-                "OmniVoice: cần --omnivoice-ref-text (transcript của giọng mẫu). "
+                "OmniVoice: cần OMNIVOICE_REF_TEXT (transcript của giọng mẫu) trong auto_vietsub_pro.py. "
                 "Để trống sẽ kích hoạt auto ASR và có thể kéo TorchCodec/FFmpeg runtime."
             )
         log(
@@ -3274,13 +3272,21 @@ def parse_cli_args():
         help="Center zoom %% (scale then crop); 0 disables zoom. Typical 5–7.",
     )
     parser.add_argument(
-        "--step6-eq-saturation", type=float, default=STEP6_EQ_SATURATION
-    )
-    parser.add_argument("--step6-eq-contrast", type=float, default=STEP6_EQ_CONTRAST)
-    parser.add_argument(
         "--step6-unsharp",
         default=STEP6_UNSHARP,
         help='ffmpeg unsharp= params, e.g. "5:5:0.8:3:3:0.0".',
+    )
+    parser.add_argument(
+        "--step6-eq-saturation",
+        type=float,
+        default=STEP6_EQ_SATURATION,
+        help="ffmpeg eq saturation (1.0 = neutral).",
+    )
+    parser.add_argument(
+        "--step6-eq-contrast",
+        type=float,
+        default=STEP6_EQ_CONTRAST,
+        help="ffmpeg eq contrast (1.0 = neutral).",
     )
     parser.add_argument(
         "--output-metadata",
@@ -3478,54 +3484,6 @@ def parse_cli_args():
         default="basic",
         help="Step1 VAD/Whisper profile: basic (nhẹ, giọng yếu/ASMR) or advance (stricter thresholds).",
     )
-    parser.add_argument(
-        "--step1-vad",
-        choices=["on", "off"],
-        default="on" if STEP1_VAD_FILTER else "off",
-        help="Enable/disable VAD filter in Step1 to reduce music/noise transcription.",
-    )
-    parser.add_argument(
-        "--step1-vad-threshold",
-        type=float,
-        default=None,
-        help="Override Silero VAD threshold (default from --mode if omitted).",
-    )
-    parser.add_argument(
-        "--step1-min-silence-ms",
-        type=int,
-        default=None,
-        help="Override min silence ms between VAD segments (default from --mode if omitted).",
-    )
-    parser.add_argument(
-        "--step1-min-speech-ms",
-        type=int,
-        default=None,
-        help="Override min speech segment ms (default from --mode if omitted).",
-    )
-    parser.add_argument(
-        "--step1-speech-pad-ms",
-        type=int,
-        default=None,
-        help="Override speech pad ms (default from --mode if omitted).",
-    )
-    parser.add_argument(
-        "--step1-no-speech-threshold",
-        type=float,
-        default=None,
-        help="Whisper no-speech threshold; higher skips non-speech more (default from --mode if omitted).",
-    )
-    parser.add_argument(
-        "--step1-logprob-threshold",
-        type=float,
-        default=None,
-        help="Whisper avg logprob threshold (default from --mode if omitted).",
-    )
-    parser.add_argument(
-        "--step1-condition-on-previous-text",
-        choices=["on", "off"],
-        default=None,
-        help="Context from previous text; default from --mode if omitted.",
-    )
     parser.add_argument("--edge-tts-voice", default=EDGE_TTS_VOICE)
     parser.add_argument("--edge-tts-rate", default=EDGE_TTS_RATE)
     parser.add_argument("--edge-tts-volume", default=EDGE_TTS_VOLUME)
@@ -3535,99 +3493,6 @@ def parse_cli_args():
         choices=["edge", "vixtts", "omnivoice"],
         default=STEP3_TTS_ENGINE,
         help="edge=Edge TTS; vixtts=Coqui XTTS local; omnivoice=OmniVoice Vi (pip install omnivoice, khuyến nghị GPU).",
-    )
-    parser.add_argument(
-        "--vixtts-model-dir",
-        default=VIXTTS_MODEL_DIR,
-        help="Thư mục checkpoint: model.pth, config.json, vocab.json (speakers_xtts.pth tự tải nếu thiếu).",
-    )
-    parser.add_argument(
-        "--vixtts-speaker-wav",
-        default=VIXTTS_SPEAKER_WAV,
-        help="File giọng mẫu ~6s (WAV dùng trực tiếp; mp3/m4a/flac/… tự chuyển WAV 24kHz trong logs/). Bắt buộc khi --step3-tts-engine vixtts.",
-    )
-    parser.add_argument(
-        "--vixtts-lang",
-        default=VIXTTS_LANG,
-        help="Mã ngôn ngữ XTTS (mặc định vi).",
-    )
-    parser.add_argument(
-        "--vixtts-use-deepspeed",
-        choices=["on", "off"],
-        default="on" if VIXTTS_USE_DEEPSPEED else "off",
-        help="DeepSpeed inference (cần cài deepspeed; mặc định off).",
-    )
-    parser.add_argument(
-        "--vixtts-normalize-text",
-        choices=["on", "off"],
-        default="on" if VIXTTS_NORMALIZE_TEXT else "off",
-        help="Chuẩn hoá tiếng Việt với vinorm (cần pip install vinorm; off=giữ text sau sanitize).",
-    )
-    parser.add_argument(
-        "--vixtts-inference-speed",
-        type=float,
-        default=VIXTTS_INFERENCE_SPEED,
-        help="Tốc độ ViXTTS (1.0 tự nhiên nhất; >1.3 dễ bị nhả chữ/cách từ).",
-    )
-    parser.add_argument(
-        "--vixtts-pitch-shift-semitones",
-        type=float,
-        default=VIXTTS_PITCH_SHIFT_SEMITONES,
-        help="Dịch cao độ ViXTTS theo semitone sau khi synth (0=giữ nguyên; âm=trầm hơn; dương=cao hơn; khuyên dùng -2..+2).",
-    )
-    parser.add_argument(
-        "--vixtts-output-volume-gain",
-        type=float,
-        default=VIXTTS_OUTPUT_VOLUME_GAIN,
-        help="Gain output WAV của ViXTTS trước khi lưu (1.0=giữ nguyên, 1.3~1.6 thường đủ lớn; quá cao dễ clip).",
-    )
-    parser.add_argument(
-        "--omnivoice-model-id",
-        default=OMNIVOICE_MODEL_ID,
-        help="HF model id (mặc định splendor1811/omnivoice-vietnamese).",
-    )
-    parser.add_argument(
-        "--omnivoice-ref-wav",
-        default=OMNIVOICE_REF_WAV,
-        help="File giọng mẫu cho OmniVoice (WAV/mp3/…; tự convert trong logs/ giống ViXTTS).",
-    )
-    parser.add_argument(
-        "--omnivoice-ref-text",
-        default=OMNIVOICE_REF_TEXT,
-        help="Transcript khớp giọng mẫu (bắt buộc cho chất lượng clone; xem HF model card).",
-    )
-    parser.add_argument(
-        "--omnivoice-device-map",
-        default=OMNIVOICE_DEVICE_MAP,
-        help="Rỗng=tự chọn cuda:0 hoặc cpu; hoặc ví dụ cuda:0, cpu.",
-    )
-    parser.add_argument(
-        "--omnivoice-dtype",
-        default=OMNIVOICE_DTYPE,
-        help="float16 | float32 | bfloat16 (CPU thường ổn hơn với float32).",
-    )
-    parser.add_argument(
-        "--omnivoice-language",
-        default=OMNIVOICE_LANGUAGE,
-        help="Tham số language cho model.generate (mặc định vietnamese).",
-    )
-    parser.add_argument(
-        "--omnivoice-num-step",
-        type=int,
-        default=OMNIVOICE_NUM_STEP,
-        help="Diffusion steps (0=dùng mặc định thư viện, không truyền OmniVoiceGenerationConfig).",
-    )
-    parser.add_argument(
-        "--omnivoice-guidance-scale",
-        type=float,
-        default=OMNIVOICE_GUIDANCE_SCALE,
-        help="Guidance scale khi dùng OmniVoiceGenerationConfig (cùng --omnivoice-num-step > 0).",
-    )
-    parser.add_argument(
-        "--omnivoice-normalize-text",
-        choices=["on", "off"],
-        default="on" if OMNIVOICE_NORMALIZE_TEXT else "off",
-        help="Chuẩn hoá tiếng Việt với vinorm trước khi đọc (cần pip install vinorm).",
     )
     parser.add_argument(
         "--auto-speed",
@@ -3675,18 +3540,6 @@ def parse_cli_args():
         "--translation-context",
         default=TRANSLATION_CONTEXT,
         help="Custom context/instructions for Gemini translation. Overrides default Han-Viet prompt.",
-    )
-    parser.add_argument(
-        "--step2-multi-keys",
-        choices=["on", "off"],
-        default="on" if STEP2_MULTI_KEYS_ENABLED else "off",
-        help="Step2 Gemini: on=rotate through all keys on error; off=use active key only.",
-    )
-    parser.add_argument(
-        "--processbar-log",
-        choices=["on", "off"],
-        default="on" if PROCESSBAR_LOG_ENABLED else "off",
-        help="Show tqdm process bars in output logs.",
     )
     parser.add_argument(
         "--step",
@@ -3749,23 +3602,6 @@ def apply_cli_config(args):
     global STEP4_MERGE_SPEED
     global EDGE_TTS_VOICE
     global STEP3_TTS_ENGINE
-    global VIXTTS_MODEL_DIR
-    global VIXTTS_SPEAKER_WAV
-    global VIXTTS_LANG
-    global VIXTTS_USE_DEEPSPEED
-    global VIXTTS_NORMALIZE_TEXT
-    global VIXTTS_INFERENCE_SPEED
-    global VIXTTS_PITCH_SHIFT_SEMITONES
-    global VIXTTS_OUTPUT_VOLUME_GAIN
-    global OMNIVOICE_MODEL_ID
-    global OMNIVOICE_REF_WAV
-    global OMNIVOICE_REF_TEXT
-    global OMNIVOICE_DEVICE_MAP
-    global OMNIVOICE_DTYPE
-    global OMNIVOICE_LANGUAGE
-    global OMNIVOICE_NUM_STEP
-    global OMNIVOICE_GUIDANCE_SCALE
-    global OMNIVOICE_NORMALIZE_TEXT
     global STEP3_AUTO_RATE_ENABLED
     global STEP3_AUTO_RATE_TRIGGER_CHARS_PER_SEC
     global STEP3_AUTO_RATE_BONUS_PERCENT
@@ -3774,8 +3610,6 @@ def apply_cli_config(args):
     global STEP3_TTS_MAX_RETRY_ACTION
     global STEP3_VOICE_RESUME
     global TRANSLATION_CONTEXT
-    global STEP2_MULTI_KEYS_ENABLED
-    global PROCESSBAR_LOG_ENABLED
     WHISPER_LANGUAGE = str(args.whisper_language).strip() or None
     STEP1_SUBTITLE_SOURCE = (
         str(args.step1_subtitle_source or STEP1_SUBTITLE_SOURCE).strip().lower()
@@ -3783,7 +3617,6 @@ def apply_cli_config(args):
     global EDGE_TTS_RATE
     global EDGE_TTS_VOLUME
     global EDGE_TTS_PITCH
-    global STEP1_VAD_FILTER
     global STEP1_VAD_THRESHOLD
     global STEP1_MIN_SILENCE_MS
     global STEP1_MIN_SPEECH_MS
@@ -3863,25 +3696,6 @@ def apply_cli_config(args):
     EDGE_TTS_VOLUME = args.edge_tts_volume
     EDGE_TTS_PITCH = args.edge_tts_pitch
     STEP3_TTS_ENGINE = str(args.step3_tts_engine or "vixtts").strip().lower() or "vixtts"
-    VIXTTS_MODEL_DIR = str(args.vixtts_model_dir or "").strip()
-    VIXTTS_SPEAKER_WAV = str(args.vixtts_speaker_wav or "").strip()
-    VIXTTS_LANG = str(args.vixtts_lang or "vi").strip() or "vi"
-    VIXTTS_USE_DEEPSPEED = args.vixtts_use_deepspeed == "on"
-    VIXTTS_NORMALIZE_TEXT = args.vixtts_normalize_text == "on"
-    VIXTTS_INFERENCE_SPEED = max(0.5, float(args.vixtts_inference_speed))
-    VIXTTS_PITCH_SHIFT_SEMITONES = max(
-        -12.0, min(12.0, float(args.vixtts_pitch_shift_semitones))
-    )
-    VIXTTS_OUTPUT_VOLUME_GAIN = max(0.0, float(args.vixtts_output_volume_gain))
-    OMNIVOICE_MODEL_ID = str(args.omnivoice_model_id or "").strip()
-    OMNIVOICE_REF_WAV = str(args.omnivoice_ref_wav or "").strip()
-    OMNIVOICE_REF_TEXT = str(args.omnivoice_ref_text or "")
-    OMNIVOICE_DEVICE_MAP = str(args.omnivoice_device_map or "")
-    OMNIVOICE_DTYPE = str(args.omnivoice_dtype or "float16").strip() or "float16"
-    OMNIVOICE_LANGUAGE = str(args.omnivoice_language or "vietnamese").strip() or "vietnamese"
-    OMNIVOICE_NUM_STEP = int(args.omnivoice_num_step)
-    OMNIVOICE_GUIDANCE_SCALE = float(args.omnivoice_guidance_scale)
-    OMNIVOICE_NORMALIZE_TEXT = args.omnivoice_normalize_text == "on"
     STEP3_AUTO_RATE_ENABLED = args.auto_speed == "on"
     STEP3_AUTO_RATE_TRIGGER_CHARS_PER_SEC = float(args.step3_auto_rate_trigger_cps)
     STEP3_AUTO_RATE_BONUS_PERCENT = int(args.step3_auto_rate_bonus_percent)
@@ -3892,45 +3706,15 @@ def apply_cli_config(args):
     )
     STEP3_VOICE_RESUME = args.step3_voice_resume == "on"
     TRANSLATION_CONTEXT = args.translation_context or ""
-    STEP2_MULTI_KEYS_ENABLED = args.step2_multi_keys == "on"
-    PROCESSBAR_LOG_ENABLED = args.processbar_log == "on"
 
     prof = STEP1_PROFILES[args.mode]
-    STEP1_VAD_FILTER = args.step1_vad == "on"
-    STEP1_VAD_THRESHOLD = (
-        args.step1_vad_threshold
-        if args.step1_vad_threshold is not None
-        else prof["vad_threshold"]
-    )
-    STEP1_MIN_SILENCE_MS = (
-        args.step1_min_silence_ms
-        if args.step1_min_silence_ms is not None
-        else prof["min_silence_ms"]
-    )
-    STEP1_MIN_SPEECH_MS = (
-        args.step1_min_speech_ms
-        if args.step1_min_speech_ms is not None
-        else prof["min_speech_ms"]
-    )
-    STEP1_SPEECH_PAD_MS = (
-        args.step1_speech_pad_ms
-        if args.step1_speech_pad_ms is not None
-        else prof["speech_pad_ms"]
-    )
-    STEP1_NO_SPEECH_THRESHOLD = (
-        args.step1_no_speech_threshold
-        if args.step1_no_speech_threshold is not None
-        else prof["no_speech_threshold"]
-    )
-    STEP1_LOGPROB_THRESHOLD = (
-        args.step1_logprob_threshold
-        if args.step1_logprob_threshold is not None
-        else prof["logprob_threshold"]
-    )
-    if args.step1_condition_on_previous_text is not None:
-        STEP1_CONDITION_ON_PREVIOUS_TEXT = args.step1_condition_on_previous_text == "on"
-    else:
-        STEP1_CONDITION_ON_PREVIOUS_TEXT = prof["condition_on_previous_text"]
+    STEP1_VAD_THRESHOLD = prof["vad_threshold"]
+    STEP1_MIN_SILENCE_MS = prof["min_silence_ms"]
+    STEP1_MIN_SPEECH_MS = prof["min_speech_ms"]
+    STEP1_SPEECH_PAD_MS = prof["speech_pad_ms"]
+    STEP1_NO_SPEECH_THRESHOLD = prof["no_speech_threshold"]
+    STEP1_LOGPROB_THRESHOLD = prof["logprob_threshold"]
+    STEP1_CONDITION_ON_PREVIOUS_TEXT = prof["condition_on_previous_text"]
 
     if args.easyocr_lang:
         EASYOCR_LANG = [s.strip() for s in args.easyocr_lang.split(",") if s.strip()]
