@@ -107,6 +107,11 @@ const OPTION_MAPPINGS: Array<{
     keys: ["step3TtsEngine", "step3_tts_engine"],
     allowedTypes: ["string"],
   },
+  {
+    cliFlag: "--omnivoice-ref-wav",
+    keys: ["omnivoiceRefWav", "omnivoice_ref_wav"],
+    allowedTypes: ["string"],
+  },
   { cliFlag: "--auto-speed", keys: ["autoSpeed", "auto_speed"], allowedTypes: ["string"] },
   {
     cliFlag: "--step3-auto-rate-trigger-cps",

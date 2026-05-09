@@ -3495,6 +3495,14 @@ def parse_cli_args():
         help="edge=Edge TTS; vixtts=Coqui XTTS local; omnivoice=OmniVoice Vi (pip install omnivoice, khuyến nghị GPU).",
     )
     parser.add_argument(
+        "--omnivoice-ref-wav",
+        default="",
+        help=(
+            "Tên file giọng mẫu đặt trong thư mục voice/ (vd: sample.wav). "
+            "Khi có giá trị, script sẽ dùng SCRIPT_DIR/voice/<tên_file> cho OMNIVOICE_REF_WAV."
+        ),
+    )
+    parser.add_argument(
         "--auto-speed",
         choices=["on", "off"],
         default="on" if STEP3_AUTO_RATE_ENABLED else "off",
@@ -3617,6 +3625,7 @@ def apply_cli_config(args):
     global EDGE_TTS_RATE
     global EDGE_TTS_VOLUME
     global EDGE_TTS_PITCH
+    global OMNIVOICE_REF_WAV
     global STEP1_VAD_THRESHOLD
     global STEP1_MIN_SILENCE_MS
     global STEP1_MIN_SPEECH_MS
@@ -3696,6 +3705,9 @@ def apply_cli_config(args):
     EDGE_TTS_VOLUME = args.edge_tts_volume
     EDGE_TTS_PITCH = args.edge_tts_pitch
     STEP3_TTS_ENGINE = str(args.step3_tts_engine or "vixtts").strip().lower() or "vixtts"
+    omnivoice_ref_wav_name = str(getattr(args, "omnivoice_ref_wav", "") or "").strip()
+    if omnivoice_ref_wav_name:
+        OMNIVOICE_REF_WAV = str(SCRIPT_DIR / "voice" / omnivoice_ref_wav_name)
     STEP3_AUTO_RATE_ENABLED = args.auto_speed == "on"
     STEP3_AUTO_RATE_TRIGGER_CHARS_PER_SEC = float(args.step3_auto_rate_trigger_cps)
     STEP3_AUTO_RATE_BONUS_PERCENT = int(args.step3_auto_rate_bonus_percent)
