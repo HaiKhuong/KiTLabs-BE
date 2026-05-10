@@ -91,6 +91,7 @@ OMNIVOICE_DTYPE = "float16"  # float16 | float32 | bfloat16
 OMNIVOICE_LANGUAGE = "vietnamese"
 OMNIVOICE_NUM_STEP = 8
 OMNIVOICE_GUIDANCE_SCALE = 2.0
+OMNIVOICE_SEED = 42  # None = random, số nguyên = deterministic (giúp reproducible + ổn định tone giọng)
 OMNIVOICE_NORMALIZE_TEXT = False
 OMNIVOICE_TRIM_TRAILING_SILENCE = True
 OMNIVOICE_TRAILING_SILENCE_MIN_MS = 120
@@ -2724,6 +2725,7 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
                     or "vietnamese",
                     num_step=ns if ns > 0 else None,
                     guidance_scale=gs if ns > 0 else None,
+                    seed=OMNIVOICE_SEED if OMNIVOICE_SEED is not None else None,
                 )
             else:
                 run_edge_tts_mp3_save(subtitle_text, raw_audio_path, rate)

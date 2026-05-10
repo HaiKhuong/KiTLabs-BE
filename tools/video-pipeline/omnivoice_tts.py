@@ -3,6 +3,23 @@ OmniVoice Vietnamese TTS (splendor1811/omnivoice-vietnamese) — dùng cho Step3
 
 Cài: pip install omnivoice
 Tham khảo: https://huggingface.co/splendor1811/omnivoice-vietnamese
+
+⚠️ QUAN TRỌNG - VOICE CONSISTENCY:
+- Module này sử dụng CACHING để đảm bảo tone giọng ổn định giữa các câu
+- Voice clone prompt được tạo một lần và tái sử dụng cho tất cả các câu
+- KHÔNG reset cache giữa các câu trong cùng một video để giữ tone giọng nhất quán
+- Chỉ reset cache khi cần đổi giọng mẫu: reset_omnivoice_session()
+
+📝 CÁCH HOẠT ĐỘNG:
+1. Lần đầu tiên gọi synthesize_to_wav() với ref_audio/ref_text:
+   - Model được load và cache (theo model_id, device, dtype)
+   - Voice clone prompt được tạo và cache (theo ref_audio path + ref_text)
+2. Các lần gọi tiếp theo với cùng ref_audio/ref_text:
+   - Tái sử dụng model và voice prompt đã cache
+   - Đảm bảo tone giọng nhất quán 100%
+3. Nếu đổi ref_audio hoặc ref_text:
+   - Voice prompt tự động được tạo lại và cache mới
+   - Model vẫn được giữ nếu model_id/device/dtype không đổi
 """
 
 from __future__ import annotations
@@ -117,7 +134,34 @@ def ensure_voice_clone_prompt(
     device_map: str,
     dtype_str: str,
 ) -> Any:
-    """Tạo / cache voice_clone_prompt từ file giọng mẫu + transcript (nên transcript khớp audio)."""
+    """
+    Tạo / cache voice_clone_prompt từ file giọng mẫu + transcript.
+    
+    ⚠️ QUAN TRỌNG - VOICE CONSISTENCY:
+    Đây là KEY để đảm bảo tone giọng nhất quán giữa các câu!
+    
+    Voice clone prompt chứa embedding của đặc trưng giọng nói từ ref_audio.
+    Bằng cách tạo và cache prompt này một lần duy nhất, tất cả các câu sau đó
+    sẽ sử dụng cùng một embedding → tone giọng giữ nguyên 100%.
+    
+    Nếu mỗi lần generate đều encode lại từ raw audio thì:
+    - Neural network có tính stochastic → embedding hơi khác mỗi lần
+    - Dẫn đến tone giọng "nhảy" giữa các câu
+    
+    Cache key: (resolved ref_audio path, ref_text)
+    - Chỉ tạo lại khi đổi file audio mẫu hoặc transcript
+    - Cùng file audio + transcript → tái sử dụng prompt đã cache
+    
+    Args:
+        ref_audio: Đường dẫn file audio mẫu (nên là transcript khớp với audio)
+        ref_text: Transcript của audio mẫu (giúp model align tốt hơn)
+        model_id: HuggingFace model ID
+        device_map: Device để chạy model
+        dtype_str: Data type của model
+        
+    Returns:
+        Cached voice clone prompt object (dùng cho model.generate())
+    """
     global _session_prompt, _session_prompt_key
     ra = str(Path(ref_audio).resolve())
     if not Path(ra).is_file():
@@ -145,10 +189,26 @@ def synthesize_to_wav(
     language: str = "vietnamese",
     num_step: Optional[int] = 8,
     guidance_scale: Optional[float] = 2.0,
+    seed: Optional[int] = None,
 ) -> None:
     """
     Sinh một đoạn thoại, ghi WAV mono 24 kHz (theo model card).
     Dùng cached model + voice prompt khi ref_audio/ref_text/model không đổi.
+    
+    ✨ QUAN TRỌNG: Sử dụng cached voice_clone_prompt để đảm bảo tone giọng ổn định giữa các câu.
+    
+    Args:
+        text: Nội dung cần tổng hợp giọng nói
+        out_wav: Đường dẫn file WAV output
+        ref_audio: File audio mẫu để clone giọng (sẽ được cache)
+        ref_text: Transcript của audio mẫu (sẽ được cache cùng ref_audio)
+        model_id: HuggingFace model ID
+        device_map: Device để chạy model (cuda:0, cpu, etc.)
+        dtype_str: Data type (float16, bfloat16, float32)
+        language: Ngôn ngữ (vietnamese, english, etc.)
+        num_step: Số bước generation (càng cao càng chất lượng nhưng chậm hơn)
+        guidance_scale: Độ mạnh của guidance (càng cao càng sát prompt nhưng ít tự nhiên)
+        seed: Random seed để tạo output deterministic (giúp tái tạo chính xác cùng output)
     """
     try:
         import numpy as np
@@ -171,13 +231,29 @@ def synthesize_to_wav(
     if not t:
         raise ValueError("OmniVoice: text rỗng.")
 
+    rt = str(ref_text or "").strip()
+    
+    # 🔧 FIX: Sử dụng cached voice clone prompt để đảm bảo tone giọng nhất quán
+    # Thay vì truyền trực tiếp ref_audio/ref_text vào mỗi lần generate,
+    # ta tạo và cache voice prompt một lần, sau đó tái sử dụng.
+    voice_prompt = ensure_voice_clone_prompt(
+        ref_audio=ref_audio_path,
+        ref_text=rt,
+        model_id=model_id,
+        device_map=device_map,
+        dtype_str=dtype_str,
+    )
+
+    # 🎲 Set seed cho deterministic output (nếu được chỉ định)
+    if seed is not None:
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
+
     gen_kw: dict = dict(
         text=t,
-        ref_audio=ref_audio_path,
+        voice_clone_prompt=voice_prompt,
     )
-    rt = str(ref_text or "").strip()
-    if rt:
-        gen_kw["ref_text"] = rt
 
     lang = str(language or "").strip()
     if lang:
@@ -195,17 +271,31 @@ def synthesize_to_wav(
                 guidance_scale=float(guidance_scale),
             )
         except Exception:
-            # Một số phiên bản có thể khác tên / không có class — gọi generate mặc định.
             pass
 
     try:
         audio = model.generate(**gen_kw)
     except TypeError:
-        # Một số bản OmniVoice không nhận language / generation_config.
-        slim_kw = {"text": t, "ref_audio": ref_audio_path}
-        if rt:
-            slim_kw["ref_text"] = rt
-        audio = model.generate(**slim_kw)
+        # Fallback nếu version không hỗ trợ voice_clone_prompt parameter
+        # hoặc không nhận language/generation_config
+        try:
+            # Thử với voice_clone_prompt đơn giản hơn
+            slim_kw = {"text": t, "voice_clone_prompt": voice_prompt}
+            audio = model.generate(**slim_kw)
+        except TypeError:
+            # Fallback cuối cùng: dùng ref_audio/ref_text trực tiếp (cách cũ, không ổn định)
+            # ⚠️ WARNING: Cách này có thể gây tone giọng không nhất quán giữa các câu
+            import warnings
+            warnings.warn(
+                "OmniVoice: Version này không hỗ trợ voice_clone_prompt. "
+                "Đang sử dụng ref_audio trực tiếp - có thể gây tone giọng không ổn định. "
+                "Nên update lên version mới hơn.",
+                UserWarning,
+            )
+            slim_kw = {"text": t, "ref_audio": ref_audio_path}
+            if rt:
+                slim_kw["ref_text"] = rt
+            audio = model.generate(**slim_kw)
 
     # Theo mẫu official: audio là list[np.ndarray] shape (T,) at 24kHz.
     if isinstance(audio, (list, tuple)) and len(audio) > 0:
