@@ -230,7 +230,7 @@ def synthesize_to_wav(
     t = str(text or "").strip()
     # Xóa các ký tự đặc biệt ở cuối text (dấu câu) trước khi tạo voice
     # Ví dụ: "Trời ơi!" => "Trời ơi"
-    t = t.rstrip('!?.,:;…—-')
+    t = t.rstrip('!?,;:;…—-')
     if not t:
         raise ValueError("OmniVoice: text rỗng.")
 
