@@ -25,6 +25,7 @@ Tham khảo: https://huggingface.co/splendor1811/omnivoice-vietnamese
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Any, Optional, Tuple
 
@@ -228,9 +229,9 @@ def synthesize_to_wav(
         raise FileNotFoundError(f"OmniVoice: không tìm thấy ref_audio: {ref_audio_path}")
 
     t = str(text or "").strip()
-    # Xóa các ký tự đặc biệt ở cuối text (dấu câu) trước khi tạo voice
-    # Ví dụ: "Trời ơi!" => "Trời ơi"
-    t = t.rstrip('!?;:;…—-')
+    # Chuẩn hóa dấu câu ở cuối text thành một dấu chấm trước khi tạo voice
+    # Ví dụ: "Trời ơi!" => "Trời ơi." ; "Xong…" => "Xong."
+    t = re.sub(r'[!?.,:;…\-–—]+$', '.', t)
     if not t:
         raise ValueError("OmniVoice: text rỗng.")
 
