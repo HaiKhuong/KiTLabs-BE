@@ -228,6 +228,9 @@ def synthesize_to_wav(
         raise FileNotFoundError(f"OmniVoice: không tìm thấy ref_audio: {ref_audio_path}")
 
     t = str(text or "").strip()
+    # Xóa các ký tự đặc biệt ở cuối text (dấu câu) trước khi tạo voice
+    # Ví dụ: "Trời ơi!" => "Trời ơi"
+    t = t.rstrip('!?.,:;…—-')
     if not t:
         raise ValueError("OmniVoice: text rỗng.")
 
