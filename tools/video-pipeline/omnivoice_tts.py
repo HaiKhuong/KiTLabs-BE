@@ -62,6 +62,25 @@ def reset_omnivoice_session() -> None:
     _session_prompt_key = None
 
 
+def _normalize_tts_text_for_audio(text: str) -> str:
+    """
+    Chuẩn hóa text trước khi TTS:
+    - Bỏ dấu ngoặc kép (ASCII và typographic thường gặp).
+    - Thay : ; ? ! trong câu bằng dấu chấm để model ngắt nhịp / ngắt câu ổn định hơn.
+    - Gộp nhiều chấm liên tiếp; cuối đoạn gom các dấu câu lặp về một dấu chấm.
+    """
+    t = str(text or "").strip()
+    if not t:
+        return t
+    for q in ('"', "\u201c", "\u201d", "\u2018", "\u2019", "\u00ab", "\u00bb"):
+        t = t.replace(q, "")
+    for p in (":", ";", "?", "!"):
+        t = t.replace(p, ".")
+    t = re.sub(r"\.(?:\s*\.)+", ".", t)
+    t = re.sub(r"[!?.,:;…\-–—]+$", ".", t)
+    return t.strip()
+
+
 def _resolve_dtype(dtype_str: str):
     import torch
 
@@ -228,10 +247,7 @@ def synthesize_to_wav(
     if not Path(ref_audio_path).is_file():
         raise FileNotFoundError(f"OmniVoice: không tìm thấy ref_audio: {ref_audio_path}")
 
-    t = str(text or "").strip()
-    # Chuẩn hóa dấu câu ở cuối text thành một dấu chấm trước khi tạo voice
-    # Ví dụ: "Trời ơi!" => "Trời ơi." ; "Xong…" => "Xong."
-    t = re.sub(r'[!?.,:;…\-–—]+$', '.', t)
+    t = _normalize_tts_text_for_audio(str(text or ""))
     if not t:
         raise ValueError("OmniVoice: text rỗng.")
 
