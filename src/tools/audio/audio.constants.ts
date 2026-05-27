@@ -21,9 +21,13 @@ export const AUDIO_CLONE_UPLOAD_DIR = join(AUDIO_DATA_ROOT, "audio-clone");
 export const AUDIO_OUTPUT_DIR = join(AUDIO_DATA_ROOT, "audio-tts");
 export const AUDIO_PREVIEW_CACHE_DIR = join(AUDIO_DATA_ROOT, "audio-previews");
 
+/** Cache HF/torch cho subprocess Python (OmniVoice). */
+export const KITLABS_PYTHON_CACHE_ROOT = resolve(
+  (process.env.KITLABS_PYTHON_CACHE_DIR ?? "").trim() || join(AUDIO_DATA_ROOT, "python-cache"),
+);
+
 export const AUDIO_MAX_TEXT_CHARS = 2000;
-export const AUDIO_DEMO_PREVIEW_TEXT =
-  "Xin chào, tôi là giọng đọc nhân tạo của AutoVietsub.";
+export const AUDIO_DEMO_PREVIEW_TEXT = "Xin chào, tôi là giọng đọc nhân tạo của AutoVietsub.";
 
 export type AudioPresetVoice = {
   id: string;
@@ -76,8 +80,7 @@ export const AUDIO_PRESET_VOICES: AudioPresetVoice[] = [
     gender: "female",
     avatar: "👩",
     refWav: "sample_edge_tts.mp3",
-    refText:
-      "Xin chào, chào mừng bạn đến với AutoVietsub. Đây là giọng đọc mẫu tiếng Việt, rõ ràng và tự nhiên.",
+    refText: "Xin chào, chào mừng bạn đến với AutoVietsub. Đây là giọng đọc mẫu tiếng Việt, rõ ràng và tự nhiên.",
   },
 ];
 

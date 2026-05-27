@@ -5,9 +5,19 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import sys
+import time
 from pathlib import Path
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="[omnivoice-cli] %(message)s",
+    stream=sys.stderr,
+    force=True,
+)
+log = logging.getLogger("omnivoice-cli")
 
 
 def _resolve_device_map(raw: str) -> str:
@@ -50,15 +60,35 @@ def main() -> int:
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
+    device_map = _resolve_device_map(str(args.device_map or ""))
+    log.info(
+        "start model_id=%s device=%s language=%s dtype=%s num_step=%s ref=%s out=%s text_len=%s",
+        model_id,
+        device_map,
+        args.language,
+        args.dtype,
+        args.num_step,
+        ref_audio,
+        out_path.resolve(),
+        len(str(args.text or "")),
+    )
+    log.info(
+        "cache env HF_HOME=%s TORCH_HOME=%s XDG_CACHE_HOME=%s",
+        os.getenv("HF_HOME", ""),
+        os.getenv("TORCH_HOME", ""),
+        os.getenv("XDG_CACHE_HOME", ""),
+    )
+
     from omnivoice_tts import synthesize_to_wav
 
+    t0 = time.perf_counter()
     synthesize_to_wav(
         text=str(args.text or ""),
         out_wav=str(out_path),
         ref_audio=ref_audio,
         ref_text=str(args.ref_text or ""),
         model_id=model_id,
-        device_map=_resolve_device_map(str(args.device_map or "")),
+        device_map=device_map,
         dtype_str=str(args.dtype or "float16"),
         language=str(args.language or "vietnamese"),
         num_step=int(args.num_step) if args.num_step is not None else 8,
@@ -66,6 +96,8 @@ def main() -> int:
         seed=int(args.seed) if args.seed is not None else None,
     )
 
+    elapsed = time.perf_counter() - t0
+    log.info("done elapsed_sec=%.2f out=%s", elapsed, out_path.resolve())
     print(json.dumps({"ok": True, "out": str(out_path.resolve())}))
     return 0
 
