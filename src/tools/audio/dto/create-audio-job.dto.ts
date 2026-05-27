@@ -66,7 +66,7 @@ export class CreateAudioJobDto {
   @Max(5)
   pitch?: number;
 
-  @ApiPropertyOptional({ description: "Credit cost estimate", default: 1 })
+  @ApiPropertyOptional({ description: "Credit cost estimate (0 = free / no deduction)", default: 0 })
   @IsOptional()
   @Type(() => Number)
   @IsNumber()

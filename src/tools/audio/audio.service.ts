@@ -168,11 +168,7 @@ export class AudioService {
       refText = dto.cloneRefText.trim();
     }
 
-    const estimatedCost = dto.estimatedCost ?? 1;
-    const availableCredit = Number(user.credit);
-    if (availableCredit < estimatedCost) {
-      throw new BadRequestException("Insufficient credit for audio generation");
-    }
+    const estimatedCost = dto.estimatedCost ?? 0;
 
     const displayName =
       text.length > 80 ? `${text.slice(0, 77).trim()}...` : text;
