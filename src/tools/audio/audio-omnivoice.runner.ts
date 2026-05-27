@@ -4,6 +4,7 @@ import { existsSync, mkdirSync } from "fs";
 import { basename, dirname, isAbsolute, join, resolve } from "path";
 
 import { KITLABS_PYTHON_CACHE_ROOT } from "./audio.constants";
+import { getOmnivoiceDaemonPool, isOmnivoiceDaemonEnabled } from "./audio-omnivoice.daemon";
 
 export type OmnivoiceRunInput = {
   text: string;
@@ -49,8 +50,10 @@ function buildPythonChildEnv(): NodeJS.ProcessEnv {
   };
 }
 
-export async function runOmnivoiceTts(input: OmnivoiceRunInput): Promise<string> {
-  const pythonBin = process.env.AUDIO_PYTHON_BIN ?? process.env.TRANSLATE_PYTHON_BIN ?? (process.platform === "win32" ? "py" : "python3");
+/** Một process Python / request (fallback khi daemon tắt hoặc lỗi). */
+async function runOmnivoiceTtsSpawn(input: OmnivoiceRunInput): Promise<string> {
+  const pythonBin =
+    process.env.AUDIO_PYTHON_BIN ?? process.env.TRANSLATE_PYTHON_BIN ?? (process.platform === "win32" ? "py" : "python3");
   const scriptPath =
     process.env.AUDIO_PYTHON_SCRIPT ?? join("tools", "video-pipeline", "audio_tts_cli.py");
   const absScriptPath = isAbsolute(scriptPath) ? scriptPath : resolve(process.cwd(), scriptPath);
@@ -99,25 +102,15 @@ export async function runOmnivoiceTts(input: OmnivoiceRunInput): Promise<string>
     args.push("--seed", String(input.seed));
   }
 
-  const textPreview =
-    input.text.length > 80 ? `${input.text.slice(0, 80)}…` : input.text;
-
   omnivoiceLog.log(
     [
-      "spawn",
+      "spawn-cli",
       `bin=${pythonBin}`,
-      `script=${absScriptPath}`,
-      `model=${modelId}`,
-      `device=${deviceMap || "auto"}`,
-      `language=${input.language ?? process.env.OMNIVOICE_LANGUAGE ?? "vietnamese"}`,
       `textLen=${input.text.length}`,
       `ref=${basename(refAudio)}`,
       `out=${outWav}`,
-      `timeoutMs=${timeoutMs}`,
-      `cacheRoot=${KITLABS_PYTHON_CACHE_ROOT}`,
     ].join(" "),
   );
-  omnivoiceLog.debug(`text preview: ${JSON.stringify(textPreview)}`);
 
   const startedAt = Date.now();
 
@@ -131,7 +124,6 @@ export async function runOmnivoiceTts(input: OmnivoiceRunInput): Promise<string>
     let stdout = "";
     let stderr = "";
     const timeoutHandle = setTimeout(() => {
-      omnivoiceLog.error(`timeout after ${timeoutMs}ms — sending SIGTERM pid=${child.pid ?? "?"}`);
       child.kill("SIGTERM");
       rejectPromise(new Error(`OmniVoice TTS timed out after ${timeoutMs}ms`));
     }, timeoutMs);
@@ -152,28 +144,37 @@ export async function runOmnivoiceTts(input: OmnivoiceRunInput): Promise<string>
     child.stderr?.on("data", (buf) => append("stderr", buf.toString("utf8")));
     child.on("error", (err) => {
       clearTimeout(timeoutHandle);
-      omnivoiceLog.error(`spawn error: ${err.message}`);
       rejectPromise(err);
     });
     child.on("close", (code) => {
       clearTimeout(timeoutHandle);
-      const elapsedMs = Date.now() - startedAt;
       if (code !== 0) {
-        omnivoiceLog.error(
-          `exit code=${code} elapsedMs=${elapsedMs} stderrTail=${JSON.stringify(stderr.trim().slice(-2000))}`,
-        );
         rejectPromise(new Error(stderr.trim() || stdout.trim() || `OmniVoice exited with code ${code}`));
         return;
       }
-      omnivoiceLog.log(`exit ok code=0 elapsedMs=${elapsedMs}`);
+      omnivoiceLog.log(`spawn-cli ok elapsedMs=${Date.now() - startedAt}`);
       resolvePromise();
     });
   });
 
   if (!existsSync(outWav)) {
-    omnivoiceLog.error(`missing output file: ${outWav}`);
     throw new Error(`OmniVoice did not produce output: ${outWav}`);
   }
-  omnivoiceLog.log(`wrote ${outWav}`);
   return outWav;
+}
+
+/**
+ * OmniVoice TTS — mặc định dùng daemon (một process Python, cache model như auto_vietsub_pro).
+ * Tắt daemon: AUDIO_OMNIVOICE_DAEMON=false
+ */
+export async function runOmnivoiceTts(input: OmnivoiceRunInput): Promise<string> {
+  if (isOmnivoiceDaemonEnabled()) {
+    try {
+      return await getOmnivoiceDaemonPool().synthesize(input);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      omnivoiceLog.warn(`daemon failed, fallback spawn-cli: ${message}`);
+    }
+  }
+  return runOmnivoiceTtsSpawn(input);
 }
