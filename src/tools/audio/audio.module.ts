@@ -1,0 +1,25 @@
+import { Module } from "@nestjs/common";
+import { BullModule } from "@nestjs/bullmq";
+import { TypeOrmModule } from "@nestjs/typeorm";
+
+import { CreditHistory } from "../credits/credit-history.entity";
+import { LogsModule } from "../logs/logs.module";
+import { NotificationsModule } from "../notifications/notifications.module";
+import { User } from "../users/user.entity";
+import { AudioController } from "./audio.controller";
+import { AudioHistory } from "./audio-history.entity";
+import { AudioProcessor } from "./audio.processor";
+import { AUDIO_QUEUE_NAME, AudioService } from "./audio.service";
+
+@Module({
+  imports: [
+    BullModule.registerQueue({ name: AUDIO_QUEUE_NAME }),
+    TypeOrmModule.forFeature([AudioHistory, User, CreditHistory], "tool"),
+    LogsModule,
+    NotificationsModule,
+  ],
+  controllers: [AudioController],
+  providers: [AudioService, AudioProcessor],
+  exports: [AudioService],
+})
+export class AudioModule {}
