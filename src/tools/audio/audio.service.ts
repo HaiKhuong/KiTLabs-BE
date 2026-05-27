@@ -75,7 +75,7 @@ export class AudioService {
 
   resolveCloneRefAudioPath(userId: string, fileName: string): string {
     const safeName = basename(fileName);
-    const path = resolve(process.cwd(), AUDIO_CLONE_UPLOAD_DIR, userId, safeName);
+    const path = resolve(AUDIO_CLONE_UPLOAD_DIR, userId, safeName);
     if (!existsSync(path)) {
       throw new BadRequestException(`Clone reference audio not found: ${safeName}`);
     }
@@ -83,7 +83,7 @@ export class AudioService {
   }
 
   getPreviewCachePath(voiceId: string): string {
-    return resolve(process.cwd(), AUDIO_PREVIEW_CACHE_DIR, `${voiceId}.wav`);
+    return resolve(AUDIO_PREVIEW_CACHE_DIR, `${voiceId}.wav`);
   }
 
   private guessAudioMimeFromPath(filePath: string): string {
@@ -333,7 +333,7 @@ export class AudioService {
   }
 
   buildOutputPath(userId: string, audioHistoryId: string): string {
-    const dir = resolve(process.cwd(), AUDIO_OUTPUT_DIR, userId);
+    const dir = resolve(AUDIO_OUTPUT_DIR, userId);
     mkdirSync(dir, { recursive: true });
     return join(dir, `${audioHistoryId}.wav`);
   }

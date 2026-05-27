@@ -15,7 +15,7 @@ import { FileInterceptor } from "@nestjs/platform-express";
 import { Response } from "express";
 import { existsSync, mkdirSync } from "fs";
 import { diskStorage } from "multer";
-import { basename, extname, join } from "path";
+import { basename, extname, join, resolve } from "path";
 
 import { Public } from "../../common/decorators/public.decorator";
 import { AUDIO_CLONE_UPLOAD_DIR } from "./audio.constants";
@@ -37,7 +37,7 @@ const resolveCloneDestination = (req: UploadRequest): string => {
   if (!userId) {
     throw new BadRequestException("userId query is required for clone upload");
   }
-  return join(process.cwd(), AUDIO_CLONE_UPLOAD_DIR, userId);
+  return resolve(AUDIO_CLONE_UPLOAD_DIR, userId);
 };
 
 @ApiTags("Audio")

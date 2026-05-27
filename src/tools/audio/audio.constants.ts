@@ -1,10 +1,25 @@
-import { join } from "path";
+import { join, resolve } from "path";
 
 export const VIDEO_PIPELINE_DIR = join("tools", "video-pipeline");
 export const VOICE_SAMPLES_DIR = join(VIDEO_PIPELINE_DIR, "voice");
-export const AUDIO_CLONE_UPLOAD_DIR = join("uploads", "audio-clone");
-export const AUDIO_OUTPUT_DIR = join("uploads", "audio-tts");
-export const AUDIO_PREVIEW_CACHE_DIR = join("uploads", "audio-previews");
+
+/**
+ * Thư mục gốc cho `audio-tts`, `audio-clone`, `audio-previews` (phải ghi được bởi user chạy Nest).
+ * Mặc định: `<cwd>/uploads`. Nếu repo không cho mkdir (permission), đặt env đường dẫn tuyệt đối có quyền ghi,
+ * ví dụ `AUDIO_DATA_ROOT=/var/tmp/kitools-audio` hoặc `KITLABS_AUDIO_DATA_ROOT` (cùng ý nghĩa).
+ */
+function resolveAudioDataRoot(): string {
+  const raw = (process.env.AUDIO_DATA_ROOT ?? process.env.KITLABS_AUDIO_DATA_ROOT ?? "").trim();
+  if (raw) {
+    return resolve(raw);
+  }
+  return resolve(process.cwd(), "uploads");
+}
+
+export const AUDIO_DATA_ROOT = resolveAudioDataRoot();
+export const AUDIO_CLONE_UPLOAD_DIR = join(AUDIO_DATA_ROOT, "audio-clone");
+export const AUDIO_OUTPUT_DIR = join(AUDIO_DATA_ROOT, "audio-tts");
+export const AUDIO_PREVIEW_CACHE_DIR = join(AUDIO_DATA_ROOT, "audio-previews");
 
 export const AUDIO_MAX_TEXT_CHARS = 2000;
 export const AUDIO_DEMO_PREVIEW_TEXT =
