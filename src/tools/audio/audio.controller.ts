@@ -73,9 +73,9 @@ export class AudioController {
   @Public()
   @Get("voices/:voiceId/preview")
   async previewVoice(@Param("voiceId") voiceId: string, @Res() res: Response) {
-    const wavPath = await this.audioService.ensureVoicePreview(voiceId);
-    res.setHeader("Content-Type", "audio/wav");
-    return res.sendFile(wavPath);
+    const { filePath, contentType } = await this.audioService.ensureVoicePreview(voiceId);
+    res.setHeader("Content-Type", contentType);
+    return res.sendFile(filePath);
   }
 
   @ApiOperation({ summary: "Upload clone reference audio (.mp3, .wav, .m4a)" })

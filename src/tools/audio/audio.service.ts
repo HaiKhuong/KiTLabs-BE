@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
+import { BadRequestException, Injectable, Logger, NotFoundException } from "@nestjs/common";
 import { InjectQueue } from "@nestjs/bullmq";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Queue } from "bullmq";
@@ -13,13 +13,14 @@ import { NotificationsService } from "../notifications/notifications.service";
 import { User } from "../users/user.entity";
 import {
   AUDIO_CLONE_UPLOAD_DIR,
-  AUDIO_DEMO_PREVIEW_TEXT,
   AUDIO_MAX_TEXT_CHARS,
   AUDIO_OUTPUT_DIR,
   AUDIO_PREVIEW_CACHE_DIR,
   AUDIO_PRESET_VOICES,
   VOICE_SAMPLES_DIR,
   findPresetVoice,
+  resolveOmnivoiceLanguage,
+  resolvePreviewTtsText,
 } from "./audio.constants";
 import { AudioHistory } from "./audio-history.entity";
 import { CreateAudioJobDto } from "./dto/create-audio-job.dto";
@@ -29,6 +30,8 @@ export const AUDIO_QUEUE_NAME = "audio-tts";
 
 @Injectable()
 export class AudioService {
+  private readonly logger = new Logger(AudioService.name);
+
   constructor(
     @InjectQueue(AUDIO_QUEUE_NAME)
     private readonly audioQueue: Queue,
@@ -83,28 +86,52 @@ export class AudioService {
     return resolve(process.cwd(), AUDIO_PREVIEW_CACHE_DIR, `${voiceId}.wav`);
   }
 
-  async ensureVoicePreview(voiceId: string): Promise<string> {
+  private guessAudioMimeFromPath(filePath: string): string {
+    const lower = filePath.toLowerCase();
+    if (lower.endsWith(".mp3")) return "audio/mpeg";
+    if (lower.endsWith(".wav")) return "audio/wav";
+    if (lower.endsWith(".m4a")) return "audio/mp4";
+    return "application/octet-stream";
+  }
+
+  /**
+   * Đảm bảo có file để stream cho `/preview`: ưu tiên cache WAV (OmniVoice TTS).
+   * Nếu OmniVoice lỗi, trả về file mẫu gốc (MP3/WAV) để UI vẫn phát được demo.
+   */
+  async ensureVoicePreview(voiceId: string): Promise<{ filePath: string; contentType: string }> {
     const voice = this.getPresetVoice(voiceId);
     const cachePath = this.getPreviewCachePath(voiceId);
     const refPath = this.resolvePresetRefAudioPath(voice.refWav);
+    const refMime = this.guessAudioMimeFromPath(refPath);
 
     if (existsSync(cachePath)) {
       const cacheStat = statSync(cachePath);
       const refStat = statSync(refPath);
       if (cacheStat.mtimeMs >= refStat.mtimeMs) {
-        return cachePath;
+        return { filePath: cachePath, contentType: "audio/wav" };
       }
     }
 
     mkdirSync(resolve(cachePath, ".."), { recursive: true });
-    await runOmnivoiceTts({
-      text: AUDIO_DEMO_PREVIEW_TEXT,
-      outWav: cachePath,
-      refAudio: refPath,
-      refText: voice.refText,
-      language: voice.language === "en" ? "english" : "vietnamese",
-    });
-    return cachePath;
+    const previewText = resolvePreviewTtsText(voice);
+    const omnivoiceLang = resolveOmnivoiceLanguage(voice);
+
+    try {
+      await runOmnivoiceTts({
+        text: previewText,
+        outWav: cachePath,
+        refAudio: refPath,
+        refText: voice.refText,
+        language: omnivoiceLang,
+      });
+      return { filePath: cachePath, contentType: "audio/wav" };
+    } catch (err) {
+      this.logger.warn(
+        `OmniVoice preview failed for preset "${voiceId}", falling back to reference clip (${voice.refWav})`,
+        err instanceof Error ? err.stack : String(err),
+      );
+      return { filePath: refPath, contentType: refMime };
+    }
   }
 
   async enqueue(dto: CreateAudioJobDto): Promise<AudioHistory> {
@@ -305,10 +332,9 @@ export class AudioService {
 
     const outPath = this.buildOutputPath(history.userId, history.id);
     const preset = history.voiceId ? findPresetVoice(history.voiceId) : undefined;
-    const language =
-      preset?.language === "en"
-        ? "english"
-        : process.env.OMNIVOICE_LANGUAGE ?? "vietnamese";
+    const language = preset
+      ? resolveOmnivoiceLanguage(preset)
+      : (process.env.OMNIVOICE_LANGUAGE ?? "vietnamese");
 
     await runOmnivoiceTts({
       text: history.inputText,

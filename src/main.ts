@@ -10,7 +10,10 @@ import { AppModule } from "./app.module";
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
-  const corsOrigins = (process.env.CORS_ORIGIN ?? "http://localhost:5173,http://localhost:4173,http://localhost:3001")
+  const corsOrigins = (
+    process.env.CORS_ORIGIN ??
+    "http://localhost:5173,http://127.0.0.1:5173,http://localhost:4173,http://127.0.0.1:4173,http://localhost:3001,http://127.0.0.1:3001,http://localhost:3000,http://127.0.0.1:3000,http://localhost:3002,http://127.0.0.1:3002"
+  )
     .split(",")
     .map((origin) => origin.trim())
     .filter(Boolean);
