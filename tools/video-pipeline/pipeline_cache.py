@@ -1,0 +1,69 @@
+"""
+Cache HF / torch dùng chung cho OmniVoice (API audio daemon + auto_vietsub_pro + CLI).
+
+Mặc định: <repo>/tools/video-pipeline/cache/omnivoice
+Ghi đè: OMNIVOICE_CACHE_ROOT hoặc KITLABS_PYTHON_CACHE_DIR (đường dẫn tuyệt đối khuyến nghị trên server).
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+import sys
+from pathlib import Path
+
+if not logging.getLogger().handlers:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="[pipeline-cache] %(message)s",
+        stream=sys.stderr,
+        force=True,
+    )
+log = logging.getLogger("pipeline-cache")
+
+_PIPELINE_DIR = Path(__file__).resolve().parent
+_DEFAULT_CACHE_ROOT = _PIPELINE_DIR / "cache" / "omnivoice"
+_configured = False
+
+
+def resolve_omnivoice_cache_root() -> Path:
+    raw = (
+        os.getenv("OMNIVOICE_CACHE_ROOT")
+        or os.getenv("KITLABS_PYTHON_CACHE_DIR")
+        or ""
+    ).strip()
+    if raw:
+        return Path(raw).expanduser().resolve()
+    return _DEFAULT_CACHE_ROOT.resolve()
+
+
+def configure_omnivoice_cache_env() -> Path:
+    """Đặt HF_HOME / hub / torch về cùng một cây thư mục (idempotent)."""
+    global _configured
+    base = resolve_omnivoice_cache_root()
+    hf_home = base / "huggingface"
+    hub = hf_home / "hub"
+    torch_home = base / "torch"
+    hf_home.mkdir(parents=True, exist_ok=True)
+    hub.mkdir(parents=True, exist_ok=True)
+    torch_home.mkdir(parents=True, exist_ok=True)
+
+    os.environ.setdefault("HF_HOME", str(hf_home))
+    os.environ.setdefault("HUGGINGFACE_HUB_CACHE", str(hub))
+    os.environ.setdefault("TRANSFORMERS_CACHE", str(hf_home))
+    os.environ.setdefault("TORCH_HOME", str(torch_home))
+    os.environ.setdefault("XDG_CACHE_HOME", str(base))
+
+    if not _configured:
+        _configured = True
+        log.info(
+            "omnivoice cache root=%s HF_HOME=%s HUB=%s",
+            base,
+            os.environ.get("HF_HOME", ""),
+            os.environ.get("HUGGINGFACE_HUB_CACHE", ""),
+        )
+    return base
+
+
+# Cấu hình ngay khi import (auto_vietsub, daemon, CLI đều dùng omnivoice_tts).
+configure_omnivoice_cache_env()

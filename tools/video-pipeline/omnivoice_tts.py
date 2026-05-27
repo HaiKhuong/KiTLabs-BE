@@ -32,6 +32,8 @@ import time
 from pathlib import Path
 from typing import Any, Optional, Tuple
 
+import pipeline_cache  # noqa: F401 — cấu hình HF/torch cache chung với audio API
+
 logging.basicConfig(
     level=logging.INFO,
     format="[omnivoice] %(message)s",

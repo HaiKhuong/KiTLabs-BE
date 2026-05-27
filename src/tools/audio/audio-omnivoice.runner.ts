@@ -3,7 +3,7 @@ import { spawn } from "child_process";
 import { existsSync, mkdirSync } from "fs";
 import { basename, dirname, isAbsolute, join, resolve } from "path";
 
-import { KITLABS_PYTHON_CACHE_ROOT } from "./audio.constants";
+import { OMNIVOICE_CACHE_ROOT } from "./audio.constants";
 import { getOmnivoiceDaemonPool, isOmnivoiceDaemonEnabled } from "./audio-omnivoice.daemon";
 
 export type OmnivoiceRunInput = {
@@ -34,7 +34,7 @@ function logPythonStreamLines(chunk: string, level: "log" | "warn" | "error"): v
 }
 
 function buildPythonChildEnv(): NodeJS.ProcessEnv {
-  const base = KITLABS_PYTHON_CACHE_ROOT;
+  const base = OMNIVOICE_CACHE_ROOT;
   const hf = join(base, "huggingface");
   const torch = join(base, "torch");
   mkdirSync(hf, { recursive: true });

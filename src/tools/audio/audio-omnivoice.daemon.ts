@@ -4,7 +4,7 @@ import { existsSync, mkdirSync } from "fs";
 import { dirname, isAbsolute, join, resolve } from "path";
 import { randomUUID } from "crypto";
 
-import { KITLABS_PYTHON_CACHE_ROOT } from "./audio.constants";
+import { OMNIVOICE_CACHE_ROOT } from "./audio.constants";
 import type { OmnivoiceRunInput } from "./audio-omnivoice.runner";
 
 type DaemonResponse = {
@@ -31,7 +31,7 @@ function logPythonStreamLines(logger: Logger, chunk: string, level: "log" | "war
 }
 
 function buildPythonChildEnv(): NodeJS.ProcessEnv {
-  const base = KITLABS_PYTHON_CACHE_ROOT;
+  const base = OMNIVOICE_CACHE_ROOT;
   const hf = join(base, "huggingface");
   const torch = join(base, "torch");
   mkdirSync(hf, { recursive: true });

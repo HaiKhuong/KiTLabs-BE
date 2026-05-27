@@ -21,10 +21,17 @@ export const AUDIO_CLONE_UPLOAD_DIR = join(AUDIO_DATA_ROOT, "audio-clone");
 export const AUDIO_OUTPUT_DIR = join(AUDIO_DATA_ROOT, "audio-tts");
 export const AUDIO_PREVIEW_CACHE_DIR = join(AUDIO_DATA_ROOT, "audio-previews");
 
-/** Cache HF/torch cho subprocess Python (OmniVoice). */
-export const KITLABS_PYTHON_CACHE_ROOT = resolve(
-  (process.env.KITLABS_PYTHON_CACHE_DIR ?? "").trim() || join(AUDIO_DATA_ROOT, "python-cache"),
+/**
+ * Cache HF/torch OmniVoice — **cùng thư mục** với `auto_vietsub_pro` / `pipeline_cache.py`.
+ * Mặc định: `tools/video-pipeline/cache/omnivoice` (không dùng `uploads/python-cache`).
+ */
+export const OMNIVOICE_CACHE_ROOT = resolve(
+  (process.env.OMNIVOICE_CACHE_ROOT ?? process.env.KITLABS_PYTHON_CACHE_DIR ?? "").trim() ||
+    join(VIDEO_PIPELINE_DIR, "cache", "omnivoice"),
 );
+
+/** @deprecated alias — dùng OMNIVOICE_CACHE_ROOT */
+export const KITLABS_PYTHON_CACHE_ROOT = OMNIVOICE_CACHE_ROOT;
 
 export const AUDIO_MAX_TEXT_CHARS = 2000;
 export const AUDIO_DEMO_PREVIEW_TEXT = "Xin chào, tôi là giọng đọc nhân tạo của AutoVietsub.";
