@@ -25,13 +25,13 @@ export class AudioProcessor extends WorkerHost {
 
     try {
       await this.audioService.processStarted(audioHistoryId);
-      this.logger.log(`Audio TTS started: ${audioHistoryId}`);
+      this.logger.log(`Audio worker: OmniVoice starting historyId=${audioHistoryId}`);
       const resultPath = await this.audioService.runGeneration(history);
       await this.audioService.processCompleted(audioHistoryId, resultPath);
-      this.logger.log(`Audio TTS completed: ${audioHistoryId} -> ${resultPath}`);
+      this.logger.log(`Audio worker: finished historyId=${audioHistoryId} -> ${resultPath}`);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      this.logger.error(`Audio TTS failed: ${audioHistoryId} — ${message}`);
+      this.logger.error(`Audio worker: failed historyId=${audioHistoryId} — ${message}`);
       await this.audioService.processFailed(audioHistoryId, message);
       throw error;
     }

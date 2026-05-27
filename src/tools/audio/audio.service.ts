@@ -203,6 +203,20 @@ export class AudioService {
     created.queueJobId = queueJob.id ? String(queueJob.id) : null;
     const saved = await this.audioRepository.save(created);
 
+    this.logger.log(
+      [
+        "Audio queued",
+        `historyId=${saved.id}`,
+        `userId=${dto.userId}`,
+        `mode=${saved.voiceMode}`,
+        `voiceId=${saved.voiceId ?? "n/a"}`,
+        `textLen=${text.length}`,
+        `cost=${saved.cost}`,
+        `bullJobId=${saved.queueJobId ?? "n/a"}`,
+        `refAudio=${basename(refAudioPath)}`,
+      ].join(" "),
+    );
+
     await this.logsService.createLog({
       userId: user.id,
       action: "audio.queued",
@@ -250,6 +264,7 @@ export class AudioService {
   }
 
   async processStarted(audioHistoryId: string): Promise<void> {
+    this.logger.log(`Audio running: historyId=${audioHistoryId}`);
     await this.audioRepository.update(
       { id: audioHistoryId },
       { status: QueueJobStatus.RUNNING, errorMessage: null },
@@ -265,6 +280,10 @@ export class AudioService {
     history.resultFileName = basename(resultPath);
     history.errorMessage = null;
     await this.audioRepository.save(history);
+
+    this.logger.log(
+      `Audio completed: historyId=${audioHistoryId} userId=${history.userId} cost=${history.cost} out=${basename(resultPath)}`,
+    );
 
     const user = await this.userRepository.findOne({ where: { id: history.userId } });
     if (!user) return;
@@ -293,6 +312,7 @@ export class AudioService {
   }
 
   async processFailed(audioHistoryId: string, errorMessage: string): Promise<void> {
+    this.logger.error(`Audio failed: historyId=${audioHistoryId} error=${errorMessage}`);
     await this.audioRepository.update(
       { id: audioHistoryId },
       { status: QueueJobStatus.FAILED, errorMessage },
@@ -332,6 +352,24 @@ export class AudioService {
       ? resolveOmnivoiceLanguage(preset)
       : (process.env.OMNIVOICE_LANGUAGE ?? "vietnamese");
 
+    const inputPreview =
+      history.inputText.length > 160 ? `${history.inputText.slice(0, 160)}…` : history.inputText;
+
+    this.logger.log(
+      [
+        "Audio TTS start",
+        `historyId=${history.id}`,
+        `userId=${history.userId}`,
+        `voiceId=${history.voiceId ?? "clone"}`,
+        `language=${language}`,
+        `refAudio=${basename(refAudioPath)}`,
+        `refTextLen=${refText.length}`,
+        `inputChars=${history.inputText.length}`,
+        `out=${outPath}`,
+      ].join(" "),
+    );
+    this.logger.debug(`Audio TTS input preview: ${JSON.stringify(inputPreview)}`);
+
     await runOmnivoiceTts({
       text: history.inputText,
       outWav: outPath,
@@ -341,6 +379,9 @@ export class AudioService {
       seed: process.env.OMNIVOICE_SEED ? Number(process.env.OMNIVOICE_SEED) : undefined,
     });
 
-    return outPath.replaceAll("\\", "/");
+    const normalizedOut = outPath.replaceAll("\\", "/");
+    this.logger.log(`Audio TTS done: historyId=${history.id} outWav=${normalizedOut}`);
+
+    return normalizedOut;
   }
 }
