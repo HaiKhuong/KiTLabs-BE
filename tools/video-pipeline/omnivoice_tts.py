@@ -24,23 +24,10 @@ Tham khảo: https://huggingface.co/splendor1811/omnivoice-vietnamese
 
 from __future__ import annotations
 
-import logging
 import os
 import re
-import sys
-import time
 from pathlib import Path
 from typing import Any, Optional, Tuple
-
-import pipeline_cache  # noqa: F401 — cấu hình HF/torch cache chung với audio API
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="[omnivoice] %(message)s",
-    stream=sys.stderr,
-    force=True,
-)
-log = logging.getLogger("omnivoice")
 
 # Cache theo (model_id, device_map, dtype_str)
 _session_model: Optional[Any] = None
@@ -125,18 +112,14 @@ def _get_model(*, model_id: str, device_map: str, dtype_str: str):
     dt = str(dtype_str or "float16").strip() or "float16"
     key = (mid, dev, dt)
     if _session_model is not None and _session_model_key == key:
-        log.info("model cache hit model_id=%s device=%s dtype=%s", mid, dev, dt)
         return _session_model
 
-    log.info("loading model model_id=%s device=%s dtype=%s", mid, dev, dt)
-    t0 = time.perf_counter()
     global _session_prompt, _session_prompt_key
     _session_prompt = None
     _session_prompt_key = None
 
     dtype = _resolve_dtype(dt)
     hf_token = _resolve_hf_token()
-    log.info("hf_token present=%s", bool(hf_token))
     load_kwargs = dict(
         device_map=dev,
         dtype=dtype,
@@ -160,7 +143,6 @@ def _get_model(*, model_id: str, device_map: str, dtype_str: str):
         else:
             raise
     _session_model_key = key
-    log.info("model loaded elapsed_sec=%.2f", time.perf_counter() - t0)
     return _session_model
 
 
@@ -207,15 +189,11 @@ def ensure_voice_clone_prompt(
     rt = str(ref_text or "")
     pk = (ra, rt)
     if _session_prompt is not None and _session_prompt_key == pk:
-        log.info("voice prompt cache hit ref_audio=%s ref_text_len=%s", ra, len(rt))
         return _session_prompt
 
-    log.info("creating voice clone prompt ref_audio=%s ref_text_len=%s", ra, len(rt))
-    t0 = time.perf_counter()
     model = _get_model(model_id=model_id, device_map=device_map, dtype_str=dtype_str)
     _session_prompt = model.create_voice_clone_prompt(ref_audio=ra, ref_text=rt)
     _session_prompt_key = pk
-    log.info("voice prompt ready elapsed_sec=%.2f", time.perf_counter() - t0)
     return _session_prompt
 
 
@@ -263,16 +241,6 @@ def synthesize_to_wav(
 
     out = Path(out_wav)
     out.parent.mkdir(parents=True, exist_ok=True)
-
-    log.info(
-        "synthesize start out=%s language=%s num_step=%s guidance=%s seed=%s input_len=%s",
-        out.resolve(),
-        language,
-        num_step,
-        guidance_scale,
-        seed,
-        len(str(text or "")),
-    )
 
     model = _get_model(model_id=model_id, device_map=device_map, dtype_str=dtype_str)
     ref_audio_path = str(Path(ref_audio).resolve())
@@ -325,12 +293,9 @@ def synthesize_to_wav(
         except Exception:
             pass
 
-    log.info("generate text_len=%s normalized_len=%s", len(str(text or "")), len(t))
-    t_gen = time.perf_counter()
     try:
         audio = model.generate(**gen_kw)
     except TypeError:
-        log.warning("generate TypeError — trying fallbacks")
         # Fallback nếu version không hỗ trợ voice_clone_prompt parameter
         # hoặc không nhận language/generation_config
         try:
@@ -352,8 +317,6 @@ def synthesize_to_wav(
                 slim_kw["ref_text"] = rt
             audio = model.generate(**slim_kw)
 
-    log.info("generate done elapsed_sec=%.2f", time.perf_counter() - t_gen)
-
     # Theo mẫu official: audio là list[np.ndarray] shape (T,) at 24kHz.
     if isinstance(audio, (list, tuple)) and len(audio) > 0:
         wave = audio[0]
@@ -372,5 +335,3 @@ def synthesize_to_wav(
         wave_np = wave_np.reshape(-1)
 
     sf.write(str(out), wave_np, 24000)
-    duration_sec = float(wave_np.shape[0]) / 24000.0 if wave_np.size else 0.0
-    log.info("wrote wav samples=%s duration_sec=%.2f path=%s", wave_np.shape[0], duration_sec, out.resolve())
