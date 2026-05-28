@@ -348,6 +348,10 @@ export class AudioService {
         row.status === QueueJobStatus.COMPLETED && row.id
           ? `/api/tools/audio/jobs/${row.id}/download`
           : null,
+      playUrl:
+        row.status === QueueJobStatus.COMPLETED && row.id
+          ? `/api/tools/audio/jobs/${row.id}/stream`
+          : null,
     };
   }
 

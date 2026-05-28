@@ -177,6 +177,21 @@ export class AudioController {
     return this.audioService.mapHistoryForClient(row);
   }
 
+  @ApiOperation({ summary: "Stream completed audio for in-browser playback" })
+  @Public()
+  @Get("jobs/:id/stream")
+  async stream(@Param("id") id: string, @Res() res: Response) {
+    const row = await this.audioService.getById(id);
+    if (!row) {
+      throw new BadRequestException("Job not found");
+    }
+    const abs = this.audioService.resolveResultPath(row);
+    res.setHeader("Content-Type", "audio/wav");
+    res.setHeader("Content-Disposition", `inline; filename="${basename(abs)}"`);
+    res.setHeader("Accept-Ranges", "bytes");
+    return res.sendFile(abs);
+  }
+
   @ApiOperation({ summary: "Download completed audio WAV" })
   @Public()
   @Get("jobs/:id/download")
