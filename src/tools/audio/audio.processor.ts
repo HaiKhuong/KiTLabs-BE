@@ -1,4 +1,3 @@
-import { Logger } from "@nestjs/common";
 import { Processor, WorkerHost } from "@nestjs/bullmq";
 import { Job } from "bullmq";
 
@@ -6,8 +5,6 @@ import { AUDIO_QUEUE_NAME, AudioService } from "./audio.service";
 
 @Processor(AUDIO_QUEUE_NAME)
 export class AudioProcessor extends WorkerHost {
-  private readonly logger = new Logger(AudioProcessor.name);
-
   constructor(private readonly audioService: AudioService) {
     super();
   }
@@ -25,13 +22,10 @@ export class AudioProcessor extends WorkerHost {
 
     try {
       await this.audioService.processStarted(audioHistoryId);
-      this.logger.log(`Audio worker: OmniVoice starting historyId=${audioHistoryId}`);
       const resultPath = await this.audioService.runGeneration(history);
       await this.audioService.processCompleted(audioHistoryId, resultPath);
-      this.logger.log(`Audio worker: finished historyId=${audioHistoryId} -> ${resultPath}`);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      this.logger.error(`Audio worker: failed historyId=${audioHistoryId} — ${message}`);
       await this.audioService.processFailed(audioHistoryId, message);
       throw error;
     }

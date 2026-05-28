@@ -1,6 +1,7 @@
 import { BadRequestException, Injectable, Logger, NotFoundException } from "@nestjs/common";
 import { InjectQueue } from "@nestjs/bullmq";
 import { InjectRepository } from "@nestjs/typeorm";
+import { ChildProcess, spawn } from "child_process";
 import { Queue } from "bullmq";
 import { existsSync, mkdirSync, statSync } from "fs";
 import { basename, isAbsolute, join, resolve } from "path";
@@ -17,6 +18,7 @@ import {
   AUDIO_OUTPUT_DIR,
   AUDIO_PREVIEW_CACHE_DIR,
   AUDIO_PRESET_VOICES,
+  VIDEO_PIPELINE_DIR,
   VOICE_SAMPLES_DIR,
   findPresetVoice,
   resolveOmnivoiceLanguage,
@@ -24,7 +26,6 @@ import {
 } from "./audio.constants";
 import { AudioHistory } from "./audio-history.entity";
 import { CreateAudioJobDto } from "./dto/create-audio-job.dto";
-import { runOmnivoiceTts } from "./audio-omnivoice.runner";
 
 export const AUDIO_QUEUE_NAME = "audio-tts";
 
@@ -44,6 +45,107 @@ export class AudioService {
     private readonly logsService: LogsService,
     private readonly notificationsService: NotificationsService,
   ) {}
+
+  private static readonly OMNIVOICE_INLINE_PY = [
+    "import json,sys",
+    "p=json.load(sys.stdin)",
+    "from omnivoice_tts import synthesize_to_wav",
+    "synthesize_to_wav(**{k:v for k,v in p.items() if v is not None})",
+  ].join(";");
+
+  private static readonly MAX_LOG_BUFFER = 64 * 1024;
+
+  private resolvePythonBin(): string {
+    return (
+      process.env.AUDIO_PYTHON_BIN ??
+      process.env.TRANSLATE_PYTHON_BIN ??
+      (process.platform === "win32" ? "py" : "python3")
+    );
+  }
+
+  private async spawnOmnivoiceTts(opts: {
+    text: string;
+    outWav: string;
+    refAudio: string;
+    refText: string;
+    language?: string;
+    seed?: number;
+  }): Promise<string> {
+    const refAudio = isAbsolute(opts.refAudio)
+      ? opts.refAudio
+      : resolve(process.cwd(), opts.refAudio);
+    if (!existsSync(refAudio)) {
+      throw new Error(`Reference audio not found: ${refAudio}`);
+    }
+
+    const outWav = isAbsolute(opts.outWav)
+      ? opts.outWav
+      : resolve(process.cwd(), opts.outWav);
+
+    const scriptDir = resolve(process.cwd(), VIDEO_PIPELINE_DIR);
+    const timeoutMs = Number(
+      process.env.AUDIO_CMD_TIMEOUT_MS ?? process.env.TRANSLATE_CMD_TIMEOUT_MS ?? 600_000,
+    );
+
+    const payload = {
+      text: opts.text,
+      out_wav: outWav,
+      ref_audio: refAudio,
+      ref_text: opts.refText ?? "",
+      model_id: (process.env.OMNIVOICE_MODEL_ID ?? "k2-fsa/OmniVoice").trim(),
+      device_map: (process.env.OMNIVOICE_DEVICE_MAP ?? "").trim() || undefined,
+      dtype_str: (process.env.OMNIVOICE_DTYPE ?? "float16").trim(),
+      language: opts.language ?? process.env.OMNIVOICE_LANGUAGE ?? "vietnamese",
+      num_step: Number(process.env.OMNIVOICE_NUM_STEP ?? 8),
+      guidance_scale: Number(process.env.OMNIVOICE_GUIDANCE_SCALE ?? 2),
+      ...(opts.seed != null ? { seed: opts.seed } : {}),
+    };
+
+    await new Promise<void>((resolvePromise, rejectPromise) => {
+      const child: ChildProcess = spawn(
+        this.resolvePythonBin(),
+        ["-c", AudioService.OMNIVOICE_INLINE_PY],
+        {
+          cwd: scriptDir,
+          windowsHide: true,
+          stdio: ["pipe", "pipe", "pipe"],
+        },
+      );
+
+      let stderr = "";
+      const timeoutHandle = setTimeout(() => {
+        child.kill("SIGTERM");
+        rejectPromise(new Error(`OmniVoice TTS timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+
+      child.stderr?.on("data", (buf: Buffer) => {
+        stderr += buf.toString("utf8");
+        if (stderr.length > AudioService.MAX_LOG_BUFFER) {
+          stderr = stderr.slice(-AudioService.MAX_LOG_BUFFER);
+        }
+      });
+      child.on("error", (err) => {
+        clearTimeout(timeoutHandle);
+        rejectPromise(err);
+      });
+      child.on("close", (code) => {
+        clearTimeout(timeoutHandle);
+        if (code !== 0) {
+          rejectPromise(new Error(stderr.trim() || `OmniVoice exited with code ${code}`));
+          return;
+        }
+        resolvePromise();
+      });
+
+      child.stdin?.write(JSON.stringify(payload));
+      child.stdin?.end();
+    });
+
+    if (!existsSync(outWav)) {
+      throw new Error(`OmniVoice did not produce output: ${outWav}`);
+    }
+    return outWav;
+  }
 
   listPresetVoices() {
     return AUDIO_PRESET_VOICES.map((voice) => ({
@@ -117,7 +219,7 @@ export class AudioService {
     const omnivoiceLang = resolveOmnivoiceLanguage(voice);
 
     try {
-      await runOmnivoiceTts({
+      await this.spawnOmnivoiceTts({
         text: previewText,
         outWav: cachePath,
         refAudio: refPath,
@@ -203,20 +305,6 @@ export class AudioService {
     created.queueJobId = queueJob.id ? String(queueJob.id) : null;
     const saved = await this.audioRepository.save(created);
 
-    this.logger.log(
-      [
-        "Audio queued",
-        `historyId=${saved.id}`,
-        `userId=${dto.userId}`,
-        `mode=${saved.voiceMode}`,
-        `voiceId=${saved.voiceId ?? "n/a"}`,
-        `textLen=${text.length}`,
-        `cost=${saved.cost}`,
-        `bullJobId=${saved.queueJobId ?? "n/a"}`,
-        `refAudio=${basename(refAudioPath)}`,
-      ].join(" "),
-    );
-
     await this.logsService.createLog({
       userId: user.id,
       action: "audio.queued",
@@ -264,7 +352,6 @@ export class AudioService {
   }
 
   async processStarted(audioHistoryId: string): Promise<void> {
-    this.logger.log(`Audio running: historyId=${audioHistoryId}`);
     await this.audioRepository.update(
       { id: audioHistoryId },
       { status: QueueJobStatus.RUNNING, errorMessage: null },
@@ -280,10 +367,6 @@ export class AudioService {
     history.resultFileName = basename(resultPath);
     history.errorMessage = null;
     await this.audioRepository.save(history);
-
-    this.logger.log(
-      `Audio completed: historyId=${audioHistoryId} userId=${history.userId} cost=${history.cost} out=${basename(resultPath)}`,
-    );
 
     const user = await this.userRepository.findOne({ where: { id: history.userId } });
     if (!user) return;
@@ -352,25 +435,7 @@ export class AudioService {
       ? resolveOmnivoiceLanguage(preset)
       : (process.env.OMNIVOICE_LANGUAGE ?? "vietnamese");
 
-    const inputPreview =
-      history.inputText.length > 160 ? `${history.inputText.slice(0, 160)}…` : history.inputText;
-
-    this.logger.log(
-      [
-        "Audio TTS start",
-        `historyId=${history.id}`,
-        `userId=${history.userId}`,
-        `voiceId=${history.voiceId ?? "clone"}`,
-        `language=${language}`,
-        `refAudio=${basename(refAudioPath)}`,
-        `refTextLen=${refText.length}`,
-        `inputChars=${history.inputText.length}`,
-        `out=${outPath}`,
-      ].join(" "),
-    );
-    this.logger.debug(`Audio TTS input preview: ${JSON.stringify(inputPreview)}`);
-
-    await runOmnivoiceTts({
+    await this.spawnOmnivoiceTts({
       text: history.inputText,
       outWav: outPath,
       refAudio: refAudioPath,
@@ -379,9 +444,6 @@ export class AudioService {
       seed: process.env.OMNIVOICE_SEED ? Number(process.env.OMNIVOICE_SEED) : undefined,
     });
 
-    const normalizedOut = outPath.replaceAll("\\", "/");
-    this.logger.log(`Audio TTS done: historyId=${history.id} outWav=${normalizedOut}`);
-
-    return normalizedOut;
+    return outPath.replaceAll("\\", "/");
   }
 }

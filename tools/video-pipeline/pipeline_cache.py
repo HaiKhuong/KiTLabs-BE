@@ -12,9 +12,14 @@ import os
 import sys
 from pathlib import Path
 
+def _resolve_log_level() -> int:
+    name = (os.getenv("OMNIVOICE_LOG_LEVEL") or "WARNING").strip().upper()
+    return getattr(logging, name, logging.WARNING)
+
+
 if not logging.getLogger().handlers:
     logging.basicConfig(
-        level=logging.INFO,
+        level=_resolve_log_level(),
         format="[pipeline-cache] %(message)s",
         stream=sys.stderr,
         force=True,
@@ -56,7 +61,7 @@ def configure_omnivoice_cache_env() -> Path:
 
     if not _configured:
         _configured = True
-        log.info(
+        log.debug(
             "omnivoice cache root=%s HF_HOME=%s HUB=%s",
             base,
             os.environ.get("HF_HOME", ""),
