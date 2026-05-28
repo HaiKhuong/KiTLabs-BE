@@ -93,7 +93,7 @@ export class AudioService {
       ref_audio: refAudio,
       ref_text: opts.refText ?? "",
       model_id: (process.env.OMNIVOICE_MODEL_ID ?? "k2-fsa/OmniVoice").trim(),
-      device_map: (process.env.OMNIVOICE_DEVICE_MAP ?? "").trim() || undefined,
+      device_map: (process.env.OMNIVOICE_DEVICE_MAP ?? "").trim() || "cuda:0",
       dtype_str: (process.env.OMNIVOICE_DTYPE ?? "float16").trim(),
       language: opts.language ?? process.env.OMNIVOICE_LANGUAGE ?? "vietnamese",
       num_step: Number(process.env.OMNIVOICE_NUM_STEP ?? 8),
