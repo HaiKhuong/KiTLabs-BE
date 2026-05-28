@@ -4,6 +4,7 @@ import { InjectRepository } from "@nestjs/typeorm";
 import { ChildProcess, spawn } from "child_process";
 import { Queue } from "bullmq";
 import { existsSync, mkdirSync, statSync } from "fs";
+import { unlink } from "fs/promises";
 import { basename, isAbsolute, join, resolve } from "path";
 import { Repository } from "typeorm";
 
@@ -329,6 +330,51 @@ export class AudioService {
 
   async getById(id: string): Promise<AudioHistory | null> {
     return this.audioRepository.findOne({ where: { id } });
+  }
+
+  async deleteHistory(userId: string, id: string): Promise<void> {
+    const row = await this.audioRepository.findOne({ where: { id, userId } });
+    if (!row) {
+      throw new NotFoundException("Job not found");
+    }
+
+    if (row.queueJobId) {
+      try {
+        const job = await this.audioQueue.getJob(row.queueJobId);
+        if (job) {
+          await job.remove();
+        }
+      } catch (err) {
+        this.logger.warn(
+          `Could not remove queue job ${row.queueJobId} for audio ${id}`,
+          err instanceof Error ? err.message : String(err),
+        );
+      }
+    }
+
+    if (row.resultPath) {
+      try {
+        const abs = isAbsolute(row.resultPath)
+          ? row.resultPath
+          : resolve(process.cwd(), row.resultPath);
+        if (existsSync(abs)) {
+          await unlink(abs);
+        }
+      } catch (err) {
+        this.logger.warn(
+          `Could not delete audio file for history ${id}`,
+          err instanceof Error ? err.message : String(err),
+        );
+      }
+    }
+
+    await this.audioRepository.delete({ id, userId });
+
+    await this.logsService.createLog({
+      userId,
+      action: "audio.deleted",
+      payload: { audioHistoryId: id, displayName: row.displayName },
+    });
   }
 
   mapHistoryForClient(row: AudioHistory) {

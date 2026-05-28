@@ -2,6 +2,7 @@ import {
   BadRequestException,
   Body,
   Controller,
+  Delete,
   Get,
   Param,
   Post,
@@ -190,6 +191,18 @@ export class AudioController {
     res.setHeader("Content-Disposition", `inline; filename="${basename(abs)}"`);
     res.setHeader("Accept-Ranges", "bytes");
     return res.sendFile(abs);
+  }
+
+  @ApiOperation({ summary: "Delete an audio generation job" })
+  @ApiQuery({ name: "userId", required: true })
+  @Public()
+  @Delete("jobs/:id")
+  async deleteJob(@Param("id") id: string, @Query("userId") userId?: string) {
+    if (!userId) {
+      throw new BadRequestException("userId is required");
+    }
+    await this.audioService.deleteHistory(userId, id);
+    return { deleted: true, id };
   }
 
   @ApiOperation({ summary: "Download completed audio WAV" })
