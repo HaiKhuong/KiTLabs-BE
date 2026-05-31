@@ -1446,7 +1446,7 @@ def _step1_extract_embedded_subtitle(video_path):
 
 def _step1_extract_vse_subtitle(video_path):
     log("Step1: VSE subtitles…")
-    vse_script = str((VSE_ENTRY_SCRIPT or "").strip())
+    vse_script = str(os.getenv("VSE_ENTRY_SCRIPT", VSE_ENTRY_SCRIPT or "").strip())
     if not vse_script:
         raise RuntimeError(
             "VSE source requires env VSE_ENTRY_SCRIPT to point to VSE CLI script."
@@ -1458,7 +1458,7 @@ def _step1_extract_vse_subtitle(video_path):
         raise RuntimeError(f"VSE_ENTRY_SCRIPT not found: {vse_script_path}")
 
     python_bin = (
-        str(VSE_PYTHON_BIN).strip()
+        str(os.getenv("VSE_PYTHON_BIN", VSE_PYTHON_BIN or "")).strip()
         or os.getenv("TRANSLATE_PYTHON_BIN", "").strip()
         or sys.executable
     )
@@ -1466,7 +1466,7 @@ def _step1_extract_vse_subtitle(video_path):
     out_srt.parent.mkdir(parents=True, exist_ok=True)
 
     # Normalize VSE mode to known values.
-    mode = str(VSE_MODE or "fast").strip().lower()
+    mode = str(os.getenv("VSE_MODE", VSE_MODE or "fast")).strip().lower()
     if mode not in {"fast", "auto", "precise"}:
         mode = "fast"
 
@@ -1481,7 +1481,7 @@ def _step1_extract_vse_subtitle(video_path):
             "--mode",
             mode,
             "--lang",
-            str(VSE_LANG or "ch"),
+            str(os.getenv("VSE_LANG", VSE_LANG or "ch")),
         ],
         "Extract subtitles with VSE",
     )
