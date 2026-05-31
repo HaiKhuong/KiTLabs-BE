@@ -97,6 +97,33 @@ def _write_silence_wav(path: Path, duration_sec: float, sample_rate: int = 24000
     )
 
 
+def _resolve_playback_speed(raw: Any) -> float:
+    try:
+        speed = float(raw)
+    except (TypeError, ValueError):
+        return 1.0
+    return max(0.5, min(2.0, speed))
+
+
+def _apply_playback_speed(wav_path: Path, speed: float) -> None:
+    if abs(float(speed) - 1.0) < 1e-6:
+        return
+    tmp = wav_path.with_name(f"{wav_path.stem}_spd{wav_path.suffix}")
+    _run_ffmpeg(
+        [
+            "-i",
+            str(wav_path),
+            "-af",
+            f"atempo={float(speed):.4f}",
+            "-acodec",
+            "pcm_s16le",
+            str(tmp),
+        ],
+        "Apply playback speed",
+    )
+    tmp.replace(wav_path)
+
+
 def _concat_wavs(paths: List[Path], out_wav: Path) -> None:
     valid = [p for p in paths if p.is_file() and p.stat().st_size > 0]
     if not valid:
@@ -134,6 +161,7 @@ def synthesize_with_pause_settings(
     guidance_scale: Optional[float] = 2.0,
     seed: Optional[int] = None,
     pause_settings: Optional[Dict[str, Any]] = None,
+    playback_speed: Optional[float] = None,
 ) -> None:
     out = Path(out_wav)
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -155,9 +183,12 @@ def synthesize_with_pause_settings(
         seed=seed,
     )
 
+    speed = _resolve_playback_speed(playback_speed)
+
     # Một đoạn, không pause sau đoạn → gọi trực tiếp (nhanh hơn)
     if len(chunks) == 1 and not chunks[0].get("pause_after"):
         synthesize_to_wav(text=chunks[0]["text"], out_wav=out, **omnivoice_kw)
+        _apply_playback_speed(out, speed)
         return
 
     timeline: List[Path] = []
@@ -178,6 +209,8 @@ def synthesize_with_pause_settings(
                     timeline.append(sil_path)
 
         _concat_wavs(timeline, out)
+
+    _apply_playback_speed(out, speed)
 
 
 if __name__ == "__main__":

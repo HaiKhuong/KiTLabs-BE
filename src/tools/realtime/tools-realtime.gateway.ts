@@ -2,7 +2,7 @@ import { OnGatewayConnection, WebSocketGateway, WebSocketServer } from "@nestjs/
 import { Server, Socket } from "socket.io";
 
 @WebSocketGateway({ cors: { origin: "*" } })
-export class TranslateGateway implements OnGatewayConnection {
+export class ToolsRealtimeGateway implements OnGatewayConnection {
   @WebSocketServer()
   server!: Server;
 

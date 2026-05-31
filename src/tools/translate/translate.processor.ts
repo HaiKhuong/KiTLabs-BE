@@ -5,7 +5,7 @@ import { spawn } from "child_process";
 import { basename, dirname, extname, isAbsolute, join, resolve } from "path";
 
 import { TRANSLATE_QUEUE_NAME, TranslateService } from "./translate.service";
-import { TranslateGateway } from "./translate.gateway";
+import { ToolsRealtimeGateway } from "../realtime/tools-realtime.gateway";
 
 const MAX_PYTHON_LOG_BUFFER = 10 * 1024 * 1024;
 const OPTION_MAPPINGS: Array<{
@@ -236,7 +236,7 @@ export class TranslateProcessor extends WorkerHost {
 
   constructor(
     private readonly translateService: TranslateService,
-    private readonly translateGateway: TranslateGateway,
+    private readonly realtimeGateway: ToolsRealtimeGateway,
   ) {
     super();
   }
@@ -261,7 +261,7 @@ export class TranslateProcessor extends WorkerHost {
 
       await this.translateService.processCompleted(translateHistoryId, resultPath);
       const completedHistory = await this.translateService.getById(translateHistoryId);
-      this.translateGateway.notifyUser(completedHistory?.userId ?? "all", "translate.completed", {
+      this.realtimeGateway.notifyUser(completedHistory?.userId ?? "all", "translate.completed", {
         translateHistoryId,
         resultPath,
         stepNbr: history.stepNbr,
@@ -281,7 +281,7 @@ export class TranslateProcessor extends WorkerHost {
       }
       await this.translateService.processFailed(translateHistoryId, message);
       const failedHistory = await this.translateService.getById(translateHistoryId);
-      this.translateGateway.notifyUser(failedHistory?.userId ?? "all", "translate.failed", {
+      this.realtimeGateway.notifyUser(failedHistory?.userId ?? "all", "translate.failed", {
         translateHistoryId,
         errorMessage: message,
         terminal: true,

@@ -50,6 +50,14 @@ export class CreateAudioJobDto {
   @IsNotEmpty()
   cloneRefText?: string;
 
+  @ApiPropertyOptional({ default: 1, minimum: 0.5, maximum: 2, description: "Playback speed after TTS" })
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0.5)
+  @Max(2)
+  speed?: number;
+
   @ApiPropertyOptional({
     description: "Pause after period (seconds)",
     default: 0.45,

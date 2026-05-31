@@ -7,7 +7,6 @@ import { LogsModule } from "../logs/logs.module";
 import { NotificationsModule } from "../notifications/notifications.module";
 import { User } from "../users/user.entity";
 import { TranslateController } from "./translate.controller";
-import { TranslateGateway } from "./translate.gateway";
 import { TranslateProcessor } from "./translate.processor";
 import { TranslateHistory } from "./translate-history.entity";
 import { TRANSLATE_QUEUE_NAME, TranslateService } from "./translate.service";
@@ -20,6 +19,6 @@ import { TRANSLATE_QUEUE_NAME, TranslateService } from "./translate.service";
     NotificationsModule,
   ],
   controllers: [TranslateController],
-  providers: [TranslateService, TranslateProcessor, TranslateGateway],
+  providers: [TranslateService, TranslateProcessor],
 })
 export class TranslateModule {}

@@ -72,6 +72,7 @@ export class AudioService {
     language?: string;
     seed?: number;
     pauseSettings?: Record<string, number>;
+    playbackSpeed?: number;
   }): Promise<string> {
     const refAudio = isAbsolute(opts.refAudio)
       ? opts.refAudio
@@ -102,6 +103,9 @@ export class AudioService {
       guidance_scale: Number(process.env.OMNIVOICE_GUIDANCE_SCALE ?? 2),
       ...(opts.seed != null ? { seed: opts.seed } : {}),
       ...(opts.pauseSettings ? { pause_settings: opts.pauseSettings } : {}),
+      ...(opts.playbackSpeed != null && Math.abs(opts.playbackSpeed - 1) > 1e-6
+        ? { playback_speed: opts.playbackSpeed }
+        : {}),
     };
 
     await new Promise<void>((resolvePromise, rejectPromise) => {
@@ -287,6 +291,7 @@ export class AudioService {
       engineConfig: {
         refAudioPath,
         refText,
+        speed: dto.speed ?? 1,
         pauseSettings: {
           period: dto.pausePeriodSec ?? 0.45,
           comma: dto.pauseCommaSec ?? 0.25,
@@ -495,6 +500,10 @@ export class AudioService {
       config.pauseSettings && typeof config.pauseSettings === "object"
         ? (config.pauseSettings as Record<string, number>)
         : undefined;
+    const rawSpeed = Number(config.speed ?? 1);
+    const playbackSpeed = Number.isFinite(rawSpeed)
+      ? Math.min(2, Math.max(0.5, rawSpeed))
+      : 1;
 
     await this.spawnOmnivoiceTts({
       text: history.inputText,
@@ -503,6 +512,7 @@ export class AudioService {
       refText,
       language,
       pauseSettings,
+      playbackSpeed,
       seed: process.env.OMNIVOICE_SEED ? Number(process.env.OMNIVOICE_SEED) : undefined,
     });
 

@@ -24,6 +24,7 @@ import { LogsModule } from "./tools/logs/logs.module";
 import { NotificationsModule } from "./tools/notifications/notifications.module";
 import { SettingsModule } from "./tools/settings/settings.module";
 import { AudioModule } from "./tools/audio/audio.module";
+import { ToolsRealtimeModule } from "./tools/realtime/tools-realtime.module";
 import { TranslateModule } from "./tools/translate/translate.module";
 import { UsersModule } from "./tools/users/users.module";
 
@@ -89,6 +90,7 @@ import { UsersModule } from "./tools/users/users.module";
     CreditsModule,
     LogsModule,
     DownloadsModule,
+    ToolsRealtimeModule,
     TranslateModule,
     AudioModule,
     NotificationsModule,
