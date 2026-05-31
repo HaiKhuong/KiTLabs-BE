@@ -21,7 +21,29 @@ DEFAULT_PAUSE_SEC = {
     "comma": 0.25,
     "semicolon": 0.3,
     "newline": 0.6,
+    "question": 0.45,
+    "exclamation": 0.45,
+    "colon": 0.3,
+    "ellipsis": 0.55,
 }
+
+# Ký tự placeholder sau khi gom "..." / "...." (tránh tách thành nhiều dấu chấm).
+ELLIPSIS_CHAR = "\u2026"
+
+# Các loại pause (trừ xuống dòng) đều có đệm 200ms trước khoảng nghỉ cấu hình.
+PUNCT_PAUSE_KEYS = frozenset(k for k in DEFAULT_PAUSE_SEC if k != "newline")
+
+# Đuôi đoạn kết thúc bằng ngoặc đóng → thêm tail pad dù không tách token ngoặc.
+CLOSING_QUOTE_CHARS = '"\'\u201d\u2019»'
+
+
+def _resolve_tail_pad_sec() -> float:
+    raw = (os.getenv("AUDIO_TTS_TAIL_PAD_MS") or "200").strip()
+    try:
+        ms = float(raw)
+    except (TypeError, ValueError):
+        ms = 200.0
+    return max(0.0, min(ms / 1000.0, 1.0))
 
 
 def _resolve_pause_sec(pause_settings: Optional[Dict[str, Any]]) -> Dict[str, float]:
@@ -48,6 +70,10 @@ def _prepare_text_for_pause_tokenize(text: str) -> str:
     t = re.sub(r" *\n+ *", "\n", t)
     t = re.sub(r"\n{2,}", "\n", t)
     t = re.sub(r" +", " ", t)
+    # Ba chấm trở lên (có/không khoảng trắng xen) → một dấu …
+    t = re.sub(r"\s*\.\s*\.\s*\.\s*", ELLIPSIS_CHAR, t)
+    t = re.sub(r"\.{3,}", ELLIPSIS_CHAR, t)
+    t = re.sub(r"[.…]{2,}", ELLIPSIS_CHAR, t)
     return t.strip()
 
 
@@ -63,14 +89,40 @@ def _append_pause_only(chunks: List[Dict[str, Optional[str]]], pause_after: str)
     chunks.append({"text": None, "pause_after": pause_after})
 
 
+def _piece_needs_quote_tail_pad(piece: str) -> bool:
+    s = str(piece or "").rstrip()
+    return bool(s) and s[-1] in CLOSING_QUOTE_CHARS
+
+
+def _should_append_tail_pad(
+    pause_after: Optional[str],
+    piece: str,
+    tail_pad_sec: float,
+) -> bool:
+    if tail_pad_sec <= 0.001:
+        return False
+    if pause_after in PUNCT_PAUSE_KEYS:
+        return True
+    return _piece_needs_quote_tail_pad(piece)
+
+
 def _tokenize_with_pauses(text: str) -> List[Dict[str, Optional[str]]]:
-    """Tách văn bản; mỗi phần có pause_after: period | comma | semicolon | newline | None."""
+    """Tách văn bản theo dấu câu; pause_after gắn với đoạn TTS trước delimiter."""
     t = _prepare_text_for_pause_tokenize(text)
     if not t:
         return []
 
-    delim_map = {".": "period", ",": "comma", ";": "semicolon", "\n": "newline"}
-    tokens = re.split(r"([.,;\n])", t)
+    delim_map = {
+        ".": "period",
+        ",": "comma",
+        ";": "semicolon",
+        "\n": "newline",
+        "?": "question",
+        "!": "exclamation",
+        ":": "colon",
+        ELLIPSIS_CHAR: "ellipsis",
+    }
+    tokens = re.split(r"(…|[.,;\n?!:])", t)
     chunks: List[Dict[str, Optional[str]]] = []
     buf: List[str] = []
 
@@ -155,6 +207,45 @@ def _apply_playback_speed(wav_path: Path, speed: float) -> None:
     tmp.replace(wav_path)
 
 
+def _append_silence_to_timeline(
+    timeline: List[Path],
+    path: Path,
+    duration_sec: float,
+) -> None:
+    _write_silence_wav(path, duration_sec)
+    if path.is_file() and path.stat().st_size > 0:
+        timeline.append(path)
+
+
+def _append_tts_segment(
+    timeline: List[Path],
+    tmp_dir: Path,
+    index: int,
+    piece: str,
+    pause_after: Optional[str],
+    pause_sec: Dict[str, float],
+    tail_pad_sec: float,
+    omnivoice_kw: Dict[str, Any],
+) -> None:
+    seg_path = tmp_dir / f"seg_{index:04d}.wav"
+    synthesize_to_wav(text=piece, out_wav=seg_path, **omnivoice_kw)
+    timeline.append(seg_path)
+
+    if _should_append_tail_pad(pause_after, piece, tail_pad_sec):
+        _append_silence_to_timeline(
+            timeline,
+            tmp_dir / f"tail_{index:04d}.wav",
+            tail_pad_sec,
+        )
+
+    if pause_after and pause_after in pause_sec:
+        _append_silence_to_timeline(
+            timeline,
+            tmp_dir / f"sil_{index:04d}.wav",
+            pause_sec[pause_after],
+        )
+
+
 def _concat_wavs(paths: List[Path], out_wav: Path) -> None:
     valid = [p for p in paths if p.is_file() and p.stat().st_size > 0]
     if not valid:
@@ -215,6 +306,7 @@ def synthesize_with_pause_settings(
     )
 
     speed = _resolve_playback_speed(playback_speed)
+    tail_pad_sec = _resolve_tail_pad_sec()
 
     speakable = [c for c in chunks if c.get("text") and _is_speakable_piece(str(c["text"]))]
 
@@ -228,10 +320,11 @@ def synthesize_with_pause_settings(
             for i, chunk in enumerate(chunks):
                 pause_key = chunk.get("pause_after")
                 if pause_key and pause_key in pause_sec:
-                    sil_path = tmp_dir / f"sil_only_{i:04d}.wav"
-                    _write_silence_wav(sil_path, pause_sec[pause_key])
-                    if sil_path.is_file() and sil_path.stat().st_size > 0:
-                        timeline.append(sil_path)
+                    _append_silence_to_timeline(
+                        timeline,
+                        tmp_dir / f"sil_only_{i:04d}.wav",
+                        pause_sec[pause_key],
+                    )
             _concat_wavs(timeline, out)
         _apply_playback_speed(out, speed)
         return
@@ -247,17 +340,24 @@ def synthesize_with_pause_settings(
         tmp_dir = Path(tmp)
         for i, chunk in enumerate(chunks):
             piece = str(chunk.get("text") or "").strip()
-            if piece and _is_speakable_piece(piece):
-                seg_path = tmp_dir / f"seg_{i:04d}.wav"
-                synthesize_to_wav(text=piece, out_wav=seg_path, **omnivoice_kw)
-                timeline.append(seg_path)
-
             pause_key = chunk.get("pause_after")
-            if pause_key and pause_key in pause_sec:
-                sil_path = tmp_dir / f"sil_{i:04d}.wav"
-                _write_silence_wav(sil_path, pause_sec[pause_key])
-                if sil_path.is_file() and sil_path.stat().st_size > 0:
-                    timeline.append(sil_path)
+            if piece and _is_speakable_piece(piece):
+                _append_tts_segment(
+                    timeline,
+                    tmp_dir,
+                    i,
+                    piece,
+                    pause_key,
+                    pause_sec,
+                    tail_pad_sec,
+                    omnivoice_kw,
+                )
+            elif pause_key and pause_key in pause_sec:
+                _append_silence_to_timeline(
+                    timeline,
+                    tmp_dir / f"sil_{i:04d}.wav",
+                    pause_sec[pause_key],
+                )
 
         _concat_wavs(timeline, out)
 

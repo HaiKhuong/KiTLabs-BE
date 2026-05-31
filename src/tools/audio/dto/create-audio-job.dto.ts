@@ -110,6 +110,43 @@ export class CreateAudioJobDto {
   @Max(3)
   pauseNewlineSec?: number;
 
+  @ApiPropertyOptional({ default: 0.45, minimum: 0, maximum: 3 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  @Max(3)
+  pauseQuestionSec?: number;
+
+  @ApiPropertyOptional({ default: 0.45, minimum: 0, maximum: 3 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  @Max(3)
+  pauseExclamationSec?: number;
+
+  @ApiPropertyOptional({ default: 0.3, minimum: 0, maximum: 3 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  @Max(3)
+  pauseColonSec?: number;
+
+  @ApiPropertyOptional({
+    description: "Pause after ellipsis (… or ...)",
+    default: 0.55,
+    minimum: 0,
+    maximum: 3,
+  })
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  @Max(3)
+  pauseEllipsisSec?: number;
+
   @ApiPropertyOptional({ description: "Credit cost estimate (0 = free / no deduction)", default: 0 })
   @IsOptional()
   @Type(() => Number)
