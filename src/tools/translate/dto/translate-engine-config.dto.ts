@@ -296,54 +296,14 @@ export class TranslateEngineConfigDto {
   @IsString()
   edge_tts_pitch?: string;
 
-  /** edge | vixtts | omnivoice */
+  /** edge | omnivoice */
   @IsOptional()
-  @IsIn(["edge", "vixtts", "omnivoice"])
+  @IsIn(["edge", "omnivoice"])
   step3TtsEngine?: string;
 
   @IsOptional()
-  @IsIn(["edge", "vixtts", "omnivoice"])
+  @IsIn(["edge", "omnivoice"])
   step3_tts_engine?: string;
-
-  @IsOptional()
-  @IsString()
-  vixttsModelDir?: string;
-
-  @IsOptional()
-  @IsString()
-  vixtts_model_dir?: string;
-
-  @IsOptional()
-  @IsString()
-  vixttsSpeakerWav?: string;
-
-  @IsOptional()
-  @IsString()
-  vixtts_speaker_wav?: string;
-
-  @IsOptional()
-  @IsString()
-  vixttsLang?: string;
-
-  @IsOptional()
-  @IsString()
-  vixtts_lang?: string;
-
-  @IsOptional()
-  @IsIn(["on", "off"])
-  vixttsUseDeepspeed?: string;
-
-  @IsOptional()
-  @IsIn(["on", "off"])
-  vixtts_use_deepspeed?: string;
-
-  @IsOptional()
-  @IsIn(["on", "off"])
-  vixttsNormalizeText?: string;
-
-  @IsOptional()
-  @IsIn(["on", "off"])
-  vixtts_normalize_text?: string;
 
   @IsOptional()
   @IsString()

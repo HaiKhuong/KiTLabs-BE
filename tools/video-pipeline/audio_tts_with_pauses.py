@@ -122,7 +122,7 @@ def _tokenize_with_pauses(text: str) -> List[Dict[str, Optional[str]]]:
 
 
 def _run_command(args: List[str], label: str) -> None:
-    """Tương thích signature run_command của auto_vietsub / step3_vixtts_edge."""
+    """Tương thích signature run_command của auto_vietsub / step3_edge."""
     proc = subprocess.run(args, capture_output=True, text=True)
     if proc.returncode != 0:
         err = (proc.stderr or proc.stdout or "").strip()
@@ -134,16 +134,12 @@ def _ensure_step3_speaker_ref_config() -> None:
     global _step3_ref_cfg_ready
     if _step3_ref_cfg_ready:
         return
-    from step3_vixtts_edge import configure_step3_vixtts_edge
+    from step3_edge import configure_step3_edge
 
-    configure_step3_vixtts_edge(
+    configure_step3_edge(
         log=lambda _msg: None,
         run_command=_run_command,
         ffmpeg_bin=FFMPEG_BIN,
-        vixtts_normalize_text=False,
-        vixtts_inference_speed=1.0,
-        vixtts_output_volume_gain=1.0,
-        vixtts_pitch_shift_semitones=0.0,
         edge_tts_voice="",
         edge_tts_volume="",
         edge_tts_pitch="",
@@ -166,7 +162,7 @@ def _prepare_ref_audio_for_omnivoice(ref_audio: str | Path) -> Path:
     if ref_path.suffix.lower() == ".wav":
         return ref_path
     _ensure_step3_speaker_ref_config()
-    from step3_vixtts_edge import prepare_speaker_reference
+    from step3_edge import prepare_speaker_reference
 
     return prepare_speaker_reference(ref_path, _resolve_ref_audio_cache_dir(ref_path))
 

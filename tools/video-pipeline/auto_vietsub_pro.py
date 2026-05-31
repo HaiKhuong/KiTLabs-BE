@@ -17,7 +17,7 @@ warnings.filterwarnings(
     message=r".*RNN module weights are not part of single contiguous chunk.*",
     category=UserWarning,
 )
-# torchaudio: StreamingMediaDecoder deprecated (chuyển TorchCodec) — spam khi torchaudio.save (Step3 ViXTTS).
+# torchaudio: StreamingMediaDecoder deprecated — spam khi torchaudio.save.
 warnings.filterwarnings(
     "ignore",
     message=r".*StreamingMediaDecoder has been deprecated.*",
@@ -32,14 +32,11 @@ except ImportError:
 from google import genai
 from tqdm import tqdm
 
-from step3_vixtts_edge import (
-    configure_step3_vixtts_edge,
+from step3_edge import (
+    configure_step3_edge,
     prepare_speaker_reference,
     run_edge_tts_mp3_save,
     tts_normalize_vi,
-    vixtts_load_model,
-    vixtts_synthesize_to_file,
-    warn_if_vixtts_torchcodec_prone,
 )
 
 # ==============================
@@ -56,32 +53,8 @@ EDGE_TTS_VOICE = "vi-VN-HoaiMyNeural"
 EDGE_TTS_RATE = "+30%"
 EDGE_TTS_VOLUME = "+10%"
 EDGE_TTS_PITCH = "+20Hz"
-# Step3 TTS: edge = Microsoft Edge TTS; vixtts = local XTTS (viXTTS / Viet-xtts-v2 checkpoint, cần GPU/CPU + coqui-tts);
-# omnivoice = OmniVoice Vietnamese (pip install omnivoice, GPU khuyến nghị).
-STEP3_TTS_ENGINE = "vixtts"
-# Thư mục chứa model.pth, config.json, vocab.json (và speakers_xtts.pth — tự tải từ coqui/XTTS-v2 nếu thiếu).
-VIXTTS_MODEL_DIR = str(SCRIPT_DIR / "voice")
-# Giọng mẫu ~6s: WAV dùng trực tiếp; mp3/m4a/… tự convert trong logs/ (bắt buộc khi STEP3_TTS_ENGINE=vixtts).
-VIXTTS_SPEAKER_WAV = str(SCRIPT_DIR / "voice" / "sample.wav")
-VIXTTS_LANG = "vi"
-VIXTTS_USE_DEEPSPEED = False
-VIXTTS_NORMALIZE_TEXT = True
-# Chỉ nhánh ViXTTS (không áp dụng EDGE_TTS_*).
-# Tốc độ: truyền vào Xtts.inference(..., speed=...) — tham số chính thức trong coqui TTS
-# (TTS/tts/models/xtts.py, mặc định speed=1.0; dùng length_scale = 1/speed). speed quá cao thường làm clone giọng kém tự nhiên.
-# Nếu bản coqui cũ không nhận `speed`, try/except bỏ qua tham số này.
-# Lưu ý: speed quá cao (>=1.4) thường làm ngữ điệu bị "nhả chữ" và cảm giác cách từ.
-VIXTTS_INFERENCE_SPEED = 1.7
-# Chỉnh cao độ sau khi synth (đơn vị semitone), giữ gần nguyên độ dài bằng asetrate+atempo.
-# 0 = giữ nguyên; dương = cao hơn; âm = trầm hơn.
-VIXTTS_PITCH_SHIFT_SEMITONES = 2
-# Âm lượng: không phải API Coqui; nhân tensor sau inference (1.2 ≈ +20%), clamp [-1,1] rồi mới lưu WAV.
-# Tránh gain quá lớn để giảm clipping/artefact ở cuối câu.
-VIXTTS_OUTPUT_VOLUME_GAIN = 1
-# Lọc phần đuôi artefact nhẹ trước khi pad/trim theo timeline.
-VIXTTS_TRIM_TRAILING_SILENCE = True
-VIXTTS_TRAILING_SILENCE_MIN_MS = 120
-VIXTTS_TRAILING_SILENCE_THRESHOLD_DB = -42
+# Step3 TTS: edge = Microsoft Edge TTS; omnivoice = OmniVoice Vietnamese (pip install omnivoice, GPU khuyến nghị).
+STEP3_TTS_ENGINE = "edge"
 # OmniVoice (splendor1811/omnivoice-vietnamese): ref_text nên là transcript khớp ref_audio.
 OMNIVOICE_MODEL_ID = "k2-fsa/OmniVoice"
 OMNIVOICE_REF_WAV = str(SCRIPT_DIR / "voice" / "sample.wav")
@@ -1126,7 +1099,7 @@ def _step3_save_voice_checkpoint(srt_path, chunk_dir, blocks, done_indices):
         return
     payload = {
         "version": 1,
-        "tts_engine": str(STEP3_TTS_ENGINE or "vixtts"),
+        "tts_engine": str(STEP3_TTS_ENGINE or "edge"),
         "srt_path_resolved": sp,
         "srt_mtime": mtime,
         "block_count": len(blocks),
@@ -2499,7 +2472,7 @@ def step2_translate_srt(srt_path):
 # ==============================
 # STEP 3
 # TTS generate voice directly from SRT (chunked)
-# ViXTTS + Edge: step3_vixtts_edge.py
+# Edge TTS: step3_edge.py
 # ==============================
 
 
@@ -2513,62 +2486,24 @@ def _omnivoice_resolve_device_map(raw: str) -> str:
 
 
 def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
-    eng = str(STEP3_TTS_ENGINE or "vixtts").strip().lower()
-    if eng not in ("edge", "vixtts", "omnivoice"):
+    eng = str(STEP3_TTS_ENGINE or "edge").strip().lower()
+    if eng not in ("edge", "omnivoice"):
         raise ValueError(f"Step3: --step3-tts-engine không hợp lệ: {eng!r}")
-    use_vixtts = eng == "vixtts"
     use_omnivoice = eng == "omnivoice"
-    use_edge = eng == "edge"
-    vixtts_model = None
-    vixtts_lang = "vi"
-    vixtts_latents = None
-    vixtts_spk = None
     omni_ref_prepared = None
     omni_device = None
 
-    configure_step3_vixtts_edge(
+    configure_step3_edge(
         log=log,
         run_command=run_command,
         ffmpeg_bin=FFMPEG_BIN,
-        vixtts_normalize_text=VIXTTS_NORMALIZE_TEXT,
-        vixtts_inference_speed=VIXTTS_INFERENCE_SPEED,
-        vixtts_output_volume_gain=VIXTTS_OUTPUT_VOLUME_GAIN,
-        vixtts_pitch_shift_semitones=VIXTTS_PITCH_SHIFT_SEMITONES,
         edge_tts_voice=EDGE_TTS_VOICE,
         edge_tts_volume=EDGE_TTS_VOLUME,
         edge_tts_pitch=EDGE_TTS_PITCH,
         step3_tts_api_timeout_sec=STEP3_TTS_API_TIMEOUT_SEC,
     )
 
-    if use_vixtts:
-        log("Step3: ViXTTS / XTTS-vi (timeline SRT)…")
-        warn_if_vixtts_torchcodec_prone()
-        md = Path(str(VIXTTS_MODEL_DIR or "").strip()).expanduser()
-        vixtts_spk = Path(str(VIXTTS_SPEAKER_WAV or "").strip()).expanduser()
-        if not str(VIXTTS_MODEL_DIR or "").strip():
-            raise ValueError("ViXTTS: cần VIXTTS_MODEL_DIR trong auto_vietsub_pro.py (thư mục checkpoint).")
-        if not md.is_dir():
-            raise FileNotFoundError(f"ViXTTS: model dir không tồn tại: {md}")
-        if not str(VIXTTS_SPEAKER_WAV or "").strip() or not vixtts_spk.is_file():
-            raise FileNotFoundError(
-                f"ViXTTS: cần VIXTTS_SPEAKER_WAV trong auto_vietsub_pro.py (file giọng mẫu): {vixtts_spk}"
-            )
-        LOG_DIR.mkdir(parents=True, exist_ok=True)
-        vixtts_spk_orig = vixtts_spk.name
-        vixtts_spk = prepare_speaker_reference(vixtts_spk, LOG_DIR)
-        vixtts_model = vixtts_load_model(md, VIXTTS_USE_DEEPSPEED)
-        vixtts_lang = str(VIXTTS_LANG or "vi").strip() or "vi"
-        vixtts_latents = vixtts_model.get_conditioning_latents(
-            audio_path=str(vixtts_spk),
-            gpt_cond_len=vixtts_model.config.gpt_cond_len,
-            max_ref_length=vixtts_model.config.max_ref_len,
-            sound_norm_refs=vixtts_model.config.sound_norm_refs,
-        )
-        log(
-            "ViXTTS: đã tính conditioning từ giọng mẫu "
-            f"{vixtts_spk_orig} → {vixtts_spk.name}"
-        )
-    elif use_omnivoice:
+    if use_omnivoice:
         log("Step3: OmniVoice Vietnamese (timeline SRT)…")
         _omni_mid = str(OMNIVOICE_MODEL_ID or "").strip()
         if not _omni_mid:
@@ -2591,7 +2526,6 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
             f"{spk.name} → {Path(omni_ref_prepared).name} (device={omni_device})"
         )
     else:
-        assert use_edge
         log("Step3: edge-tts (timeline SRT)…")
 
     with open(srt_path, encoding="utf8") as f:
@@ -2685,7 +2619,7 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
             )
             continue
 
-        raw_ext = "wav" if (use_vixtts or use_omnivoice) else "mp3"
+        raw_ext = "wav" if use_omnivoice else "mp3"
         raw_audio_path = chunk_dir / f"raw_{i:04d}.{raw_ext}"
         final_seg_path = chunk_dir / f"part_{i:04d}.wav"
 
@@ -2701,22 +2635,11 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
             current_time_ms = start_ms + int(seg_ms)
             continue
 
-        gpt_lat, spk_emb = vixtts_latents if use_vixtts else (None, None)
-
         def run_tts(rate):
             sleep_ms = max(0, int(STEP3_TTS_REQUEST_SLEEP_MS))
             if sleep_ms > 0:
                 time.sleep(sleep_ms / 1000.0)
-            if use_vixtts:
-                vixtts_synthesize_to_file(
-                    vixtts_model,
-                    subtitle_text,
-                    vixtts_lang,
-                    raw_audio_path,
-                    gpt_lat,
-                    spk_emb,
-                )
-            elif use_omnivoice:
+            if use_omnivoice:
                 from omnivoice_tts import synthesize_to_wav
 
                 tts_omni = tts_normalize_vi(subtitle_text, OMNIVOICE_NORMALIZE_TEXT)
@@ -2764,8 +2687,7 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
 
         raw_segment_ms = get_media_duration_ms(raw_audio_path)
         if (
-            (not use_vixtts)
-            and (not use_omnivoice)
+            (not use_omnivoice)
             and STEP3_AUTO_RATE_ENABLED
             and raw_segment_ms
             and subtitle_duration_ms > 220
@@ -2814,13 +2736,7 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
             raw_segment_ms = subtitle_duration_ms
 
         fit_filters = []
-        if use_vixtts and VIXTTS_TRIM_TRAILING_SILENCE:
-            stop_dur = max(0.02, float(VIXTTS_TRAILING_SILENCE_MIN_MS) / 1000.0)
-            stop_thr = float(VIXTTS_TRAILING_SILENCE_THRESHOLD_DB)
-            fit_filters.append(
-                f"silenceremove=stop_periods=-1:stop_duration={stop_dur:.3f}:stop_threshold={stop_thr:.1f}dB"
-            )
-        elif use_omnivoice and OMNIVOICE_TRIM_TRAILING_SILENCE:
+        if use_omnivoice and OMNIVOICE_TRIM_TRAILING_SILENCE:
             stop_dur = max(
                 0.02, float(OMNIVOICE_TRAILING_SILENCE_MIN_MS) / 1000.0
             )
@@ -3758,9 +3674,9 @@ def parse_cli_args():
     parser.add_argument("--edge-tts-pitch", default=EDGE_TTS_PITCH)
     parser.add_argument(
         "--step3-tts-engine",
-        choices=["edge", "vixtts", "omnivoice"],
+        choices=["edge", "omnivoice"],
         default=STEP3_TTS_ENGINE,
-        help="edge=Edge TTS; vixtts=Coqui XTTS local; omnivoice=OmniVoice Vi (pip install omnivoice, khuyến nghị GPU).",
+        help="edge=Edge TTS; omnivoice=OmniVoice Vi (pip install omnivoice, khuyến nghị GPU).",
     )
     parser.add_argument(
         "--omnivoice-ref-wav",
@@ -3798,7 +3714,7 @@ def parse_cli_args():
         "--step3-tts-api-timeout-sec",
         type=float,
         default=STEP3_TTS_API_TIMEOUT_SEC,
-        help="Per-request timeout cho edge-tts (save). ViXTTS chạy sync trên main thread — tham số này không áp dụng; 0=tắt (edge).",
+        help="Per-request timeout cho edge-tts (save). 0=tắt.",
     )
     parser.add_argument(
         "--step3-tts-max-retry-action",
@@ -3982,7 +3898,7 @@ def apply_cli_config(args):
     EDGE_TTS_RATE = resolve_base_tts_rate(args.edge_tts_rate)
     EDGE_TTS_VOLUME = args.edge_tts_volume
     EDGE_TTS_PITCH = args.edge_tts_pitch
-    STEP3_TTS_ENGINE = str(args.step3_tts_engine or "vixtts").strip().lower() or "vixtts"
+    STEP3_TTS_ENGINE = str(args.step3_tts_engine or "edge").strip().lower() or "edge"
     omnivoice_ref_wav_name = str(getattr(args, "omnivoice_ref_wav", "") or "").strip()
     if omnivoice_ref_wav_name:
         OMNIVOICE_REF_WAV = str(SCRIPT_DIR / "voice" / omnivoice_ref_wav_name)

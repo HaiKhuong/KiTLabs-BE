@@ -32,6 +32,4 @@ tools/video-pipeline/workspace/
 tools/video-pipeline/cache/
 tools/video-pipeline/**/*.log
 
-tools/video-pipeline/voice/model.pth
-
 .cursor
