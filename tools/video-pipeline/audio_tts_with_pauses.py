@@ -13,7 +13,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from omnivoice_tts import synthesize_to_wav
+from omnivoice_tts import _normalize_tts_text_for_audio, synthesize_to_wav
 
 FFMPEG_BIN = (os.getenv("FFMPEG_BIN") or "ffmpeg").strip() or "ffmpeg"
 DEFAULT_PAUSE_SEC = {
@@ -39,10 +39,34 @@ def _resolve_pause_sec(pause_settings: Optional[Dict[str, Any]]) -> Dict[str, fl
     return out
 
 
+def _prepare_text_for_pause_tokenize(text: str) -> str:
+    """Gom khoảng trắng / xuống dòng thừa trước khi tách đoạn TTS."""
+    t = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
+    # Khoảng trắng Unicode (NBSP, zero-width…) → space thường
+    t = re.sub(r"[\u00a0\u200b\u200c\u200d\ufeff]+", " ", t)
+    t = re.sub(r"[ \t]+", " ", t)
+    t = re.sub(r" *\n+ *", "\n", t)
+    t = re.sub(r"\n{2,}", "\n", t)
+    t = re.sub(r" +", " ", t)
+    return t.strip()
+
+
+def _is_speakable_piece(piece: str) -> bool:
+    """True nếu sau chuẩn hóa OmniVoice vẫn còn nội dung để synthesize."""
+    return bool(_normalize_tts_text_for_audio(str(piece or "").strip()))
+
+
+def _append_pause_only(chunks: List[Dict[str, Optional[str]]], pause_after: str) -> None:
+    """Gộp pause liên tiếp cùng loại (vd. nhiều \\n liền nhau)."""
+    if chunks and chunks[-1].get("text") is None and chunks[-1].get("pause_after") == pause_after:
+        return
+    chunks.append({"text": None, "pause_after": pause_after})
+
+
 def _tokenize_with_pauses(text: str) -> List[Dict[str, Optional[str]]]:
     """Tách văn bản; mỗi phần có pause_after: period | comma | semicolon | newline | None."""
-    t = str(text or "")
-    if not t.strip():
+    t = _prepare_text_for_pause_tokenize(text)
+    if not t:
         return []
 
     delim_map = {".": "period", ",": "comma", ";": "semicolon", "\n": "newline"}
@@ -53,8 +77,10 @@ def _tokenize_with_pauses(text: str) -> List[Dict[str, Optional[str]]]:
     def flush(pause_after: Optional[str]) -> None:
         piece = "".join(buf).strip()
         buf.clear()
-        if piece:
+        if piece and _is_speakable_piece(piece):
             chunks.append({"text": piece, "pause_after": pause_after})
+        elif pause_after:
+            _append_pause_only(chunks, pause_after)
 
     for tok in tokens:
         if not tok:
@@ -65,6 +91,11 @@ def _tokenize_with_pauses(text: str) -> List[Dict[str, Optional[str]]]:
             buf.append(tok)
 
     flush(None)
+
+    # Bỏ pause_after ở chunk cuối nếu không có text (chỉ silence thừa)
+    while chunks and chunks[-1].get("text") is None:
+        chunks.pop()
+
     return chunks
 
 
@@ -185,9 +216,29 @@ def synthesize_with_pause_settings(
 
     speed = _resolve_playback_speed(playback_speed)
 
-    # Một đoạn, không pause sau đoạn → gọi trực tiếp (nhanh hơn)
-    if len(chunks) == 1 and not chunks[0].get("pause_after"):
-        synthesize_to_wav(text=chunks[0]["text"], out_wav=out, **omnivoice_kw)
+    speakable = [c for c in chunks if c.get("text") and _is_speakable_piece(str(c["text"]))]
+
+    # Chỉ còn silence (xuống dòng thừa) hoặc không có đoạn nói
+    if not speakable:
+        if not chunks:
+            raise ValueError("text is empty after tokenize")
+        timeline: List[Path] = []
+        with tempfile.TemporaryDirectory(prefix="audio_pause_") as tmp:
+            tmp_dir = Path(tmp)
+            for i, chunk in enumerate(chunks):
+                pause_key = chunk.get("pause_after")
+                if pause_key and pause_key in pause_sec:
+                    sil_path = tmp_dir / f"sil_only_{i:04d}.wav"
+                    _write_silence_wav(sil_path, pause_sec[pause_key])
+                    if sil_path.is_file() and sil_path.stat().st_size > 0:
+                        timeline.append(sil_path)
+            _concat_wavs(timeline, out)
+        _apply_playback_speed(out, speed)
+        return
+
+    # Một đoạn nói, không pause sau đoạn → gọi trực tiếp (nhanh hơn)
+    if len(chunks) == 1 and chunks[0].get("text") and not chunks[0].get("pause_after"):
+        synthesize_to_wav(text=str(chunks[0]["text"]), out_wav=out, **omnivoice_kw)
         _apply_playback_speed(out, speed)
         return
 
@@ -196,7 +247,7 @@ def synthesize_with_pause_settings(
         tmp_dir = Path(tmp)
         for i, chunk in enumerate(chunks):
             piece = str(chunk.get("text") or "").strip()
-            if piece:
+            if piece and _is_speakable_piece(piece):
                 seg_path = tmp_dir / f"seg_{i:04d}.wav"
                 synthesize_to_wav(text=piece, out_wav=seg_path, **omnivoice_kw)
                 timeline.append(seg_path)
