@@ -253,6 +253,17 @@ export class TranslateEngineConfigDto {
   @IsNumber()
   speed_video?: number;
 
+  /** Tốc độ video gốc trước Step1 (1.0 = bỏ qua), CLI --preprocess-speed */
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  preProcessSpeed?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  preprocess_speed?: number;
+
   @IsOptional()
   @IsString()
   edgeTtsVoice?: string;
@@ -465,13 +476,13 @@ export class TranslateEngineConfigDto {
   @IsString()
   mode?: string;
 
-  /** Step1 subtitle source: whisper | embedded */
+  /** Step1 subtitle source: whisper | embedded | easyocr | vse */
   @IsOptional()
-  @IsIn(["whisper", "embedded", "easyocr"])
+  @IsIn(["whisper", "embedded", "easyocr", "vse"])
   step1SubtitleSource?: string;
 
   @IsOptional()
-  @IsIn(["whisper", "embedded", "easyocr"])
+  @IsIn(["whisper", "embedded", "easyocr", "vse"])
   step1_subtitle_source?: string;
 
   /** EasyOCR crop band inner edge from bottom (0–1) */
@@ -758,4 +769,31 @@ export class TranslateEngineConfigDto {
   @Type(() => Number)
   @IsNumber()
   step6_eq_contrast?: number;
+
+  /** Step7: 1080p | 2k | 4k (downscale theo nguồn) */
+  @IsOptional()
+  @IsString()
+  exportResolution?: string;
+
+  @IsOptional()
+  @IsString()
+  export_resolution?: string;
+
+  /** Step7: ghép clip outro sau video đã render; CLI on | off */
+  @IsOptional()
+  @IsString()
+  mergeOutro?: string;
+
+  @IsOptional()
+  @IsString()
+  merge_outro?: string;
+
+  /** Đường dẫn file outro (upload), CLI --outro-file */
+  @IsOptional()
+  @IsString()
+  outroFile?: string;
+
+  @IsOptional()
+  @IsString()
+  outro_file?: string;
 }

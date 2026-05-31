@@ -98,6 +98,11 @@ const OPTION_MAPPINGS: Array<{
     allowedTypes: ["number", "string"],
   },
   { cliFlag: "--speed-video", keys: ["speedVideo", "speed_video"], allowedTypes: ["number", "string"] },
+  {
+    cliFlag: "--preprocess-speed",
+    keys: ["preProcessSpeed", "preprocess_speed"],
+    allowedTypes: ["number", "string"],
+  },
   { cliFlag: "--edge-tts-voice", keys: ["edgeTtsVoice", "edge_tts_voice"], allowedTypes: ["string"] },
   { cliFlag: "--edge-tts-rate", keys: ["edgeTtsRate", "edge_tts_rate"], allowedTypes: ["string"] },
   { cliFlag: "--edge-tts-volume", keys: ["edgeTtsVolume", "edge_tts_volume"], allowedTypes: ["string"] },
@@ -215,6 +220,13 @@ const OPTION_MAPPINGS: Array<{
     keys: ["step6EqContrast", "step6_eq_contrast"],
     allowedTypes: ["number", "string"],
   },
+  {
+    cliFlag: "--export-resolution",
+    keys: ["exportResolution", "export_resolution"],
+    allowedTypes: ["string"],
+  },
+  { cliFlag: "--merge-outro", keys: ["mergeOutro", "merge_outro"], allowedTypes: ["string"] },
+  { cliFlag: "--outro-file", keys: ["outroFile", "outro_file"], allowedTypes: ["string"] },
 ];
 
 @Processor(TRANSLATE_QUEUE_NAME)

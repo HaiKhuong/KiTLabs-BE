@@ -51,6 +51,10 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 WHISPER_MODEL = "large-v3"
 WHISPER_LANGUAGE = "zh"
 STEP1_SUBTITLE_SOURCE = "embedded"
+VSE_PYTHON_BIN = os.getenv("VSE_PYTHON_BIN", "").strip()
+VSE_ENTRY_SCRIPT = os.getenv("VSE_ENTRY_SCRIPT", "").strip()
+VSE_MODE = os.getenv("VSE_MODE", "fast").strip().lower()
+VSE_LANG = os.getenv("VSE_LANG", "ch").strip()
 GEMINI_MODEL_NAME = "gemini-2.5-flash"
 EDGE_TTS_VOICE = "vi-VN-HoaiMyNeural"
 EDGE_TTS_RATE = "+30%"
@@ -158,6 +162,9 @@ LOGO_MARGIN_Y = 30
 LOGO_OPACITY = 0.5
 # Step 6: tắt overlay logo (--logo-enabled off) dù vẫn có file --logo-file.
 LOGO_ENABLED = True
+# Step 7: ghép clip outro sau video _vs_tm (tạo thêm *_vs_tm_outro.mp4).
+MERGE_OUTRO_ENABLED = False
+OUTRO_FILE = ""
 # Step 6: optional visual pass before subtitle (hflip, zoom, eq, unsharp). Bật bằng --step6-visual-transform on.
 STEP6_VISUAL_TRANSFORM_ENABLED = True
 STEP6_HFLIP = True
@@ -170,8 +177,17 @@ ORIGINAL_AUDIO_VOLUME = 0.1
 NARRATION_AUDIO_VOLUME = 1
 # Step4: tốc độ trước khi merge (1.0 = copy video, không setpts). Đổi tốc 0.97 nên dùng --speed-video ở Step7.
 STEP4_MERGE_SPEED = 1.0
+# Step0: tốc độ video gốc trước Step1 (1.0 = dùng file input, không tạo *_pre.mp4).
+PREPROCESS_SPEED = 1.0
 # Step7: sau render phụ đề (_vs_tm), áp dụng setpts + atempo lên file cuối (vd 0.97 = chậm ~3%).
 SPEED_VIDEO = 0.97
+# Step7: độ phân giải xuất 16:9 — 1080p | 2k | 4k | source (giữ WxH sau Step6).
+EXPORT_RESOLUTION = "source"
+EXPORT_RESOLUTION_PRESETS = {
+    "1080p": (1920, 1080),
+    "2k": (2560, 1440),
+    "4k": (3840, 2160),
+}
 # Xuất MP4: xóa metadata nguồn (-map_metadata -1) và ghi Title/Artist/Comment kênh. Bật: --output-metadata on.
 OUTPUT_METADATA_ENABLED = True
 # True: title/artist/comment = stem file đầu ra (vd. Ten_vs_tm từ Ten_vs_tm.mp4). False: dùng 3 biến bên dưới.
@@ -1430,6 +1446,58 @@ def _step1_extract_embedded_subtitle(video_path):
     return srt_path
 
 
+def _step1_extract_vse_subtitle(video_path):
+    log("Step1: VSE subtitles…")
+    vse_script = str((VSE_ENTRY_SCRIPT or "").strip())
+    if not vse_script:
+        raise RuntimeError(
+            "VSE source requires env VSE_ENTRY_SCRIPT to point to VSE CLI script."
+        )
+    vse_script_path = Path(vse_script).expanduser()
+    if not vse_script_path.is_absolute():
+        vse_script_path = (SCRIPT_DIR / vse_script_path).resolve()
+    if not vse_script_path.exists():
+        raise RuntimeError(f"VSE_ENTRY_SCRIPT not found: {vse_script_path}")
+
+    python_bin = (
+        str(VSE_PYTHON_BIN).strip()
+        or os.getenv("TRANSLATE_PYTHON_BIN", "").strip()
+        or sys.executable
+    )
+    out_srt = get_zh_srt_path()
+    out_srt.parent.mkdir(parents=True, exist_ok=True)
+
+    # Normalize VSE mode to known values.
+    mode = str(VSE_MODE or "fast").strip().lower()
+    if mode not in {"fast", "auto", "precise"}:
+        mode = "fast"
+
+    run_command(
+        [
+            python_bin,
+            str(vse_script_path),
+            "--input",
+            str(video_path),
+            "--output",
+            str(out_srt),
+            "--mode",
+            mode,
+            "--lang",
+            str(VSE_LANG or "ch"),
+        ],
+        "Extract subtitles with VSE",
+    )
+
+    if not out_srt.exists():
+        raise RuntimeError(f"VSE did not produce subtitle file: {out_srt}")
+    with open(out_srt, encoding="utf8") as f:
+        blocks = parse_srt(f.read())
+    if not blocks:
+        raise RuntimeError("VSE subtitle result is empty.")
+    log(f"Step1: VSE extracted {len(blocks)} lines.")
+    return out_srt
+
+
 def _step1_transcribe_with_whisper(video_path):
     log("Step1: transcribe (Whisper)…")
     from faster_whisper import WhisperModel
@@ -2297,9 +2365,11 @@ def step1_transcribe(video_path):
         return _step1_transcribe_with_whisper(video_path)
     if source_mode == "easyocr":
         return _step1_ocr_with_easyocr(video_path)
+    if source_mode == "vse":
+        return _step1_extract_vse_subtitle(video_path)
     raise RuntimeError(
         f"Unsupported Step1 source: {STEP1_SUBTITLE_SOURCE}. "
-        "Use --step1-subtitle-source whisper|embedded|easyocr."
+        "Use --step1-subtitle-source whisper|embedded|easyocr|vse."
     )
 
 
@@ -2991,33 +3061,54 @@ def step4_merge_audio(video_path, voice_path):
     return out
 
 
-def build_step7_speed_command(video_path, part_path, speed, use_gpu, has_audio, anchor_wh=None):
-    """Step7: setpts + atempo; video encode NVENC (GPU) hoặc libx264 (CPU), giống Step6.
+def _resolve_export_target_wh(source_wh):
+    """Map --export-resolution → (W,H); source/auto giữ WxH Step6."""
+    key = str(EXPORT_RESOLUTION or "source").strip().lower()
+    if key in ("", "source", "auto"):
+        return source_wh
+    preset = EXPORT_RESOLUTION_PRESETS.get(key)
+    if not preset:
+        log(f"Step7: unknown export-resolution '{key}', keeping source size.")
+        return source_wh
+    return preset
 
-    anchor_wh: WxH từ ffprobe — sau setpts ép scale=W:H để tránh encoder lệch 1–2 px so với nguồn.
-    """
+
+def _video_wh_needs_resize(source_wh, target_wh):
+    if not source_wh or not target_wh:
+        return False
+    return int(source_wh[0]) != int(target_wh[0]) or int(source_wh[1]) != int(target_wh[1])
+
+
+def build_step7_finalize_command(
+    video_path, part_path, speed, use_gpu, has_audio, source_wh, target_wh
+):
+    """Step7: setpts/atempo (speed) + scale/pad (export resolution)."""
     meta = ffmpeg_output_metadata_args(part_path)
     if use_gpu:
         v_enc = ["-c:v", "h264_nvenc", "-preset", "p4", "-cq", "23"]
     else:
         v_enc = ["-c:v", "libx264", "-preset", "medium", "-crf", "23"]
 
-    vt = (
-        "[0:v]setpts=PTS/{speed:.6f},scale={w}:{h}:flags=bicubic+accurate_rnd[v]".format(
-            speed=float(speed),
-            w=int(anchor_wh[0]),
-            h=int(anchor_wh[1]),
-        )
-        if (
-            anchor_wh is not None
-            and len(anchor_wh) == 2
-            and int(anchor_wh[0]) > 1
-            and int(anchor_wh[1]) > 1
-        )
-        else f"[0:v]setpts=PTS/{float(speed):.6f}[v]"
-    )
+    speed = float(speed)
+    apply_speed = abs(speed - 1.0) > 1e-6
+    apply_resize = _video_wh_needs_resize(source_wh, target_wh)
 
-    if has_audio:
+    v_chain = []
+    if apply_speed:
+        v_chain.append(f"setpts=PTS/{speed:.6f}")
+    if apply_resize and target_wh:
+        v_chain.append(_step7_scale_pad_filter(int(target_wh[0]), int(target_wh[1])))
+    elif apply_speed and source_wh and int(source_wh[0]) > 1 and int(source_wh[1]) > 1:
+        v_chain.append(
+            f"scale={int(source_wh[0])}:{int(source_wh[1])}:flags=bicubic+accurate_rnd"
+        )
+
+    if not v_chain:
+        return None
+
+    vt = f"[0:v]{','.join(v_chain)}[v]"
+
+    if apply_speed and has_audio:
         atempo_filter = build_atempo_filter(speed)
         return [
             FFMPEG_BIN,
@@ -3030,6 +3121,26 @@ def build_step7_speed_command(video_path, part_path, speed, use_gpu, has_audio, 
             "[v]",
             "-map",
             "[a]",
+            *v_enc,
+            "-c:a",
+            "aac",
+            *meta,
+            "-f",
+            "mp4",
+            str(part_path),
+        ]
+    if has_audio and not apply_speed:
+        return [
+            FFMPEG_BIN,
+            "-y",
+            "-i",
+            str(video_path),
+            "-filter_complex",
+            vt,
+            "-map",
+            "[v]",
+            "-map",
+            "0:a",
             *v_enc,
             "-c:a",
             "aac",
@@ -3056,52 +3167,227 @@ def build_step7_speed_command(video_path, part_path, speed, use_gpu, has_audio, 
     ]
 
 
-def step7_apply_speed(video_path):
-    if abs(float(SPEED_VIDEO) - 1.0) < 1e-6:
+def _run_step7_encode(video_path, part_path, speed, source_wh, target_wh, step_label):
+    speed = float(speed)
+    if speed <= 0:
+        raise ValueError(f"{step_label}: speed must be > 0, got {speed}")
+
+    has_audio = media_has_audio_stream(video_path)
+    gpu_cmd = build_step7_finalize_command(
+        video_path,
+        part_path,
+        speed,
+        use_gpu=True,
+        has_audio=has_audio,
+        source_wh=source_wh,
+        target_wh=target_wh,
+    )
+    if gpu_cmd is None:
+        return False
+    try:
+        run_command(gpu_cmd, f"{step_label} (GPU)")
+    except Exception as e:
+        log(f"{step_label}: GPU encode failed → CPU: {e}")
+        cpu_cmd = build_step7_finalize_command(
+            video_path,
+            part_path,
+            speed,
+            use_gpu=False,
+            has_audio=has_audio,
+            source_wh=source_wh,
+            target_wh=target_wh,
+        )
+        if cpu_cmd is None:
+            return False
+        run_command(cpu_cmd, f"{step_label} (CPU)")
+    return True
+
+
+def _apply_speed_to_output(video_path, speed, out_path, part_path, step_label):
+    """setpts + atempo → out_path (Step0 preprocess; không đổi resolution)."""
+    speed = float(speed)
+    if speed <= 0:
+        raise ValueError(f"{step_label}: speed must be > 0, got {speed}")
+
+    source_wh = get_ffprobe_video_dimensions(video_path)
+    if not _run_step7_encode(
+        video_path, part_path, speed, source_wh, source_wh, step_label
+    ):
+        raise RuntimeError(f"{step_label}: encode command missing.")
+    try:
+        os.replace(part_path, out_path)
+    except OSError:
+        if part_path.is_file():
+            part_path.unlink(missing_ok=True)
+        raise
+    return out_path
+
+
+def step0_preprocess_speed(video_path):
+    """Trước Step1: encode video với setpts/atempo khi --preprocess-speed != 1."""
+    speed = float(PREPROCESS_SPEED)
+    if abs(speed - 1.0) < 1e-6:
         return video_path
 
+    out = VIDEO_DIR / f"{WORK_NAME}_pre.mp4"
+    part = VIDEO_DIR / f"{WORK_NAME}_pre.mp4.part"
+    _apply_speed_to_output(
+        video_path, speed, out, part, "Step0 preprocess-speed"
+    )
+    if not file_ready(out):
+        raise RuntimeError("Step0 preprocess-speed output is missing or empty.")
+    log(f"Step0: preprocessed video → {out}")
+    return out
+
+
+def step7_finalize(video_path):
+    """Step7: speed-video + export-resolution (scale/pad) trên *_vs_tm.mp4."""
     speed = float(SPEED_VIDEO)
     if speed <= 0:
         raise ValueError(f"speed-video must be > 0, got {speed}")
 
+    source_wh = get_ffprobe_video_dimensions(video_path)
+    target_wh = _resolve_export_target_wh(source_wh)
+    apply_speed = abs(speed - 1.0) > 1e-6
+    apply_resize = _video_wh_needs_resize(source_wh, target_wh)
+
+    if not apply_speed and not apply_resize:
+        return video_path
+
     final_out = VIDEO_DIR / f"{WORK_NAME}_vs_tm.mp4"
     part = VIDEO_DIR / f"{WORK_NAME}_vs_tm.mp4.part"
-    has_audio = media_has_audio_stream(video_path)
-    anchor_wh = get_ffprobe_video_dimensions(video_path)
-    gpu_cmd = build_step7_speed_command(
-        video_path,
-        part,
-        speed,
-        use_gpu=True,
-        has_audio=has_audio,
-        anchor_wh=anchor_wh,
-    )
-    try:
-        label = f"Apply speed-video x{speed:.3f}" + (
-            "" if has_audio else " (video-only)"
-        )
-        run_command(gpu_cmd, f"{label} (GPU)")
-    except Exception as e:
-        log(f"Step7: GPU encode failed → CPU: {e}")
-        cpu_cmd = build_step7_speed_command(
-            video_path,
-            part,
-            speed,
-            use_gpu=False,
-            has_audio=has_audio,
-            anchor_wh=anchor_wh,
-        )
-        label = f"Apply speed-video x{speed:.3f}" + (
-            "" if has_audio else " (video-only)"
-        )
-        run_command(cpu_cmd, f"{label} (CPU)")
+    label = "Step7 finalize"
+    if apply_resize and target_wh:
+        label += f" → {int(target_wh[0])}x{int(target_wh[1])}"
+    if apply_speed:
+        label += f" x{speed:.3f}"
+
+    if not _run_step7_encode(
+        video_path, part, speed, source_wh, target_wh, label
+    ):
+        return video_path
+
     try:
         os.replace(part, final_out)
     except OSError:
         if part.is_file():
             part.unlink(missing_ok=True)
         raise
+    if not file_ready(final_out):
+        raise RuntimeError("Step7 finalize output is missing or empty.")
     return final_out
+
+
+def _step7_scale_pad_filter(w, h):
+    return (
+        f"scale={int(w)}:{int(h)}:force_original_aspect_ratio=decrease,"
+        f"pad={int(w)}:{int(h)}:(ow-iw)/2:(oh-ih)/2,setsar=1"
+    )
+
+
+def build_step7_merge_outro_command(main_path, outro_path, part_path, use_gpu):
+    """Ghép main (_vs_tm) + outro; scale outro khớp WxH main."""
+    wh = get_ffprobe_video_dimensions(main_path)
+    if not wh or int(wh[0]) < 2 or int(wh[1]) < 2:
+        raise RuntimeError("Cannot read main video dimensions for outro merge.")
+    w, h = int(wh[0]), int(wh[1])
+    scale = _step7_scale_pad_filter(w, h)
+    main_has_audio = media_has_audio_stream(main_path)
+    outro_has_audio = media_has_audio_stream(outro_path)
+    meta = ffmpeg_output_metadata_args(part_path)
+    if use_gpu:
+        v_enc = ["-c:v", "h264_nvenc", "-preset", "p4", "-cq", "23"]
+    else:
+        v_enc = ["-c:v", "libx264", "-preset", "medium", "-crf", "23"]
+
+    a_fmt = "aresample=44100,aformat=sample_fmts=fltp:channel_layouts=stereo"
+    if main_has_audio and outro_has_audio:
+        fc = (
+            f"[0:v]{scale}[v0];[1:v]{scale}[v1];"
+            f"[0:a]{a_fmt}[a0];[1:a]{a_fmt}[a1];"
+            f"[v0][a0][v1][a1]concat=n=2:v=1:a=1[outv][outa]"
+        )
+        maps = ["-map", "[outv]", "-map", "[outa]", "-c:a", "aac"]
+    elif main_has_audio:
+        outro_dur = get_media_duration_ms(outro_path)
+        dur_s = max(0.1, (outro_dur or 1000) / 1000.0)
+        fc = (
+            f"[0:v]{scale}[v0];[1:v]{scale}[v1];"
+            f"[0:a]{a_fmt}[a0];"
+            f"anullsrc=r=44100:cl=stereo:d={dur_s:.3f}[a1];"
+            f"[v0][a0][v1][a1]concat=n=2:v=1:a=1[outv][outa]"
+        )
+        maps = ["-map", "[outv]", "-map", "[outa]", "-c:a", "aac"]
+    elif outro_has_audio:
+        main_dur = get_media_duration_ms(main_path)
+        dur_s = max(0.1, (main_dur or 1000) / 1000.0)
+        fc = (
+            f"[0:v]{scale}[v0];[1:v]{scale}[v1];"
+            f"anullsrc=r=44100:cl=stereo:d={dur_s:.3f}[a0];"
+            f"[1:a]{a_fmt}[a1];"
+            f"[v0][a0][v1][a1]concat=n=2:v=1:a=1[outv][outa]"
+        )
+        maps = ["-map", "[outv]", "-map", "[outa]", "-c:a", "aac"]
+    else:
+        fc = f"[0:v]{scale}[v0];[1:v]{scale}[v1];[v0][v1]concat=n=2:v=1:a=0[outv]"
+        maps = ["-map", "[outv]", "-an"]
+
+    return [
+        FFMPEG_BIN,
+        "-y",
+        "-i",
+        str(main_path),
+        "-i",
+        str(outro_path),
+        "-filter_complex",
+        fc,
+        *maps,
+        *v_enc,
+        *meta,
+        "-f",
+        "mp4",
+        str(part_path),
+    ]
+
+
+def step7_merge_outro(main_video_path):
+    """Giữ main tại *_vs_tm.mp4; tạo thêm *_vs_tm_outro.mp4."""
+    configured = Path(OUTRO_FILE or "")
+    outro_path = (
+        configured if configured.is_absolute() else (SCRIPT_DIR / configured)
+    ).resolve()
+    if not file_ready(outro_path):
+        raise FileNotFoundError(f"Outro file not ready: {outro_path}")
+
+    base_out = Path(main_video_path).resolve()
+    with_outro = VIDEO_DIR / f"{WORK_NAME}_vs_tm_outro.mp4"
+    part = VIDEO_DIR / f"{WORK_NAME}_vs_tm_outro.mp4.part"
+
+    gpu_cmd = build_step7_merge_outro_command(
+        base_out, outro_path, part, use_gpu=True
+    )
+    try:
+        run_command(gpu_cmd, "Step7: merge outro (GPU)")
+    except Exception as e:
+        log(f"Step7: merge outro GPU failed → CPU: {e}")
+        cpu_cmd = build_step7_merge_outro_command(
+            base_out, outro_path, part, use_gpu=False
+        )
+        run_command(cpu_cmd, "Step7: merge outro (CPU)")
+
+    try:
+        os.replace(part, with_outro)
+    except OSError:
+        if part.is_file():
+            part.unlink(missing_ok=True)
+        raise
+
+    if not file_ready(with_outro):
+        raise RuntimeError("Step7 outro merge output is missing or empty.")
+
+    log(f"Step7: base video (subs+TTS): {base_out}")
+    log(f"Step7: with outro: {with_outro}")
+    return with_outro
 
 
 # ==============================
@@ -3256,6 +3542,17 @@ def parse_cli_args():
         help="Step6: overlay logo image on video. off = skip logo even if --logo-file exists.",
     )
     parser.add_argument(
+        "--merge-outro",
+        choices=["on", "off"],
+        default="on" if MERGE_OUTRO_ENABLED else "off",
+        help="Step7: append --outro-file after final _vs_tm.mp4; keeps base file and writes *_vs_tm_outro.mp4.",
+    )
+    parser.add_argument(
+        "--outro-file",
+        default=OUTRO_FILE,
+        help="Outro clip path (absolute or relative to script dir). Required when --merge-outro on.",
+    )
+    parser.add_argument(
         "--step6-visual-transform",
         choices=["on", "off"],
         default="on" if STEP6_VISUAL_TRANSFORM_ENABLED else "off",
@@ -3328,10 +3625,22 @@ def parse_cli_args():
         help="Step4 merge only: 1.0 = copy video. If not 1.0, re-encodes video+audio before subtitle step.",
     )
     parser.add_argument(
+        "--preprocess-speed",
+        type=float,
+        default=PREPROCESS_SPEED,
+        help="Before Step1: re-encode input with setpts/atempo (1.0 = skip, use original file).",
+    )
+    parser.add_argument(
         "--speed-video",
         type=float,
         default=SPEED_VIDEO,
-        help="Step7 after subtitle render: re-encode *_vs_tm.mp4 in place (temp .part). 1.0 = skip Step7 encode.",
+        help="Step7 after subtitle render: re-encode *_vs_tm.mp4 in place (temp .part). 1.0 = skip speed only.",
+    )
+    parser.add_argument(
+        "--export-resolution",
+        choices=["source", "1080p", "2k", "4k"],
+        default=EXPORT_RESOLUTION,
+        help="Step7 output size (16:9): 1080p=1920x1080, 2k=2560x1440, 4k=3840x2160, source=keep Step6 size.",
     )
     parser.add_argument(
         "--whisper-language",
@@ -3340,12 +3649,13 @@ def parse_cli_args():
     )
     parser.add_argument(
         "--step1-subtitle-source",
-        choices=["whisper", "embedded", "easyocr"],
+        choices=["whisper", "embedded", "easyocr", "vse"],
         default=STEP1_SUBTITLE_SOURCE,
         help=(
             "Step1 subtitle source: whisper=ASR from audio, "
             "embedded=extract subtitle stream with ffmpeg, "
-            "easyocr=visual OCR on subtitle region."
+            "easyocr=visual OCR on subtitle region, "
+            "vse=external VSE extractor (requires VSE_ENTRY_SCRIPT)."
         ),
     )
     parser.add_argument(
@@ -3590,6 +3900,8 @@ def apply_cli_config(args):
     global SUBTITLE_BG_BLUR_CHROMA_RADIUS
     global SUBTITLE_BG_BLUR_CHROMA_POWER
     global LOGO_FILE
+    global MERGE_OUTRO_ENABLED
+    global OUTRO_FILE
     global LOGO_WIDTH
     global LOGO_MARGIN_X
     global LOGO_MARGIN_Y
@@ -3608,6 +3920,8 @@ def apply_cli_config(args):
     global OUTPUT_METADATA_COMMENT
     global ORIGINAL_AUDIO_VOLUME
     global NARRATION_AUDIO_VOLUME
+    global PREPROCESS_SPEED
+    global EXPORT_RESOLUTION
     global SPEED_VIDEO
     global STEP4_MERGE_SPEED
     global EDGE_TTS_VOICE
@@ -3683,6 +3997,8 @@ def apply_cli_config(args):
     LOGO_MARGIN_Y = args.logo_margin_y
     LOGO_OPACITY = args.logo_opacity
     LOGO_ENABLED = args.logo_enabled == "on"
+    MERGE_OUTRO_ENABLED = args.merge_outro == "on"
+    OUTRO_FILE = str(args.outro_file or "").strip()
 
     STEP6_VISUAL_TRANSFORM_ENABLED = args.step6_visual_transform == "on"
     STEP6_HFLIP = args.step6_hflip == "on"
@@ -3699,6 +4015,8 @@ def apply_cli_config(args):
 
     ORIGINAL_AUDIO_VOLUME = args.original_volume
     NARRATION_AUDIO_VOLUME = args.narration_volume
+    PREPROCESS_SPEED = float(args.preprocess_speed)
+    EXPORT_RESOLUTION = str(args.export_resolution or "source").strip().lower()
     SPEED_VIDEO = args.speed_video
     STEP4_MERGE_SPEED = float(args.step4_merge_speed)
 
@@ -3852,9 +4170,11 @@ def _run_step6_and_finalize(ass, tm_video, video_path, skip_voice_step):
     # Re-apply subtitle style even when ASS is reused from cache.
     update_ass_default_style(ass)
     final = step6_render(video_for_render, ass)
-    final = step7_apply_speed(final)
+    final = step7_finalize(final)
     if not file_ready(final):
         raise RuntimeError("Final video render failed.")
+    if MERGE_OUTRO_ENABLED and OUTRO_FILE:
+        final = step7_merge_outro(final)
     _cleanup_easyocr_artifacts_after_step7()
     if not skip_voice_step and tm_video.is_file():
         tm_video.unlink()
@@ -3887,8 +4207,20 @@ def run_pipeline(video, step_arg=None):
     LOG_DIR.mkdir(parents=True, exist_ok=True)
 
     preflight_checks()
-    video_duration_ms = get_media_duration_ms(video_path)
     start_step, end_step = parse_step_range(step_arg)
+
+    pre_out = VIDEO_DIR / f"{WORK_NAME}_pre.mp4"
+    if abs(float(PREPROCESS_SPEED) - 1.0) > 1e-6:
+        pipeline_video_path = get_or_run(
+            pre_out,
+            "Step0",
+            step0_preprocess_speed,
+            video_path,
+        )
+    else:
+        pipeline_video_path = video_path
+
+    video_duration_ms = get_media_duration_ms(pipeline_video_path)
     dur_s = (video_duration_ms / 1000.0) if video_duration_ms else None
     log(
         f"Pipeline steps {start_step}..{end_step}"
@@ -3918,7 +4250,7 @@ def run_pipeline(video, step_arg=None):
         zh_srt = run_step(
             1,
             "Step1",
-            lambda: get_or_run(zh_srt, "Step1", step1_transcribe, video_path),
+            lambda: get_or_run(zh_srt, "Step1", step1_transcribe, pipeline_video_path),
         )
         last_output = zh_srt
 
@@ -3959,7 +4291,7 @@ def run_pipeline(video, step_arg=None):
                 "Step4",
                 lambda: (
                     require_ready(voice, "Step4 input voice.wav"),
-                    get_or_run(tm_video, "Step4", step4_merge_audio, video_path, voice),
+                    get_or_run(tm_video, "Step4", step4_merge_audio, pipeline_video_path, voice),
                 )[1],
             )
             last_output = tm_video
@@ -3982,7 +4314,7 @@ def run_pipeline(video, step_arg=None):
             lambda: _run_step6_and_finalize(
                 ass=ass,
                 tm_video=tm_video,
-                video_path=video_path,
+                video_path=pipeline_video_path,
                 skip_voice_step=SKIP_VOICE_STEP,
             ),
         )
