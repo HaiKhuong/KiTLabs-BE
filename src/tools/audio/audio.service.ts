@@ -74,21 +74,15 @@ export class AudioService {
     pauseSettings?: Record<string, number>;
     playbackSpeed?: number;
   }): Promise<string> {
-    const refAudio = isAbsolute(opts.refAudio)
-      ? opts.refAudio
-      : resolve(process.cwd(), opts.refAudio);
+    const refAudio = isAbsolute(opts.refAudio) ? opts.refAudio : resolve(process.cwd(), opts.refAudio);
     if (!existsSync(refAudio)) {
       throw new Error(`Reference audio not found: ${refAudio}`);
     }
 
-    const outWav = isAbsolute(opts.outWav)
-      ? opts.outWav
-      : resolve(process.cwd(), opts.outWav);
+    const outWav = isAbsolute(opts.outWav) ? opts.outWav : resolve(process.cwd(), opts.outWav);
 
     const scriptDir = resolve(process.cwd(), VIDEO_PIPELINE_DIR);
-    const timeoutMs = Number(
-      process.env.AUDIO_CMD_TIMEOUT_MS ?? process.env.TRANSLATE_CMD_TIMEOUT_MS ?? 600_000,
-    );
+    const timeoutMs = Number(process.env.AUDIO_CMD_TIMEOUT_MS ?? process.env.TRANSLATE_CMD_TIMEOUT_MS ?? 600_000);
 
     const payload = {
       text: opts.text,
@@ -109,15 +103,11 @@ export class AudioService {
     };
 
     await new Promise<void>((resolvePromise, rejectPromise) => {
-      const child: ChildProcess = spawn(
-        this.resolvePythonBin(),
-        ["-c", AudioService.OMNIVOICE_INLINE_PY],
-        {
-          cwd: scriptDir,
-          windowsHide: true,
-          stdio: ["pipe", "pipe", "pipe"],
-        },
-      );
+      const child: ChildProcess = spawn(this.resolvePythonBin(), ["-c", AudioService.OMNIVOICE_INLINE_PY], {
+        cwd: scriptDir,
+        windowsHide: true,
+        stdio: ["pipe", "pipe", "pipe"],
+      });
 
       let stderr = "";
       const timeoutHandle = setTimeout(() => {
@@ -279,8 +269,7 @@ export class AudioService {
 
     const estimatedCost = dto.estimatedCost ?? 0;
 
-    const displayName =
-      text.length > 80 ? `${text.slice(0, 77).trim()}...` : text;
+    const displayName = text.length > 80 ? `${text.slice(0, 77).trim()}...` : text;
 
     const history = this.audioRepository.create({
       userId: dto.userId,
@@ -369,9 +358,7 @@ export class AudioService {
 
     if (row.resultPath) {
       try {
-        const abs = isAbsolute(row.resultPath)
-          ? row.resultPath
-          : resolve(process.cwd(), row.resultPath);
+        const abs = isAbsolute(row.resultPath) ? row.resultPath : resolve(process.cwd(), row.resultPath);
         if (existsSync(abs)) {
           await unlink(abs);
         }
@@ -406,21 +393,13 @@ export class AudioService {
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
       downloadUrl:
-        row.status === QueueJobStatus.COMPLETED && row.id
-          ? `/api/tools/audio/jobs/${row.id}/download`
-          : null,
-      playUrl:
-        row.status === QueueJobStatus.COMPLETED && row.id
-          ? `/api/tools/audio/jobs/${row.id}/stream`
-          : null,
+        row.status === QueueJobStatus.COMPLETED && row.id ? `/api/tools/audio/jobs/${row.id}/download` : null,
+      playUrl: row.status === QueueJobStatus.COMPLETED && row.id ? `/api/tools/audio/jobs/${row.id}/stream` : null,
     };
   }
 
   async processStarted(audioHistoryId: string): Promise<void> {
-    await this.audioRepository.update(
-      { id: audioHistoryId },
-      { status: QueueJobStatus.RUNNING, errorMessage: null },
-    );
+    await this.audioRepository.update({ id: audioHistoryId }, { status: QueueJobStatus.RUNNING, errorMessage: null });
   }
 
   async processCompleted(audioHistoryId: string, resultPath: string): Promise<void> {
@@ -461,19 +440,14 @@ export class AudioService {
 
   async processFailed(audioHistoryId: string, errorMessage: string): Promise<void> {
     this.logger.error(`Audio failed: historyId=${audioHistoryId} error=${errorMessage}`);
-    await this.audioRepository.update(
-      { id: audioHistoryId },
-      { status: QueueJobStatus.FAILED, errorMessage },
-    );
+    await this.audioRepository.update({ id: audioHistoryId }, { status: QueueJobStatus.FAILED, errorMessage });
   }
 
   resolveResultPath(history: AudioHistory): string {
     if (!history.resultPath) {
       throw new NotFoundException("Audio result not ready");
     }
-    const abs = isAbsolute(history.resultPath)
-      ? history.resultPath
-      : resolve(process.cwd(), history.resultPath);
+    const abs = isAbsolute(history.resultPath) ? history.resultPath : resolve(process.cwd(), history.resultPath);
     if (!existsSync(abs)) {
       throw new NotFoundException("Audio file not found on server");
     }
@@ -496,18 +470,14 @@ export class AudioService {
 
     const outPath = this.buildOutputPath(history.userId, history.id);
     const preset = history.voiceId ? findPresetVoice(history.voiceId) : undefined;
-    const language = preset
-      ? resolveOmnivoiceLanguage(preset)
-      : (process.env.OMNIVOICE_LANGUAGE ?? "vietnamese");
+    const language = preset ? resolveOmnivoiceLanguage(preset) : (process.env.OMNIVOICE_LANGUAGE ?? "vietnamese");
 
     const pauseSettings =
       config.pauseSettings && typeof config.pauseSettings === "object"
         ? (config.pauseSettings as Record<string, number>)
         : undefined;
     const rawSpeed = Number(config.speed ?? 1);
-    const playbackSpeed = Number.isFinite(rawSpeed)
-      ? Math.min(2, Math.max(0.5, rawSpeed))
-      : 1;
+    const playbackSpeed = Number.isFinite(rawSpeed) ? Math.min(2, Math.max(0.5, rawSpeed)) : 1;
 
     await this.spawnOmnivoiceTts({
       text: history.inputText,

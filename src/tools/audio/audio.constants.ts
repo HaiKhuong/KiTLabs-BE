@@ -46,9 +46,9 @@ export type AudioPresetVoice = {
 /** Một preset cho mỗi file giọng mẫu trong `VOICE_SAMPLES_DIR` (tránh trùng cùng ref + refText lệch). */
 export const AUDIO_PRESET_VOICES: AudioPresetVoice[] = [
   {
-    id: "ngoc-huyen",
-    name: "Ngọc Huyền",
-    tags: ["Nữ", "Miền Bắc", "WAV"],
+    id: "rong-con-vietsub",
+    name: "RongConVietsub",
+    tags: ["Nữ", "Vietsub", "WAV"],
     language: "vi",
     gender: "female",
     avatar: "👩",
@@ -57,15 +57,15 @@ export const AUDIO_PRESET_VOICES: AudioPresetVoice[] = [
       "Chào bạn, tôi đang thực hiện một thử nghiệm để tạo ra bản sao kỹ thuật số cho giọng nói của mình. Quá trình này đòi hỏi sự rõ ràng, nhịp điệu tự nhiên và một chút cảm xúc trong từng câu chữ.",
   },
   {
-    id: "tin-tuc",
-    name: "Minh Quân",
-    tags: ["Nam", "Tin tức", "MP3"],
+    id: "giai-tri",
+    name: "Ngọc Huyền ",
+    tags: ["Nữ", "Giải trí", "MP3"],
     language: "vi",
     gender: "male",
     avatar: "📰",
     refWav: "sample.mp3",
     refText:
-      "Tin tức hôm nay có nhiều diễn biến quan trọng. Chúng tôi sẽ cập nhật nhanh và chính xác các sự kiện nổi bật trong ngày.",
+      "Capybara, còn được gọi là chuột lang nước, được mệnh danh là bộ trưởng bộ ngoại giao trong thế giới động vật vì tính cách hiền lành, thân thiện và khả năng hòa đồng. Chúng thường sống hòa bình với các loài động vật khác, kể cả những loài săn mồi, và được yêu thích bởi sự gần gũi, thân thiện với con người.",
   },
   {
     id: "ngoc-my",
@@ -75,7 +75,8 @@ export const AUDIO_PRESET_VOICES: AudioPresetVoice[] = [
     gender: "female",
     avatar: "👩",
     refWav: "sample_edge_tts.mp3",
-    refText: "Xin chào, chào mừng bạn đến với AutoVietsub. Đây là giọng đọc mẫu tiếng Việt, rõ ràng và tự nhiên.",
+    refText:
+      "Chào bạn, tôi đang thực hiện một thử nghiệm để tạo ra bản sao kỹ thuật số cho giọng nói của mình. Quá trình này đòi hỏi sự rõ ràng, nhịp điệu tự nhiên và một chút cảm xúc trong từng câu chữ.",
   },
 ];
 
