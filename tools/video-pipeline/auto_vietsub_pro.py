@@ -51,8 +51,6 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 WHISPER_MODEL = "large-v3"
 WHISPER_LANGUAGE = "zh"
 STEP1_SUBTITLE_SOURCE = "embedded"
-VSE_PYTHON_BIN = os.getenv("VSE_PYTHON_BIN", "").strip()
-VSE_ENTRY_SCRIPT = os.getenv("VSE_ENTRY_SCRIPT", "").strip()
 GEMINI_MODEL_NAME = "gemini-2.5-flash"
 EDGE_TTS_VOICE = "vi-VN-HoaiMyNeural"
 EDGE_TTS_RATE = "+30%"
@@ -1442,49 +1440,6 @@ def _step1_extract_embedded_subtitle(video_path):
     return srt_path
 
 
-def _step1_extract_vse_subtitle(video_path):
-    log("Step1: VSE subtitles…")
-    vse_script = str(os.getenv("VSE_ENTRY_SCRIPT", VSE_ENTRY_SCRIPT or "").strip())
-    if not vse_script:
-        raise RuntimeError(
-            "VSE source requires env VSE_ENTRY_SCRIPT to point to VSE CLI script."
-        )
-    vse_script_path = Path(vse_script).expanduser()
-    if not vse_script_path.is_absolute():
-        vse_script_path = (SCRIPT_DIR / vse_script_path).resolve()
-    if not vse_script_path.exists():
-        raise RuntimeError(f"VSE_ENTRY_SCRIPT not found: {vse_script_path}")
-
-    python_bin = (
-        str(os.getenv("VSE_PYTHON_BIN", VSE_PYTHON_BIN or "")).strip()
-        or os.getenv("TRANSLATE_PYTHON_BIN", "").strip()
-        or sys.executable
-    )
-    out_srt = get_zh_srt_path()
-    out_srt.parent.mkdir(parents=True, exist_ok=True)
-
-    run_command(
-        [
-            python_bin,
-            str(vse_script_path),
-            "--input",
-            str(video_path),
-            "--output",
-            str(out_srt),
-        ],
-        "Extract subtitles with VSE",
-    )
-
-    if not out_srt.exists():
-        raise RuntimeError(f"VSE did not produce subtitle file: {out_srt}")
-    with open(out_srt, encoding="utf8") as f:
-        blocks = parse_srt(f.read())
-    if not blocks:
-        raise RuntimeError("VSE subtitle result is empty.")
-    log(f"Step1: VSE extracted {len(blocks)} lines.")
-    return out_srt
-
-
 def _step1_transcribe_with_whisper(video_path):
     log("Step1: transcribe (Whisper)…")
     from faster_whisper import WhisperModel
@@ -2352,11 +2307,9 @@ def step1_transcribe(video_path):
         return _step1_transcribe_with_whisper(video_path)
     if source_mode == "easyocr":
         return _step1_ocr_with_easyocr(video_path)
-    if source_mode == "vse":
-        return _step1_extract_vse_subtitle(video_path)
     raise RuntimeError(
         f"Unsupported Step1 source: {STEP1_SUBTITLE_SOURCE}. "
-        "Use --step1-subtitle-source whisper|embedded|easyocr|vse."
+        "Use --step1-subtitle-source whisper|embedded|easyocr."
     )
 
 
@@ -3653,13 +3606,12 @@ def parse_cli_args():
     )
     parser.add_argument(
         "--step1-subtitle-source",
-        choices=["whisper", "embedded", "easyocr", "vse"],
+        choices=["whisper", "embedded", "easyocr"],
         default=STEP1_SUBTITLE_SOURCE,
         help=(
             "Step1 subtitle source: whisper=ASR from audio, "
             "embedded=extract subtitle stream with ffmpeg, "
-            "easyocr=visual OCR on subtitle region, "
-            "vse=external VSE extractor (requires VSE_ENTRY_SCRIPT)."
+            "easyocr=visual OCR on subtitle region."
         ),
     )
     parser.add_argument(

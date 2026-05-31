@@ -395,11 +395,8 @@ export class TranslateProcessor extends WorkerHost {
           this.logger.log(`Python done code=${code ?? "?"} ${elapsedMs}ms`);
 
           if (code !== 0) {
-            const stepFailure =
-              this.extractStepFailureMarker(stdout) ?? this.extractStepFailureMarker(stderr);
-            const statusPart = stepFailure
-              ? ` (step=${stepFailure.step}, ${stepFailure.message})`
-              : "";
+            const stepFailure = this.extractStepFailureMarker(stdout) ?? this.extractStepFailureMarker(stderr);
+            const statusPart = stepFailure ? ` (step=${stepFailure.step}, ${stepFailure.message})` : "";
             rejectPromise(
               new Error(
                 `Python command failed with code ${code ?? "unknown"}${signal ? ` and signal ${signal}` : ""}${statusPart}`,
@@ -434,9 +431,7 @@ export class TranslateProcessor extends WorkerHost {
   }
 
   /** Parse `[STEP_n_FAILED] ...` from Python pipeline stderr/stdout after non-zero exit. */
-  private extractStepFailureMarker(
-    text: string | undefined,
-  ): { step: number; message: string } | null {
+  private extractStepFailureMarker(text: string | undefined): { step: number; message: string } | null {
     if (!text) {
       return null;
     }
