@@ -188,6 +188,27 @@ EXPORT_RESOLUTION_PRESETS = {
     "2k": (2560, 1440),
     "4k": (3840, 2160),
 }
+# Video encode: h264 (mặc định) | hevc — GPU: h264_nvenc / hevc_nvenc, CPU: libx264 / libx265.
+VIDEO_CODEC = "h264"
+
+
+def _normalize_video_codec_key(raw=None):
+    key = str(raw if raw is not None else VIDEO_CODEC).strip().lower()
+    if key in ("hevc", "h265", "h.265"):
+        return "hevc"
+    return "h264"
+
+
+def ffmpeg_video_encode_args(use_gpu):
+    """Tham số -c:v + preset/cq|crf; ưu tiên NVENC khi use_gpu=True."""
+    codec = _normalize_video_codec_key()
+    if codec == "hevc":
+        if use_gpu:
+            return ["-c:v", "hevc_nvenc", "-preset", "p4", "-cq", "23"]
+        return ["-c:v", "libx265", "-preset", "medium", "-crf", "23"]
+    if use_gpu:
+        return ["-c:v", "h264_nvenc", "-preset", "p4", "-cq", "23"]
+    return ["-c:v", "libx264", "-preset", "medium", "-crf", "23"]
 # Xuất MP4: xóa metadata nguồn (-map_metadata -1) và ghi Title/Artist/Comment kênh. Bật: --output-metadata on.
 OUTPUT_METADATA_ENABLED = True
 # True: title/artist/comment = stem file đầu ra (vd. Ten_vs_tm từ Ten_vs_tm.mp4). False: dùng 3 biến bên dưới.
@@ -1307,25 +1328,7 @@ def build_step6_render_command(
         map_args = ["-map", "[vout]", "-map", "0:a?"]
 
     meta = ffmpeg_output_metadata_args(out_path)
-    if use_gpu:
-        return [
-            FFMPEG_BIN,
-            "-y",
-            *input_args,
-            filter_arg_key,
-            filter_arg_value,
-            *map_args,
-            "-c:v",
-            "h264_nvenc",
-            "-preset",
-            "p4",
-            "-cq",
-            "23",
-            "-c:a",
-            "copy",
-            *meta,
-            str(out_path),
-        ]
+    v_enc = ffmpeg_video_encode_args(use_gpu)
     return [
         FFMPEG_BIN,
         "-y",
@@ -1333,12 +1336,7 @@ def build_step6_render_command(
         filter_arg_key,
         filter_arg_value,
         *map_args,
-        "-c:v",
-        "libx264",
-        "-preset",
-        "medium",
-        "-crf",
-        "23",
+        *v_enc,
         "-c:a",
         "copy",
         *meta,
@@ -3030,8 +3028,32 @@ def step4_merge_audio(video_path, voice_path):
         f"[1:a]{voice_a}[voice];"
         "[orig][voice]amix=inputs=2:duration=first:dropout_transition=0[aout]"
     )
-    run_command(
-        [
+    meta = ffmpeg_output_metadata_args(out)
+    gpu_cmd = [
+        FFMPEG_BIN,
+        "-y",
+        "-i",
+        str(video_path),
+        "-i",
+        str(voice_path),
+        "-filter_complex",
+        fc,
+        "-map",
+        "[v]",
+        "-map",
+        "[aout]",
+        *ffmpeg_video_encode_args(True),
+        "-c:a",
+        "aac",
+        "-shortest",
+        *meta,
+        str(out),
+    ]
+    try:
+        run_command(gpu_cmd, "Merge narration audio (pre-merge speed, GPU)")
+    except Exception as e:
+        log(f"Step4: GPU encode failed → CPU: {e}")
+        cpu_cmd = [
             FFMPEG_BIN,
             "-y",
             "-i",
@@ -3044,20 +3066,14 @@ def step4_merge_audio(video_path, voice_path):
             "[v]",
             "-map",
             "[aout]",
-            "-c:v",
-            "libx264",
-            "-preset",
-            "medium",
-            "-crf",
-            "23",
+            *ffmpeg_video_encode_args(False),
             "-c:a",
             "aac",
             "-shortest",
-            *ffmpeg_output_metadata_args(out),
+            *meta,
             str(out),
-        ],
-        "Merge narration audio (pre-merge speed)",
-    )
+        ]
+        run_command(cpu_cmd, "Merge narration audio (pre-merge speed, CPU)")
     return out
 
 
@@ -3084,10 +3100,7 @@ def build_step7_finalize_command(
 ):
     """Step7: setpts/atempo (speed) + scale/pad (export resolution)."""
     meta = ffmpeg_output_metadata_args(part_path)
-    if use_gpu:
-        v_enc = ["-c:v", "h264_nvenc", "-preset", "p4", "-cq", "23"]
-    else:
-        v_enc = ["-c:v", "libx264", "-preset", "medium", "-crf", "23"]
+    v_enc = ffmpeg_video_encode_args(use_gpu)
 
     speed = float(speed)
     apply_speed = abs(speed - 1.0) > 1e-6
@@ -3295,10 +3308,7 @@ def build_step7_merge_outro_command(main_path, outro_path, part_path, use_gpu):
     main_has_audio = media_has_audio_stream(main_path)
     outro_has_audio = media_has_audio_stream(outro_path)
     meta = ffmpeg_output_metadata_args(part_path)
-    if use_gpu:
-        v_enc = ["-c:v", "h264_nvenc", "-preset", "p4", "-cq", "23"]
-    else:
-        v_enc = ["-c:v", "libx264", "-preset", "medium", "-crf", "23"]
+    v_enc = ffmpeg_video_encode_args(use_gpu)
 
     a_fmt = "aresample=44100,aformat=sample_fmts=fltp:channel_layouts=stereo"
     if main_has_audio and outro_has_audio:
@@ -3643,6 +3653,12 @@ def parse_cli_args():
         help="Step7 output size (16:9): 1080p=1920x1080, 2k=2560x1440, 4k=3840x2160, source=keep Step6 size.",
     )
     parser.add_argument(
+        "--video-codec",
+        choices=["h264", "hevc"],
+        default=VIDEO_CODEC,
+        help="Video encode: h264 (h264_nvenc/libx264) or hevc (hevc_nvenc/libx265). GPU tried first.",
+    )
+    parser.add_argument(
         "--whisper-language",
         default=WHISPER_LANGUAGE,
         help="Whisper language code. Example: zh, en, vi.",
@@ -3922,6 +3938,7 @@ def apply_cli_config(args):
     global NARRATION_AUDIO_VOLUME
     global PREPROCESS_SPEED
     global EXPORT_RESOLUTION
+    global VIDEO_CODEC
     global SPEED_VIDEO
     global STEP4_MERGE_SPEED
     global EDGE_TTS_VOICE
@@ -4017,6 +4034,7 @@ def apply_cli_config(args):
     NARRATION_AUDIO_VOLUME = args.narration_volume
     PREPROCESS_SPEED = float(args.preprocess_speed)
     EXPORT_RESOLUTION = str(args.export_resolution or "source").strip().lower()
+    VIDEO_CODEC = _normalize_video_codec_key(getattr(args, "video_codec", VIDEO_CODEC))
     SPEED_VIDEO = args.speed_video
     STEP4_MERGE_SPEED = float(args.step4_merge_speed)
 

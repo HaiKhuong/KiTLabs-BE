@@ -775,6 +775,15 @@ export class TranslateEngineConfigDto {
   @IsString()
   exportResolution?: string;
 
+  /** h264 | hevc — encode ưu tiên GPU (nvenc) */
+  @IsOptional()
+  @IsString()
+  videoCodec?: string;
+
+  @IsOptional()
+  @IsString()
+  video_codec?: string;
+
   @IsOptional()
   @IsString()
   export_resolution?: string;

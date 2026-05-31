@@ -225,6 +225,7 @@ const OPTION_MAPPINGS: Array<{
     keys: ["exportResolution", "export_resolution"],
     allowedTypes: ["string"],
   },
+  { cliFlag: "--video-codec", keys: ["videoCodec", "video_codec"], allowedTypes: ["string"] },
   { cliFlag: "--merge-outro", keys: ["mergeOutro", "merge_outro"], allowedTypes: ["string"] },
   { cliFlag: "--outro-file", keys: ["outroFile", "outro_file"], allowedTypes: ["string"] },
 ];
