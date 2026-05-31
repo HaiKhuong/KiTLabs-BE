@@ -53,8 +53,6 @@ WHISPER_LANGUAGE = "zh"
 STEP1_SUBTITLE_SOURCE = "embedded"
 VSE_PYTHON_BIN = os.getenv("VSE_PYTHON_BIN", "").strip()
 VSE_ENTRY_SCRIPT = os.getenv("VSE_ENTRY_SCRIPT", "").strip()
-VSE_MODE = os.getenv("VSE_MODE", "fast").strip().lower()
-VSE_LANG = os.getenv("VSE_LANG", "ch").strip()
 GEMINI_MODEL_NAME = "gemini-2.5-flash"
 EDGE_TTS_VOICE = "vi-VN-HoaiMyNeural"
 EDGE_TTS_RATE = "+30%"
@@ -1465,11 +1463,6 @@ def _step1_extract_vse_subtitle(video_path):
     out_srt = get_zh_srt_path()
     out_srt.parent.mkdir(parents=True, exist_ok=True)
 
-    # Normalize VSE mode to known values.
-    mode = str(os.getenv("VSE_MODE", VSE_MODE or "fast")).strip().lower()
-    if mode not in {"fast", "auto", "precise"}:
-        mode = "fast"
-
     run_command(
         [
             python_bin,
@@ -1478,10 +1471,6 @@ def _step1_extract_vse_subtitle(video_path):
             str(video_path),
             "--output",
             str(out_srt),
-            "--mode",
-            mode,
-            "--lang",
-            str(os.getenv("VSE_LANG", VSE_LANG or "ch")),
         ],
         "Extract subtitles with VSE",
     )
