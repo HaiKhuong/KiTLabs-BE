@@ -106,23 +106,24 @@ def _should_append_tail_pad(
     return _piece_needs_quote_tail_pad(piece)
 
 
-def _tokenize_with_pauses(text: str) -> List[Dict[str, Optional[str]]]:
-    """Tách văn bản theo dấu câu; pause_after gắn với đoạn TTS trước delimiter."""
-    t = _prepare_text_for_pause_tokenize(text)
-    if not t:
+def _tokenize_line_with_pauses(line: str) -> List[Dict[str, Optional[str]]]:
+    """
+    Tách một dòng theo dấu câu kết thúc câu — không tách tại dấu phẩy giữa dòng
+    (OmniVoice đọc trọn câu, tránh nuốt chữ khi ghép nhiều segment ngắn).
+    """
+    line = str(line or "").strip()
+    if not line:
         return []
 
     delim_map = {
         ".": "period",
-        ",": "comma",
         ";": "semicolon",
-        "\n": "newline",
         "?": "question",
         "!": "exclamation",
         ":": "colon",
         ELLIPSIS_CHAR: "ellipsis",
     }
-    tokens = re.split(r"(…|[.,;\n?!:])", t)
+    tokens = re.split(r"(…|[.;?!:])", line)
     chunks: List[Dict[str, Optional[str]]] = []
     buf: List[str] = []
 
@@ -143,8 +144,39 @@ def _tokenize_with_pauses(text: str) -> List[Dict[str, Optional[str]]]:
             buf.append(tok)
 
     flush(None)
+    return chunks
 
-    # Bỏ pause_after ở chunk cuối nếu không có text (chỉ silence thừa)
+
+def _tokenize_with_pauses(text: str) -> List[Dict[str, Optional[str]]]:
+    """
+    Tách văn bản thành đoạn TTS + pause_after.
+
+    - Dấu phẩy giữa cùng một dòng: giữ nguyên một đoạn (không tách, không chèn pause riêng).
+    - Xuống dòng: ranh giới câu mới; đoạn cuối mỗi dòng (kể cả kết thúc bằng dấu phẩy) dùng pause newline.
+    - Các dấu . ; ? ! : … vẫn tách trong phạm vi từng dòng như trước.
+    """
+    t = _prepare_text_for_pause_tokenize(text)
+    if not t:
+        return []
+
+    lines = t.split("\n")
+    chunks: List[Dict[str, Optional[str]]] = []
+
+    for line_idx, line in enumerate(lines):
+        line_chunks = _tokenize_line_with_pauses(line)
+        if not line_chunks:
+            if line_idx < len(lines) - 1:
+                _append_pause_only(chunks, "newline")
+            continue
+
+        for chunk_idx, chunk in enumerate(line_chunks):
+            is_last_chunk_in_line = chunk_idx == len(line_chunks) - 1
+            is_last_line = line_idx == len(lines) - 1
+            if is_last_chunk_in_line and not is_last_line and chunk.get("text"):
+                chunk = dict(chunk)
+                chunk["pause_after"] = "newline"
+            chunks.append(chunk)
+
     while chunks and chunks[-1].get("text") is None:
         chunks.pop()
 
