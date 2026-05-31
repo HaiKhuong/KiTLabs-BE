@@ -31,20 +31,15 @@ DEFAULT_PAUSE_SEC = {
 # Ký tự placeholder sau khi gom "..." / "...." (tránh tách thành nhiều dấu chấm).
 ELLIPSIS_CHAR = "\u2026"
 
-# Các loại pause (trừ xuống dòng) đều có đệm 200ms trước khoảng nghỉ cấu hình.
-PUNCT_PAUSE_KEYS = frozenset(k for k in DEFAULT_PAUSE_SEC if k != "newline")
 
-# Đuôi đoạn kết thúc bằng ngoặc đóng → thêm tail pad dù không tách token ngoặc.
-CLOSING_QUOTE_CHARS = '"\'\u201d\u2019»'
-
-
+# Đệm im lặng sau mỗi đoạn TTS (ms) — tránh cảm giác bị cắt đuôi trước khi nghỉ.
 def _resolve_tail_pad_sec() -> float:
-    raw = (os.getenv("AUDIO_TTS_TAIL_PAD_MS") or "200").strip()
+    raw = (os.getenv("AUDIO_TTS_TAIL_PAD_MS") or "350").strip()
     try:
         ms = float(raw)
     except (TypeError, ValueError):
-        ms = 200.0
-    return max(0.0, min(ms / 1000.0, 1.0))
+        ms = 350.0
+    return max(0.0, min(ms / 1000.0, 1.5))
 
 
 def _resolve_pause_sec(pause_settings: Optional[Dict[str, Any]]) -> Dict[str, float]:
@@ -90,93 +85,35 @@ def _append_pause_only(chunks: List[Dict[str, Optional[str]]], pause_after: str)
     chunks.append({"text": None, "pause_after": pause_after})
 
 
-def _piece_needs_quote_tail_pad(piece: str) -> bool:
-    s = str(piece or "").rstrip()
-    return bool(s) and s[-1] in CLOSING_QUOTE_CHARS
-
-
-def _should_append_tail_pad(
-    pause_after: Optional[str],
-    piece: str,
-    tail_pad_sec: float,
-) -> bool:
-    if tail_pad_sec <= 0.001:
-        return False
-    if pause_after in PUNCT_PAUSE_KEYS:
-        return True
-    return _piece_needs_quote_tail_pad(piece)
-
-
-def _tokenize_line_with_pauses(line: str) -> List[Dict[str, Optional[str]]]:
-    """
-    Tách một dòng theo dấu câu kết thúc câu — không tách tại dấu phẩy giữa dòng
-    (OmniVoice đọc trọn câu, tránh nuốt chữ khi ghép nhiều segment ngắn).
-    """
-    line = str(line or "").strip()
-    if not line:
-        return []
-
-    delim_map = {
-        ".": "period",
-        ";": "semicolon",
-        "?": "question",
-        "!": "exclamation",
-        ":": "colon",
-        ELLIPSIS_CHAR: "ellipsis",
-    }
-    tokens = re.split(r"(…|[.;?!:])", line)
-    chunks: List[Dict[str, Optional[str]]] = []
-    buf: List[str] = []
-
-    def flush(pause_after: Optional[str]) -> None:
-        piece = "".join(buf).strip()
-        buf.clear()
-        if piece and _is_speakable_piece(piece):
-            chunks.append({"text": piece, "pause_after": pause_after})
-        elif pause_after:
-            _append_pause_only(chunks, pause_after)
-
-    for tok in tokens:
-        if not tok:
-            continue
-        if tok in delim_map:
-            flush(delim_map[tok])
-        else:
-            buf.append(tok)
-
-    flush(None)
-    return chunks
-
-
 def _tokenize_with_pauses(text: str) -> List[Dict[str, Optional[str]]]:
     """
     Tách văn bản thành đoạn TTS + pause_after.
 
-    - Dấu phẩy giữa cùng một dòng: giữ nguyên một đoạn (không tách, không chèn pause riêng).
-    - Xuống dòng: ranh giới câu mới; đoạn cuối mỗi dòng (kể cả kết thúc bằng dấu phẩy) dùng pause newline.
-    - Các dấu . ; ? ! : … vẫn tách trong phạm vi từng dòng như trước.
+    Chỉ tách theo xuống dòng — mỗi dòng (kể cả nhiều câu / dấu phẩy / dấu chấm) là
+    một lần gọi OmniVoice, tránh nuốt/cắt đuôi khi ghép nhiều segment ngắn.
+    pause_after = newline giữa các dòng (trừ dòng cuối).
     """
     t = _prepare_text_for_pause_tokenize(text)
     if not t:
         return []
 
-    lines = t.split("\n")
-    chunks: List[Dict[str, Optional[str]]] = []
+    raw_lines = t.split("\n")
+    lines = [ln.strip() for ln in raw_lines if ln.strip()]
+    if not lines:
+        return []
 
+    chunks: List[Dict[str, Optional[str]]] = []
     for line_idx, line in enumerate(lines):
-        line_chunks = _tokenize_line_with_pauses(line)
-        if not line_chunks:
+        if not _is_speakable_piece(line):
             if line_idx < len(lines) - 1:
                 _append_pause_only(chunks, "newline")
             continue
-
-        for chunk_idx, chunk in enumerate(line_chunks):
-            is_last_chunk_in_line = chunk_idx == len(line_chunks) - 1
-            is_last_line = line_idx == len(lines) - 1
-            if is_last_chunk_in_line and not is_last_line and chunk.get("text"):
-                chunk = dict(chunk)
-                chunk["pause_after"] = "newline"
-            chunks.append(chunk)
+        chunks.append(
+            {
+                "text": line,
+                "pause_after": "newline" if line_idx < len(lines) - 1 else None,
+            }
+        )
 
     while chunks and chunks[-1].get("text") is None:
         chunks.pop()
@@ -326,7 +263,8 @@ def _append_tts_segment(
     synthesize_to_wav(text=piece, out_wav=seg_path, **omnivoice_kw)
     timeline.append(seg_path)
 
-    if _should_append_tail_pad(pause_after, piece, tail_pad_sec):
+    # Luôn đệm đuôi sau mỗi đoạn nói — tránh cảm giác bị cắt trước khi chèn pause.
+    if tail_pad_sec > 0.001:
         _append_silence_to_timeline(
             timeline,
             tmp_dir / f"tail_{index:04d}.wav",
