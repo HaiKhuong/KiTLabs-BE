@@ -50,8 +50,8 @@ export class AudioService {
   private static readonly OMNIVOICE_INLINE_PY = [
     "import json,sys",
     "p=json.load(sys.stdin)",
-    "from omnivoice_tts import synthesize_to_wav",
-    "synthesize_to_wav(**{k:v for k,v in p.items() if v is not None})",
+    "from audio_tts_with_pauses import synthesize_with_pause_settings",
+    "synthesize_with_pause_settings(**{k:v for k,v in p.items() if v is not None})",
   ].join(";");
 
   private static readonly MAX_LOG_BUFFER = 64 * 1024;
@@ -71,6 +71,7 @@ export class AudioService {
     refText: string;
     language?: string;
     seed?: number;
+    pauseSettings?: Record<string, number>;
   }): Promise<string> {
     const refAudio = isAbsolute(opts.refAudio)
       ? opts.refAudio
@@ -100,6 +101,7 @@ export class AudioService {
       num_step: Number(process.env.OMNIVOICE_NUM_STEP ?? 8),
       guidance_scale: Number(process.env.OMNIVOICE_GUIDANCE_SCALE ?? 2),
       ...(opts.seed != null ? { seed: opts.seed } : {}),
+      ...(opts.pauseSettings ? { pause_settings: opts.pauseSettings } : {}),
     };
 
     await new Promise<void>((resolvePromise, rejectPromise) => {
@@ -285,8 +287,12 @@ export class AudioService {
       engineConfig: {
         refAudioPath,
         refText,
-        speed: dto.speed ?? 1,
-        pitch: dto.pitch ?? 0,
+        pauseSettings: {
+          period: dto.pausePeriodSec ?? 0.45,
+          comma: dto.pauseCommaSec ?? 0.25,
+          semicolon: dto.pauseSemicolonSec ?? 0.3,
+          newline: dto.pauseNewlineSec ?? 0.6,
+        },
         cloneRefWav: dto.cloneRefWav ?? null,
       },
       status: QueueJobStatus.PENDING,
@@ -485,12 +491,18 @@ export class AudioService {
       ? resolveOmnivoiceLanguage(preset)
       : (process.env.OMNIVOICE_LANGUAGE ?? "vietnamese");
 
+    const pauseSettings =
+      config.pauseSettings && typeof config.pauseSettings === "object"
+        ? (config.pauseSettings as Record<string, number>)
+        : undefined;
+
     await this.spawnOmnivoiceTts({
       text: history.inputText,
       outWav: outPath,
       refAudio: refAudioPath,
       refText,
       language,
+      pauseSettings,
       seed: process.env.OMNIVOICE_SEED ? Number(process.env.OMNIVOICE_SEED) : undefined,
     });
 

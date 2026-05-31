@@ -50,21 +50,57 @@ export class CreateAudioJobDto {
   @IsNotEmpty()
   cloneRefText?: string;
 
-  @ApiPropertyOptional({ default: 1, minimum: 0.5, maximum: 2 })
+  @ApiPropertyOptional({
+    description: "Pause after period (seconds)",
+    default: 0.45,
+    minimum: 0,
+    maximum: 3,
+  })
   @IsOptional()
   @Type(() => Number)
   @IsNumber()
-  @Min(0.5)
-  @Max(2)
-  speed?: number;
+  @Min(0)
+  @Max(3)
+  pausePeriodSec?: number;
 
-  @ApiPropertyOptional({ default: 0, minimum: -5, maximum: 5 })
+  @ApiPropertyOptional({
+    description: "Pause after comma (seconds)",
+    default: 0.25,
+    minimum: 0,
+    maximum: 3,
+  })
   @IsOptional()
   @Type(() => Number)
   @IsNumber()
-  @Min(-5)
-  @Max(5)
-  pitch?: number;
+  @Min(0)
+  @Max(3)
+  pauseCommaSec?: number;
+
+  @ApiPropertyOptional({
+    description: "Pause after semicolon (seconds)",
+    default: 0.3,
+    minimum: 0,
+    maximum: 3,
+  })
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  @Max(3)
+  pauseSemicolonSec?: number;
+
+  @ApiPropertyOptional({
+    description: "Pause after newline (seconds)",
+    default: 0.6,
+    minimum: 0,
+    maximum: 3,
+  })
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  @Max(3)
+  pauseNewlineSec?: number;
 
   @ApiPropertyOptional({ description: "Credit cost estimate (0 = free / no deduction)", default: 0 })
   @IsOptional()
