@@ -64,6 +64,16 @@ export class AudioService {
     );
   }
 
+  /** Mặc định 42 — khớp OMNIVOICE_SEED trong auto_vietsub_pro.py. Set env `none` để random. */
+  private resolveOmnivoiceSeed(): number | undefined {
+    const raw = (process.env.OMNIVOICE_SEED ?? "42").trim();
+    if (!raw || raw.toLowerCase() === "none" || raw.toLowerCase() === "null") {
+      return undefined;
+    }
+    const n = Number(raw);
+    return Number.isFinite(n) ? n : 42;
+  }
+
   private async spawnOmnivoiceTts(opts: {
     text: string;
     outWav: string;
@@ -84,6 +94,8 @@ export class AudioService {
     const scriptDir = resolve(process.cwd(), VIDEO_PIPELINE_DIR);
     const timeoutMs = Number(process.env.AUDIO_CMD_TIMEOUT_MS ?? process.env.TRANSLATE_CMD_TIMEOUT_MS ?? 600_000);
 
+    const seed = opts.seed ?? this.resolveOmnivoiceSeed();
+
     const payload = {
       text: opts.text,
       out_wav: outWav,
@@ -95,7 +107,7 @@ export class AudioService {
       language: opts.language ?? process.env.OMNIVOICE_LANGUAGE ?? "vietnamese",
       num_step: Number(process.env.OMNIVOICE_NUM_STEP ?? 8),
       guidance_scale: Number(process.env.OMNIVOICE_GUIDANCE_SCALE ?? 2),
-      ...(opts.seed != null ? { seed: opts.seed } : {}),
+      ...(seed != null ? { seed } : {}),
       ...(opts.pauseSettings ? { pause_settings: opts.pauseSettings } : {}),
       ...(opts.playbackSpeed != null && Math.abs(opts.playbackSpeed - 1) > 1e-6
         ? { playback_speed: opts.playbackSpeed }
@@ -487,7 +499,6 @@ export class AudioService {
       language,
       pauseSettings,
       playbackSpeed,
-      seed: process.env.OMNIVOICE_SEED ? Number(process.env.OMNIVOICE_SEED) : undefined,
     });
 
     return outPath.replaceAll("\\", "/");

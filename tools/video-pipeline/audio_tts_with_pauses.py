@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional
 from omnivoice_tts import _normalize_tts_text_for_audio, synthesize_to_wav
 
 FFMPEG_BIN = (os.getenv("FFMPEG_BIN") or "ffmpeg").strip() or "ffmpeg"
+_step3_ref_cfg_ready = False
 DEFAULT_PAUSE_SEC = {
     "period": 0.45,
     "comma": 0.25,
@@ -183,6 +184,68 @@ def _tokenize_with_pauses(text: str) -> List[Dict[str, Optional[str]]]:
     return chunks
 
 
+def _run_command(args: List[str], label: str) -> None:
+    """Tương thích signature run_command của auto_vietsub / step3_vixtts_edge."""
+    proc = subprocess.run(args, capture_output=True, text=True)
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout or "").strip()
+        raise RuntimeError(f"{label} failed: {err[:2000]}")
+
+
+def _ensure_step3_speaker_ref_config() -> None:
+    """Cấu hình tối thiểu để dùng prepare_speaker_reference (mp3/m4a → WAV 24kHz mono)."""
+    global _step3_ref_cfg_ready
+    if _step3_ref_cfg_ready:
+        return
+    from step3_vixtts_edge import configure_step3_vixtts_edge
+
+    configure_step3_vixtts_edge(
+        log=lambda _msg: None,
+        run_command=_run_command,
+        ffmpeg_bin=FFMPEG_BIN,
+        vixtts_normalize_text=False,
+        vixtts_inference_speed=1.0,
+        vixtts_output_volume_gain=1.0,
+        vixtts_pitch_shift_semitones=0.0,
+        edge_tts_voice="",
+        edge_tts_volume="",
+        edge_tts_pitch="",
+        step3_tts_api_timeout_sec=60.0,
+    )
+    _step3_ref_cfg_ready = True
+
+
+def _resolve_ref_audio_cache_dir(ref_path: Path) -> Path:
+    root = (os.getenv("AUDIO_REF_CACHE_DIR") or "").strip()
+    base = Path(root) if root else Path(tempfile.gettempdir()) / "kitools_audio_ref"
+    return base / ref_path.stem
+
+
+def _prepare_ref_audio_for_omnivoice(ref_audio: str | Path) -> Path:
+    """WAV giữ nguyên; mp3/m4a/… → WAV 24kHz mono (cùng logic auto_vietsub Step3)."""
+    ref_path = Path(ref_audio).expanduser().resolve()
+    if not ref_path.is_file():
+        raise FileNotFoundError(f"Reference audio not found: {ref_path}")
+    if ref_path.suffix.lower() == ".wav":
+        return ref_path
+    _ensure_step3_speaker_ref_config()
+    from step3_vixtts_edge import prepare_speaker_reference
+
+    return prepare_speaker_reference(ref_path, _resolve_ref_audio_cache_dir(ref_path))
+
+
+def _resolve_omnivoice_seed(seed: Optional[int]) -> Optional[int]:
+    if seed is not None:
+        return int(seed)
+    raw = (os.getenv("OMNIVOICE_SEED") or "42").strip()
+    if not raw or raw.lower() in ("none", "null"):
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return 42
+
+
 def _run_ffmpeg(args: List[str], label: str) -> None:
     cmd = [FFMPEG_BIN, "-y", *args]
     proc = subprocess.run(cmd, capture_output=True, text=True)
@@ -319,6 +382,10 @@ def synthesize_with_pause_settings(
 ) -> None:
     out = Path(out_wav)
     out.parent.mkdir(parents=True, exist_ok=True)
+    # Khớp auto_vietsub Step3 OmniVoice: lowercase trước khi tokenize / synthesize.
+    text = str(text or "").lower()
+    ref_prepared = _prepare_ref_audio_for_omnivoice(ref_audio)
+    resolved_seed = _resolve_omnivoice_seed(seed)
     pause_sec = _resolve_pause_sec(pause_settings)
     chunks = _tokenize_with_pauses(text)
 
@@ -326,7 +393,7 @@ def synthesize_with_pause_settings(
         raise ValueError("text is empty after tokenize")
 
     omnivoice_kw = dict(
-        ref_audio=ref_audio,
+        ref_audio=str(ref_prepared),
         ref_text=ref_text,
         model_id=model_id,
         device_map=device_map,
@@ -334,7 +401,7 @@ def synthesize_with_pause_settings(
         language=language,
         num_step=num_step,
         guidance_scale=guidance_scale,
-        seed=seed,
+        seed=resolved_seed,
     )
 
     speed = _resolve_playback_speed(playback_speed)
