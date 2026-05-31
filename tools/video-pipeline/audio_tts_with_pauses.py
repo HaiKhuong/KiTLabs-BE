@@ -13,7 +13,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from omnivoice_tts import _normalize_tts_text_for_audio, synthesize_to_wav
+from omnivoice_tts import prepare_omnivoice_input_text, synthesize_to_wav
 
 FFMPEG_BIN = (os.getenv("FFMPEG_BIN") or "ffmpeg").strip() or "ffmpeg"
 _step3_ref_cfg_ready = False
@@ -75,7 +75,7 @@ def _prepare_text_for_pause_tokenize(text: str) -> str:
 
 def _is_speakable_piece(piece: str) -> bool:
     """True nếu sau chuẩn hóa OmniVoice vẫn còn nội dung để synthesize."""
-    return bool(_normalize_tts_text_for_audio(str(piece or "").strip()))
+    return bool(prepare_omnivoice_input_text(str(piece or "").strip()))
 
 
 def _append_pause_only(chunks: List[Dict[str, Optional[str]]], pause_after: str) -> None:
@@ -320,8 +320,6 @@ def synthesize_with_pause_settings(
 ) -> None:
     out = Path(out_wav)
     out.parent.mkdir(parents=True, exist_ok=True)
-    # Khớp auto_vietsub Step3 OmniVoice: lowercase trước khi tokenize / synthesize.
-    text = str(text or "").lower()
     ref_prepared = _prepare_ref_audio_for_omnivoice(ref_audio)
     resolved_seed = _resolve_omnivoice_seed(seed)
     pause_sec = _resolve_pause_sec(pause_settings)

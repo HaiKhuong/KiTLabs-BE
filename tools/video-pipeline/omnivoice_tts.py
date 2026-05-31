@@ -81,6 +81,70 @@ def _normalize_tts_text_for_audio(text: str) -> str:
     return t.strip()
 
 
+def apply_omnivoice_lexical_replacements(text: str) -> str:
+    """
+    Thay token OmniVoice đọc kém — luôn gọi **trước** ``.lower()``.
+
+    Rule đã chốt:
+    1. ``%`` → phần trăm
+    2. ``AI`` (uppercase, từ riêng) → ây ai
+    3. ``&`` → và
+    4. ``$`` → đô
+    6. ``km/h`` → ki lô mét trên giờ; ``km`` (còn lại) → ki lô mét
+    9. ``OK`` / ``ok`` → ô kê
+    10. Wi‑Fi / WiFi → wai fai; ``4G`` → 4 gờ; ``5G`` → 5 gờ
+    14. ``AM`` / ``PM`` (chỉ chữ hoa) → sáng / chiều
+    15. ``24/7`` → 24 trên 7
+    """
+    t = str(text or "")
+    if not t.strip():
+        return t
+
+    # 15 — trước các pattern có dấu /
+    t = re.sub(r"\b24\s*/\s*7\b", "24 trên 7", t)
+
+    # 10 — Wi‑Fi (gạch thường / non-breaking hyphen)
+    t = re.sub(r"\bWi\s*[-\u2011]?\s*Fi\b", "wai fai", t, flags=re.IGNORECASE)
+    t = re.sub(r"\b4G\b", "4 gờ", t)
+    t = re.sub(r"\b5G\b", "5 gờ", t)
+
+    # 14 — AM/PM chỉ chữ HOA (9 AM, 9AM, 9 A.M.)
+    t = re.sub(r"(?<=\d)\s*AM\b", " sáng", t)
+    t = re.sub(r"(?<=\d)\s*PM\b", " chiều", t)
+    t = re.sub(r"\bA\.?\s*M\.?\b", "sáng", t)
+    t = re.sub(r"\bP\.?\s*M\.?\b", "chiều", t)
+
+    # 9, 2 — từ viết tắt
+    t = re.sub(r"\b[oO][kK]\b", "ô kê", t)
+    t = re.sub(r"\bAI\b", "ây ai", t)
+
+    # 6 — km/h trước km đơn
+    t = re.sub(
+        r"(?<=\d)\s*km\s*/\s*h\b",
+        " ki lô mét trên giờ",
+        t,
+        flags=re.IGNORECASE,
+    )
+    t = re.sub(r"\bkm\s*/\s*h\b", "ki lô mét trên giờ", t, flags=re.IGNORECASE)
+    t = re.sub(r"(?<=\d)\s*km\b", " ki lô mét", t, flags=re.IGNORECASE)
+    t = re.sub(r"\bkm\b", "ki lô mét", t, flags=re.IGNORECASE)
+
+    # 1, 3, 4
+    t = t.replace("%", " phần trăm ")
+    t = t.replace("&", " và ")
+    t = t.replace("$", " đô ")
+
+    t = re.sub(r"\s+", " ", t).strip()
+    return t
+
+
+def prepare_omnivoice_input_text(text: str) -> str:
+    """Replace lexical → lowercase → chuẩn hóa dấu câu (pipeline chung Audio + auto_vietsub)."""
+    t = apply_omnivoice_lexical_replacements(text)
+    t = t.lower()
+    return _normalize_tts_text_for_audio(t)
+
+
 def _resolve_dtype(dtype_str: str):
     import torch
 
@@ -247,7 +311,7 @@ def synthesize_to_wav(
     if not Path(ref_audio_path).is_file():
         raise FileNotFoundError(f"OmniVoice: không tìm thấy ref_audio: {ref_audio_path}")
 
-    t = _normalize_tts_text_for_audio(str(text or ""))
+    t = prepare_omnivoice_input_text(text)
     if not t:
         raise ValueError("OmniVoice: text rỗng.")
 

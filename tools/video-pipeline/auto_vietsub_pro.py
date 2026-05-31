@@ -2778,7 +2778,6 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
                 from omnivoice_tts import synthesize_to_wav
 
                 tts_omni = tts_normalize_vi(subtitle_text, OMNIVOICE_NORMALIZE_TEXT)
-                tts_omni = str(tts_omni or "").lower()
                 ns = int(OMNIVOICE_NUM_STEP)
                 gs = float(OMNIVOICE_GUIDANCE_SCALE)
                 synthesize_to_wav(
