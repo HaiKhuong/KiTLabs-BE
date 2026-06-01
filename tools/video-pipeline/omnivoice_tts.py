@@ -88,6 +88,7 @@ def apply_omnivoice_lexical_replacements(text: str) -> str:
     Rule đã chốt:
     1. ``%`` → phần trăm
     2. ``AI`` (uppercase, từ riêng) → ây ai
+    2b. ``NPC`` / ``npc`` (từ riêng) → Nờ Bi Xi
     3. ``&`` → và
     4. ``$`` → đô
     6. ``km/h`` → ki lô mét trên giờ; ``km`` (còn lại) → ki lô mét
@@ -117,6 +118,7 @@ def apply_omnivoice_lexical_replacements(text: str) -> str:
     # 9, 2 — từ viết tắt
     t = re.sub(r"\b[oO][kK]\b", "ô kê", t)
     t = re.sub(r"\bAI\b", "ây ai", t)
+    t = re.sub(r"\bNPC\b", "Nờ Bi Xi", t, flags=re.IGNORECASE)
 
     # 6 — km/h trước km đơn
     t = re.sub(
