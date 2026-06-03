@@ -1,5 +1,19 @@
 # VSE Step1 Setup Guide (Linux GPU)
 
+## WSL: staging `/home` + output `/mnt/c`
+
+Set in KiTLabs-BE `.env`:
+
+```bash
+TRANSLATE_WORK_ROOT=/mnt/c/Users/haikh/Videos/VideoVietsub/videos
+TRANSLATE_WORK_STAGING_ROOT=/home/haikhuong/sources/KiTLabs-BE/tools/video-pipeline/workspace
+```
+
+- **Staging**: log, VSE/EasyOCR temp, file mp4 trung gian, input copy.
+- **Output**: `.zh.srt`, `.vi.srt`, `*_vs_tm.mp4` (logic cũ trên `/mnt/c`).
+
+`localVideoPath` vẫn có thể trỏ `/mnt/c/...`; pipeline copy sang staging khi chạy.
+
 VSE (Video Subtitle Extractor) integration for KiTLabs auto_vietsub_pro.py.
 
 ## Requirements

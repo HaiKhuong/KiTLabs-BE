@@ -376,14 +376,26 @@ class SubtitleExtractor:
                 cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                bufsize=1,
+                bufsize=-1,
                 close_fds=True,
                 shell=True,
                 start_new_session=True,
             )
             threading.Thread(target=vsf_output, daemon=True, args=(p.stderr,)).start()
             ProcessManager.instance().add_process(p)
-            p.wait()
+            return_code = p.wait()
+            if return_code != 0:
+                raise RuntimeError(
+                    f"VideoSubFinder exited with code {return_code}. "
+                    "On WSL, use a Linux-native binary and avoid /mnt/c paths; "
+                    "or run with --vse-mode accurate (GPU). "
+                    "Ensure VideoSubFinderCli is executable (chmod as deploy user, chown for node)."
+                )
+            if not os.path.isfile(self.vsf_subtitle):
+                raise RuntimeError(
+                    f"VideoSubFinder did not create {self.vsf_subtitle}. "
+                    "VSF may have crashed (segfault) — check ldd/file on VideoSubFinderCli."
+                )
         finally:
             self.vsf_running = False
 

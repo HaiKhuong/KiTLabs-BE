@@ -311,7 +311,10 @@ export class TranslateService {
       throw new BadRequestException("Cannot resolve runtime log path: engineConfig.localVideoPath is missing");
     }
 
-    const workRoot = process.env.TRANSLATE_WORK_ROOT ?? "/mnt/c/Users/haikh/Videos/VideoVietsub/videos";
+    const workRoot =
+      process.env.TRANSLATE_WORK_STAGING_ROOT?.trim() ||
+      process.env.TRANSLATE_WORK_ROOT ||
+      "/mnt/c/Users/haikh/Videos/VideoVietsub/videos";
     const workName = basename(resolve(localPath.trim()), extname(resolve(localPath.trim())));
     return join(workRoot, workName, "logs", "pipeline.log");
   }

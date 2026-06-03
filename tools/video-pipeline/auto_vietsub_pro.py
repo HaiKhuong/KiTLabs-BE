@@ -29,6 +29,13 @@ warnings.filterwarnings(
     message=r".*No ccache found.*",
     category=UserWarning,
 )
+# subprocess PIPE + bufsize=1 trên Python 3.12 — spam khi VSE chạy VideoSubFinder.
+warnings.filterwarnings(
+    "ignore",
+    message=r".*line buffering.*isn't supported in binary mode.*",
+    category=RuntimeWarning,
+    module=r"subprocess",
+)
 
 try:
     from dotenv import load_dotenv
@@ -96,12 +103,31 @@ STEP3_TTS_BORROW_GAP = False
 # Optional: set absolute ffmpeg.exe path here if needed.
 FFMPEG_PATH = ""
 
-WORK_ROOT = Path("/mnt/c/Users/haikh/Videos/VideoVietsub/videos")
+_DEFAULT_WORK_OUTPUT_ROOT = "/mnt/c/Users/haikh/Videos/VideoVietsub/videos"
+
+
+def _resolve_work_root_env(var_name: str, fallback: str) -> Path:
+    raw = (os.getenv(var_name) or "").strip()
+    if raw:
+        return Path(raw).expanduser().resolve()
+    return Path(fallback).expanduser().resolve()
+
+
+# Kết quả cuối (deliverables) — logic cũ, thường /mnt/c trên WSL.
+WORK_OUTPUT_ROOT = _resolve_work_root_env("TRANSLATE_WORK_ROOT", _DEFAULT_WORK_OUTPUT_ROOT)
+# Workspace xử lý (log, VSE temp, file tạm) — WSL: đặt /home/... để tránh /mnt/c.
+WORK_STAGING_ROOT = _resolve_work_root_env(
+    "TRANSLATE_WORK_STAGING_ROOT",
+    os.getenv("TRANSLATE_WORK_ROOT") or _DEFAULT_WORK_OUTPUT_ROOT,
+)
+
 WORK_NAME = "default"
-WORK_DIR = WORK_ROOT / WORK_NAME
-VIDEO_DIR = WORK_DIR / "videos"
-SUBTITLE_DIR = WORK_DIR / "subtitles"
-LOG_DIR = WORK_DIR / "logs"
+WORK_OUTPUT_DIR = WORK_OUTPUT_ROOT / WORK_NAME
+WORK_STAGING_DIR = WORK_STAGING_ROOT / WORK_NAME
+WORK_DIR = WORK_STAGING_DIR
+VIDEO_DIR = WORK_STAGING_DIR / "videos"
+SUBTITLE_DIR = WORK_STAGING_DIR / "subtitles"
+LOG_DIR = WORK_STAGING_DIR / "logs"
 LOG_PATH = LOG_DIR / "pipeline.log"
 TRANSLATE_BATCH_SIZE = 500
 TTS_CHUNK_MAX_CHARS = 350
@@ -4194,8 +4220,87 @@ def _run_step6_and_finalize(ass, tm_video, video_path, skip_voice_step):
         tm_video.unlink()
     if ass.is_file():
         ass.unlink()
-    log(f"DONE: {final}")
-    return final
+    done_path = publish_deliverables(preferred=final) or final
+    log(f"DONE: {done_path}")
+    return done_path
+
+
+def work_roots_use_staging_split() -> bool:
+    return WORK_STAGING_ROOT.resolve() != WORK_OUTPUT_ROOT.resolve()
+
+
+def _init_work_paths(work_name: str) -> None:
+    global WORK_NAME, WORK_OUTPUT_DIR, WORK_STAGING_DIR, WORK_DIR
+    global VIDEO_DIR, SUBTITLE_DIR, LOG_DIR, LOG_PATH
+
+    WORK_NAME = work_name
+    WORK_OUTPUT_DIR = WORK_OUTPUT_ROOT / work_name
+    WORK_STAGING_DIR = WORK_STAGING_ROOT / work_name
+    WORK_DIR = WORK_STAGING_DIR
+    VIDEO_DIR = WORK_STAGING_DIR / "videos"
+    SUBTITLE_DIR = WORK_STAGING_DIR / "subtitles"
+    LOG_DIR = WORK_STAGING_DIR / "logs"
+    LOG_PATH = LOG_DIR / "pipeline.log"
+    VIDEO_DIR.mkdir(parents=True, exist_ok=True)
+    SUBTITLE_DIR.mkdir(parents=True, exist_ok=True)
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _stage_pipeline_input(video_path: Path) -> Path:
+    """Copy input sang staging (/home) khi tách khỏi output (/mnt/c)."""
+    if not work_roots_use_staging_split():
+        return video_path
+    staged = VIDEO_DIR / f"{WORK_NAME}_input{video_path.suffix.lower()}"
+    if (not staged.is_file()) or (
+        video_path.stat().st_mtime > staged.stat().st_mtime
+    ):
+        log(f"Staging input: {video_path} -> {staged}")
+        shutil.copy2(video_path, staged)
+    return staged
+
+
+def publish_deliverables(preferred: Path | None = None) -> Path | None:
+    """
+    Đồng bộ artifact cuối staging -> TRANSLATE_WORK_ROOT (vd. /mnt/c).
+    No-op khi staging == output.
+    """
+    if not work_roots_use_staging_split():
+        return preferred.resolve() if preferred and preferred.is_file() else None
+
+    out_base = WORK_OUTPUT_DIR
+    out_videos = out_base / "videos"
+    out_subs = out_base / "subtitles"
+    out_videos.mkdir(parents=True, exist_ok=True)
+    out_subs.mkdir(parents=True, exist_ok=True)
+
+    published_final = None
+    for name in (f"{WORK_NAME}_vs_tm_outro.mp4", f"{WORK_NAME}_vs_tm.mp4"):
+        src = VIDEO_DIR / name
+        if src.is_file():
+            dst = out_videos / name
+            shutil.copy2(src, dst)
+            published_final = dst
+
+    for src in (get_zh_srt_path(), get_vi_srt_path()):
+        if src.is_file():
+            shutil.copy2(src, out_subs / src.name)
+
+    if published_final:
+        log(f"Published deliverables -> {out_base}")
+        return published_final.resolve()
+
+    if preferred and preferred.is_file():
+        try:
+            rel = preferred.resolve().relative_to(WORK_STAGING_DIR.resolve())
+        except ValueError:
+            return preferred.resolve()
+        dst = (out_base / rel).resolve()
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(preferred, dst)
+        log(f"Published {dst}")
+        return dst
+
+    return None
 
 
 # ==============================
@@ -4209,30 +4314,25 @@ def run_pipeline(video, step_arg=None):
     if not file_ready(video_path):
         raise FileNotFoundError(f"Input video not found: {video_path}")
 
-    # Group all generated artifacts by input filename.
-    WORK_NAME = video_path.stem
-    WORK_DIR = WORK_ROOT / WORK_NAME
-    VIDEO_DIR = WORK_DIR / "videos"
-    SUBTITLE_DIR = WORK_DIR / "subtitles"
-    LOG_DIR = WORK_DIR / "logs"
-    LOG_PATH = LOG_DIR / "pipeline.log"
-    VIDEO_DIR.mkdir(parents=True, exist_ok=True)
-    SUBTITLE_DIR.mkdir(parents=True, exist_ok=True)
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    _init_work_paths(video_path.stem)
+    if work_roots_use_staging_split():
+        log(f"Work staging: {WORK_STAGING_DIR}")
+        log(f"Work output:   {WORK_OUTPUT_DIR}")
 
     preflight_checks()
     start_step, end_step = parse_step_range(step_arg)
 
+    pipeline_input = _stage_pipeline_input(video_path)
     pre_out = VIDEO_DIR / f"{WORK_NAME}_pre.mp4"
     if abs(float(PREPROCESS_SPEED) - 1.0) > 1e-6:
         pipeline_video_path = get_or_run(
             pre_out,
             "Step0",
             step0_preprocess_speed,
-            video_path,
+            pipeline_input,
         )
     else:
-        pipeline_video_path = video_path
+        pipeline_video_path = pipeline_input
 
     video_duration_ms = get_media_duration_ms(pipeline_video_path)
     dur_s = (video_duration_ms / 1000.0) if video_duration_ms else None
@@ -4336,6 +4436,11 @@ def run_pipeline(video, step_arg=None):
     else:
         log("Stopped before Step6 by --step option.")
 
+    published = publish_deliverables(
+        preferred=Path(last_output) if last_output else None,
+    )
+    if published is not None:
+        return str(published)
     return last_output
 
 
