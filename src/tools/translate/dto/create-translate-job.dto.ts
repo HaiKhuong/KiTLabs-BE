@@ -38,7 +38,7 @@ export class CreateTranslateJobDto {
     type: TranslateEngineConfigDto,
     example: {
       localVideoPath: "/uploads/videos/demo.mp4",
-      step1SubtitleSource: "embedded",
+      step1SubtitleSource: "vse",
       edgeTtsRate: "+30%",
       edgeTtsVolume: "+10%",
       edgeTtsPitch: "+20Hz",
