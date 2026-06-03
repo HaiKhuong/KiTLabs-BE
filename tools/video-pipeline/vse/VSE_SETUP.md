@@ -35,6 +35,7 @@ pip install paddlepaddle-gpu==3.0.0 -f https://www.paddlepaddle.org.cn/whl/linux
 ```
 
 Verify:
+
 ```python
 import paddle
 print(paddle.is_compiled_with_cuda())  # should be True
@@ -55,6 +56,7 @@ Download and extract to `tools/video-pipeline/vse/models/V5/`:
 - `PP-OCRv5_server_rec_infer` - Recognition model (Chinese/English)
 
 Download links:
+
 - https://paddleocr.bj.bcebos.com/PP-OCRv5/PP-OCRv5_server_det_infer.tar
 - https://paddleocr.bj.bcebos.com/PP-OCRv5/PP-OCRv5_server_rec_infer.tar
 
@@ -104,23 +106,26 @@ python auto_vietsub_pro.py --input video.mp4 --step1-subtitle-source vse
 
 ## Modes
 
-| Mode | Detection | Recognition | Frame Selection | GPU Required |
-|------|-----------|-------------|-----------------|--------------|
-| fast | mobile | mobile | VideoSubFinder | No |
-| auto | server | server | VideoSubFinder | Recommended |
-| accurate | server | server | Full-frame det | Yes |
+| Mode     | Detection | Recognition | Frame Selection | GPU Required |
+| -------- | --------- | ----------- | --------------- | ------------ |
+| fast     | mobile    | mobile      | VideoSubFinder  | No           |
+| auto     | server    | server      | VideoSubFinder  | Recommended  |
+| accurate | server    | server      | Full-frame det  | Yes          |
 
 ## Troubleshooting
 
 ### "No CUDA devices found"
+
 - Check NVIDIA driver: `nvidia-smi`
 - Check CUDA toolkit: `nvcc --version`
 - Ensure paddlepaddle-gpu matches your CUDA version
 
 ### "Model not found"
+
 - Download models to `vse/models/V5/`
 - Check directory structure: `vse/models/V5/PP-OCRv5_server_det_infer/`
 
 ### VideoSubFinder fails
+
 - Check permissions: `chmod +x vse/subfinder/linux/VideoSubFinderCli.run`
 - Run manually to see errors: `./VideoSubFinderCli.run --help`

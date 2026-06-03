@@ -2,10 +2,7 @@
 cd "${0%/*}" || exit 1
 export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:+$LD_LIBRARY_PATH:}$PWD:/lib64"
 if [ ! -x "./VideoSubFinderCli" ]; then
-  chmod +x ./VideoSubFinderCli 2>/dev/null || true
-fi
-if [ ! -x "./VideoSubFinderCli" ]; then
-  echo "VideoSubFinderCli not executable. Run as deploy user: chmod +x VideoSubFinderCli VideoSubFinderCli.run" >&2
+  echo "VideoSubFinderCli not executable. Run: chmod +x VideoSubFinderCli VideoSubFinderCli.run" >&2
   exit 126
 fi
 exec ./VideoSubFinderCli "$@"
