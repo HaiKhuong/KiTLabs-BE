@@ -33,6 +33,24 @@ from .tools.subtitle_detect import SubtitleDetect
 from .bean.subtitle_area import SubtitleArea
 
 
+def _is_wsl() -> bool:
+    """Detect if running on WSL."""
+    try:
+        return "microsoft" in Path("/proc/version").read_text(
+            encoding="utf-8", errors="ignore"
+        ).lower()
+    except OSError:
+        return False
+
+
+def _vsf_disabled() -> bool:
+    """Check if VideoSubFinder should be disabled (WSL or env flag)."""
+    flag = os.environ.get("VSE_DISABLE_VSF", "").strip().lower()
+    if flag in ("1", "true", "yes", "on"):
+        return True
+    return _is_wsl()
+
+
 class SubtitleExtractor:
     """Video subtitle extractor using PaddleOCR + optional VideoSubFinder."""
 
@@ -125,7 +143,13 @@ class SubtitleExtractor:
             subtitle_ocr_process = self._start_subtitle_ocr_async()
 
             if self.sub_area is not None:
-                if self.hardware_accelerator.has_accelerator() and config.mode.value == "accurate":
+                use_det = config.mode.value == "accurate" or _vsf_disabled()
+                if use_det:
+                    if _vsf_disabled() and config.mode.value != "accurate":
+                        self.append_output(
+                            "[INFO] VideoSubFinder skipped (WSL or VSE_DISABLE_VSF); "
+                            "using Paddle DET frame scan."
+                        )
                     self._extract_frame_by_det()
                 else:
                     self._extract_frame_by_vsf()

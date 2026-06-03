@@ -301,6 +301,25 @@ VSE_TEXT_SIMILARITY = 80  # Dedup similarity threshold %
 # Override ROI (normalized 0-1, origin top-left): "ymin,ymax,xmin,xmax" or empty = auto from EasyOCR probe
 VSE_ROI = ""
 
+
+def _is_wsl() -> bool:
+    """Detect WSL environment."""
+    try:
+        return "microsoft" in Path("/proc/version").read_text(
+            encoding="utf-8", errors="ignore"
+        ).lower()
+    except OSError:
+        return False
+
+
+def _apply_wsl_vse_defaults() -> None:
+    """WSL: VideoSubFinder segfault — auto set VSE_DISABLE_VSF."""
+    if _is_wsl():
+        os.environ.setdefault("VSE_DISABLE_VSF", "1")
+
+
+_apply_wsl_vse_defaults()
+
 STEP1_MAX_SUBTITLE_CHARS = 22  # số ký tự tối đa mỗi câu sau tách.
 STEP1_MIN_SUBTITLE_DURATION_MS = 280  # thời gian hiển thị tối thiểu mỗi câu.
 STEP1_SHORT_TEXT_MAX_CHARS = 14  # ngưỡng để coi là “câu ngắn”.
