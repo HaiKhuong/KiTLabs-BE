@@ -258,6 +258,17 @@ EASYOCR_BUILTIN_SKIP_REGEXES = (
 # Sau Step7: xóa LOG_DIR/step1_ocr (gồm frame_ocr_raw.jsonl debug OCR theo frame) và easyocr_crop_probe; off để giữ.
 EASYOCR_CLEANUP_DEBUG_AFTER_STEP7 = True
 
+# VSE config (STEP1_SUBTITLE_SOURCE = "vse") — PaddleOCR + VideoSubFinder
+# Mode: fast (mobile model), auto (server model, VSF), accurate (full-frame det, GPU required)
+VSE_MODE = "auto"
+VSE_LANGUAGE = "ch"  # OCR language: ch, en, korean, japan, etc.
+VSE_HARDWARE_ACCEL = True  # GPU acceleration (paddlepaddle-gpu)
+VSE_EXTRACT_FREQUENCY = 3  # Fallback FPS when no ROI
+VSE_DROP_SCORE = 75  # Min confidence % for OCR results
+VSE_TEXT_SIMILARITY = 80  # Dedup similarity threshold %
+# Override ROI (normalized 0-1, origin top-left): "ymin,ymax,xmin,xmax" or empty = auto from EasyOCR probe
+VSE_ROI = ""
+
 STEP1_MAX_SUBTITLE_CHARS = 22  # số ký tự tối đa mỗi câu sau tách.
 STEP1_MIN_SUBTITLE_DURATION_MS = 280  # thời gian hiển thị tối thiểu mỗi câu.
 STEP1_SHORT_TEXT_MAX_CHARS = 14  # ngưỡng để coi là “câu ngắn”.
@@ -2272,6 +2283,97 @@ def _step1_ocr_with_easyocr(video_path):
     return srt_path
 
 
+def _step1_extract_with_vse(video_path):
+    """Step1: extract subtitles via VSE (PaddleOCR + VideoSubFinder)."""
+    log("Step1: VSE (PaddleOCR + VideoSubFinder)…")
+    import cv2
+
+    try:
+        import vse_runner
+    except ImportError:
+        raise RuntimeError(
+            "vse_runner not found. Ensure vse/ folder is properly set up."
+        )
+
+    srt_path = get_zh_srt_path()
+
+    # Get video dimensions
+    cap = cv2.VideoCapture(str(video_path))
+    if not cap.isOpened():
+        raise RuntimeError(f"Cannot open video: {video_path}")
+    frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    cap.release()
+
+    # Check for ROI override
+    roi_override = str(VSE_ROI or "").strip()
+    if roi_override:
+        # Parse normalized ROI: "ymin,ymax,xmin,xmax"
+        try:
+            parts = [float(x.strip()) for x in roi_override.split(",")]
+            if len(parts) != 4:
+                raise ValueError("Expected 4 values")
+            ymin_norm, ymax_norm, xmin_norm, xmax_norm = parts
+            log(f"Step1 VSE: using ROI override {roi_override}")
+            vse_runner.run_vse_with_roi_override(
+                video_path=str(video_path),
+                output_srt_path=str(srt_path),
+                log_dir=str(LOG_DIR),
+                roi_normalized=(ymin_norm, ymax_norm, xmin_norm, xmax_norm),
+                frame_width=frame_width,
+                frame_height=frame_height,
+                language=VSE_LANGUAGE,
+                mode=VSE_MODE,
+                hardware_acceleration=VSE_HARDWARE_ACCEL,
+                drop_score=VSE_DROP_SCORE,
+                text_similarity=VSE_TEXT_SIMILARITY,
+                extract_frequency=VSE_EXTRACT_FREQUENCY,
+                log_func=log,
+            )
+        except Exception as e:
+            raise RuntimeError(f"Invalid VSE_ROI format '{roi_override}': {e}")
+    else:
+        # Auto-detect ROI using EasyOCR probe (same logic as easyocr path)
+        log("Step1 VSE: auto-detecting subtitle region via EasyOCR probe…")
+        try:
+            import easyocr
+        except ImportError:
+            raise RuntimeError(
+                "easyocr is required for VSE auto ROI detection. "
+                "Run: pip install easyocr, or use --vse-roi to specify ROI manually."
+            )
+
+        ocr_dir = LOG_DIR / "step1_vse_probe"
+        ocr_dir.mkdir(parents=True, exist_ok=True)
+        reader = easyocr.Reader(EASYOCR_LANG, gpu=EASYOCR_GPU)
+        band_lo, band_hi = _detect_easyocr_crop_band(video_path, reader, ocr_dir)
+        shutil.rmtree(ocr_dir, ignore_errors=True)
+
+        log(f"Step1 VSE: detected band lo={band_lo:.3f} hi={band_hi:.3f}")
+
+        vse_runner.run_vse(
+            video_path=str(video_path),
+            output_srt_path=str(srt_path),
+            log_dir=str(LOG_DIR),
+            band_lo=band_lo,
+            band_hi=band_hi,
+            frame_width=frame_width,
+            frame_height=frame_height,
+            h_trim_left=float(EASYOCR_CROP_PROBE_H_TRIM_LEFT_FRAC),
+            h_trim_right=float(EASYOCR_CROP_PROBE_H_TRIM_RIGHT_FRAC),
+            language=VSE_LANGUAGE,
+            mode=VSE_MODE,
+            hardware_acceleration=VSE_HARDWARE_ACCEL,
+            drop_score=VSE_DROP_SCORE,
+            text_similarity=VSE_TEXT_SIMILARITY,
+            extract_frequency=VSE_EXTRACT_FREQUENCY,
+            log_func=log,
+        )
+
+    log(f"Step1 VSE: done → {srt_path}")
+    return srt_path
+
+
 def step1_transcribe(video_path):
     source_mode = str(STEP1_SUBTITLE_SOURCE or "whisper").strip().lower()
     if source_mode == "embedded":
@@ -2280,9 +2382,11 @@ def step1_transcribe(video_path):
         return _step1_transcribe_with_whisper(video_path)
     if source_mode == "easyocr":
         return _step1_ocr_with_easyocr(video_path)
+    if source_mode == "vse":
+        return _step1_extract_with_vse(video_path)
     raise RuntimeError(
         f"Unsupported Step1 source: {STEP1_SUBTITLE_SOURCE}. "
-        "Use --step1-subtitle-source whisper|embedded|easyocr."
+        "Use --step1-subtitle-source whisper|embedded|easyocr|vse."
     )
 
 
@@ -3522,12 +3626,13 @@ def parse_cli_args():
     )
     parser.add_argument(
         "--step1-subtitle-source",
-        choices=["whisper", "embedded", "easyocr"],
+        choices=["whisper", "embedded", "easyocr", "vse"],
         default=STEP1_SUBTITLE_SOURCE,
         help=(
             "Step1 subtitle source: whisper=ASR from audio, "
             "embedded=extract subtitle stream with ffmpeg, "
-            "easyocr=visual OCR on subtitle region."
+            "easyocr=visual OCR on subtitle region, "
+            "vse=VSE PaddleOCR+VideoSubFinder (GPU, Linux)."
         ),
     )
     parser.add_argument(
@@ -3660,6 +3765,24 @@ def parse_cli_args():
         help=(
             f"Số frame tương đồng tối thiểu để rescue (default {EASYOCR_BRIDGE_MIN_MATCH}). "
             "Nếu >= N frame lân cận có text >=fuzzy-threshold%% giống → rescue."
+        ),
+    )
+    # VSE arguments
+    parser.add_argument(
+        "--vse-mode",
+        choices=["fast", "auto", "accurate"],
+        default=VSE_MODE,
+        help=(
+            "VSE extraction mode: fast (mobile model), auto (server model + VSF), "
+            "accurate (full-frame detection, GPU required). Default: auto."
+        ),
+    )
+    parser.add_argument(
+        "--vse-roi",
+        default="",
+        help=(
+            "VSE ROI override: 'ymin,ymax,xmin,xmax' as normalized 0-1 coordinates "
+            "(origin top-left). Empty = auto-detect via EasyOCR probe."
         ),
     )
     parser.add_argument(
@@ -3845,6 +3968,8 @@ def apply_cli_config(args):
     global EASYOCR_MAX_STRIP_HEIGHT_RATIO
     global EASYOCR_TEXT_SKIP_DEFAULTS_ON
     global EASYOCR_TEXT_SKIP_REGEXES_JSON
+    global VSE_MODE
+    global VSE_ROI
 
     SUBTITLE_FONT = args.subtitle_font
     SUBTITLE_FONTSIZE = args.subtitle_fontsize
@@ -3965,6 +4090,15 @@ def apply_cli_config(args):
     EASYOCR_BRIDGE_MIN_MATCH = max(
         1, int(getattr(args, "easyocr_bridge_min_match", EASYOCR_BRIDGE_MIN_MATCH))
     )
+
+    # VSE config
+    vse_mode_arg = getattr(args, "vse_mode", None)
+    if vse_mode_arg:
+        VSE_MODE = str(vse_mode_arg).strip().lower()
+    vse_roi_arg = getattr(args, "vse_roi", None)
+    if vse_roi_arg is not None:
+        VSE_ROI = str(vse_roi_arg).strip()
+
     if EASYOCR_WHITE_THRESH > 0:
         _mode_str = f"white_thresh={EASYOCR_WHITE_THRESH} (binary: white text / black bg)"
     elif EASYOCR_LUMA_SUPPRESS > 1e-9:
@@ -4021,10 +4155,10 @@ def require_ready(path, label):
 
 
 def _cleanup_easyocr_artifacts_after_step7():
-    """Sau Step7 xong: xóa thư mục tạm EasyOCR (step1_ocr + easyocr_crop_probe dưới LOG_DIR)."""
+    """Sau Step7 xong: xóa thư mục tạm EasyOCR/VSE (step1_ocr, easyocr_crop_probe, step1_vse dưới LOG_DIR)."""
     if not EASYOCR_CLEANUP_DEBUG_AFTER_STEP7:
         return
-    for name in ("step1_ocr", "easyocr_crop_probe"):
+    for name in ("step1_ocr", "easyocr_crop_probe", "step1_vse", "step1_vse_probe"):
         path = LOG_DIR / name
         if not path.exists():
             continue

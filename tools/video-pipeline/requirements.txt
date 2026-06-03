@@ -19,3 +19,14 @@ vinorm
 
 # Optional Step3 engine: --step3-tts-engine omnivoice (https://huggingface.co/splendor1811/omnivoice-vietnamese)
 omnivoice
+
+# VSE (--step1-subtitle-source vse): PaddleOCR + VideoSubFinder, GPU-first.
+# Install paddlepaddle-gpu for CUDA 11.8/12.x: pip install paddlepaddle-gpu
+# See: https://www.paddlepaddle.org.cn/install/quick
+paddleocr>=3.4.0
+Levenshtein
+pysrt
+shapely
+pyclipper
+scikit-image
+Pillow
