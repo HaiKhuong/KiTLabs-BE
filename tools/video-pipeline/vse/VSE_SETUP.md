@@ -52,11 +52,24 @@ tar xf PP-OCRv5_server_det_infer.tar
 tar xf PP-OCRv5_server_rec_infer.tar
 ```
 
-### 4. Make VideoSubFinder executable (optional)
+### 4. VideoSubFinder binary (required for fast/auto mode)
+
+Git chỉ có `VideoSubFinderCli.run` (shell wrapper). Cần copy binary **`VideoSubFinderCli`**
+từ bản Linux của [video-subtitle-extractor](https://github.com/YaoFANGUK/video-subtitle-extractor)
+(green release / `backend/subfinder/linux/`) vào:
+
+`tools/video-pipeline/vse/subfinder/linux/VideoSubFinderCli`
+
+Chạy **một lần** khi deploy (user sở hữu repo hoặc root):
 
 ```bash
-chmod +x tools/video-pipeline/vse/subfinder/linux/VideoSubFinderCli.run
+cd tools/video-pipeline/vse/subfinder/linux
+chmod +x VideoSubFinderCli VideoSubFinderCli.run
+# Nếu Nest chạy user `node`:
+sudo chown -R node:node .
 ```
+
+Lỗi `Operation not permitted` trên `.run` thường do process `node` gọi `chmod` trên file của user khác — fix bằng chmod/chown trước, không cần chmod lúc runtime.
 
 ## Usage
 

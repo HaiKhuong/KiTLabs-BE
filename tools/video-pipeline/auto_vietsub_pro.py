@@ -23,6 +23,12 @@ warnings.filterwarnings(
     message=r".*StreamingMediaDecoder has been deprecated.*",
     category=UserWarning,
 )
+# Paddle: thiếu ccache trên server — không ảnh hưởng chạy inference VSE/OCR.
+warnings.filterwarnings(
+    "ignore",
+    message=r".*No ccache found.*",
+    category=UserWarning,
+)
 
 try:
     from dotenv import load_dotenv

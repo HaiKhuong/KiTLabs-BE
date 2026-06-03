@@ -340,9 +340,21 @@ class SubtitleExtractor:
 
         # Linux only
         path_vsf = os.path.join(BASE_DIR, "subfinder", "linux", "VideoSubFinderCli.run")
+        path_vsf_cli = os.path.join(BASE_DIR, "subfinder", "linux", "VideoSubFinderCli")
         if not os.path.exists(path_vsf):
-            raise FileNotFoundError(f"VSF binary not found: {path_vsf}")
-        os.chmod(path_vsf, 0o775)
+            raise FileNotFoundError(f"VSF launcher not found: {path_vsf}")
+        if not os.path.isfile(path_vsf_cli):
+            raise FileNotFoundError(
+                f"VSF binary missing: {path_vsf_cli}. "
+                "Copy VideoSubFinderCli from video-subtitle-extractor Linux release "
+                "into vse/subfinder/linux/ and run: chmod +x VideoSubFinderCli VideoSubFinderCli.run"
+            )
+        try:
+            os.chmod(path_vsf, 0o775)
+            os.chmod(path_vsf_cli, 0o775)
+        except OSError as e:
+            # Nest/node thường không chmod được file owned by deploy user — cần chmod một lần khi deploy.
+            self.append_output(f"[WARN] VSF chmod skipped ({e}); ensure launcher is executable.")
 
         top_end = 1 - self.sub_area.ymin / self.frame_height
         bottom_end = 1 - self.sub_area.ymax / self.frame_height
