@@ -228,6 +228,11 @@ const OPTION_MAPPINGS: Array<{
   { cliFlag: "--video-codec", keys: ["videoCodec", "video_codec"], allowedTypes: ["string"] },
   { cliFlag: "--merge-outro", keys: ["mergeOutro", "merge_outro"], allowedTypes: ["string"] },
   { cliFlag: "--outro-file", keys: ["outroFile", "outro_file"], allowedTypes: ["string"] },
+  {
+    cliFlag: "--existing-srt-dir-path",
+    keys: ["existingSrtDirPath", "existing_srt_dir_path"],
+    allowedTypes: ["string"],
+  },
 ];
 
 @Processor(TRANSLATE_QUEUE_NAME)

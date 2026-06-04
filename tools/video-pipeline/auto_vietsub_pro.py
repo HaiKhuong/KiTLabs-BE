@@ -57,6 +57,10 @@ from step3_edge import (
 # ==============================
 
 SCRIPT_DIR = Path(__file__).resolve().parent
+# Nest spawn: đảm bảo import vse_runner, step3_edge từ thư mục video-pipeline.
+_SCRIPT_DIR_STR = str(SCRIPT_DIR)
+if _SCRIPT_DIR_STR not in sys.path:
+    sys.path.insert(0, _SCRIPT_DIR_STR)
 
 WHISPER_MODEL = "large-v3"
 WHISPER_LANGUAGE = "zh"
@@ -129,6 +133,8 @@ VIDEO_DIR = WORK_STAGING_DIR / "videos"
 SUBTITLE_DIR = WORK_STAGING_DIR / "subtitles"
 LOG_DIR = WORK_STAGING_DIR / "logs"
 LOG_PATH = LOG_DIR / "pipeline.log"
+# Thư mục ngoài chứa SRT có sẵn ({work_name}.srt) — CLI --existing-srt-dir-path
+EXISTING_SRT_DIR_PATH = ""
 TRANSLATE_BATCH_SIZE = 500
 TTS_CHUNK_MAX_CHARS = 350
 RETRY_MAX = 4
@@ -1189,6 +1195,42 @@ def get_zh_srt_path():
 
 def get_vi_srt_path():
     return SUBTITLE_DIR / f"{WORK_NAME}.vi.srt"
+
+
+def _try_prefetch_step1_zh_srt_from_existing_dir():
+    """Nếu --existing-srt-dir-path có {WORK_NAME}.srt thì copy sang subtitles/{WORK_NAME}.zh.srt và bỏ Step1."""
+    raw = str(EXISTING_SRT_DIR_PATH or "").strip()
+    if not raw:
+        return None
+
+    folder = Path(raw).expanduser().resolve()
+    if not folder.is_dir():
+        log(f"Step1: existing-srt-dir-path không tồn tại, chạy Step1 bình thường: {folder}")
+        return None
+
+    source = folder / f"{WORK_NAME}.srt"
+    if not file_ready(source):
+        log(
+            f"Step1: không thấy {source.name} trong existing-srt-dir-path, chạy Step1 bình thường."
+        )
+        return None
+
+    dest = get_zh_srt_path()
+    SUBTITLE_DIR.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, dest)
+    if not file_ready(dest):
+        raise RuntimeError(f"Step1 prefetch copy failed: {source} -> {dest}")
+
+    with open(dest, encoding="utf8") as f:
+        blocks = parse_srt(f.read())
+    if not blocks:
+        raise RuntimeError(f"Step1 prefetch SRT rỗng: {source}")
+
+    log(
+        f"Step1: dùng SRT có sẵn từ {source} ({len(blocks)} cues) -> {dest} "
+        f"(bỏ qua Whisper/VSE/EasyOCR)."
+    )
+    return dest
 
 
 def cleanup_step6_intermediate_files():
@@ -2341,10 +2383,12 @@ def _step1_extract_with_vse(video_path):
 
     try:
         import vse_runner
-    except ImportError:
+    except ImportError as exc:
         raise RuntimeError(
-            "vse_runner not found. Ensure vse/ folder is properly set up."
-        )
+            "vse_runner import failed. Ensure tools/video-pipeline contains "
+            "vse_runner.py and vse/ (pip: paddleocr, paddlepaddle-gpu, opencv). "
+            f"script_dir={SCRIPT_DIR} cwd={Path.cwd()} cause={exc!r}"
+        ) from exc
 
     srt_path = get_zh_srt_path()
 
@@ -3729,6 +3773,14 @@ def parse_cli_args():
         ),
     )
     parser.add_argument(
+        "--existing-srt-dir-path",
+        default="",
+        help=(
+            "Thư mục chứa SRT có sẵn. Nếu có {video_stem}.srt thì copy sang "
+            "subtitles/{video_stem}.zh.srt và bỏ qua Step1 (Whisper/VSE/EasyOCR)."
+        ),
+    )
+    parser.add_argument(
         "--easyocr-max-strip-height-ratio",
         type=float,
         default=EASYOCR_MAX_STRIP_HEIGHT_RATIO,
@@ -4016,6 +4068,7 @@ def apply_cli_config(args):
     global EASYOCR_GRAY_INVERT
     global EASYOCR_UNSHARP
     global EASYOCR_CLEANUP_DEBUG_AFTER_STEP7
+    global EXISTING_SRT_DIR_PATH
     global EASYOCR_MAX_STRIP_HEIGHT_RATIO
     global EASYOCR_TEXT_SKIP_DEFAULTS_ON
     global EASYOCR_TEXT_SKIP_REGEXES_JSON
@@ -4112,6 +4165,7 @@ def apply_cli_config(args):
     EASYOCR_CLEANUP_DEBUG_AFTER_STEP7 = (
         args.easyocr_cleanup_debug_after_step7 == "on"
     )
+    EXISTING_SRT_DIR_PATH = str(getattr(args, "existing_srt_dir_path", "") or "").strip()
     mstrip = float(getattr(args, "easyocr_max_strip_height_ratio", 0) or 0)
     if mstrip > 1.0 and mstrip <= 100.0:
         mstrip = mstrip / 100.0
@@ -4380,11 +4434,17 @@ def run_pipeline(video, step_arg=None):
             ) from exc
 
     if step_enabled(1):
-        zh_srt = run_step(
-            1,
-            "Step1",
-            lambda: get_or_run(zh_srt, "Step1", step1_transcribe, pipeline_video_path),
-        )
+        prefetched = _try_prefetch_step1_zh_srt_from_existing_dir()
+        if prefetched is not None:
+            zh_srt = prefetched
+        else:
+            zh_srt = run_step(
+                1,
+                "Step1",
+                lambda: get_or_run(
+                    zh_srt, "Step1", step1_transcribe, pipeline_video_path
+                ),
+            )
         last_output = zh_srt
 
     if step_enabled(2):

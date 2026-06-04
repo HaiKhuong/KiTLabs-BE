@@ -765,4 +765,13 @@ export class TranslateEngineConfigDto {
   @IsOptional()
   @IsString()
   outro_file?: string;
+
+  /** Thư mục chứa SRT có sẵn ({video_stem}.srt); nếu có thì Step1 bỏ qua Whisper/VSE/EasyOCR */
+  @IsOptional()
+  @IsString()
+  existingSrtDirPath?: string;
+
+  @IsOptional()
+  @IsString()
+  existing_srt_dir_path?: string;
 }
