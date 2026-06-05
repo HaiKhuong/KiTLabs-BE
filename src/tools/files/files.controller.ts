@@ -1,4 +1,4 @@
-import { BadRequestException, Controller, Post, Query, UploadedFile, UseInterceptors } from "@nestjs/common";
+import { BadRequestException, Controller, Get, Post, Query, UploadedFile, UseInterceptors } from "@nestjs/common";
 import { ApiBearerAuth, ApiBody, ApiConsumes, ApiOperation, ApiQuery, ApiTags } from "@nestjs/swagger";
 import { FileInterceptor } from "@nestjs/platform-express";
 import { existsSync, mkdirSync } from "fs";
@@ -89,6 +89,14 @@ const buildStoredFileName = (destination: string, originalName: string, allowOve
 @Controller("tools/files")
 export class FilesController {
   constructor(private readonly filesService: FilesService) {}
+
+  @ApiOperation({ summary: "List subfolders on BE machine (pick path only, no file upload)" })
+  @ApiQuery({ name: "path", required: false, description: "Absolute folder on BE. Omit = default root." })
+  @Public()
+  @Get("browse-dirs")
+  browseDirs(@Query("path") path?: string) {
+    return this.filesService.browseDirectories(path);
+  }
 
   @ApiOperation({ summary: "Upload file to local storage" })
   @ApiConsumes("multipart/form-data")
