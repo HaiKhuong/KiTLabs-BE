@@ -1217,7 +1217,7 @@ def _try_prefetch_step1_zh_srt_from_existing_dir():
 
     dest = get_zh_srt_path()
     SUBTITLE_DIR.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(source, dest)
+    shutil.copyfile(source, dest)
     if not file_ready(dest):
         raise RuntimeError(f"Step1 prefetch copy failed: {source} -> {dest}")
 
