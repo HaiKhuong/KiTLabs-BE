@@ -7,6 +7,7 @@ Gọi configure_step3_edge(...) trước khi dùng run_edge_tts_mp3_save / prepa
 from __future__ import annotations
 
 import asyncio
+import re
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -54,7 +55,12 @@ def tts_normalize_vi(text, enabled: bool):
         .replace("'", "")
         .replace("AI", "Ây Ai")
         .replace("A.I", "Ây Ai")
+        .replace("/", " phần ")
     )
+    t = re.sub(r"\bSSS\b", "Ét Ét Ét", t)
+    t = re.sub(r"\bSS\b", "Ét Ét", t)
+    t = re.sub(r"\bS\b", "Ét", t)
+    t = re.sub(r"\bHACK\b", "Hách", t, flags=re.IGNORECASE)
     return t
 
 
