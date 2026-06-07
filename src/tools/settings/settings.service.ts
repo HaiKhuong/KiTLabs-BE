@@ -3,6 +3,7 @@ import { InjectRepository } from "@nestjs/typeorm";
 import { Repository } from "typeorm";
 
 import { CreateUserSettingProfileDto } from "./dto/create-user-setting-profile.dto";
+import { UpdateUserSettingProfileDto } from "./dto/update-user-setting-profile.dto";
 import { UpsertSettingDto } from "./dto/upsert-setting.dto";
 import { UpsertUserSettingDto } from "./dto/upsert-user-setting.dto";
 import { Setting } from "./setting.entity";
@@ -115,6 +116,83 @@ export class SettingsService {
       where: { userId, type },
       order: { isDefault: "DESC", name: "ASC" },
     });
+  }
+
+  async updateUserSettingProfile(id: string, dto: UpdateUserSettingProfileDto): Promise<UserSettingProfile> {
+    if (!dto.userId?.trim()) {
+      throw new BadRequestException("userId is required");
+    }
+
+    const profile = await this.userSettingProfileRepository.findOne({
+      where: { id, userId: dto.userId },
+    });
+    if (!profile) {
+      throw new BadRequestException("Profile not found");
+    }
+
+    if (dto.name !== undefined) {
+      const name = dto.name.trim();
+      if (!name) {
+        throw new BadRequestException("Profile name is required");
+      }
+
+      const duplicated = await this.userSettingProfileRepository.findOne({
+        where: { userId: dto.userId, type: profile.type, name },
+      });
+      if (duplicated && duplicated.id !== profile.id) {
+        throw new BadRequestException("Profile name already exists");
+      }
+      profile.name = name;
+    }
+
+    if (dto.directUrl !== undefined) {
+      profile.directUrl = dto.directUrl.trim() || undefined;
+    }
+
+    if (dto.isDefault === true) {
+      await this.userSettingProfileRepository.update(
+        { userId: dto.userId, type: profile.type, isDefault: true },
+        { isDefault: false },
+      );
+      profile.isDefault = true;
+    } else if (dto.isDefault === false && profile.isDefault) {
+      const otherProfiles = await this.userSettingProfileRepository.count({
+        where: { userId: dto.userId, type: profile.type },
+      });
+      if (otherProfiles <= 1) {
+        throw new BadRequestException("Cannot unset default on the only profile");
+      }
+      profile.isDefault = false;
+    }
+
+    return this.userSettingProfileRepository.save(profile);
+  }
+
+  async deleteUserSettingProfile(id: string, userId: string): Promise<void> {
+    if (!userId?.trim()) {
+      throw new BadRequestException("userId is required");
+    }
+
+    const profile = await this.userSettingProfileRepository.findOne({
+      where: { id, userId },
+    });
+    if (!profile) {
+      throw new BadRequestException("Profile not found");
+    }
+
+    const profileCount = await this.userSettingProfileRepository.count({
+      where: { userId, type: profile.type },
+    });
+    if (profileCount <= 1) {
+      throw new BadRequestException("Cannot delete the only profile");
+    }
+
+    const wasDefault = profile.isDefault;
+    await this.userSettingProfileRepository.remove(profile);
+
+    if (wasDefault) {
+      await this.ensureDefaultProfile(userId, profile.type);
+    }
   }
 
   async createUserSettingProfile(dto: CreateUserSettingProfileDto): Promise<UserSettingProfile> {

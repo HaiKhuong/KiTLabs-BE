@@ -1,8 +1,19 @@
-import { BadRequestException, Body, Controller, Get, Post, Put, Query } from "@nestjs/common";
+import {
+  BadRequestException,
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  Post,
+  Put,
+  Query,
+} from "@nestjs/common";
 import { ApiBearerAuth, ApiBody, ApiOperation, ApiQuery, ApiTags } from "@nestjs/swagger";
 
 import { Public } from "../../common/decorators/public.decorator";
 import { CreateUserSettingProfileDto } from "./dto/create-user-setting-profile.dto";
+import { UpdateUserSettingProfileDto } from "./dto/update-user-setting-profile.dto";
 import { UpsertSettingDto } from "./dto/upsert-setting.dto";
 import { UpsertUserSettingDto } from "./dto/upsert-user-setting.dto";
 import { SettingsService } from "./settings.service";
@@ -70,5 +81,25 @@ export class SettingsController {
   @Post("user/profiles")
   async createUserSettingProfile(@Body() dto: CreateUserSettingProfileDto) {
     return this.settingsService.createUserSettingProfile(dto);
+  }
+
+  @ApiOperation({ summary: "Update user setting profile" })
+  @ApiBody({ type: UpdateUserSettingProfileDto })
+  @Public()
+  @Put("user/profiles/:id")
+  async updateUserSettingProfile(@Param("id") id: string, @Body() dto: UpdateUserSettingProfileDto) {
+    return this.settingsService.updateUserSettingProfile(id, dto);
+  }
+
+  @ApiOperation({ summary: "Delete user setting profile" })
+  @ApiQuery({ name: "userId", required: true, description: "User UUID" })
+  @Public()
+  @Delete("user/profiles/:id")
+  async deleteUserSettingProfile(@Param("id") id: string, @Query("userId") userId?: string) {
+    if (!userId) {
+      throw new BadRequestException("userId is required");
+    }
+    await this.settingsService.deleteUserSettingProfile(id, userId);
+    return { success: true };
   }
 }
