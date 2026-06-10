@@ -83,7 +83,7 @@ def _extract_json_array(text):
 
 
 def _parse_line_format(text: str) -> dict[int, str]:
-    """Parse output format: '0:|translated text' per line."""
+    """Parse output format: '0:|text' or '0:|vi: text' per line."""
     result = {}
     for line in text.strip().splitlines():
         line = line.strip()
@@ -92,8 +92,32 @@ def _parse_line_format(text: str) -> dict[int, str]:
         match = re.match(r"^(\d+):\|(.*)$", line)
         if match:
             idx = int(match.group(1))
-            result[idx] = match.group(2).strip()
+            content = match.group(2).strip()
+            # Strip 'vi:' or 'vi：' prefix if present
+            content = re.sub(r"^vi\s*[:：]\s*", "", content, flags=re.IGNORECASE)
+            result[idx] = content
     return result
+
+
+def _parse_response(text: str) -> dict[int, str]:
+    """Try JSON first, fallback to line format."""
+    # Try JSON format first
+    try:
+        data = _extract_json_array(text)
+        mapped = {}
+        for item in data:
+            idx = int(item["id"])
+            mapped[idx] = str(item["vi"]).strip()
+        return mapped
+    except (ValueError, KeyError, json.JSONDecodeError):
+        pass
+
+    # Fallback to line format
+    mapped = _parse_line_format(text)
+    if mapped:
+        return mapped
+
+    raise ValueError(f"Cannot parse response (not JSON or line format): {text[:200]}")
 
 
 def translate_batch_with_gemini(batch, batch_start_index):
@@ -206,9 +230,7 @@ def translate_batch_with_gemini(batch, batch_start_index):
                         f"{raw_text}\n\n"
                     ),
                 )
-                mapped = _parse_line_format(raw_text)
-                if not mapped:
-                    raise ValueError(f"No valid 'id:|text' lines in response: {raw_text[:200]}")
+                mapped = _parse_response(raw_text)
                 _active_key_index = key_idx
                 return mapped
             except Exception as e:
