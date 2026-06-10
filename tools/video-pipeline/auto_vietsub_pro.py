@@ -45,6 +45,10 @@ except ImportError:
 from google import genai
 from tqdm import tqdm
 
+from step2_gemini import (
+    configure_step2_gemini,
+    step2_translate_srt,
+)
 from step3_edge import (
     configure_step3_edge,
     prepare_speaker_reference,
@@ -708,6 +712,23 @@ def preflight_checks():
         log(
             "Warning: ffprobe not found. Some duration/subtitle probe features may be unavailable."
         )
+    configure_step2_gemini(
+        log=log,
+        write_text=write_text,
+        append_text=append_text,
+        parse_srt=parse_srt,
+        write_srt=write_srt,
+        progressbar=progressbar,
+        retry_call=retry_call,
+        get_vi_srt_path=get_vi_srt_path,
+        log_dir=LOG_DIR,
+        gemini_api_keys=GEMINI_API_KEYS,
+        gemini_model_name=GEMINI_MODEL_NAME,
+        gemini_retry_max=GEMINI_RETRY_MAX,
+        translate_batch_size=TRANSLATE_BATCH_SIZE,
+        translation_context=TRANSLATION_CONTEXT,
+        step2_multi_keys_enabled=STEP2_MULTI_KEYS_ENABLED,
+    )
     log(
         f"Preflight OK (Gemini keys={len(GEMINI_API_KEYS)}, ffmpeg+ffprobe ready)."
     )
@@ -2483,189 +2504,6 @@ def step1_transcribe(video_path):
         f"Unsupported Step1 source: {STEP1_SUBTITLE_SOURCE}. "
         "Use --step1-subtitle-source whisper|embedded|easyocr|vse."
     )
-
-
-# ==============================
-# STEP 2
-# Gemini translate zh -> vi (batched)
-# ==============================
-
-
-def translate_batch_with_gemini(batch, batch_start_index):
-    global ACTIVE_GEMINI_KEY_INDEX
-    payload = [{"id": i, "text": b["text"]} for i, b in enumerate(batch)]
-
-    # Base prompt
-    prompt_parts = [
-        "Translate Chinese subtitles into Vietnamese.\n"
-        "Write very concise, subtitle-friendly Vietnamese.\n"
-        "Keep original meaning and emotional tone, but simplify phrasing.\n"
-        "Preserve historical tone, titles, names, and relationships.\n"
-    ]
-
-    # Add custom context if provided, otherwise use default
-    if TRANSLATION_CONTEXT and TRANSLATION_CONTEXT.strip():
-        prompt_parts.append(f"{TRANSLATION_CONTEXT.strip()}\n")
-    else:
-        # Default context for Chinese historical/wuxia/xianxia
-        prompt_parts.extend(
-            [
-                "Use Sino-Vietnamese (Han-Viet) pronouns/family terms when appropriate.\n"
-                "Context: Chinese historical / wuxia / xianxia animation.\n"
-                "Examples: Người Tôm => Hà Nhân, Thượng vị => hoàng thượng, cha => phụ thân, mẹ => mẫu thân, anh trai => huynh trưởng, em trai => đệ đệ.\n"
-            ]
-        )
-
-    prompt_parts.extend(
-        [
-            "Avoid verbose or literary wording unless required by context.\n"
-            "Do NOT explain anything.\n"
-            'Return ONLY JSON array, exact schema: [{"id":0,"vi":"..."}]\n'
-            f"Input JSON:\n{json.dumps(payload, ensure_ascii=False)}"
-        ]
-    )
-
-    prompt = "".join(prompt_parts)
-
-    debug_dir = LOG_DIR / "gemini_debug"
-    debug_dir.mkdir(parents=True, exist_ok=True)
-    batch_name = f"batch_{batch_start_index:06d}"
-    request_path = debug_dir / f"{batch_name}_request.txt"
-    response_path = debug_dir / f"{batch_name}_response.txt"
-    request_content = (
-        f"model: {GEMINI_MODEL_NAME}\n"
-        f"batch_start_index: {batch_start_index}\n"
-        f"batch_size: {len(batch)}\n\n"
-        f"prompt:\n{prompt}\n"
-    )
-    write_text(request_path, request_content)
-
-    attempt_no = 0
-
-    def _is_token_limit_error(exc):
-        text = str(exc or "").lower()
-        return any(
-            key in text
-            for key in (
-                "token",
-                "quota",
-                "resource_exhausted",
-                "rate limit",
-                "too many requests",
-                "429",
-            )
-        )
-
-    def _is_high_demand_error(exc):
-        text = str(exc or "").lower()
-        return any(
-            key in text
-            for key in (
-                "high demand",
-                "overloaded",
-                "service unavailable",
-                "unavailable",
-                "temporarily unavailable",
-                "503",
-            )
-        )
-
-    def _call():
-        global ACTIVE_GEMINI_KEY_INDEX
-        nonlocal attempt_no
-        total_key_count = len(GEMINI_CLIENTS)
-        if total_key_count == 0:
-            raise RuntimeError("No Gemini API keys available.")
-        key_count = total_key_count if STEP2_MULTI_KEYS_ENABLED else 1
-        start_idx = ACTIVE_GEMINI_KEY_INDEX % total_key_count
-        last_error = None
-
-        for offset in range(key_count):
-            key_idx = (start_idx + offset) % total_key_count
-            key_masked = mask_secret(GEMINI_API_KEYS[key_idx])
-            attempt_no += 1
-            try:
-                response = GEMINI_CLIENTS[key_idx].models.generate_content(
-                    model=GEMINI_MODEL_NAME,
-                    contents=prompt,
-                )
-                raw_text = response.text or ""
-                append_text(
-                    response_path,
-                    (
-                        f"===== attempt {attempt_no} | key {key_idx + 1}/{total_key_count} "
-                        f"({key_masked}) | {time.strftime('%Y-%m-%d %H:%M:%S')} =====\n"
-                        f"{raw_text}\n\n"
-                    ),
-                )
-                data = extract_json_array(raw_text)
-                mapped = {}
-                for item in data:
-                    idx = int(item["id"])
-                    mapped[idx] = str(item["vi"]).strip()
-                ACTIVE_GEMINI_KEY_INDEX = key_idx
-                return mapped
-            except Exception as e:
-                last_error = e
-                append_text(
-                    response_path,
-                    (
-                        f"===== attempt {attempt_no} | key {key_idx + 1}/{total_key_count} "
-                        f"({key_masked}) | {time.strftime('%Y-%m-%d %H:%M:%S')} =====\n"
-                        f"ERROR: {e}\n\n"
-                    ),
-                )
-                if _is_high_demand_error(e):
-                    # User requirement: high demand/server overload must stop immediately.
-                    raise RuntimeError(
-                        f"Gemini server high demand/unavailable on key {key_idx + 1}/{total_key_count}; "
-                        f"stop without key rotation. Error: {e}"
-                    ) from e
-                if offset < key_count - 1:
-                    if not _is_token_limit_error(e):
-                        # Only rotate keys for token/quota/rate-limit class errors.
-                        raise RuntimeError(
-                            f"Gemini translation failed with non-rotatable error on key "
-                            f"{key_idx + 1}/{total_key_count}: {e}"
-                        ) from e
-                    next_key_idx = (key_idx + 1) % total_key_count
-                    log(
-                        f"Step2: Gemini key {key_idx + 1}/{total_key_count} → "
-                        f"{next_key_idx + 1}/{total_key_count}."
-                    )
-
-        if STEP2_MULTI_KEYS_ENABLED:
-            raise RuntimeError(
-                f"Gemini translation failed on all {total_key_count} keys. Last error: {last_error}"
-            ) from last_error
-        raise RuntimeError(
-            f"Gemini translation failed on active key only (multi-keys off). Last error: {last_error}"
-        ) from last_error
-
-    return retry_call(
-        _call, "Gemini translation", max_retry=GEMINI_RETRY_MAX
-    )
-
-
-def step2_translate_srt(srt_path):
-    key_mode = "multi-keys on" if STEP2_MULTI_KEYS_ENABLED else "multi-keys off"
-    log(f"Step2: Gemini ({key_mode})…")
-    with open(srt_path, encoding="utf8") as f:
-        blocks = parse_srt(f.read())
-
-    translated_blocks = []
-    for i in progressbar(range(0, len(blocks), TRANSLATE_BATCH_SIZE), desc="Translate"):
-        batch = blocks[i : i + TRANSLATE_BATCH_SIZE]
-        mapping = translate_batch_with_gemini(batch, i)
-        for local_idx, b in enumerate(batch):
-            translated_text = mapping.get(local_idx, b["text"])
-            translated_blocks.append(
-                {"index": b["index"], "time": b["time"], "text": translated_text}
-            )
-
-    out_path = get_vi_srt_path()
-    write_srt(translated_blocks, out_path)
-    return out_path
 
 
 # ==============================
