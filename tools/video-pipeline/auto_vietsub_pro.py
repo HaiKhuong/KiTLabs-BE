@@ -23,19 +23,6 @@ warnings.filterwarnings(
     message=r".*StreamingMediaDecoder has been deprecated.*",
     category=UserWarning,
 )
-# Paddle: thiếu ccache trên server — không ảnh hưởng chạy inference VSE/OCR.
-warnings.filterwarnings(
-    "ignore",
-    message=r".*No ccache found.*",
-    category=UserWarning,
-)
-# subprocess PIPE + bufsize=1 trên Python 3.12 — spam khi VSE chạy VideoSubFinder.
-warnings.filterwarnings(
-    "ignore",
-    message=r".*line buffering.*isn't supported in binary mode.*",
-    category=RuntimeWarning,
-    module=r"subprocess",
-)
 
 try:
     from dotenv import load_dotenv
@@ -45,6 +32,10 @@ except ImportError:
 from google import genai
 from tqdm import tqdm
 
+from step1_easyocr import configure_step1_easyocr
+from step1_easyocr import run as _step1_easyocr_run
+from step1_paddleocr import configure_step1_paddleocr
+from step1_paddleocr import run as _step1_paddleocr_run
 from step2_gemini import (
     configure_step2_gemini,
     step2_translate_srt,
@@ -61,7 +52,7 @@ from step3_edge import (
 # ==============================
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-# Nest spawn: đảm bảo import vse_runner, step3_edge từ thư mục video-pipeline.
+# Nest spawn: đảm bảo import step3_edge từ thư mục video-pipeline.
 _SCRIPT_DIR_STR = str(SCRIPT_DIR)
 if _SCRIPT_DIR_STR not in sys.path:
     sys.path.insert(0, _SCRIPT_DIR_STR)
@@ -123,7 +114,7 @@ def _resolve_work_root_env(var_name: str, fallback: str) -> Path:
 
 # Kết quả cuối (deliverables) — logic cũ, thường /mnt/c trên WSL.
 WORK_OUTPUT_ROOT = _resolve_work_root_env("TRANSLATE_WORK_ROOT", _DEFAULT_WORK_OUTPUT_ROOT)
-# Workspace xử lý (log, VSE temp, file tạm) — WSL: đặt /home/... để tránh /mnt/c.
+# Workspace xử lý (log, file tạm) — WSL: đặt /home/... để tránh /mnt/c.
 WORK_STAGING_ROOT = _resolve_work_root_env(
     "TRANSLATE_WORK_STAGING_ROOT",
     os.getenv("TRANSLATE_WORK_ROOT") or _DEFAULT_WORK_OUTPUT_ROOT,
@@ -287,48 +278,43 @@ EASYOCR_UNSHARP = ""
 # Giới hạn độ cao dải OCR (hi−lo) so với chiều cao khung; 0 = không chặn (vd 0.05 = tối đa 5%).
 EASYOCR_MAX_STRIP_HEIGHT_RATIO = 0.05
 # Bỏ qua block SRT sau merge nếu fullmatch regex (sau clean_text).
+# Các builtin patterns được định nghĩa trong step1_easyocr.py::BUILTIN_SKIP_REGEXES.
 EASYOCR_TEXT_SKIP_DEFAULTS_ON = True
 EASYOCR_TEXT_SKIP_REGEXES_JSON = "[]"
-_EASYOCR_SKIP_COMPILED = []  # list[re.Pattern], rebuild trong apply_cli_config
-
-EASYOCR_BUILTIN_SKIP_REGEXES = (
-    r"(?i)^\s*(订阅|点赞|收藏|分享|转发|AlCheng动漫)\s*$",
-    r"(?i)^\s*会员\s*\d*\s*$",
-    r"(?i)^\s*温馨提示\s*$",
-    r"^\s*\d{1,2}:\d{2}(:\d{2})?\s*[-–~至]\s*\d{1,2}:\d{2}(:\d{2})?\s*$",
-)
 # Sau Step7: xóa LOG_DIR/step1_ocr (gồm frame_ocr_raw.jsonl debug OCR theo frame) và easyocr_crop_probe; off để giữ.
 EASYOCR_CLEANUP_DEBUG_AFTER_STEP7 = True
 
-# VSE config (STEP1_SUBTITLE_SOURCE = "vse") — PaddleOCR + VideoSubFinder
-# Mode: fast (mobile model), auto (server model, VSF), accurate (full-frame det, GPU required)
-VSE_MODE = "auto"
-VSE_LANGUAGE = "ch"  # OCR language: ch, en, korean, japan, etc.
-VSE_HARDWARE_ACCEL = True  # GPU acceleration (paddlepaddle-gpu)
-VSE_EXTRACT_FREQUENCY = 3  # Fallback FPS when no ROI
-VSE_DROP_SCORE = 75  # Min confidence % for OCR results
-VSE_TEXT_SIMILARITY = 80  # Dedup similarity threshold %
-# Override ROI (normalized 0-1, origin top-left): "ymin,ymax,xmin,xmax" or empty = auto from EasyOCR probe
-VSE_ROI = ""
-
-
-def _is_wsl() -> bool:
-    """Detect WSL environment."""
-    try:
-        return "microsoft" in Path("/proc/version").read_text(
-            encoding="utf-8", errors="ignore"
-        ).lower()
-    except OSError:
-        return False
-
-
-def _apply_wsl_vse_defaults() -> None:
-    """WSL: VideoSubFinder segfault — auto set VSE_DISABLE_VSF."""
-    if _is_wsl():
-        os.environ.setdefault("VSE_DISABLE_VSF", "1")
-
-
-_apply_wsl_vse_defaults()
+# PaddleOCR config (STEP1_SUBTITLE_SOURCE = "paddleocr")
+PADDLEOCR_LANG = "ch"               # "ch" = Chinese+English unified (PP-OCRv6); "en", "japan", v.v.
+PADDLEOCR_USE_GPU = True
+PADDLEOCR_USE_ANGLE_CLS = True      # nhận diện sub bị xoay/ngược
+PADDLEOCR_MIN_CONFIDENCE = 0.5      # loại bỏ kết quả dưới ngưỡng
+PADDLEOCR_LOW_CONF_FLOOR = 0.003    # ngưỡng tối thiểu để xem xét rescue cluster
+PADDLEOCR_BATCH_SIZE = 8            # số frame gộp 1 lần gọi batch inference
+PADDLEOCR_SUBTITLE_CROP_BAND_HI = 0.20  # giới hạn cao nhất dải phụ đề (% từ đáy)
+PADDLEOCR_CROP_PROBE_FRAMES = 12    # số frame mẫu để auto-detect crop band
+PADDLEOCR_CROP_PROBE_H_TRIM_LEFT_FRAC = 0.15   # bỏ mé trái trước khi OCR
+PADDLEOCR_CROP_PROBE_H_TRIM_RIGHT_FRAC = 0.15  # bỏ mé phải trước khi OCR
+PADDLEOCR_MAX_STRIP_HEIGHT_RATIO = 0.05  # giới hạn độ cao dải OCR (0 = không chặn)
+PADDLEOCR_MIN_DURATION_MS = 500     # thời gian hiển thị tối thiểu mỗi cue SRT
+PADDLEOCR_MERGE_GAP_MS = 200        # merge các block gần nhau trong ngưỡng này (ms)
+PADDLEOCR_FUZZY_THRESHOLD = 55      # % similarity để gộp / dedup block
+PADDLEOCR_BRIDGE_FRAMES = 8         # số frame lân cận để vote rescue cluster
+PADDLEOCR_BRIDGE_MIN_MATCH = 3      # số frame tương đồng tối thiểu để rescue
+# Frame Difference: Module 1 – chỉ OCR khi subtitle thực sự thay đổi.
+PADDLEOCR_SCAN_FPS = 10             # FPS quét change detection (nên cao hơn tốc độ sub thay đổi)
+PADDLEOCR_FRAMEDIFF_THRESHOLD = 8.0 # MAD pixel (0-255); ~8 = thay đổi sub, ~2 = nhiễu nén
+PADDLEOCR_FRAMEDIFF_SKIP_BLANK = True  # bỏ qua frame trống (nền đen/trắng không có chữ)
+# Preprocessing frame (giống EasyOCR nhưng config độc lập để tuning riêng)
+PADDLEOCR_GRAY_CONTRAST = 2.0       # eq contrast
+PADDLEOCR_GRAY_BRIGHTNESS = -0.15   # eq brightness (âm = làm tối; giúp giảm logo sáng)
+PADDLEOCR_GRAY_GAMMA = 1.2          # eq gamma (>1 tối midtone)
+PADDLEOCR_WHITE_THRESH = 0          # 0=tắt; >0: binarize chữ trắng→255, nền→0 (160..200)
+PADDLEOCR_LUMA_SUPPRESS = 0.0       # 0=tắt; >0: giữ màu Cb/Cr, đè Y trong YUV
+PADDLEOCR_HISTEQ_STRENGTH = 0.0     # 0=tắt; 0..1 → histeq=strength=…
+PADDLEOCR_GRAY_INVERT = False       # negate luma (thử với chữ trắng nền tối)
+PADDLEOCR_UNSHARP = ""              # vd "5:5:0.85:5:5:0.0" — rỗng = tắt
+PADDLEOCR_CLEANUP_DEBUG_AFTER_STEP7 = True  # xóa LOG_DIR/step1_paddleocr sau Step7
 
 STEP1_MAX_SUBTITLE_CHARS = 22  # số ký tự tối đa mỗi câu sau tách.
 STEP1_MIN_SUBTITLE_DURATION_MS = 280  # thời gian hiển thị tối thiểu mỗi câu.
@@ -1249,7 +1235,7 @@ def _try_prefetch_step1_zh_srt_from_existing_dir():
 
     log(
         f"Step1: dùng SRT có sẵn từ {source} ({len(blocks)} cues) -> {dest} "
-        f"(bỏ qua Whisper/VSE/EasyOCR)."
+        f"(bỏ qua Whisper/EasyOCR)."
     )
     return dest
 
@@ -1666,828 +1652,86 @@ def _step1_transcribe_with_whisper(video_path):
 
 
 
-def _easyocr_crop_band_strip_bgr(img_bgr, band_lo, band_hi):
-    """Cắt dải dọc [band_lo, band_hi] tính từ đáy khung (band_lo < band_hi)."""
-    ih, iw = img_bgr.shape[:2]
-    if ih < 4 or iw < 4:
-        return None
-    lo = float(band_lo)
-    hi = float(band_hi)
-    if hi <= lo + 1e-9:
-        return None
-    top = int(round(ih * (1.0 - hi)))
-    h = int(round(ih * (hi - lo)))
-    h = max(2, min(h, ih - top))
-    if h < 2 or top >= ih:
-        return None
-    return img_bgr[top : top + h, :]
-
-
-def _easyocr_ffmpeg_gray_post_eq_suffix():
-    """Thêm sau eq grayscale: histeq / unsharp / negate — giúp chữ nổi, nền dễ tách."""
-    parts = []
-    hs = float(EASYOCR_HISTEQ_STRENGTH or 0.0)
-    if hs > 1e-9:
-        hs = max(0.0, min(1.0, hs))
-        parts.append(f"histeq=strength={hs:.6f}")
-    us = (EASYOCR_UNSHARP or "").strip()
-    if us and us.lower() not in ("0", "off", "none", "false"):
-        if re.fullmatch(r"[-\d.:]+", us):
-            parts.append(f"unsharp={us}")
-        else:
-            log(f"Step1 OCR: bỏ qua --easyocr-unsharp (ký tự không hợp lệ): {us!r}")
-    if EASYOCR_GRAY_INVERT:
-        parts.append("negate")
-    return ("," + ",".join(parts)) if parts else ""
-
-
-def _easyocr_crop_ffmpeg_vf(band_lo, band_hi):
-    """Dải đáy [band_lo, band_hi] → crop ngang → preprocess → cropped.mp4 cho EasyOCR.
-
-    Hai chế độ:
-    - luma_suppress = 0 (mặc định): grayscale + eq + post-filter (histeq/unsharp/negate).
-    - luma_suppress > 0         : giữ màu RGB, đè Y trong YUV xuống thấp rồi chuyển về rgb24.
-                                  Bỏ format=gray, EasyOCR nhận frame màu.
-    """
-    lo = float(band_lo)
-    hi = float(band_hi)
-    if hi <= lo + 1e-9:
-        raise ValueError("easyocr crop band: need band_hi > band_lo")
-    dh = hi - lo
-    y_from_top = 1.0 - hi
-    vert = f"crop=iw:ih*{dh:.6f}:0:ih*{y_from_top:.6f}"
-    htrim = _easyocr_h_trim_crop_vf()
-
-    # Ưu tiên 1: white_thresh — ảnh nhị phân (chữ trắng=255, nền=0)
-    wt = int(EASYOCR_WHITE_THRESH or 0)
-    if wt > 0:
-        wt = max(0, min(254, wt))
-        thresh_vf = f"format=gray,lut=y='if(gt(val\\,{wt}),255,0)'"
-        return f"{vert},{htrim},{thresh_vf}"
-
-    # Ưu tiên 2: luma-suppress — đè Y trong YUV, giữ chênh lệch màu Cb/Cr
-    ls = max(0.0, min(1.0, float(EASYOCR_LUMA_SUPPRESS or 0.0)))
-    if ls > 1e-9:
-        y_factor = max(0.0, 1.0 - ls)
-        luma_vf = f"format=yuv444p,lutyuv=y='clip(val*{y_factor:.6f}\\,0\\,255)',format=rgb24"
-        return f"{vert},{htrim},{luma_vf}"
-
-    # Mặc định: grayscale + eq
-    c = float(EASYOCR_GRAY_CONTRAST)
-    b = float(EASYOCR_GRAY_BRIGHTNESS)
-    g = float(EASYOCR_GRAY_GAMMA)
-    post = _easyocr_ffmpeg_gray_post_eq_suffix()
-    return (
-        f"{vert},"
-        f"{htrim},"
-        f"format=gray,eq=contrast={c:.6f}:brightness={b:.6f}:gamma={g:.6f}"
-        f"{post}"
-    )
-
-
-def _easyocr_probe_timestamps_sec(duration_ms, n_frames):
-    """Spread sample times across the file; avoid the very last frames."""
-    n = max(1, int(n_frames))
-    if duration_ms and duration_ms > 8000:
-        d_sec = duration_ms / 1000.0
-        cap = max(0.5, d_sec * 0.95)
-        lo_frac, hi_frac = 0.02, 0.90
-        if n == 1:
-            t = max(0.25, d_sec * 0.12)
-            return [min(t, cap)]
-        out = []
-        for k in range(n):
-            frac = lo_frac + (hi_frac - lo_frac) * (k / (n - 1))
-            t = max(0.25, d_sec * frac)
-            out.append(min(t, cap))
-        return out
-    fixed = [
-        0.25,
-        0.5,
-        0.85,
-        1.2,
-        1.8,
-        2.5,
-        3.5,
-        5.0,
-        6.5,
-        8.0,
-        10.0,
-        12.0,
-        15.0,
-        20.0,
-        28.0,
-        38.0,
-        50.0,
-        65.0,
-    ]
-    return fixed[:n]
-
-
-def _easyocr_h_trim_crop_vf():
-    """Filter crop ngang: bỏ trái/phải theo EASYOCR_CROP_PROBE_H_TRIM_* (probe PNG + dải trong cropped.mp4)."""
-    hl = max(0.0, min(0.49, float(EASYOCR_CROP_PROBE_H_TRIM_LEFT_FRAC)))
-    hr = max(0.0, min(0.49, float(EASYOCR_CROP_PROBE_H_TRIM_RIGHT_FRAC)))
-    wfrac = max(0.02, 1.0 - hl - hr)
-    return f"crop=iw*{wfrac:.6f}:ih:iw*{hl:.6f}:0"
-
-
-def _extract_easyocr_probe_frames(video_path, out_dir, n_frames):
-    """Lưu PNG probe đã crop ngang theo EASYOCR_CROP_PROBE_H_TRIM_* (cùng vùng OCR crop detect)."""
-    import cv2
-
-    out_dir.mkdir(parents=True, exist_ok=True)
-    duration_ms = get_media_duration_ms(video_path)
-    times = _easyocr_probe_timestamps_sec(duration_ms, n_frames)
-    probe_vf = _easyocr_h_trim_crop_vf()
-    paths = []
-    for i, t in enumerate(times):
-        p = out_dir / f"probe_{i:02d}.png"
-        run_command(
-            [
-                FFMPEG_BIN,
-                "-y",
-                "-ss",
-                f"{t:.3f}",
-                "-i",
-                str(video_path),
-                "-vf",
-                probe_vf,
-                "-vframes",
-                "1",
-                "-q:v",
-                "2",
-                str(p),
-            ],
-            f"EasyOCR crop probe frame {i} @ {t:.2f}s",
-        )
-        if p.exists() and p.stat().st_size > 0:
-            img = cv2.imread(str(p))
-            if img is not None and img.size > 0:
-                paths.append(p)
-            else:
-                try:
-                    p.unlink(missing_ok=True)
-                except TypeError:
-                    if p.exists():
-                        p.unlink()
-    return paths
-
-
-def _preprocess_easyocr_strip_like_pipeline(bgr_strip, for_probe: bool = False):
-    """Preprocess dải ảnh BGR trước khi đưa vào EasyOCR.
-
-    for_probe=True  (bước detect band easyocr_crop_probe):
-        Luôn dùng grayscale + eq để OCR xác định bbox chính xác trên ảnh gốc.
-        Không áp luma suppress — tránh mất vị trí chữ khi Y=0.
-
-    for_probe=False (bước trích frame từ cropped.mp4):
-        Nếu EASYOCR_LUMA_SUPPRESS > 0 → đè Y trong YUV, trả BGR màu.
-        Nếu = 0 → grayscale + eq + histeq/unsharp/negate.
-    """
-    import cv2
-    import numpy as np
-
-    if not for_probe:
-        # Ưu tiên 1: white_thresh — ảnh nhị phân chữ trắng / nền đen
-        wt = int(EASYOCR_WHITE_THRESH or 0)
-        if wt > 0:
-            wt = max(0, min(254, wt))
-            gray_raw = cv2.cvtColor(bgr_strip, cv2.COLOR_BGR2GRAY)
-            _, out = cv2.threshold(gray_raw, wt, 255, cv2.THRESH_BINARY)
-            return out
-
-        # Ưu tiên 2: luma-suppress — đè Y trong YUV, giữ màu Cb/Cr
-        ls = max(0.0, min(1.0, float(EASYOCR_LUMA_SUPPRESS or 0.0)))
-        if ls > 1e-9:
-            y_factor = max(0.0, 1.0 - ls)
-            ycrcb = cv2.cvtColor(bgr_strip, cv2.COLOR_BGR2YCrCb).astype(np.float32)
-            ycrcb[:, :, 0] = np.clip(ycrcb[:, :, 0] * y_factor, 0, 255)
-            out_bgr = cv2.cvtColor(ycrcb.astype(np.uint8), cv2.COLOR_YCrCb2BGR)
-            return out_bgr
-
-    # Grayscale + eq (probe luôn dùng nhánh này; OCR dùng khi white_thresh=0 và luma_suppress=0)
-    gray = cv2.cvtColor(bgr_strip, cv2.COLOR_BGR2GRAY)
-    x = gray.astype(np.float32) / 255.0
-    g = max(float(EASYOCR_GRAY_GAMMA), 0.01)
-    x = np.power(np.clip(x, 0, 1), 1.0 / g) * 255.0
-    c = float(EASYOCR_GRAY_CONTRAST)
-    b = float(EASYOCR_GRAY_BRIGHTNESS)
-    x = (x - 128.0) * c + 128.0 + b * 255.0
-    out = np.clip(x, 0, 255).astype(np.uint8)
-
-    hs = float(EASYOCR_HISTEQ_STRENGTH or 0.0)
-    if hs > 1e-9:
-        hs = max(0.0, min(1.0, hs))
-        eqf = cv2.equalizeHist(out)
-        out = cv2.addWeighted(out, 1.0 - hs, eqf, hs, 0)
-
-    us = (EASYOCR_UNSHARP or "").strip()
-    if us and us.lower() not in ("0", "off", "none", "false") and re.fullmatch(r"[-\d.:]+", us):
-        try:
-            parts = [float(p) for p in us.split(":")]
-            amt = float(parts[2]) if len(parts) >= 3 else 0.75
-        except (ValueError, IndexError):
-            amt = 0.75
-        amt = max(0.05, min(2.5, amt))
-        blur = cv2.GaussianBlur(out, (0, 0), sigmaX=1.15)
-        out = cv2.addWeighted(out, 1.0 + amt, blur, -amt, 0)
-        out = np.clip(out, 0, 255).astype(np.uint8)
-
-    if EASYOCR_GRAY_INVERT:
-        out = 255 - out
-    return out
-
-
-
-
-
-def _rebuild_easyocr_skip_regexes():
-    global _EASYOCR_SKIP_COMPILED
-    patterns = []
-    if EASYOCR_TEXT_SKIP_DEFAULTS_ON:
-        patterns.extend(EASYOCR_BUILTIN_SKIP_REGEXES)
-    raw = (EASYOCR_TEXT_SKIP_REGEXES_JSON or "").strip()
-    if raw and raw != "[]":
-        try:
-            extra = json.loads(raw)
-        except json.JSONDecodeError as e:
-            log(f"Step1 OCR: easyocr-text-skip-regexes-json invalid JSON: {e}")
-            extra = []
-        if isinstance(extra, list):
-            for item in extra:
-                s = str(item).strip()
-                if s:
-                    patterns.append(s)
-    compiled = []
-    for p in patterns:
-        try:
-            compiled.append(re.compile(p))
-        except re.error as e:
-            log(f"Step1 OCR: skip-regex compile failed for {p!r}: {e}")
-    _EASYOCR_SKIP_COMPILED = compiled
-
-
-def _easyocr_should_skip_merged_text(text):
-    """True nếu block (đã gộp) fullmatch một trong các regex skip."""
-    t = re.sub(r"\s+", " ", (text or "").strip())
-    if not t:
-        return True
-    for cre in _EASYOCR_SKIP_COMPILED:
-        try:
-            if cre.fullmatch(t):
-                return True
-        except re.error:
-            continue
-    return False
-
-
-_rebuild_easyocr_skip_regexes()
-
-
-
-
-def _easyocr_tune_timestamp_sec(video_path):
-    """Thời điểm lấy 1 frame mẫu (detect crop band)."""
-    try:
-        duration_ms = int(get_media_duration_ms(video_path) or 0)
-    except Exception:
-        duration_ms = 0
-    t_sec = 1.0
-    if duration_ms > 0:
-        d = duration_ms / 1000.0
-        t_sec = min(max(d * 0.12, 0.25), max(d - 0.1, 0.25))
-        t_sec = min(t_sec, 120.0)
-    return t_sec
-
-
-
-
-def _detect_easyocr_crop_band(video_path, reader, ocr_dir):
-    """
-    Detect subtitle band (lo, hi) bằng cách chạy OCR trên phần đáy frame probe
-    (probe PNG đã crop ngang trong ffmpeg theo EASYOCR_CROP_PROBE_H_TRIM_*),
-    lấy bbox chữ để xác định lo/hi; hi từ phân vị bbox (p95+PAD), lo = hi − strip_max nếu strip_max > 0.
-
-    lo/hi tính từ đáy frame (0 = sát đáy, 1 = đỉnh frame).
-    Fallback: hi = EASYOCR_SUBTITLE_CROP_BAND_HI, lo = hi - strip_max.
-    """
-    import cv2
-
-    hi_max = float(EASYOCR_SUBTITLE_CROP_BAND_HI)
-    strip_max = float(EASYOCR_MAX_STRIP_HEIGHT_RATIO or 0.05)
-    fallback_hi = hi_max
-    fallback_lo = max(0.0, fallback_hi - strip_max)
-
-    SCAN_HI = 0.4    # quét 40% đáy frame để bắt hết phụ đề
-    PAD = 0.015      # padding quanh bbox (1.5% chiều cao frame) — đủ cho descender/ascender
-    # Box có hi quá cao (xa đáy) → khả năng watermark góc trên, không phải phụ đề đáy.
-    HI_OUTLIER_MIN = hi_max + 0.05
-    lo_floor = 0.0   # giới hạn dưới của lo (sát đáy frame)
-
-    probe_dir = ocr_dir / "probe_src"
-    shutil.rmtree(probe_dir, ignore_errors=True)
-    debug_probe_dir = LOG_DIR / "easyocr_crop_probe"
-    shutil.rmtree(debug_probe_dir, ignore_errors=True)
-    debug_probe_dir.mkdir(parents=True, exist_ok=True)
-
-    frame_paths = _extract_easyocr_probe_frames(video_path, probe_dir, EASYOCR_CROP_PROBE_FRAMES)
-    if not frame_paths:
-        shutil.rmtree(debug_probe_dir, ignore_errors=True)
-        log(f"Step1 OCR: crop detect — không lấy được frame mẫu, fallback lo={fallback_lo:.3f} hi={fallback_hi:.3f}")
-        return fallback_lo, fallback_hi
-
-    all_lo: list[float] = []
-    all_hi: list[float] = []
-    for fp in frame_paths:
-        img = cv2.imread(str(fp))
-        try:
-            fp.unlink()
-        except OSError:
-            pass
-        if img is None:
-            continue
-        ih, iw = img.shape[:2]
-        if ih < 40 or iw < 40:
-            continue
-        try:
-            cv2.imwrite(str(debug_probe_dir / fp.name), img)
-        except Exception:
-            pass
-        scan_top = int(ih * (1.0 - SCAN_HI))
-        scan_strip = img[scan_top:, :]
-        gray = _preprocess_easyocr_strip_like_pipeline(scan_strip, for_probe=True)
-        try:
-            results = reader.readtext(gray, detail=1)
-        except Exception:
-            continue
-        frame_boxes = []
-        for item in results:
-            if not item or len(item) < 3:
-                continue
-            box, text, conf = item[0], item[1], item[2]
-            conf_f = float(conf)
-            text_s = str(text or "").strip()
-            if conf_f < float(EASYOCR_MIN_CONFIDENCE):
-                log(
-                    f"Step1 OCR: crop detect [{fp.name}] skip conf={conf_f:.2f} "
-                    f'text="{text_s[:30]}"'
-                )
-                continue
-            if not text_s:
-                continue
-            if _easyocr_should_skip_merged_text(text_s):
-                log(
-                    f"Step1 OCR: crop detect [{fp.name}] skip regex watermark "
-                    f'conf={conf_f:.2f} "{text_s[:30]}"'
-                )
-                continue
-            ys = [float(pt[1]) for pt in box]
-            y_top_in_scan = min(ys)
-            y_bot_in_scan = max(ys)
-            y_top_frame = scan_top + y_top_in_scan
-            y_bot_frame = scan_top + y_bot_in_scan
-            hi_cand = (ih - y_top_frame) / ih
-            lo_cand = max(0.0, (ih - y_bot_frame) / ih)
-            if hi_cand > HI_OUTLIER_MIN:
-                log(
-                    f"Step1 OCR: crop detect [{fp.name}] skip watermark top "
-                    f"hi={hi_cand:.3f} > max={HI_OUTLIER_MIN:.3f} "
-                    f'conf={conf_f:.2f} "{text_s[:20]}"'
-                )
-                continue
-            all_hi.append(hi_cand)
-            all_lo.append(lo_cand)
-            frame_boxes.append((conf_f, text_s, lo_cand, hi_cand))
-        if frame_boxes:
-            parts = " | ".join(
-                f'conf={c:.2f} lo={l:.3f} hi={h:.3f} "{t[:20]}"'
-                for c, t, l, h in frame_boxes
-            )
-            log(f"Step1 OCR: crop detect [{fp.name}] {parts}")
-
-    shutil.rmtree(probe_dir, ignore_errors=True)
-
-    if not all_hi:
-        log(f"Step1 OCR: crop detect — không tìm thấy text, fallback lo={fallback_lo:.3f} hi={fallback_hi:.3f}")
-        return fallback_lo, fallback_hi
-
-    n = len(all_hi)
-    all_hi_s = sorted(all_hi)
-    all_lo_s = sorted(all_lo)
-    # Dùng p95/p5 thay vì p90/p10 để bao nhiều boxes hơn, tránh cắt phụ đề thật ngoài cùng
-    det_hi = all_hi_s[min(n - 1, int(n * 0.95))] + PAD
-    det_lo = max(lo_floor, all_lo_s[max(0, int(n * 0.05))] - PAD)
-    det_hi = min(1.0, det_hi)
-    log(
-        f"Step1 OCR: crop detect dist "
-        f"hi=[{all_hi_s[0]:.3f}…{all_hi_s[-1]:.3f}] p95={all_hi_s[min(n-1,int(n*0.95))]:.3f} "
-        f"lo=[{all_lo_s[0]:.3f}…{all_lo_s[-1]:.3f}] p5={all_lo_s[max(0,int(n*0.05))]:.3f} "
-        f"n={n}"
-    )
-
-    # Neo theo mé ngoài (hi từ bbox): độ cao dải ≤ strip_max ⇒ lo = hi − strip_max (không kéo hi xuống theo p5).
-    if strip_max > 0:
-        det_lo = max(lo_floor, det_hi - strip_max)
-
-    if det_hi <= det_lo + 1e-9:
-        log(f"Step1 OCR: crop detect — dải không hợp lệ sau tính toán, fallback lo={fallback_lo:.3f} hi={fallback_hi:.3f}")
-        return fallback_lo, fallback_hi
-
-    log(
-        f"Step1 OCR: crop detect lo={det_lo:.3f} hi={det_hi:.3f} "
-        f"strip_pct={(det_hi - det_lo) * 100:.1f} n_boxes={n}"
-    )
-    return det_lo, det_hi
-
-
-def _easyocr_readtext_sort_for_join(results):
-    """Sort bbox for reading order: same text row left→right, then top→bottom.
-
-    EasyOCR often returns multiple boxes when a vertical line splits the line; sorting
-    by bbox *center* (cx, cy) can put the right segment before the left. Using a row
-    bucket on y then **min(x)** fixes that.
-    """
-    if not results:
-        return results
-
-    def key_fn(item):
-        bbox = item[0]
-        ys = [float(p[1]) for p in bbox]
-        xs = [float(p[0]) for p in bbox]
-        my = sum(ys) / max(len(ys), 1)
-        row = int(my // 12)  # px bucket: same subtitle line shares row
-        return (row, min(xs))
-
-    return sorted(results, key=key_fn)
-
-
 def _step1_ocr_with_easyocr(video_path):
-    """Step1: extract subtitles via EasyOCR on the cropped subtitle region."""
-    log("Step1: OCR (EasyOCR)…")
-    import concurrent.futures
-    from difflib import SequenceMatcher
-
-    try:
-        import easyocr
-    except ImportError:
-        raise RuntimeError(
-            "easyocr is not installed. Run: pip install easyocr opencv-python-headless"
-        )
-
-    ocr_dir = LOG_DIR / "step1_ocr"
-    frames_dir = ocr_dir / "frames"
-    shutil.rmtree(ocr_dir, ignore_errors=True)
-    ocr_dir.mkdir(parents=True, exist_ok=True)
-
-    reader = easyocr.Reader(EASYOCR_LANG, gpu=EASYOCR_GPU)
-    log(
-        "Step1 OCR: gray eq (crop) "
-        f"contrast={EASYOCR_GRAY_CONTRAST:.3f} "
-        f"brightness={EASYOCR_GRAY_BRIGHTNESS:.3f} "
-        f"gamma={EASYOCR_GRAY_GAMMA:.3f}"
+    """Wrapper: configure và gọi step1_easyocr.run() với config hiện tại."""
+    configure_step1_easyocr(
+        log=log,
+        run_command=run_command,
+        ffmpeg_bin=FFMPEG_BIN,
+        progressbar=progressbar,
+        get_media_duration_ms=get_media_duration_ms,
+        fmt_time=fmt_time,
+        get_zh_srt_path=get_zh_srt_path,
+        log_dir=LOG_DIR,
+        lang=EASYOCR_LANG,
+        gpu=EASYOCR_GPU,
+        workers=EASYOCR_WORKERS,
+        subtitle_crop_band_hi=EASYOCR_SUBTITLE_CROP_BAND_HI,
+        crop_probe_frames=EASYOCR_CROP_PROBE_FRAMES,
+        crop_probe_h_trim_left_frac=EASYOCR_CROP_PROBE_H_TRIM_LEFT_FRAC,
+        crop_probe_h_trim_right_frac=EASYOCR_CROP_PROBE_H_TRIM_RIGHT_FRAC,
+        max_strip_height_ratio=EASYOCR_MAX_STRIP_HEIGHT_RATIO,
+        fps=EASYOCR_FPS,
+        min_duration_ms=EASYOCR_MIN_DURATION_MS,
+        min_confidence=EASYOCR_MIN_CONFIDENCE,
+        low_conf_floor=EASYOCR_LOW_CONF_FLOOR,
+        bridge_frames=EASYOCR_BRIDGE_FRAMES,
+        bridge_min_match=EASYOCR_BRIDGE_MIN_MATCH,
+        fuzzy_threshold=EASYOCR_FUZZY_THRESHOLD,
+        merge_gap_ms=EASYOCR_MERGE_GAP_MS,
+        gray_contrast=EASYOCR_GRAY_CONTRAST,
+        gray_brightness=EASYOCR_GRAY_BRIGHTNESS,
+        gray_gamma=EASYOCR_GRAY_GAMMA,
+        luma_suppress=EASYOCR_LUMA_SUPPRESS,
+        white_thresh=EASYOCR_WHITE_THRESH,
+        histeq_strength=EASYOCR_HISTEQ_STRENGTH,
+        gray_invert=EASYOCR_GRAY_INVERT,
+        unsharp=EASYOCR_UNSHARP,
+        text_skip_defaults_on=EASYOCR_TEXT_SKIP_DEFAULTS_ON,
+        text_skip_regexes_json=EASYOCR_TEXT_SKIP_REGEXES_JSON,
     )
-    band_lo, band_hi = _detect_easyocr_crop_band(video_path, reader, ocr_dir)
-    if band_hi <= band_lo + 1e-9:
-        raise RuntimeError(
-            f"Step1 OCR: invalid crop band lo={band_lo} hi={band_hi} (need hi > lo)."
-        )
+    return _step1_easyocr_run(video_path)
 
-    log(
-        "Step1 OCR: crop apply "
-        f"lo={band_lo:.3f} hi={band_hi:.3f} strip_pct={(band_hi - band_lo) * 100:.1f}"
+
+def _step1_ocr_with_paddleocr(video_path):
+    """Wrapper: configure và gọi step1_paddleocr.run() với config hiện tại."""
+    configure_step1_paddleocr(
+        log=log,
+        run_command=run_command,
+        ffmpeg_bin=FFMPEG_BIN,
+        get_media_duration_ms=get_media_duration_ms,
+        fmt_time=fmt_time,
+        get_zh_srt_path=get_zh_srt_path,
+        log_dir=LOG_DIR,
+        lang=PADDLEOCR_LANG,
+        use_gpu=PADDLEOCR_USE_GPU,
+        use_angle_cls=PADDLEOCR_USE_ANGLE_CLS,
+        subtitle_crop_band_hi=PADDLEOCR_SUBTITLE_CROP_BAND_HI,
+        crop_probe_frames=PADDLEOCR_CROP_PROBE_FRAMES,
+        crop_probe_h_trim_left_frac=PADDLEOCR_CROP_PROBE_H_TRIM_LEFT_FRAC,
+        crop_probe_h_trim_right_frac=PADDLEOCR_CROP_PROBE_H_TRIM_RIGHT_FRAC,
+        max_strip_height_ratio=PADDLEOCR_MAX_STRIP_HEIGHT_RATIO,
+        scan_fps=PADDLEOCR_SCAN_FPS,
+        framediff_threshold=PADDLEOCR_FRAMEDIFF_THRESHOLD,
+        framediff_skip_blank=PADDLEOCR_FRAMEDIFF_SKIP_BLANK,
+        batch_size=PADDLEOCR_BATCH_SIZE,
+        min_confidence=PADDLEOCR_MIN_CONFIDENCE,
+        low_conf_floor=PADDLEOCR_LOW_CONF_FLOOR,
+        bridge_frames=PADDLEOCR_BRIDGE_FRAMES,
+        bridge_min_match=PADDLEOCR_BRIDGE_MIN_MATCH,
+        fuzzy_threshold=PADDLEOCR_FUZZY_THRESHOLD,
+        merge_gap_ms=PADDLEOCR_MERGE_GAP_MS,
+        min_duration_ms=PADDLEOCR_MIN_DURATION_MS,
+        gray_contrast=PADDLEOCR_GRAY_CONTRAST,
+        gray_brightness=PADDLEOCR_GRAY_BRIGHTNESS,
+        gray_gamma=PADDLEOCR_GRAY_GAMMA,
+        luma_suppress=PADDLEOCR_LUMA_SUPPRESS,
+        white_thresh=PADDLEOCR_WHITE_THRESH,
+        histeq_strength=PADDLEOCR_HISTEQ_STRENGTH,
+        gray_invert=PADDLEOCR_GRAY_INVERT,
+        unsharp=PADDLEOCR_UNSHARP,
     )
-
-    frames_dir.mkdir(parents=True, exist_ok=True)
-
-    # --- 1. Crop subtitle region + preprocess (grayscale + contrast boost) ---
-    crop_video = ocr_dir / "cropped.mp4"
-    run_command(
-        [
-            FFMPEG_BIN,
-            "-y",
-            "-i",
-            str(video_path),
-            "-vf",
-            _easyocr_crop_ffmpeg_vf(band_lo, band_hi),
-            "-an",
-            "-c:v",
-            "libx264",
-            "-crf",
-            "23",
-            "-preset",
-            "ultrafast",
-            str(crop_video),
-        ],
-        "Crop subtitle region",
-    )
-
-    # --- 2. Extract frames ---
-    run_command(
-        [
-            FFMPEG_BIN,
-            "-y",
-            "-i",
-            str(crop_video),
-            "-vf",
-            f"fps={EASYOCR_FPS}",
-            str(frames_dir / "frame_%05d.png"),
-        ],
-        "Extract frames for OCR",
-    )
-
-    frame_files = sorted(frames_dir.glob("frame_*.png"))
-    if not frame_files:
-        raise RuntimeError("Step1 OCR: no frames extracted.")
-
-    # --- 3. OCR with EasyOCR (parallel ThreadPoolExecutor) ---
-    frame_interval_sec = 1.0 / EASYOCR_FPS
-
-    def _serialize_easyocr_boxes(results):
-        """BBox + text + conf (JSON-friendly) — thứ tự theo list `results` truyền vào."""
-        out = []
-        for item in results or []:
-            bbox, t, conf = item[0], item[1], float(item[2])
-            pts = (
-                [[float(p[0]), float(p[1])] for p in bbox]
-                if bbox
-                else []
-            )
-            out.append({"bbox": pts, "text": t, "confidence": conf})
-        return out
-
-    def ocr_frame(idx_path):
-        idx, fpath = idx_path
-        timestamp_sec = idx * frame_interval_sec
-        debug_row = {
-            "frame_index": idx,
-            "frame_png": fpath.name,
-            "timestamp_sec": timestamp_sec,
-            "easyocr_min_confidence": float(EASYOCR_MIN_CONFIDENCE),
-            "raw_readtext_order": [],
-            "sorted_reading_order": [],
-            "joined_after_filter": "",
-            "error": None,
-        }
-        try:
-            results = reader.readtext(str(fpath), detail=1)
-            debug_row["raw_readtext_order"] = _serialize_easyocr_boxes(results)
-            sorted_results = _easyocr_readtext_sort_for_join(results)
-            debug_row["sorted_reading_order"] = _serialize_easyocr_boxes(sorted_results)
-            # High-confidence texts (pass threshold normally)
-            texts = [
-                t.strip()
-                for _bbox, t, conf in sorted_results
-                if conf >= EASYOCR_MIN_CONFIDENCE and t.strip()
-            ]
-            joined = " ".join(texts)
-            debug_row["joined_after_filter"] = joined
-            # Low-confidence rescue candidates (above floor but below threshold)
-            low_texts = [
-                t.strip()
-                for _bbox, t, conf in sorted_results
-                if EASYOCR_LOW_CONF_FLOOR <= conf < EASYOCR_MIN_CONFIDENCE and t.strip()
-            ]
-            low_joined = " ".join(low_texts)
-            return timestamp_sec, joined, low_joined, debug_row
-        except Exception as exc:
-            debug_row["error"] = str(exc)
-            return timestamp_sec, "", "", debug_row
-
-    raw_results = []
-    low_conf_candidates = []  # (timestamp_sec, text) for rescue evaluation
-    frame_ocr_debug_rows = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=EASYOCR_WORKERS) as pool:
-        indexed = list(enumerate(frame_files))
-        futures = {pool.submit(ocr_frame, item): item[0] for item in indexed}
-        for fut in progressbar(
-            concurrent.futures.as_completed(futures),
-            total=len(futures),
-            desc="EasyOCR frames",
-        ):
-            ts, text, low_text, dbg = fut.result()
-            frame_ocr_debug_rows.append(dbg)
-            if text:
-                raw_results.append((ts, text))
-            elif low_text:
-                low_conf_candidates.append((ts, low_text))
-
-    # Low-confidence rescue: nếu >= BRIDGE_MIN_MATCH frame lân cận (trong BRIDGE_FRAMES bước)
-    # có text tương đồng >= FUZZY_THRESHOLD%, frame đó được kéo vào raw_results.
-    if low_conf_candidates and EASYOCR_BRIDGE_MIN_MATCH > 0:
-        from difflib import SequenceMatcher as _SM
-        all_candidates = sorted(raw_results + low_conf_candidates, key=lambda x: x[0])
-        high_conf_ts = {ts for ts, _ in raw_results}
-        rescued_count = 0
-        for ts, text in low_conf_candidates:
-            window_start = ts - EASYOCR_BRIDGE_FRAMES * frame_interval_sec
-            window_end   = ts + EASYOCR_BRIDGE_FRAMES * frame_interval_sec
-            neighbors = [
-                tx for t, tx in all_candidates
-                if window_start <= t <= window_end and t != ts
-            ]
-            match_count = sum(
-                1 for tx in neighbors
-                if _SM(None, text, tx).ratio() * 100 >= EASYOCR_FUZZY_THRESHOLD
-            )
-            if match_count >= EASYOCR_BRIDGE_MIN_MATCH:
-                raw_results.append((ts, text))
-                rescued_count += 1
-        if rescued_count:
-            log(f"Step1 OCR: rescued {rescued_count} low-confidence frame(s) via cluster voting.")
-
-    raw_results.sort(key=lambda x: x[0])
-    frame_ocr_debug_rows.sort(key=lambda r: r["frame_index"])
-    ocr_debug_path = ocr_dir / "frame_ocr_raw.jsonl"
-    with open(ocr_debug_path, "w", encoding="utf8") as _df:
-        for row in frame_ocr_debug_rows:
-            _df.write(json.dumps(row, ensure_ascii=False) + "\n")
-    log(f"Step1 OCR: debug raw per frame → {ocr_debug_path} ({len(frame_ocr_debug_rows)} lines)")
-
-    # --- 4. Text cleaning ---
-    _re_keep = re.compile(r"[\w\s\u4e00-\u9fff\u3000-\u303f\uff00-\uffef]+")
-
-    def clean_text(t):
-        parts = _re_keep.findall(t)
-        return re.sub(r"\s+", " ", " ".join(parts)).strip()
-
-    def fuzzy_sim(a, b):
-        return SequenceMatcher(None, a, b).ratio() * 100
-
-    def same_subtitle_line(prev: str, curr: str) -> bool:
-        """Cùng một dòng phụ đề giữa hai frame: fuzzy, prefix/substring, hoặc gần cùng multiset ký tự (đảo box / thiếu 1 chữ)."""
-        from collections import Counter
-
-        if fuzzy_sim(prev, curr) >= EASYOCR_FUZZY_THRESHOLD:
-            return True
-        a, b = prev.strip(), curr.strip()
-        if len(a) < 2 or len(b) < 2:
-            return False
-        if a.startswith(b) or b.startswith(a):
-            return True
-        shorter, longer = (a, b) if len(a) <= len(b) else (b, a)
-        if len(shorter) >= 4 and shorter in longer:
-            return True
-        # Hai OCR cùng câu nhưng đảo thứ tự khối / khuyết 1 ký tự (vd. vạch dọc chia bbox).
-        maxlen = max(len(a), len(b), 1)
-        if maxlen >= 8 and abs(len(a) - len(b)) <= 2:
-            inter = sum((Counter(a) & Counter(b)).values())
-            if inter / float(maxlen) >= 0.88:
-                return True
-        return False
-
-    cleaned = [(ts, clean_text(text)) for ts, text in raw_results]
-    cleaned = [(ts, text) for ts, text in cleaned if text]
-
-    if not cleaned:
-        raise RuntimeError("Step1 OCR: no text survived cleaning.")
-
-    # --- 5. Group by time + fuzzy dedup ---
-    # First pass: extend same-subtitle groups frame by frame
-    groups = []  # each entry: [start_sec, end_sec, text]
-    for ts, text in cleaned:
-        if groups and same_subtitle_line(groups[-1][2], text):
-            groups[-1][1] = ts + frame_interval_sec
-            if len(text) > len(groups[-1][2]):
-                groups[-1][2] = text
-        else:
-            groups.append([ts, ts + frame_interval_sec, text])
-
-    # Second pass: merge groups separated by a small silent gap
-    merged = []
-    for block in groups:
-        if (
-            merged
-            and same_subtitle_line(merged[-1][2], block[2])
-            and (block[0] - merged[-1][1]) * 1000 <= EASYOCR_MERGE_GAP_MS
-        ):
-            merged[-1][1] = block[1]
-            if len(block[2]) > len(merged[-1][2]):
-                merged[-1][2] = block[2]
-        else:
-            merged.append(list(block))
-
-    if not merged:
-        raise RuntimeError("Step1 OCR: no subtitle groups after dedup.")
-
-    kept = []
-    skipped = 0
-    for start, end, text in merged:
-        if _easyocr_should_skip_merged_text(text):
-            skipped += 1
-            continue
-        kept.append((start, end, text))
-    if skipped:
-        log(f"Step1 OCR: skipped {skipped} block(s) (regex full-match after clean)")
-    if not kept:
-        raise RuntimeError(
-            "Step1 OCR: all subtitle blocks were removed by regex skip filter."
-        )
-
-    # --- 6. Export SRT ---
-    srt_path = get_zh_srt_path()
-    with open(srt_path, "w", encoding="utf8") as f:
-        for i, (start, end, text) in enumerate(kept, 1):
-            if (end - start) * 1000 < EASYOCR_MIN_DURATION_MS:
-                end = start + EASYOCR_MIN_DURATION_MS / 1000.0
-            f.write(f"{i}\n")
-            f.write(f"{fmt_time(start)} --> {fmt_time(end)}\n")
-            f.write(f"{text}\n\n")
-    log(f"Step1: OCR done — {len(kept)} blocks (after skip filter).")
-    return srt_path
-
-
-def _step1_extract_with_vse(video_path):
-    """Step1: extract subtitles via VSE (PaddleOCR + VideoSubFinder)."""
-    log("Step1: VSE (PaddleOCR + VideoSubFinder)…")
-    import cv2
-
-    try:
-        import vse_runner
-    except ImportError as exc:
-        raise RuntimeError(
-            "vse_runner import failed. Ensure tools/video-pipeline contains "
-            "vse_runner.py and vse/ (pip: paddleocr, paddlepaddle-gpu, opencv). "
-            f"script_dir={SCRIPT_DIR} cwd={Path.cwd()} cause={exc!r}"
-        ) from exc
-
-    srt_path = get_zh_srt_path()
-
-    # Get video dimensions
-    cap = cv2.VideoCapture(str(video_path))
-    if not cap.isOpened():
-        raise RuntimeError(f"Cannot open video: {video_path}")
-    frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    cap.release()
-
-    # Check for ROI override
-    roi_override = str(VSE_ROI or "").strip()
-    if roi_override:
-        # Parse normalized ROI: "ymin,ymax,xmin,xmax"
-        try:
-            parts = [float(x.strip()) for x in roi_override.split(",")]
-            if len(parts) != 4:
-                raise ValueError("Expected 4 values")
-            ymin_norm, ymax_norm, xmin_norm, xmax_norm = parts
-            log(f"Step1 VSE: using ROI override {roi_override}")
-            vse_runner.run_vse_with_roi_override(
-                video_path=str(video_path),
-                output_srt_path=str(srt_path),
-                log_dir=str(LOG_DIR),
-                roi_normalized=(ymin_norm, ymax_norm, xmin_norm, xmax_norm),
-                frame_width=frame_width,
-                frame_height=frame_height,
-                language=VSE_LANGUAGE,
-                mode=VSE_MODE,
-                hardware_acceleration=VSE_HARDWARE_ACCEL,
-                drop_score=VSE_DROP_SCORE,
-                text_similarity=VSE_TEXT_SIMILARITY,
-                extract_frequency=VSE_EXTRACT_FREQUENCY,
-                log_func=log,
-            )
-        except Exception as e:
-            raise RuntimeError(f"Invalid VSE_ROI format '{roi_override}': {e}")
-    else:
-        # Auto-detect ROI using EasyOCR probe (same logic as easyocr path)
-        log("Step1 VSE: auto-detecting subtitle region via EasyOCR probe…")
-        try:
-            import easyocr
-        except ImportError:
-            raise RuntimeError(
-                "easyocr is required for VSE auto ROI detection. "
-                "Run: pip install easyocr, or use --vse-roi to specify ROI manually."
-            )
-
-        ocr_dir = LOG_DIR / "step1_vse_probe"
-        ocr_dir.mkdir(parents=True, exist_ok=True)
-        reader = easyocr.Reader(EASYOCR_LANG, gpu=EASYOCR_GPU)
-        band_lo, band_hi = _detect_easyocr_crop_band(video_path, reader, ocr_dir)
-        shutil.rmtree(ocr_dir, ignore_errors=True)
-
-        log(f"Step1 VSE: detected band lo={band_lo:.3f} hi={band_hi:.3f}")
-
-        vse_runner.run_vse(
-            video_path=str(video_path),
-            output_srt_path=str(srt_path),
-            log_dir=str(LOG_DIR),
-            band_lo=band_lo,
-            band_hi=band_hi,
-            frame_width=frame_width,
-            frame_height=frame_height,
-            h_trim_left=float(EASYOCR_CROP_PROBE_H_TRIM_LEFT_FRAC),
-            h_trim_right=float(EASYOCR_CROP_PROBE_H_TRIM_RIGHT_FRAC),
-            language=VSE_LANGUAGE,
-            mode=VSE_MODE,
-            hardware_acceleration=VSE_HARDWARE_ACCEL,
-            drop_score=VSE_DROP_SCORE,
-            text_similarity=VSE_TEXT_SIMILARITY,
-            extract_frequency=VSE_EXTRACT_FREQUENCY,
-            log_func=log,
-        )
-
-    log(f"Step1 VSE: done → {srt_path}")
-    return srt_path
+    return _step1_paddleocr_run(video_path)
 
 
 def step1_transcribe(video_path):
@@ -2498,11 +1742,11 @@ def step1_transcribe(video_path):
         return _step1_transcribe_with_whisper(video_path)
     if source_mode == "easyocr":
         return _step1_ocr_with_easyocr(video_path)
-    if source_mode == "vse":
-        return _step1_extract_with_vse(video_path)
+    if source_mode == "paddleocr":
+        return _step1_ocr_with_paddleocr(video_path)
     raise RuntimeError(
         f"Unsupported Step1 source: {STEP1_SUBTITLE_SOURCE}. "
-        "Use --step1-subtitle-source whisper|embedded|easyocr|vse."
+        "Use --step1-subtitle-source whisper|embedded|easyocr|paddleocr."
     )
 
 
@@ -3559,14 +2803,94 @@ def parse_cli_args():
     )
     parser.add_argument(
         "--step1-subtitle-source",
-        choices=["whisper", "embedded", "easyocr", "vse"],
+        choices=["whisper", "embedded", "easyocr", "paddleocr"],
         default=STEP1_SUBTITLE_SOURCE,
         help=(
             "Step1 subtitle source: whisper=ASR from audio, "
             "embedded=extract subtitle stream with ffmpeg, "
-            "easyocr=visual OCR on subtitle region, "
-            "vse=VSE PaddleOCR+VideoSubFinder (GPU, Linux)."
+            "easyocr=visual OCR on subtitle region (fixed FPS), "
+            "paddleocr=visual OCR with Frame Difference frame selection (PP-OCRv6)."
         ),
+    )
+    parser.add_argument(
+        "--paddleocr-lang",
+        default=None,
+        help="PaddleOCR language code. Default: ch (Chinese+English). Example: en, japan.",
+    )
+    parser.add_argument(
+        "--paddleocr-use-gpu",
+        choices=["on", "off"],
+        default="on" if PADDLEOCR_USE_GPU else "off",
+        help="Use GPU for PaddleOCR inference (default on).",
+    )
+    parser.add_argument(
+        "--paddleocr-crop-band-hi",
+        type=float,
+        default=PADDLEOCR_SUBTITLE_CROP_BAND_HI,
+        help="PaddleOCR crop: outer edge from bottom as fraction of frame height (default 0.20).",
+    )
+    parser.add_argument(
+        "--paddleocr-crop-probe-h-trim-left-frac",
+        type=float,
+        default=PADDLEOCR_CROP_PROBE_H_TRIM_LEFT_FRAC,
+        help="PaddleOCR horizontal crop: fraction to discard from left (0–0.49, default 0.15).",
+    )
+    parser.add_argument(
+        "--paddleocr-crop-probe-h-trim-right-frac",
+        type=float,
+        default=PADDLEOCR_CROP_PROBE_H_TRIM_RIGHT_FRAC,
+        help="PaddleOCR horizontal crop: fraction to discard from right (0–0.49, default 0.15).",
+    )
+    parser.add_argument(
+        "--paddleocr-min-confidence",
+        type=float,
+        default=PADDLEOCR_MIN_CONFIDENCE,
+        help="PaddleOCR minimum confidence to keep a text result (default 0.5).",
+    )
+    parser.add_argument(
+        "--paddleocr-scan-fps",
+        type=float,
+        default=PADDLEOCR_SCAN_FPS,
+        help="PaddleOCR Frame Difference: FPS to scan video for change detection (default 10).",
+    )
+    parser.add_argument(
+        "--paddleocr-framediff-threshold",
+        type=float,
+        default=PADDLEOCR_FRAMEDIFF_THRESHOLD,
+        help=(
+            "PaddleOCR Frame Difference: MAD pixel threshold (0-255) to trigger OCR on a frame. "
+            "~8=subtitle changed, ~2=compression noise. Default 8.0."
+        ),
+    )
+    parser.add_argument(
+        "--paddleocr-batch-size",
+        type=int,
+        default=PADDLEOCR_BATCH_SIZE,
+        help="PaddleOCR frames per batch inference call (default 8).",
+    )
+    parser.add_argument(
+        "--paddleocr-min-duration-ms",
+        type=int,
+        default=PADDLEOCR_MIN_DURATION_MS,
+        help="PaddleOCR minimum SRT cue duration ms (default 500).",
+    )
+    parser.add_argument(
+        "--paddleocr-fuzzy-threshold",
+        type=float,
+        default=PADDLEOCR_FUZZY_THRESHOLD,
+        help="PaddleOCR similarity %% threshold for dedup/merge (default 55).",
+    )
+    parser.add_argument(
+        "--paddleocr-max-strip-height-ratio",
+        type=float,
+        default=PADDLEOCR_MAX_STRIP_HEIGHT_RATIO,
+        help="Cap PaddleOCR OCR band height vs frame height; 0 disables (default 0.05).",
+    )
+    parser.add_argument(
+        "--paddleocr-cleanup-debug-after-step7",
+        choices=["on", "off"],
+        default="on" if PADDLEOCR_CLEANUP_DEBUG_AFTER_STEP7 else "off",
+        help="on (default): delete LOG_DIR/step1_paddleocr after Step7. off: keep for inspection.",
     )
     parser.add_argument(
         "--easyocr-lang",
@@ -3615,7 +2939,7 @@ def parse_cli_args():
         default="",
         help=(
             "Thư mục chứa SRT có sẵn. Nếu có {video_stem}.srt thì copy sang "
-            "subtitles/{video_stem}.zh.srt và bỏ qua Step1 (Whisper/VSE/EasyOCR)."
+            "subtitles/{video_stem}.zh.srt và bỏ qua Step1 (Whisper/EasyOCR)."
         ),
     )
     parser.add_argument(
@@ -3706,24 +3030,6 @@ def parse_cli_args():
         help=(
             f"Số frame tương đồng tối thiểu để rescue (default {EASYOCR_BRIDGE_MIN_MATCH}). "
             "Nếu >= N frame lân cận có text >=fuzzy-threshold%% giống → rescue."
-        ),
-    )
-    # VSE arguments
-    parser.add_argument(
-        "--vse-mode",
-        choices=["fast", "auto", "accurate"],
-        default=VSE_MODE,
-        help=(
-            "VSE extraction mode: fast (mobile model), auto (server model + VSF), "
-            "accurate (full-frame detection, GPU required). Default: auto."
-        ),
-    )
-    parser.add_argument(
-        "--vse-roi",
-        default="",
-        help=(
-            "VSE ROI override: 'ymin,ymax,xmin,xmax' as normalized 0-1 coordinates "
-            "(origin top-left). Empty = auto-detect via EasyOCR probe."
         ),
     )
     parser.add_argument(
@@ -3910,8 +3216,19 @@ def apply_cli_config(args):
     global EASYOCR_MAX_STRIP_HEIGHT_RATIO
     global EASYOCR_TEXT_SKIP_DEFAULTS_ON
     global EASYOCR_TEXT_SKIP_REGEXES_JSON
-    global VSE_MODE
-    global VSE_ROI
+    global PADDLEOCR_LANG
+    global PADDLEOCR_USE_GPU
+    global PADDLEOCR_SUBTITLE_CROP_BAND_HI
+    global PADDLEOCR_CROP_PROBE_H_TRIM_LEFT_FRAC
+    global PADDLEOCR_CROP_PROBE_H_TRIM_RIGHT_FRAC
+    global PADDLEOCR_MIN_CONFIDENCE
+    global PADDLEOCR_SCAN_FPS
+    global PADDLEOCR_FRAMEDIFF_THRESHOLD
+    global PADDLEOCR_BATCH_SIZE
+    global PADDLEOCR_MIN_DURATION_MS
+    global PADDLEOCR_FUZZY_THRESHOLD
+    global PADDLEOCR_MAX_STRIP_HEIGHT_RATIO
+    global PADDLEOCR_CLEANUP_DEBUG_AFTER_STEP7
 
     SUBTITLE_FONT = args.subtitle_font
     SUBTITLE_FONTSIZE = args.subtitle_fontsize
@@ -4015,7 +3332,6 @@ def apply_cli_config(args):
     EASYOCR_TEXT_SKIP_REGEXES_JSON = (
         str(rj).strip() if rj is not None and str(rj).strip() else "[]"
     )
-    _rebuild_easyocr_skip_regexes()
     EASYOCR_WORKERS = int(args.easyocr_workers)
     EASYOCR_MIN_CONFIDENCE = float(args.easyocr_min_confidence)
     EASYOCR_MIN_DURATION_MS = max(1, int(args.easyocr_min_duration_ms))
@@ -4034,14 +3350,6 @@ def apply_cli_config(args):
         1, int(getattr(args, "easyocr_bridge_min_match", EASYOCR_BRIDGE_MIN_MATCH))
     )
 
-    # VSE config
-    vse_mode_arg = getattr(args, "vse_mode", None)
-    if vse_mode_arg:
-        VSE_MODE = str(vse_mode_arg).strip().lower()
-    vse_roi_arg = getattr(args, "vse_roi", None)
-    if vse_roi_arg is not None:
-        VSE_ROI = str(vse_roi_arg).strip()
-
     if EASYOCR_WHITE_THRESH > 0:
         _mode_str = f"white_thresh={EASYOCR_WHITE_THRESH} (binary: white text / black bg)"
     elif EASYOCR_LUMA_SUPPRESS > 1e-9:
@@ -4059,6 +3367,29 @@ def apply_cli_config(args):
         f"{_mode_str} "
         f"({'override' if args.easyocr_fps is not None else '1000/min-duration'})"
     )
+
+    # PaddleOCR CLI config
+    if getattr(args, "paddleocr_lang", None):
+        PADDLEOCR_LANG = str(args.paddleocr_lang).strip()
+    PADDLEOCR_USE_GPU = getattr(args, "paddleocr_use_gpu", "on") == "on"
+    PADDLEOCR_SUBTITLE_CROP_BAND_HI = float(getattr(args, "paddleocr_crop_band_hi", PADDLEOCR_SUBTITLE_CROP_BAND_HI))
+    PADDLEOCR_CROP_PROBE_H_TRIM_LEFT_FRAC = max(
+        0.0, min(0.49, float(getattr(args, "paddleocr_crop_probe_h_trim_left_frac", PADDLEOCR_CROP_PROBE_H_TRIM_LEFT_FRAC)))
+    )
+    PADDLEOCR_CROP_PROBE_H_TRIM_RIGHT_FRAC = max(
+        0.0, min(0.49, float(getattr(args, "paddleocr_crop_probe_h_trim_right_frac", PADDLEOCR_CROP_PROBE_H_TRIM_RIGHT_FRAC)))
+    )
+    PADDLEOCR_MIN_CONFIDENCE = float(getattr(args, "paddleocr_min_confidence", PADDLEOCR_MIN_CONFIDENCE))
+    PADDLEOCR_SCAN_FPS = max(0.1, float(getattr(args, "paddleocr_scan_fps", PADDLEOCR_SCAN_FPS)))
+    PADDLEOCR_FRAMEDIFF_THRESHOLD = float(getattr(args, "paddleocr_framediff_threshold", PADDLEOCR_FRAMEDIFF_THRESHOLD))
+    PADDLEOCR_BATCH_SIZE = max(1, int(getattr(args, "paddleocr_batch_size", PADDLEOCR_BATCH_SIZE)))
+    PADDLEOCR_MIN_DURATION_MS = max(1, int(getattr(args, "paddleocr_min_duration_ms", PADDLEOCR_MIN_DURATION_MS)))
+    PADDLEOCR_FUZZY_THRESHOLD = float(getattr(args, "paddleocr_fuzzy_threshold", PADDLEOCR_FUZZY_THRESHOLD))
+    _pstrip = float(getattr(args, "paddleocr_max_strip_height_ratio", PADDLEOCR_MAX_STRIP_HEIGHT_RATIO) or 0)
+    if _pstrip > 1.0 and _pstrip <= 100.0:
+        _pstrip = _pstrip / 100.0
+    PADDLEOCR_MAX_STRIP_HEIGHT_RATIO = max(0.0, min(1.0, _pstrip))
+    PADDLEOCR_CLEANUP_DEBUG_AFTER_STEP7 = getattr(args, "paddleocr_cleanup_debug_after_step7", "on") == "on"
 
 
 def parse_step_range(step_arg, min_step=1, max_step=6):
@@ -4098,10 +3429,25 @@ def require_ready(path, label):
 
 
 def _cleanup_easyocr_artifacts_after_step7():
-    """Sau Step7 xong: xóa thư mục tạm EasyOCR/VSE (step1_ocr, easyocr_crop_probe, step1_vse dưới LOG_DIR)."""
+    """Sau Step7 xong: xóa thư mục tạm EasyOCR (step1_ocr, easyocr_crop_probe dưới LOG_DIR)."""
     if not EASYOCR_CLEANUP_DEBUG_AFTER_STEP7:
         return
-    for name in ("step1_ocr", "easyocr_crop_probe", "step1_vse", "step1_vse_probe"):
+    for name in ("step1_ocr", "easyocr_crop_probe"):
+        path = LOG_DIR / name
+        if not path.exists():
+            continue
+        shutil.rmtree(path, ignore_errors=True)
+        if path.exists():
+            log(f"Step7 cleanup: không xóa hết được {path} (quyền/ghi volume).")
+        else:
+            log(f"Step7 cleanup: đã xóa {name} ({path}).")
+
+
+def _cleanup_paddleocr_artifacts_after_step7():
+    """Sau Step7 xong: xóa thư mục tạm PaddleOCR (step1_paddleocr, paddleocr_crop_probe)."""
+    if not PADDLEOCR_CLEANUP_DEBUG_AFTER_STEP7:
+        return
+    for name in ("step1_paddleocr", "paddleocr_crop_probe"):
         path = LOG_DIR / name
         if not path.exists():
             continue
@@ -4127,6 +3473,7 @@ def _run_step6_and_finalize(ass, tm_video, video_path, skip_voice_step):
     if MERGE_OUTRO_ENABLED and OUTRO_FILE:
         final = step7_merge_outro(final)
     _cleanup_easyocr_artifacts_after_step7()
+    _cleanup_paddleocr_artifacts_after_step7()
     if not skip_voice_step and tm_video.is_file():
         tm_video.unlink()
     if ass.is_file():

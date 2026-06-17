@@ -1,8 +1,0 @@
-#!/bin/sh
-cd "${0%/*}" || exit 1
-export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:+$LD_LIBRARY_PATH:}$PWD:/lib64"
-if [ ! -x "./VideoSubFinderCli" ]; then
-  echo "VideoSubFinderCli not executable. Run: chmod +x VideoSubFinderCli VideoSubFinderCli.run" >&2
-  exit 126
-fi
-exec ./VideoSubFinderCli "$@"

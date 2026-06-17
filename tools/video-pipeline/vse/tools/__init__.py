@@ -1,1 +1,0 @@
-# VSE tools module
