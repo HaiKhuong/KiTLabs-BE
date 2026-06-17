@@ -9,6 +9,7 @@ import { User } from "../users/user.entity";
 import { TranslateController } from "./translate.controller";
 import { TranslateProcessor } from "./translate.processor";
 import { TranslateHistory } from "./translate-history.entity";
+import { GeminiSubtitleTranslateService } from "./gemini-subtitle-translate.service";
 import { TRANSLATE_QUEUE_NAME, TranslateService } from "./translate.service";
 
 @Module({
@@ -19,6 +20,6 @@ import { TRANSLATE_QUEUE_NAME, TranslateService } from "./translate.service";
     NotificationsModule,
   ],
   controllers: [TranslateController],
-  providers: [TranslateService, TranslateProcessor],
+  providers: [TranslateService, TranslateProcessor, GeminiSubtitleTranslateService],
 })
 export class TranslateModule {}

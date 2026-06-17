@@ -4,13 +4,18 @@ import { Response } from "express";
 
 import { Public } from "../../common/decorators/public.decorator";
 import { CreateTranslateJobDto } from "./dto/create-translate-job.dto";
+import { TranslateCompareSubtitleDto } from "./dto/translate-compare-subtitle.dto";
+import { GeminiSubtitleTranslateService } from "./gemini-subtitle-translate.service";
 import { TranslateService } from "./translate.service";
 
 @ApiTags("Translates")
 @ApiBearerAuth("bearer")
 @Controller("tools/translates")
 export class TranslateController {
-  constructor(private readonly translateService: TranslateService) {}
+  constructor(
+    private readonly translateService: TranslateService,
+    private readonly geminiSubtitleTranslateService: GeminiSubtitleTranslateService,
+  ) {}
 
   @ApiOperation({ summary: "Create translate queue job" })
   @ApiBody({ type: CreateTranslateJobDto })
@@ -18,6 +23,22 @@ export class TranslateController {
   @Post()
   async enqueue(@Body() dto: CreateTranslateJobDto) {
     return this.translateService.enqueue(dto);
+  }
+
+  @ApiOperation({ summary: "Translate compare-subtitle missing blocks via Gemini (zh -> vi)" })
+  @ApiBody({ type: TranslateCompareSubtitleDto })
+  @Public()
+  @Post("compare-subtitle/translate")
+  async translateCompareSubtitle(@Body() dto: TranslateCompareSubtitleDto) {
+    const blocks = await this.geminiSubtitleTranslateService.translateBlocks(
+      dto.blocks,
+      dto.translationContext,
+    );
+    const srtText = blocks
+      .map((b) => `${b.index}\n${b.timestamp}\n${b.text}`)
+      .join("\n\n")
+      .concat("\n");
+    return { blocks, srtText };
   }
 
   @ApiOperation({ summary: "Get user translate history" })
