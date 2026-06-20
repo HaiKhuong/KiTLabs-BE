@@ -3,9 +3,9 @@ import { InjectQueue } from "@nestjs/bullmq";
 import { InjectRepository } from "@nestjs/typeorm";
 import { ChildProcess, spawn } from "child_process";
 import { Queue } from "bullmq";
-import { existsSync, mkdirSync, statSync } from "fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "fs";
 import { unlink } from "fs/promises";
-import { basename, isAbsolute, join, resolve } from "path";
+import { basename, extname, isAbsolute, join, resolve } from "path";
 import { Repository } from "typeorm";
 
 import { NotificationType, QueueJobStatus } from "../../common/enums/domain.enums";
@@ -29,6 +29,21 @@ import { AudioHistory } from "./audio-history.entity";
 import { CreateAudioJobDto } from "./dto/create-audio-job.dto";
 
 export const AUDIO_QUEUE_NAME = "audio-tts";
+
+const PIPELINE_VOICE_ALLOWED_EXT = new Set([".wav", ".mp3", ".m4a"]);
+
+export type PipelineVoiceDto = {
+  fileName: string;
+  refText: string;
+  size: number;
+  updatedAt: string;
+  /** Thư mục voice trên server (tools/video-pipeline/voice). */
+  voiceDir?: string;
+  /** Đường dẫn tuyệt đối file audio sau upload. */
+  absolutePath?: string;
+  /** true khi file tồn tại và size > 0 sau khi ghi. */
+  verified?: boolean;
+};
 
 @Injectable()
 export class AudioService {
@@ -177,11 +192,56 @@ export class AudioService {
   }
 
   resolvePresetRefAudioPath(refWav: string): string {
-    const path = resolve(process.cwd(), VOICE_SAMPLES_DIR, refWav);
+    const path = resolve(process.cwd(), VOICE_SAMPLES_DIR, basename(refWav));
     if (!existsSync(path)) {
-      throw new BadRequestException(`Preset reference audio missing on server: ${refWav}`);
+      throw new BadRequestException(`Preset reference audio missing on server: ${basename(refWav)}`);
     }
     return path;
+  }
+
+  /** Kiểm tra file giọng mẫu nằm đúng tools/video-pipeline/voice (dùng cho translate Step3). */
+  assertPipelineVoiceReady(
+    refWav: string,
+    refTextOverride?: string,
+  ): { fileName: string; voiceDir: string; absolutePath: string; refText: string } {
+    const fileName = basename(String(refWav || "").trim());
+    if (!fileName) {
+      throw new BadRequestException("omnivoiceRefWav is required");
+    }
+    const ext = extname(fileName).toLowerCase();
+    if (!PIPELINE_VOICE_ALLOWED_EXT.has(ext)) {
+      throw new BadRequestException(
+        `Invalid omnivoiceRefWav "${fileName}": only .wav, .mp3, .m4a are allowed.`,
+      );
+    }
+
+    const voiceDir = this.resolvePipelineVoiceDir();
+    const absolutePath = join(voiceDir, fileName);
+    if (!existsSync(absolutePath)) {
+      throw new BadRequestException(
+        `Voice sample not found: ${fileName}. Expected under ${voiceDir.replace(/\\/g, "/")}. Upload via Clone Voice menu.`,
+      );
+    }
+
+    const stats = statSync(absolutePath);
+    if (!stats.isFile() || stats.size <= 0) {
+      throw new BadRequestException(`Voice sample is empty or invalid: ${fileName}`);
+    }
+
+    const refText =
+      String(refTextOverride || "").trim() || this.readPipelineVoiceRefText(fileName);
+    if (!refText) {
+      throw new BadRequestException(
+        `Missing ref text for voice "${fileName}". Upload with refText or add ${basename(fileName, ext)}.ref.txt in voice folder.`,
+      );
+    }
+
+    return {
+      fileName,
+      voiceDir,
+      absolutePath,
+      refText,
+    };
   }
 
   resolveCloneRefAudioPath(userId: string, fileName: string): string {
@@ -191,6 +251,119 @@ export class AudioService {
       throw new BadRequestException(`Clone reference audio not found: ${safeName}`);
     }
     return path;
+  }
+
+  private resolvePipelineVoiceDir(): string {
+    return resolve(process.cwd(), VOICE_SAMPLES_DIR);
+  }
+
+  private pipelineVoiceRefSidecarPath(fileName: string): string {
+    const safeName = basename(fileName);
+    const stem = basename(safeName, extname(safeName));
+    return join(this.resolvePipelineVoiceDir(), `${stem}.ref.txt`);
+  }
+
+  readPipelineVoiceRefText(fileName: string): string {
+    const sidecar = this.pipelineVoiceRefSidecarPath(fileName);
+    if (!existsSync(sidecar)) {
+      return "";
+    }
+    return readFileSync(sidecar, "utf8").trim();
+  }
+
+  writePipelineVoiceRefText(fileName: string, refText: string): void {
+    const trimmed = String(refText || "").trim();
+    if (!trimmed) {
+      throw new BadRequestException("refText is required");
+    }
+    writeFileSync(this.pipelineVoiceRefSidecarPath(fileName), trimmed, "utf8");
+  }
+
+  listPipelineVoices(): PipelineVoiceDto[] {
+    const dir = this.resolvePipelineVoiceDir();
+    if (!existsSync(dir)) {
+      return [];
+    }
+
+    return readdirSync(dir)
+      .filter((name) => PIPELINE_VOICE_ALLOWED_EXT.has(extname(name).toLowerCase()))
+      .map((fileName) => {
+        const abs = join(dir, fileName);
+        const stats = statSync(abs);
+        return {
+          fileName,
+          refText: this.readPipelineVoiceRefText(fileName),
+          size: stats.size,
+          updatedAt: stats.mtime.toISOString(),
+        };
+      })
+      .sort((a, b) => a.fileName.localeCompare(b.fileName));
+  }
+
+  savePipelineVoiceUpload(input: {
+    originalName: string;
+    voiceName?: string;
+    refText: string;
+    buffer: Buffer;
+  }): PipelineVoiceDto {
+    const refText = String(input.refText || "").trim();
+    if (!refText) {
+      throw new BadRequestException("refText is required");
+    }
+
+    const ext = extname(input.originalName).toLowerCase();
+    if (!PIPELINE_VOICE_ALLOWED_EXT.has(ext)) {
+      throw new BadRequestException("Only .wav, .mp3, .m4a are allowed.");
+    }
+
+    const rawBase =
+      String(input.voiceName || "").trim() ||
+      basename(input.originalName, extname(input.originalName));
+    const safeBase =
+      rawBase
+        .replace(/[\\/:*?"<>|]/g, "_")
+        .replace(/\s+/g, "_")
+        .trim() || `voice_${Date.now()}`;
+    const fileName = `${safeBase}${ext}`;
+
+    const dir = this.resolvePipelineVoiceDir();
+    if (!existsSync(dir)) {
+      mkdirSync(dir, { recursive: true });
+    }
+
+    const abs = join(dir, fileName);
+    writeFileSync(abs, input.buffer);
+    this.writePipelineVoiceRefText(fileName, refText);
+
+    const verified = this.assertPipelineVoiceReady(fileName, refText);
+    const stats = statSync(abs);
+    return {
+      fileName,
+      refText: verified.refText,
+      size: stats.size,
+      updatedAt: stats.mtime.toISOString(),
+      voiceDir: verified.voiceDir.replace(/\\/g, "/"),
+      absolutePath: verified.absolutePath.replace(/\\/g, "/"),
+      verified: true,
+    };
+  }
+
+  private resolveCloneReference(dto: CreateAudioJobDto): { refAudioPath: string; refText: string } {
+    if (dto.pipelineRefWav?.trim()) {
+      const verified = this.assertPipelineVoiceReady(
+        dto.pipelineRefWav.trim(),
+        dto.cloneRefText?.trim(),
+      );
+      return { refAudioPath: verified.absolutePath, refText: verified.refText };
+    }
+
+    if (!dto.cloneRefWav || !dto.cloneRefText?.trim()) {
+      throw new BadRequestException("cloneRefWav and cloneRefText are required for clone mode");
+    }
+    return {
+      refAudioPath: this.resolveCloneRefAudioPath(dto.userId, dto.cloneRefWav),
+      refText: dto.cloneRefText.trim(),
+    };
   }
 
   getPreviewCachePath(voiceId: string): string {
@@ -272,11 +445,9 @@ export class AudioService {
       refAudioPath = this.resolvePresetRefAudioPath(preset.refWav);
       refText = preset.refText;
     } else {
-      if (!dto.cloneRefWav || !dto.cloneRefText?.trim()) {
-        throw new BadRequestException("cloneRefWav and cloneRefText are required for clone mode");
-      }
-      refAudioPath = this.resolveCloneRefAudioPath(dto.userId, dto.cloneRefWav);
-      refText = dto.cloneRefText.trim();
+      const resolved = this.resolveCloneReference(dto);
+      refAudioPath = resolved.refAudioPath;
+      refText = resolved.refText;
     }
 
     const estimatedCost = dto.estimatedCost ?? 0;
@@ -303,7 +474,7 @@ export class AudioService {
           colon: dto.pauseColonSec ?? 0.3,
           ellipsis: dto.pauseEllipsisSec ?? 0.55,
         },
-        cloneRefWav: dto.cloneRefWav ?? null,
+        cloneRefWav: dto.cloneRefWav ?? dto.pipelineRefWav ?? null,
       },
       status: QueueJobStatus.PENDING,
       cost: estimatedCost.toFixed(2),

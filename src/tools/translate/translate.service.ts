@@ -7,11 +7,13 @@ import { basename, dirname, extname, isAbsolute, join, resolve, sep } from "path
 import { Repository } from "typeorm";
 
 import { CreditHistory } from "../credits/credit-history.entity";
+import { AudioService } from "../audio/audio.service";
 import { LogsService } from "../logs/logs.service";
 import { NotificationsService } from "../notifications/notifications.service";
 import { User } from "../users/user.entity";
 import { NotificationType, QueueJobStatus } from "../../common/enums/domain.enums";
 import { CreateTranslateJobDto } from "./dto/create-translate-job.dto";
+import { TranslateEngineConfigDto } from "./dto/translate-engine-config.dto";
 import { TranslateHistory } from "./translate-history.entity";
 
 export const TRANSLATE_QUEUE_NAME = "video-translate";
@@ -38,6 +40,7 @@ export class TranslateService {
     private readonly creditHistoryRepository: Repository<CreditHistory>,
     private readonly logsService: LogsService,
     private readonly notificationsService: NotificationsService,
+    private readonly audioService: AudioService,
   ) {}
 
   async enqueue(dto: CreateTranslateJobDto): Promise<TranslateHistory> {
@@ -57,6 +60,8 @@ export class TranslateService {
 
     const normalizedSteps = this.normalizeSteps(dto.stepNbr);
     const functionUsed = normalizedSteps.map((step) => STEP_TO_FUNCTION_CODE[step]);
+
+    this.validateOmnivoiceConfigForTranslate(normalizedSteps, dto.engineConfig);
 
     const history = this.translateRepository.create({
       userId: dto.userId,
@@ -343,6 +348,32 @@ export class TranslateService {
       return `/tools/translates${normalized.slice(markerIndex)}`;
     }
     return normalized;
+  }
+
+  private validateOmnivoiceConfigForTranslate(
+    steps: number[],
+    engineConfig?: TranslateEngineConfigDto | null,
+  ): void {
+    if (!steps.includes(3) || !engineConfig) {
+      return;
+    }
+
+    const config = engineConfig as Record<string, unknown>;
+    const ttsEngine = String(
+      this.pickConfigValue(config, ["step3TtsEngine", "step3_tts_engine"]) ?? "edge",
+    ).toLowerCase();
+    if (ttsEngine !== "omnivoice") {
+      return;
+    }
+
+    const refWav = String(
+      this.pickConfigValue(config, ["omnivoiceRefWav", "omnivoice_ref_wav"]) ?? "",
+    ).trim();
+    const refText = String(
+      this.pickConfigValue(config, ["omnivoiceRefText", "omnivoice_ref_text"]) ?? "",
+    ).trim();
+
+    this.audioService.assertPipelineVoiceReady(refWav, refText || undefined);
   }
 
   private pickConfigValue(engineConfig: Record<string, unknown>, keys: string[]): unknown {

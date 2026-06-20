@@ -15,7 +15,7 @@ import { ApiBearerAuth, ApiBody, ApiConsumes, ApiOperation, ApiQuery, ApiTags } 
 import { FileInterceptor } from "@nestjs/platform-express";
 import { Response } from "express";
 import { existsSync, mkdirSync } from "fs";
-import { diskStorage } from "multer";
+import { diskStorage, memoryStorage } from "multer";
 import { basename, extname, join, resolve } from "path";
 
 import { Public } from "../../common/decorators/public.decorator";
@@ -146,6 +146,59 @@ export class AudioController {
       size: file.size,
       refText: refText?.trim() ?? null,
     };
+  }
+
+  @ApiOperation({ summary: "List voice samples under tools/video-pipeline/voice (translate Step3)" })
+  @Public()
+  @Get("pipeline-voices")
+  listPipelineVoices() {
+    return this.audioService.listPipelineVoices();
+  }
+
+  @ApiOperation({ summary: "Upload voice sample + ref text to tools/video-pipeline/voice" })
+  @ApiConsumes("multipart/form-data")
+  @ApiQuery({ name: "refText", required: true, description: "Transcript of the reference clip" })
+  @ApiQuery({ name: "voiceName", required: false, description: "Optional safe filename stem" })
+  @ApiBody({
+    schema: { type: "object", properties: { file: { type: "string", format: "binary" } }, required: ["file"] },
+  })
+  @Public()
+  @Post("pipeline-voices/upload")
+  @UseInterceptors(
+    FileInterceptor("file", {
+      storage: memoryStorage(),
+      limits: { fileSize: Number(process.env.AUDIO_CLONE_MAX_BYTES ?? 25_000_000) },
+      fileFilter: (_req, file, cb) => {
+        const ext = extname(file.originalname).toLowerCase();
+        if (!CLONE_ALLOWED_EXT.has(ext)) {
+          cb(new BadRequestException("Only .mp3, .wav, .m4a are allowed."), false);
+          return;
+        }
+        cb(null, true);
+      },
+    }),
+  )
+  uploadPipelineVoice(
+    @UploadedFile() file: Express.Multer.File,
+    @Query("refText") refText?: string,
+    @Query("voiceName") voiceName?: string,
+  ) {
+    if (!file) {
+      throw new BadRequestException("file is required");
+    }
+    return this.audioService.savePipelineVoiceUpload({
+      originalName: file.originalname,
+      voiceName,
+      refText: refText ?? "",
+      buffer: file.buffer,
+    });
+  }
+
+  @ApiOperation({ summary: "Verify pipeline voice file exists under tools/video-pipeline/voice" })
+  @Public()
+  @Get("pipeline-voices/:fileName/verify")
+  verifyPipelineVoice(@Param("fileName") fileName: string) {
+    return this.audioService.assertPipelineVoiceReady(fileName);
   }
 
   @ApiOperation({ summary: "Enqueue OmniVoice TTS job" })

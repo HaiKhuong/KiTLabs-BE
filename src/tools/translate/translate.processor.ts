@@ -8,6 +8,7 @@ import { TRANSLATE_QUEUE_NAME, TranslateService } from "./translate.service";
 import { ToolsRealtimeGateway } from "../realtime/tools-realtime.gateway";
 
 const MAX_PYTHON_LOG_BUFFER = 10 * 1024 * 1024;
+const PYTHON_INT_CLI_FLAGS = new Set(["--subtitle-margin-v", "--subtitle-alignment"]);
 const OPTION_MAPPINGS: Array<{
   cliFlag: string;
   keys: string[];
@@ -115,6 +116,11 @@ const OPTION_MAPPINGS: Array<{
   {
     cliFlag: "--omnivoice-ref-wav",
     keys: ["omnivoiceRefWav", "omnivoice_ref_wav"],
+    allowedTypes: ["string"],
+  },
+  {
+    cliFlag: "--omnivoice-ref-text",
+    keys: ["omnivoiceRefText", "omnivoice_ref_text"],
     allowedTypes: ["string"],
   },
   { cliFlag: "--auto-speed", keys: ["autoSpeed", "auto_speed"], allowedTypes: ["string"] },
@@ -484,9 +490,16 @@ export class TranslateProcessor extends WorkerHost {
         continue;
       }
 
-      const value = String(rawValue).trim();
+      let value = String(rawValue).trim();
       if (!value) {
         continue;
+      }
+      if (PYTHON_INT_CLI_FLAGS.has(mapping.cliFlag)) {
+        const numeric = Number(value);
+        if (!Number.isFinite(numeric)) {
+          continue;
+        }
+        value = String(Math.round(numeric));
       }
       if (value.startsWith("-")) {
         // argparse can treat values like "-20%" as another option token.

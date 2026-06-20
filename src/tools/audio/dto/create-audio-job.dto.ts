@@ -39,13 +39,24 @@ export class CreateAudioJobDto {
   @ApiPropertyOptional({
     description: "Clone ref wav filename under uploads/audio-clone/<userId>/",
   })
-  @ValidateIf((o: CreateAudioJobDto) => o.voiceMode === "clone")
+  @ValidateIf((o: CreateAudioJobDto) => o.voiceMode === "clone" && !o.pipelineRefWav?.trim())
   @IsString()
   @IsNotEmpty()
   cloneRefWav?: string;
 
+  @ApiPropertyOptional({
+    description: "Reference wav/mp3 filename under tools/video-pipeline/voice/ (translate pipeline)",
+  })
+  @ValidateIf((o: CreateAudioJobDto) => o.voiceMode === "clone" && !o.cloneRefWav?.trim())
+  @IsString()
+  @IsNotEmpty()
+  pipelineRefWav?: string;
+
   @ApiPropertyOptional({ description: "Transcript of clone reference audio" })
-  @ValidateIf((o: CreateAudioJobDto) => o.voiceMode === "clone")
+  @ValidateIf(
+    (o: CreateAudioJobDto) =>
+      o.voiceMode === "clone" && !o.pipelineRefWav?.trim(),
+  )
   @IsString()
   @IsNotEmpty()
   cloneRefText?: string;

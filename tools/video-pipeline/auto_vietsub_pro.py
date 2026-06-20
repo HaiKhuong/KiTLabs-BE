@@ -3057,6 +3057,11 @@ def parse_cli_args():
         ),
     )
     parser.add_argument(
+        "--omnivoice-ref-text",
+        default="",
+        help="Transcript khớp file giọng mẫu OmniVoice (OMNIVOICE_REF_TEXT).",
+    )
+    parser.add_argument(
         "--auto-speed",
         choices=["on", "off"],
         default="on" if STEP3_AUTO_RATE_ENABLED else "off",
@@ -3185,7 +3190,7 @@ def apply_cli_config(args):
     global EDGE_TTS_VOLUME
     global EDGE_TTS_PITCH
     global OMNIVOICE_REF_WAV
-    global STEP1_VAD_THRESHOLD
+    global OMNIVOICE_REF_TEXT
     global STEP1_MIN_SILENCE_MS
     global STEP1_MIN_SPEECH_MS
     global STEP1_SPEECH_PAD_MS
@@ -3286,6 +3291,9 @@ def apply_cli_config(args):
     omnivoice_ref_wav_name = str(getattr(args, "omnivoice_ref_wav", "") or "").strip()
     if omnivoice_ref_wav_name:
         OMNIVOICE_REF_WAV = str(SCRIPT_DIR / "voice" / omnivoice_ref_wav_name)
+    omnivoice_ref_text = str(getattr(args, "omnivoice_ref_text", "") or "").strip()
+    if omnivoice_ref_text:
+        OMNIVOICE_REF_TEXT = omnivoice_ref_text
     STEP3_AUTO_RATE_ENABLED = args.auto_speed == "on"
     STEP3_AUTO_RATE_TRIGGER_CHARS_PER_SEC = float(args.step3_auto_rate_trigger_cps)
     STEP3_AUTO_RATE_BONUS_PERCENT = int(args.step3_auto_rate_bonus_percent)

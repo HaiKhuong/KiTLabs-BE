@@ -5,6 +5,7 @@ import { TypeOrmModule } from "@nestjs/typeorm";
 import { CreditHistory } from "../credits/credit-history.entity";
 import { LogsModule } from "../logs/logs.module";
 import { NotificationsModule } from "../notifications/notifications.module";
+import { AudioModule } from "../audio/audio.module";
 import { User } from "../users/user.entity";
 import { TranslateController } from "./translate.controller";
 import { TranslateProcessor } from "./translate.processor";
@@ -18,6 +19,7 @@ import { TRANSLATE_QUEUE_NAME, TranslateService } from "./translate.service";
     TypeOrmModule.forFeature([TranslateHistory, User, CreditHistory], "tool"),
     LogsModule,
     NotificationsModule,
+    AudioModule,
   ],
   controllers: [TranslateController],
   providers: [TranslateService, TranslateProcessor, GeminiSubtitleTranslateService],
