@@ -63,7 +63,6 @@ def tts_normalize_vi(text, enabled: bool):
     t = re.sub(r"\bS\b", "Ét", t)
     t = re.sub(r"\bHACK\b", "Hách", t, flags=re.IGNORECASE)
     t = re.sub(r"\bMecha\b", "Mê cha", t, flags=re.IGNORECASE)
-    t = re.sub(r"\bMaster\b", "Mát Tơ", t, flags=re.IGNORECASE)
     t = re.sub(r"\bHaizzz\b", "Hài", t, flags=re.IGNORECASE)
     t = re.sub(r"\bHaizz\b", "Hài", t, flags=re.IGNORECASE)
     t = re.sub(r"\bHaiz\b", "Hài", t, flags=re.IGNORECASE)
