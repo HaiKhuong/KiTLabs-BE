@@ -99,9 +99,85 @@ def _parse_line_format(text: str) -> dict[int, str]:
     return result
 
 
+def _validate_batch_mapping(mapped: dict[int, str], expected_count: int) -> None:
+    missing = [i for i in range(expected_count) if i not in mapped]
+    if missing:
+        raise ValueError(
+            f"Gemini line count mismatch: got {len(mapped)}/{expected_count} lines; "
+            f"missing ids: {missing}"
+        )
+    empty = [i for i in range(expected_count) if not str(mapped[i]).strip()]
+    if empty:
+        raise ValueError(f"Gemini returned empty translation for ids: {empty}")
+
+
+def _normalize_batch_mapping(
+    mapped: dict[int, str],
+    batch: list,
+    batch_start_index: int,
+) -> dict[int, str]:
+    """Map Gemini ids back to local batch indices 0..n-1."""
+    expected_count = len(batch)
+    if expected_count == 0:
+        return {}
+
+    def complete(local_map: dict[int, str]) -> bool:
+        return all(i in local_map and str(local_map[i]).strip() for i in range(expected_count))
+
+    if complete(mapped):
+        return {i: mapped[i] for i in range(expected_count)}
+
+    offset_map = {k - batch_start_index: v for k, v in mapped.items()}
+    if complete(offset_map):
+        return {i: offset_map[i] for i in range(expected_count)}
+
+    block_to_local = {int(b["index"]): i for i, b in enumerate(batch)}
+    block_map: dict[int, str] = {}
+    for key, value in mapped.items():
+        local_idx = block_to_local.get(int(key))
+        if local_idx is not None:
+            block_map[local_idx] = value
+    if complete(block_map):
+        return {i: block_map[i] for i in range(expected_count)}
+
+    got_ids = sorted(mapped.keys())
+    raise ValueError(
+        f"Gemini line count mismatch: expected {expected_count} lines (ids 0..{expected_count - 1}), "
+        f"got ids {got_ids}"
+    )
+
+
+def _build_translate_prompt(batch: list, payload_text: str, translation_context: str) -> str:
+    line_count = len(batch)
+    last_id = line_count - 1
+    prompt_parts = [
+        "Translate Chinese subtitles into Vietnamese.\n",
+        "Write very concise, subtitle-friendly Vietnamese.\n",
+        "Keep original meaning and emotional tone, but simplify phrasing.\n",
+        "Preserve historical tone, titles, names, and relationships.\n",
+    ]
+
+    if translation_context and translation_context.strip():
+        prompt_parts.append(f"{translation_context.strip()}\n")
+    else:
+        prompt_parts.append("Han-Viet terms OK. Historical/wuxia context.\n")
+
+    prompt_parts.append(
+        f"INPUT: exactly {line_count} lines (ids 0 to {last_id}):\n"
+        f"{payload_text}\n\n"
+        "OUTPUT RULES (mandatory):\n"
+        f"- Return exactly {line_count} lines with ids 0 to {last_id}, same order as input.\n"
+        "- Translate each input line separately into exactly one output line.\n"
+        "- Do NOT merge, split, skip, deduplicate, summarize, or reorder lines.\n"
+        "- Do NOT combine short consecutive lines into one translation.\n"
+        "- Format each output line: id:|Vietnamese translation\n"
+        "- Output ONLY translated lines. No notes, no markdown, no extra text.\n"
+    )
+    return "".join(prompt_parts)
+
+
 def _parse_response(text: str) -> dict[int, str]:
     """Try JSON first, fallback to line format."""
-    # Try JSON format first
     try:
         data = _extract_json_array(text)
         mapped = {}
@@ -112,7 +188,6 @@ def _parse_response(text: str) -> dict[int, str]:
     except (ValueError, KeyError, json.JSONDecodeError):
         pass
 
-    # Fallback to line format
     mapped = _parse_line_format(text)
     if mapped:
         return mapped
@@ -133,31 +208,9 @@ def translate_batch_with_gemini(batch, batch_start_index):
     translation_context = _cfg["translation_context"]
     step2_multi_keys_enabled = _cfg["step2_multi_keys_enabled"]
 
-    # Build line-based payload: "0:|text\n1:|text\n..."
     payload_lines = [f"{i}:|{b['text']}" for i, b in enumerate(batch)]
     payload_text = "\n".join(payload_lines)
-
-    # Build compact prompt
-    prompt_parts = [
-        "Translate Chinese subtitles into Vietnamese.\n"
-        "Write very concise, subtitle-friendly Vietnamese.\n"
-        "Keep original meaning and emotional tone, but simplify phrasing.\n"
-        "Preserve historical tone, titles, names, and relationships.\n"
-    ]
-
-    # Add custom context if provided, otherwise use default
-    if translation_context and translation_context.strip():
-        prompt_parts.append(f"{translation_context.strip()}\n")
-    else:
-        prompt_parts.append(
-            "Han-Viet terms OK. Historical/wuxia context.\n"
-        )
-
-    prompt_parts.append(
-        f"Output same format: id:|vi\n{payload_text}"
-    )
-
-    prompt = "".join(prompt_parts)
+    prompt = _build_translate_prompt(batch, payload_text, translation_context)
 
     debug_dir = log_dir / "gemini_debug"
     debug_dir.mkdir(parents=True, exist_ok=True)
@@ -230,7 +283,9 @@ def translate_batch_with_gemini(batch, batch_start_index):
                         f"{raw_text}\n\n"
                     ),
                 )
-                mapped = _parse_response(raw_text)
+                parsed = _parse_response(raw_text)
+                mapped = _normalize_batch_mapping(parsed, batch, batch_start_index)
+                _validate_batch_mapping(mapped, len(batch))
                 _active_key_index = key_idx
                 return mapped
             except Exception as e:
@@ -244,14 +299,12 @@ def translate_batch_with_gemini(batch, batch_start_index):
                     ),
                 )
                 if _is_high_demand_error(e):
-                    # User requirement: high demand/server overload must stop immediately.
                     raise RuntimeError(
                         f"Gemini server high demand/unavailable on key {key_idx + 1}/{total_key_count}; "
                         f"stop without key rotation. Error: {e}"
                     ) from e
                 if offset < key_count - 1:
                     if not _is_token_limit_error(e):
-                        # Only rotate keys for token/quota/rate-limit class errors.
                         raise RuntimeError(
                             f"Gemini translation failed with non-rotatable error on key "
                             f"{key_idx + 1}/{total_key_count}: {e}"
@@ -294,7 +347,7 @@ def step2_translate_srt(srt_path):
         batch = blocks[i : i + translate_batch_size]
         mapping = translate_batch_with_gemini(batch, i)
         for local_idx, b in enumerate(batch):
-            translated_text = mapping.get(local_idx, b["text"])
+            translated_text = mapping[local_idx]
             translated_blocks.append(
                 {"index": b["index"], "time": b["time"], "text": translated_text}
             )

@@ -52,7 +52,12 @@ export class GeminiSubtitleTranslateService {
       const mapping = await this.translateBatch(batch, translationContext);
       for (let localIdx = 0; localIdx < batch.length; localIdx += 1) {
         const source = batch[localIdx];
-        const viText = mapping.get(localIdx) ?? source.text;
+        const viText = mapping.get(localIdx);
+        if (!viText?.trim()) {
+          throw new InternalServerErrorException(
+            `Gemini missing translation for line ${localIdx} in batch starting at index ${source.index}.`,
+          );
+        }
         translated.push({
           index: source.index,
           timestamp: source.timestamp,
@@ -63,13 +68,13 @@ export class GeminiSubtitleTranslateService {
     return translated;
   }
 
-  private async translateBatch(
+  private buildTranslatePrompt(
     batch: CompareSubtitleBlockDto[],
+    payloadText: string,
     translationContext?: string,
-  ): Promise<Map<number, string>> {
-    const payloadLines = batch.map((b, i) => `${i}:|${b.text}`);
-    const payloadText = payloadLines.join("\n");
-
+  ): string {
+    const lineCount = batch.length;
+    const lastId = lineCount - 1;
     const promptParts = [
       "Translate Chinese subtitles into Vietnamese.\n",
       "Write very concise, subtitle-friendly Vietnamese.\n",
@@ -83,11 +88,43 @@ export class GeminiSubtitleTranslateService {
       promptParts.push("Han-Viet terms OK. Historical/wuxia context.\n");
     }
 
-    promptParts.push(`Output same format: id:|vi\n${payloadText}`);
-    const prompt = promptParts.join("");
+    promptParts.push(
+      `INPUT: exactly ${lineCount} lines (ids 0 to ${lastId}):\n` +
+        `${payloadText}\n\n` +
+        "OUTPUT RULES (mandatory):\n" +
+        `- Return exactly ${lineCount} lines with ids 0 to ${lastId}, same order as input.\n` +
+        "- Translate each input line separately into exactly one output line.\n" +
+        "- Do NOT merge, split, skip, deduplicate, summarize, or reorder lines.\n" +
+        "- Do NOT combine short consecutive lines into one translation.\n" +
+        "- Format each output line: id:|Vietnamese translation\n" +
+        "- Output ONLY translated lines. No notes, no markdown, no extra text.\n",
+    );
+    return promptParts.join("");
+  }
 
-    const rawText = await this.callGemini(prompt);
-    return this.parseResponse(rawText);
+  private async translateBatch(
+    batch: CompareSubtitleBlockDto[],
+    translationContext?: string,
+  ): Promise<Map<number, string>> {
+    const payloadLines = batch.map((b, i) => `${i}:|${b.text}`);
+    const payloadText = payloadLines.join("\n");
+    const prompt = this.buildTranslatePrompt(batch, payloadText, translationContext);
+    const maxRetry = 3;
+    let lastError: unknown;
+
+    for (let attempt = 1; attempt <= maxRetry; attempt += 1) {
+      try {
+        const rawText = await this.callGemini(prompt);
+        const parsed = this.parseResponse(rawText);
+        return this.normalizeBatchMapping(parsed, batch);
+      } catch (error) {
+        lastError = error;
+      }
+    }
+
+    const message =
+      lastError instanceof Error ? lastError.message : "Gemini translation failed.";
+    throw new InternalServerErrorException(message);
   }
 
   private async callGemini(prompt: string): Promise<string> {
@@ -152,5 +189,40 @@ export class GeminiSubtitleTranslateService {
       );
     }
     return mapped;
+  }
+
+  private normalizeBatchMapping(
+    mapped: Map<number, string>,
+    batch: CompareSubtitleBlockDto[],
+  ): Map<number, string> {
+    const expectedCount = batch.length;
+    const complete = (localMap: Map<number, string>): boolean =>
+      Array.from({ length: expectedCount }, (_, i) => i).every(
+        (i) => localMap.has(i) && String(localMap.get(i) ?? "").trim().length > 0,
+      );
+
+    if (complete(mapped)) {
+      return mapped;
+    }
+
+    const blockToLocal = new Map<number, number>();
+    batch.forEach((block, localIdx) => {
+      blockToLocal.set(Number(block.index), localIdx);
+    });
+    const blockMap = new Map<number, string>();
+    for (const [key, value] of mapped.entries()) {
+      const localIdx = blockToLocal.get(Number(key));
+      if (localIdx !== undefined) {
+        blockMap.set(localIdx, value);
+      }
+    }
+    if (complete(blockMap)) {
+      return blockMap;
+    }
+
+    const gotIds = [...mapped.keys()].sort((a, b) => a - b);
+    throw new InternalServerErrorException(
+      `Gemini line count mismatch: expected ${expectedCount} lines (ids 0..${expectedCount - 1}), got ids ${gotIds.join(", ")}`,
+    );
   }
 }

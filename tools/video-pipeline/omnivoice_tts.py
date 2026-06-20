@@ -62,12 +62,27 @@ def reset_omnivoice_session() -> None:
     _session_prompt_key = None
 
 
+def ensure_tts_trailing_period(text: str) -> str:
+    """Đảm bảo mọi câu TTS kết thúc bằng đúng một dấu chấm."""
+    t = str(text or "").strip()
+    if not t:
+        return t
+    t = re.sub(r"[,，、;；:：!?！？…\-–—]+$", "", t).rstrip()
+    if not t:
+        return t
+    t = re.sub(r"\.+$", ".", t)
+    if not t.endswith("."):
+        t = f"{t}."
+    return t
+
+
 def _normalize_tts_text_for_audio(text: str) -> str:
     """
     Chuẩn hóa text trước khi TTS:
     - Bỏ dấu ngoặc kép (ASCII và typographic thường gặp).
     - Thay : ; ? ! trong câu bằng dấu chấm để model ngắt nhịp / ngắt câu ổn định hơn.
     - Gộp nhiều chấm liên tiếp; cuối đoạn gom các dấu câu lặp về một dấu chấm.
+    - Luôn kết thúc bằng một dấu chấm.
     """
     t = str(text or "").strip()
     if not t:
@@ -78,7 +93,7 @@ def _normalize_tts_text_for_audio(text: str) -> str:
         t = t.replace(p, ".")
     t = re.sub(r"\.(?:\s*\.)+", ".", t)
     t = re.sub(r"[!?.,:;…\-–—]+$", ".", t)
-    return t.strip()
+    return ensure_tts_trailing_period(t)
 
 
 def apply_omnivoice_lexical_replacements(text: str) -> str:

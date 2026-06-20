@@ -119,4 +119,7 @@ async def edge_tts_save_mp3_async(text, out_path, rate: str) -> None:
 
 
 def run_edge_tts_mp3_save(text, out_path, rate: str) -> None:
-    asyncio.run(edge_tts_save_mp3_async(text, out_path, rate))
+    from omnivoice_tts import ensure_tts_trailing_period
+
+    tts_text = ensure_tts_trailing_period(text)
+    asyncio.run(edge_tts_save_mp3_async(tts_text, out_path, rate))
