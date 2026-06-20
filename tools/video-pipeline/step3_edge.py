@@ -36,6 +36,20 @@ def configure_step3_edge(
     )
 
 
+def _apply_tts_acronym_rules(t: str) -> str:
+    """Thay viết tắt chữ cái → cách đọc tiếng Việt. Thứ tự: dài / có khoảng trắng trước."""
+    t = re.sub(r"\bS\s+S\s+S\b", "Ba Ét", t, flags=re.IGNORECASE)
+    t = re.sub(r"\bSSS\b", "Ba Ét", t)
+    t = re.sub(r"\bS\s+S\b", "Hai Ét", t, flags=re.IGNORECASE)
+    t = re.sub(r"\bSS\b", "Hai Ét", t)
+    t = re.sub(r"\bS\b", "Ét", t)
+    t = re.sub(r"\bHACK\b", "Hách", t, flags=re.IGNORECASE)
+    t = re.sub(r"\bMecha\b", "Mê cha", t, flags=re.IGNORECASE)
+    t = re.sub(r"\bHaiz+\b", "Hài", t, flags=re.IGNORECASE)
+    t = t.replace("A.I", "Ây Ai").replace("AI", "Ây Ai")
+    return t
+
+
 def tts_normalize_vi(text, enabled: bool):
     if not enabled:
         return text
@@ -43,8 +57,9 @@ def tts_normalize_vi(text, enabled: bool):
         from vinorm import TTSnorm
     except ImportError:
         return text
+    s = _apply_tts_acronym_rules(str(text or ""))
     t = (
-        TTSnorm(str(text or ""), unknown=False, lower=False, rule=True)
+        TTSnorm(s, unknown=False, lower=False, rule=True)
         .replace("..", "")
         .replace("...", "")
         .replace("!.", "")
@@ -53,19 +68,11 @@ def tts_normalize_vi(text, enabled: bool):
         .replace(" ,", "")
         .replace('"', "")
         .replace("'", "")
-        .replace("AI", "Ây Ai")
-        .replace("A.I", "Ây Ai")
         .replace("/", " phần ")
         .replace("+", " Cộng ")
     )
-    t = re.sub(r"\bSSS\b", "Ba Ét", t)
-    t = re.sub(r"\bSS\b", "Hai Ét", t)
-    t = re.sub(r"\bS\b", "Ét", t)
-    t = re.sub(r"\bHACK\b", "Hách", t, flags=re.IGNORECASE)
-    t = re.sub(r"\bMecha\b", "Mê cha", t, flags=re.IGNORECASE)
-    t = re.sub(r"\bHaizzz\b", "Hài", t, flags=re.IGNORECASE)
-    t = re.sub(r"\bHaizz\b", "Hài", t, flags=re.IGNORECASE)
-    t = re.sub(r"\bHaiz\b", "Hài", t, flags=re.IGNORECASE)
+    # vinorm đôi khi tách SS → "S S"; chạy lại sau normalize
+    t = _apply_tts_acronym_rules(t)
     return t
 
 
