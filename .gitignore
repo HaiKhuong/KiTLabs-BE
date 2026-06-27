@@ -25,6 +25,8 @@ tmp/
 temp/
 
 # Python pipeline artifacts
+__pycache__/
+*.pyc
 tools/video-pipeline/.easyocr_models/
 tools/video-pipeline/.venv/
 tools/video-pipeline/venv/

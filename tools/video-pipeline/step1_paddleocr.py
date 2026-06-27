@@ -18,8 +18,14 @@ from __future__ import annotations
 import json
 import re
 import shutil
+import time
 from pathlib import Path
 from typing import Any, Callable
+
+from subtitle.ffmpeg_frames import build_crop_vf, iter_cropped_frames, probe_frames_to_memory
+from subtitle.normalize import clean_text, same_subtitle_line
+from subtitle.watermark import filter_watermarks, DEFAULT_WATERMARK_BLACKLIST
+from subtitle.models import SubtitleSegment
 
 _cfg: dict[str, Any] = {}
 _SKIP_COMPILED: list = []
@@ -79,6 +85,9 @@ def configure_step1_paddleocr(
     histeq_strength: float,
     gray_invert: bool,
     unsharp: str,
+    # Watermark filter
+    watermark_blacklist: str = "",
+    watermark_min_frames: int = 0,
 ) -> None:
     """Populate module config. Call before run()."""
     _cfg.clear()
@@ -117,6 +126,8 @@ def configure_step1_paddleocr(
         histeq_strength=float(histeq_strength),
         gray_invert=bool(gray_invert),
         unsharp=str(unsharp or ""),
+        watermark_blacklist=str(watermark_blacklist or ""),
+        watermark_min_frames=max(0, int(watermark_min_frames)),
     )
     _rebuild_skip_regexes()
 
@@ -238,45 +249,15 @@ def _probe_timestamps_sec(duration_ms, n_frames: int) -> list[float]:
     return fixed[:n]
 
 
-def _extract_probe_frames(video_path: Path, out_dir: Path, n_frames: int) -> list[Path]:
-    """Lưu PNG probe frames crop ngang."""
-    import cv2
-
-    out_dir.mkdir(parents=True, exist_ok=True)
+def _extract_probe_frames_to_memory(video_path: Path, n_frames: int) -> list:
+    """Extract probe frames to memory via FFmpeg pipe (no temp PNG files)."""
     duration_ms = _cfg["get_media_duration_ms"](video_path)
     times = _probe_timestamps_sec(duration_ms, n_frames)
     probe_vf = _h_trim_crop_vf()
-    paths = []
-    for i, t in enumerate(times):
-        p = out_dir / f"probe_{i:02d}.png"
-        _cfg["run_command"](
-            [_cfg["ffmpeg_bin"], "-y", "-ss", f"{t:.3f}", "-i", str(video_path),
-             "-vf", probe_vf, "-frames:v", "1", "-q:v", "2", str(p)],
-            f"PaddleOCR probe frame {i} @ {t:.2f}s",
-        )
-        if p.exists() and p.stat().st_size > 0:
-            img = cv2.imread(str(p))
-            if img is not None and img.size > 0:
-                paths.append(p)
-            else:
-                if p.exists():
-                    p.unlink()
-    return paths
-
-
-def _crop_band_bgr(img_bgr, band_lo: float, band_hi: float):
-    """Cắt dải dọc [band_lo, band_hi] từ đáy frame."""
-    ih, iw = img_bgr.shape[:2]
-    if ih < 4 or iw < 4:
-        return None
-    lo, hi = float(band_lo), float(band_hi)
-    if hi <= lo + 1e-9 or hi > 1.0 + 1e-9:
-        return None
-    h = max(1, int(round(ih * (hi - lo))))
-    top = max(0, ih - int(round(ih * hi)))
-    if h < 2 or top >= ih:
-        return None
-    return img_bgr[top: top + h, :]
+    frames = probe_frames_to_memory(
+        video_path, times, _cfg["ffmpeg_bin"], vf=probe_vf, log=_cfg["log"],
+    )
+    return frames
 
 
 def _parse_line(item):
@@ -308,7 +289,7 @@ def _readtext_sort_for_join(lines):
 # ──────────────────────────────────────────────
 
 def _detect_crop_band(video_path: Path, ocr, ocr_dir: Path):
-    """Detect subtitle band (lo, hi) tính từ đáy frame bằng PaddleOCR probe frames."""
+    """Detect subtitle band (lo, hi) tính từ đáy frame bằng PaddleOCR probe frames (in-memory)."""
     import cv2
 
     log = _cfg["log"]
@@ -323,33 +304,26 @@ def _detect_crop_band(video_path: Path, ocr, ocr_dir: Path):
     HI_OUTLIER_MIN = hi_max + 0.05
     lo_floor = 0.0
 
-    probe_dir = ocr_dir / "probe_src"
-    shutil.rmtree(probe_dir, ignore_errors=True)
     debug_probe_dir = log_dir / "paddleocr_crop_probe"
     shutil.rmtree(debug_probe_dir, ignore_errors=True)
     debug_probe_dir.mkdir(parents=True, exist_ok=True)
 
-    frame_paths = _extract_probe_frames(video_path, probe_dir, _cfg["crop_probe_frames"])
-    if not frame_paths:
+    probe_imgs = _extract_probe_frames_to_memory(video_path, _cfg["crop_probe_frames"])
+    if not probe_imgs:
         shutil.rmtree(debug_probe_dir, ignore_errors=True)
         log(f"Step1 PaddleOCR: crop detect — không lấy được frame mẫu, fallback lo={fallback_lo:.3f} hi={fallback_hi:.3f}")
         return fallback_lo, fallback_hi
 
     all_lo: list[float] = []
     all_hi: list[float] = []
-    for fp in frame_paths:
-        img = cv2.imread(str(fp))
-        try:
-            fp.unlink()
-        except OSError:
-            pass
+    for idx, img in enumerate(probe_imgs):
         if img is None:
             continue
         ih, iw = img.shape[:2]
         if ih < 40 or iw < 40:
             continue
         try:
-            cv2.imwrite(str(debug_probe_dir / fp.name), img)
+            cv2.imwrite(str(debug_probe_dir / f"probe_{idx:02d}.png"), img)
         except Exception:
             pass
         scan_top = int(ih * (1.0 - SCAN_HI))
@@ -380,9 +354,7 @@ def _detect_crop_band(video_path: Path, ocr, ocr_dir: Path):
             frame_boxes.append((conf_f, text_s, lo_cand, hi_cand))
         if frame_boxes:
             parts = " | ".join(f"conf={c:.2f} lo={l:.3f} hi={h:.3f} \"{t[:20]}\"" for c, t, l, h in frame_boxes)
-            log(f"Step1 PaddleOCR: crop detect [{fp.name}] {parts}")
-
-    shutil.rmtree(probe_dir, ignore_errors=True)
+            log(f"Step1 PaddleOCR: crop detect [probe_{idx:02d}] {parts}")
 
     if not all_hi:
         log(f"Step1 PaddleOCR: crop detect — không tìm thấy text, fallback lo={fallback_lo:.3f} hi={fallback_hi:.3f}")
@@ -408,79 +380,64 @@ def _detect_crop_band(video_path: Path, ocr, ocr_dir: Path):
 
 
 # ──────────────────────────────────────────────
-# Module 1: Frame Difference frame selector
+# Module 1: Frame Difference frame selector (FFmpeg pipe)
 # ──────────────────────────────────────────────
 
-def _select_change_frames(video_path: Path, band_lo: float, band_hi: float) -> list:
+def _iter_change_frames(video_path: Path, band_lo: float, band_hi: float):
     """
-    Scan video bằng cv2.VideoCapture tại scan_fps.
-    Trả về list[(timestamp_sec, strip_preprocessed)] chỉ tại các frame có subtitle thay đổi.
-    Không tạo file trung gian.
+    Stream cropped subtitle frames via FFmpeg pipe and yield only changed frames.
+    Yields (timestamp_sec, preprocessed_strip_for_ocr) — streaming, no buffering.
     """
-    import cv2
     import numpy as np
 
     log = _cfg["log"]
-    cap = cv2.VideoCapture(str(video_path))
-    if not cap.isOpened():
-        raise RuntimeError(f"PaddleOCR frame diff: không mở được video {video_path}")
-
-    native_fps = cap.get(cv2.CAP_PROP_FPS) or 24.0
-    scan_fps = _cfg["scan_fps"]
-    scan_step = max(1, int(round(native_fps / scan_fps)))
     threshold = _cfg["framediff_threshold"]
     skip_blank = _cfg["framediff_skip_blank"]
+    scan_fps = _cfg["scan_fps"]
     hl = _cfg["crop_probe_h_trim_left_frac"]
     hr = _cfg["crop_probe_h_trim_right_frac"]
 
-    prev_gray = None
-    change_frames: list = []
-    frame_idx = 0
-
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
-        if frame_idx % scan_step == 0:
-            strip = _crop_band_bgr(frame, band_lo, band_hi)
-            if strip is None or strip.size == 0:
-                frame_idx += 1
-                continue
-            # Horizontal trim
-            ih, iw = strip.shape[:2]
-            x0 = int(iw * hl)
-            x1 = iw - int(iw * hr)
-            if x1 > x0 + 2:
-                strip = strip[:, x0:x1]
-            # Preprocess for diff (grayscale)
-            gray = _preprocess_strip(strip, for_probe=True)
-            # Skip blank frames
-            if skip_blank and float(np.mean(gray)) < 5:
-                prev_gray = gray
-                frame_idx += 1
-                continue
-            if prev_gray is not None:
-                mad = (
-                    float(np.mean(np.abs(gray.astype(np.float32) - prev_gray.astype(np.float32))))
-                    if gray.shape == prev_gray.shape
-                    else threshold + 1.0
-                )
-                if mad >= threshold:
-                    ocr_strip = _preprocess_strip(strip, for_probe=False)
-                    change_frames.append((frame_idx / native_fps, ocr_strip))
-            else:
-                ocr_strip = _preprocess_strip(strip, for_probe=False)
-                change_frames.append((frame_idx / native_fps, ocr_strip))
-            prev_gray = gray
-        frame_idx += 1
-
-    cap.release()
-    log(
-        f"Step1 PaddleOCR: frame diff — {frame_idx} frames read, "
-        f"{len(change_frames)} change frames (scan_step={scan_step}, "
-        f"native_fps={native_fps:.2f}, threshold={threshold})"
+    crop_vf = build_crop_vf(
+        band_lo, band_hi,
+        h_trim_left=hl, h_trim_right=hr,
+        fps=scan_fps,
     )
-    return change_frames
+
+    prev_gray = None
+    total_frames = 0
+    change_count = 0
+    t_start = time.time()
+
+    for ts, strip in iter_cropped_frames(video_path, _cfg["ffmpeg_bin"], crop_vf, scan_fps, log=log):
+        total_frames += 1
+        if strip is None or strip.size == 0:
+            continue
+        gray = _preprocess_strip(strip, for_probe=True)
+        if skip_blank and float(np.mean(gray)) < 5:
+            prev_gray = gray
+            continue
+        if prev_gray is not None:
+            mad = (
+                float(np.mean(np.abs(gray.astype(np.float32) - prev_gray.astype(np.float32))))
+                if gray.shape == prev_gray.shape
+                else threshold + 1.0
+            )
+            if mad >= threshold:
+                ocr_strip = _preprocess_strip(strip, for_probe=False)
+                change_count += 1
+                yield ts, ocr_strip
+        else:
+            ocr_strip = _preprocess_strip(strip, for_probe=False)
+            change_count += 1
+            yield ts, ocr_strip
+        prev_gray = gray
+
+    elapsed = time.time() - t_start
+    log(
+        f"Step1 PaddleOCR: frame diff — {total_frames} frames scanned, "
+        f"{change_count} change frames, skip_ratio={1.0 - change_count / max(1, total_frames):.2%}, "
+        f"elapsed={elapsed:.1f}s (scan_fps={scan_fps}, threshold={threshold})"
+    )
 
 
 # ──────────────────────────────────────────────
@@ -488,9 +445,7 @@ def _select_change_frames(video_path: Path, band_lo: float, band_hi: float) -> l
 # ──────────────────────────────────────────────
 
 def _ocr_with_paddleocr(video_path: Path) -> Path:
-    """Step1: extract subtitles via PaddleOCR + Frame Difference frame selection."""
-    from difflib import SequenceMatcher
-
+    """Step1: extract subtitles via PaddleOCR + streaming Frame Difference."""
     log = _cfg["log"]
     log("Step1: OCR (PaddleOCR)…")
 
@@ -521,24 +476,27 @@ def _ocr_with_paddleocr(video_path: Path) -> Path:
         raise RuntimeError(f"Step1 PaddleOCR: invalid crop band lo={band_lo} hi={band_hi}")
     log(f"Step1 PaddleOCR: crop band lo={band_lo:.3f} hi={band_hi:.3f} strip_pct={(band_hi - band_lo) * 100:.1f}")
 
-    # 2. Module 1: Frame Difference – chỉ lấy frame có subtitle thay đổi
-    change_frames = _select_change_frames(video_path, band_lo, band_hi)
-    if not change_frames:
-        raise RuntimeError("Step1 PaddleOCR: Frame Difference không tìm được frame thay đổi nào.")
-
-    # 3. Module 2: Batch OCR
-    batch_size = _cfg["batch_size"]
+    # 2. Streaming OCR: iterate change frames and OCR inline (no full buffer)
     frame_interval_sec = 1.0 / _cfg["scan_fps"]
     min_conf = _cfg["min_confidence"]
     low_floor = _cfg["low_conf_floor"]
     use_angle_cls = _cfg["use_angle_cls"]
+    fuzzy_thr = _cfg["fuzzy_threshold"]
 
-    def _ocr_strip(ts, strip):
+    raw_results: list = []
+    low_conf_candidates: list = []
+    debug_rows: list = []
+    ocr_count = 0
+
+    for ts, strip in _iter_change_frames(video_path, band_lo, band_hi):
+        ocr_count += 1
         try:
             result = ocr.ocr(strip, cls=use_angle_cls)
             lines = result[0] if result and result[0] else []
         except Exception as exc:
-            return ts, "", "", {"timestamp_sec": ts, "error": str(exc), "lines": []}
+            debug_rows.append({"timestamp_sec": ts, "error": str(exc), "lines": []})
+            continue
+
         sorted_lines = _readtext_sort_for_join(lines)
         high_texts, low_texts = [], []
         dbg_lines = []
@@ -554,28 +512,17 @@ def _ocr_with_paddleocr(video_path: Path) -> Path:
                 high_texts.append(text_s)
             elif conf_f >= low_floor:
                 low_texts.append(text_s)
+
         joined = " ".join(high_texts)
-        dbg = {"timestamp_sec": ts, "error": None, "lines": dbg_lines, "joined": joined}
-        return ts, joined, " ".join(low_texts), dbg
+        debug_rows.append({"timestamp_sec": ts, "error": None, "lines": dbg_lines, "joined": joined})
+        if joined:
+            raw_results.append((ts, joined))
+        elif low_texts:
+            low_conf_candidates.append((ts, " ".join(low_texts)))
 
-    raw_results: list = []
-    low_conf_candidates: list = []
-    debug_rows: list = []
+    log(f"Step1 PaddleOCR: OCR done — {ocr_count} frames OCR'd, {len(raw_results)} high-conf, {len(low_conf_candidates)} low-conf")
 
-    for i in range(0, len(change_frames), batch_size):
-        batch = change_frames[i: i + batch_size]
-        for ts, strip in batch:
-            ts_r, joined, low_joined, dbg = _ocr_strip(ts, strip)
-            debug_rows.append(dbg)
-            if joined:
-                raw_results.append((ts_r, joined))
-            elif low_joined:
-                low_conf_candidates.append((ts_r, low_joined))
-
-    log(f"Step1 PaddleOCR: OCR done — {len(raw_results)} high-conf, {len(low_conf_candidates)} low-conf candidates")
-
-    # 4. Low-confidence rescue (cluster voting)
-    fuzzy_thr = _cfg["fuzzy_threshold"]
+    # 3. Low-confidence rescue (cluster voting)
     bridge_frames = _cfg["bridge_frames"]
     bridge_min = _cfg["bridge_min_match"]
     if low_conf_candidates and bridge_min > 0:
@@ -584,7 +531,8 @@ def _ocr_with_paddleocr(video_path: Path) -> Path:
         for ts, text in low_conf_candidates:
             window = bridge_frames * frame_interval_sec
             neighbors = [tx for t, tx in all_cands if abs(t - ts) <= window and t != ts]
-            if sum(1 for tx in neighbors if SequenceMatcher(None, text, tx).ratio() * 100 >= fuzzy_thr) >= bridge_min:
+            matches = sum(1 for tx in neighbors if same_subtitle_line(text, tx, fuzzy_thr))
+            if matches >= bridge_min:
                 raw_results.append((ts, text))
                 rescued += 1
         if rescued:
@@ -599,40 +547,16 @@ def _ocr_with_paddleocr(video_path: Path) -> Path:
             _df.write(json.dumps(row, ensure_ascii=False) + "\n")
     log(f"Step1 PaddleOCR: debug log → {ocr_debug_path} ({len(debug_rows)} frames)")
 
-    # 5. Text cleaning
-    _re_keep = re.compile(r"[\w\s\u4e00-\u9fff\u3000-\u303f\uff00-\uffef]+")
-
-    def clean_text(t):
-        return re.sub(r"\s+", " ", " ".join(_re_keep.findall(t))).strip()
-
-    def same_subtitle_line(prev: str, curr: str) -> bool:
-        from collections import Counter
-        if SequenceMatcher(None, prev, curr).ratio() * 100 >= fuzzy_thr:
-            return True
-        a, b = prev.strip(), curr.strip()
-        if len(a) < 2 or len(b) < 2:
-            return False
-        if a.startswith(b) or b.startswith(a):
-            return True
-        shorter, longer = (a, b) if len(a) <= len(b) else (b, a)
-        if len(shorter) >= 4 and shorter in longer:
-            return True
-        maxlen = max(len(a), len(b), 1)
-        if maxlen >= 8 and abs(len(a) - len(b)) <= 2:
-            if sum((Counter(a) & Counter(b)).values()) / float(maxlen) >= 0.88:
-                return True
-        return False
-
+    # 4. Text cleaning + group + dedup (uses shared normalize module)
     cleaned = [(ts, clean_text(t)) for ts, t in raw_results]
     cleaned = [(ts, t) for ts, t in cleaned if t]
     if not cleaned:
         raise RuntimeError("Step1 PaddleOCR: không có text nào sau cleaning.")
 
-    # 6. Group + dedup
     merge_gap_ms = _cfg["merge_gap_ms"]
     groups: list = []
     for ts, text in cleaned:
-        if groups and same_subtitle_line(groups[-1][2], text):
+        if groups and same_subtitle_line(groups[-1][2], text, fuzzy_thr):
             groups[-1][1] = ts + frame_interval_sec
             if len(text) > len(groups[-1][2]):
                 groups[-1][2] = text
@@ -641,7 +565,7 @@ def _ocr_with_paddleocr(video_path: Path) -> Path:
 
     merged: list = []
     for block in groups:
-        if merged and same_subtitle_line(merged[-1][2], block[2]) and (block[0] - merged[-1][1]) * 1000 <= merge_gap_ms:
+        if merged and same_subtitle_line(merged[-1][2], block[2], fuzzy_thr) and (block[0] - merged[-1][1]) * 1000 <= merge_gap_ms:
             merged[-1][1] = block[1]
             if len(block[2]) > len(merged[-1][2]):
                 merged[-1][2] = block[2]
@@ -663,7 +587,23 @@ def _ocr_with_paddleocr(video_path: Path) -> Path:
     if not kept:
         raise RuntimeError("Step1 PaddleOCR: tất cả block bị lọc bởi regex skip filter.")
 
-    # 7. Export SRT
+    # 5. Watermark filter
+    wm_blacklist_str = _cfg.get("watermark_blacklist") or ""
+    wm_blacklist = tuple(s.strip() for s in wm_blacklist_str.split(",") if s.strip()) if wm_blacklist_str else DEFAULT_WATERMARK_BLACKLIST
+    wm_segments = [SubtitleSegment(s, e, t, frame_count=1) for s, e, t in kept]
+    wm_segments = filter_watermarks(
+        wm_segments,
+        blacklist=wm_blacklist,
+        skip_regexes=_SKIP_COMPILED,
+        min_frame_count=_cfg.get("watermark_min_frames", 0),
+        total_scan_frames=ocr_count,
+        log=log,
+    )
+    kept = [(seg.start_sec, seg.end_sec, seg.text) for seg in wm_segments]
+    if not kept:
+        raise RuntimeError("Step1 PaddleOCR: tất cả block bị lọc bởi watermark filter.")
+
+    # 6. Export SRT
     min_dur = _cfg["min_duration_ms"]
     fmt_time = _cfg["fmt_time"]
     srt_path = _cfg["get_zh_srt_path"]()

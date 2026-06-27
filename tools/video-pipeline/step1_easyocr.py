@@ -21,6 +21,9 @@ import shutil
 from pathlib import Path
 from typing import Any, Callable, List
 
+from subtitle.normalize import clean_text, same_subtitle_line
+from subtitle.watermark import build_skip_regexes, should_skip_text
+
 _cfg: dict[str, Any] = {}
 
 # Compiled skip-regex list; rebuilt inside configure_step1_easyocr().
@@ -472,7 +475,6 @@ def _readtext_sort_for_join(results):
 def _ocr_with_easyocr(video_path: Path) -> Path:
     """Step1: extract subtitles via EasyOCR on the cropped subtitle region."""
     import concurrent.futures
-    from difflib import SequenceMatcher
 
     log = _cfg["log"]
     log("Step1: OCR (EasyOCR)…")
@@ -578,13 +580,13 @@ def _ocr_with_easyocr(video_path: Path) -> Path:
     bridge_min = _cfg["bridge_min_match"]
     fuzzy_thr = _cfg["fuzzy_threshold"]
     if low_conf_candidates and bridge_min > 0:
-        from difflib import SequenceMatcher as _SM
         all_cands = sorted(raw_results + low_conf_candidates, key=lambda x: x[0])
         rescued = 0
         for ts, text in low_conf_candidates:
             window = bridge_frames * frame_interval_sec
             neighbors = [tx for t, tx in all_cands if abs(t - ts) <= window and t != ts]
-            if sum(1 for tx in neighbors if _SM(None, text, tx).ratio() * 100 >= fuzzy_thr) >= bridge_min:
+            matches = sum(1 for tx in neighbors if same_subtitle_line(text, tx, fuzzy_thr))
+            if matches >= bridge_min:
                 raw_results.append((ts, text))
                 rescued += 1
         if rescued:
@@ -598,30 +600,7 @@ def _ocr_with_easyocr(video_path: Path) -> Path:
             _df.write(json.dumps(row, ensure_ascii=False) + "\n")
     log(f"Step1 EasyOCR: debug log → {ocr_debug_path} ({len(debug_rows)} frames)")
 
-    # 4. Text cleaning
-    _re_keep = re.compile(r"[\w\s\u4e00-\u9fff\u3000-\u303f\uff00-\uffef]+")
-
-    def clean_text(t):
-        return re.sub(r"\s+", " ", " ".join(_re_keep.findall(t))).strip()
-
-    def same_subtitle_line(prev: str, curr: str) -> bool:
-        from collections import Counter
-        if SequenceMatcher(None, prev, curr).ratio() * 100 >= fuzzy_thr:
-            return True
-        a, b = prev.strip(), curr.strip()
-        if len(a) < 2 or len(b) < 2:
-            return False
-        if a.startswith(b) or b.startswith(a):
-            return True
-        shorter, longer = (a, b) if len(a) <= len(b) else (b, a)
-        if len(shorter) >= 4 and shorter in longer:
-            return True
-        maxlen = max(len(a), len(b), 1)
-        if maxlen >= 8 and abs(len(a) - len(b)) <= 2:
-            if sum((Counter(a) & Counter(b)).values()) / float(maxlen) >= 0.88:
-                return True
-        return False
-
+    # 4. Text cleaning (uses shared normalize module)
     cleaned = [(ts, clean_text(t)) for ts, t in raw_results]
     cleaned = [(ts, t) for ts, t in cleaned if t]
     if not cleaned:
@@ -631,7 +610,7 @@ def _ocr_with_easyocr(video_path: Path) -> Path:
     merge_gap_ms = _cfg["merge_gap_ms"]
     groups: list = []
     for ts, text in cleaned:
-        if groups and same_subtitle_line(groups[-1][2], text):
+        if groups and same_subtitle_line(groups[-1][2], text, fuzzy_thr):
             groups[-1][1] = ts + frame_interval_sec
             if len(text) > len(groups[-1][2]):
                 groups[-1][2] = text
@@ -640,7 +619,7 @@ def _ocr_with_easyocr(video_path: Path) -> Path:
 
     merged: list = []
     for block in groups:
-        if merged and same_subtitle_line(merged[-1][2], block[2]) and (block[0] - merged[-1][1]) * 1000 <= merge_gap_ms:
+        if merged and same_subtitle_line(merged[-1][2], block[2], fuzzy_thr) and (block[0] - merged[-1][1]) * 1000 <= merge_gap_ms:
             merged[-1][1] = block[1]
             if len(block[2]) > len(merged[-1][2]):
                 merged[-1][2] = block[2]
@@ -653,7 +632,7 @@ def _ocr_with_easyocr(video_path: Path) -> Path:
     kept = []
     skipped = 0
     for start, end, text in merged:
-        if _should_skip_merged_text(text):
+        if should_skip_text(text, _SKIP_COMPILED):
             skipped += 1
         else:
             kept.append((start, end, text))

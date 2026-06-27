@@ -315,6 +315,9 @@ PADDLEOCR_HISTEQ_STRENGTH = 0.0     # 0=tắt; 0..1 → histeq=strength=…
 PADDLEOCR_GRAY_INVERT = False       # negate luma (thử với chữ trắng nền tối)
 PADDLEOCR_UNSHARP = ""              # vd "5:5:0.85:5:5:0.0" — rỗng = tắt
 PADDLEOCR_CLEANUP_DEBUG_AFTER_STEP7 = True  # xóa LOG_DIR/step1_paddleocr sau Step7
+# Watermark filter (PaddleOCR)
+PADDLEOCR_WATERMARK_BLACKLIST = "腾讯视频,优酷,爱奇艺,芒果TV,bilibili,VIP,独播,搜狐视频,乐视,PP视频,咪咕视频"
+PADDLEOCR_WATERMARK_MIN_FRAMES = 0  # 0=auto (80% of total scanned frames); >0=fixed threshold
 
 STEP1_MAX_SUBTITLE_CHARS = 22  # số ký tự tối đa mỗi câu sau tách.
 STEP1_MIN_SUBTITLE_DURATION_MS = 280  # thời gian hiển thị tối thiểu mỗi câu.
@@ -1730,6 +1733,8 @@ def _step1_ocr_with_paddleocr(video_path):
         histeq_strength=PADDLEOCR_HISTEQ_STRENGTH,
         gray_invert=PADDLEOCR_GRAY_INVERT,
         unsharp=PADDLEOCR_UNSHARP,
+        watermark_blacklist=PADDLEOCR_WATERMARK_BLACKLIST,
+        watermark_min_frames=PADDLEOCR_WATERMARK_MIN_FRAMES,
     )
     return _step1_paddleocr_run(video_path)
 
@@ -2893,6 +2898,17 @@ def parse_cli_args():
         help="on (default): delete LOG_DIR/step1_paddleocr after Step7. off: keep for inspection.",
     )
     parser.add_argument(
+        "--paddleocr-watermark-blacklist",
+        default=PADDLEOCR_WATERMARK_BLACKLIST,
+        help="Comma-separated watermark platform names to filter (substring match). Default: common Chinese platforms.",
+    )
+    parser.add_argument(
+        "--paddleocr-watermark-min-frames",
+        type=int,
+        default=PADDLEOCR_WATERMARK_MIN_FRAMES,
+        help="Frequency filter threshold: text on more frames than this is treated as watermark. 0=auto (80%% of total scanned).",
+    )
+    parser.add_argument(
         "--easyocr-lang",
         default=None,
         help="Comma-separated EasyOCR language codes. Example: ch_sim,en (default).",
@@ -3398,6 +3414,8 @@ def apply_cli_config(args):
         _pstrip = _pstrip / 100.0
     PADDLEOCR_MAX_STRIP_HEIGHT_RATIO = max(0.0, min(1.0, _pstrip))
     PADDLEOCR_CLEANUP_DEBUG_AFTER_STEP7 = getattr(args, "paddleocr_cleanup_debug_after_step7", "on") == "on"
+    PADDLEOCR_WATERMARK_BLACKLIST = getattr(args, "paddleocr_watermark_blacklist", PADDLEOCR_WATERMARK_BLACKLIST)
+    PADDLEOCR_WATERMARK_MIN_FRAMES = int(getattr(args, "paddleocr_watermark_min_frames", PADDLEOCR_WATERMARK_MIN_FRAMES))
 
 
 def parse_step_range(step_arg, min_step=1, max_step=6):
