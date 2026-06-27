@@ -436,13 +436,13 @@ export class TranslateEngineConfigDto {
   @IsString()
   mode?: string;
 
-  /** Step1 subtitle source: whisper | vse | easyocr (embedded = ffmpeg stream, legacy) */
+  /** Step1 subtitle source: whisper | vse | easyocr | paddleocr (embedded = ffmpeg stream, legacy) */
   @IsOptional()
-  @IsIn(["whisper", "vse", "easyocr", "embedded"])
+  @IsIn(["whisper", "vse", "easyocr", "paddleocr", "embedded"])
   step1SubtitleSource?: string;
 
   @IsOptional()
-  @IsIn(["whisper", "vse", "easyocr", "embedded"])
+  @IsIn(["whisper", "vse", "easyocr", "paddleocr", "embedded"])
   step1_subtitle_source?: string;
 
   /** EasyOCR crop band inner edge from bottom (0–1) */
