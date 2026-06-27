@@ -26,6 +26,7 @@ STEP2_VI_SKIP_TEXTS: tuple[str, ...] = (
     "HAHAHAHAHA",
     "HA HA",
     "HA HA HA",
+    "Haiz",
     "Hừ",
     "Hừ!",
     "A!",
