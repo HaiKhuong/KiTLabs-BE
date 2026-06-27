@@ -9,6 +9,7 @@ import { UserSetting } from "../../tools/settings/user-setting.entity";
 import { AudioHistory } from "../../tools/audio/audio-history.entity";
 import { TranslateHistory } from "../../tools/translate/translate-history.entity";
 import { User } from "../../tools/users/user.entity";
+import { ChunkUpload } from "../../tools/files/entities/chunk-upload.entity";
 import {
   YouTubeChannel,
   YouTubeVideo,
@@ -38,4 +39,5 @@ export const TOOL_DB_ENTITIES = [
   AnalyticsSnapshot,
   Recommendation,
   AiChatHistory,
+  ChunkUpload,
 ];

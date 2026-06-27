@@ -1,11 +1,26 @@
-import { BadRequestException, Controller, Post, Query, UploadedFile, UseInterceptors } from "@nestjs/common";
-import { ApiBearerAuth, ApiBody, ApiConsumes, ApiOperation, ApiQuery, ApiTags } from "@nestjs/swagger";
+import {
+  BadRequestException,
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Headers,
+  Post,
+  Query,
+  Req,
+  UploadedFile,
+  UseInterceptors,
+} from "@nestjs/common";
+import { ApiBearerAuth, ApiBody, ApiConsumes, ApiHeader, ApiOperation, ApiQuery, ApiTags } from "@nestjs/swagger";
 import { FileInterceptor } from "@nestjs/platform-express";
+import { Request } from "express";
 import { existsSync, mkdirSync } from "fs";
 import { diskStorage } from "multer";
 import { basename, extname, join } from "path";
 
 import { Public } from "../../common/decorators/public.decorator";
+import { ChunkUploadService } from "./chunk-upload.service";
+import { CancelUploadDto, CompleteUploadDto, InitUploadDto } from "./dto/chunk-upload.dto";
 import { FilesService } from "./files.service";
 
 type UploadRequest = {
@@ -88,7 +103,10 @@ const buildStoredFileName = (destination: string, originalName: string, allowOve
 @ApiBearerAuth("bearer")
 @Controller("tools/files")
 export class FilesController {
-  constructor(private readonly filesService: FilesService) {}
+  constructor(
+    private readonly filesService: FilesService,
+    private readonly chunkUploadService: ChunkUploadService,
+  ) {}
 
   @ApiOperation({ summary: "Upload file to local storage" })
   @ApiConsumes("multipart/form-data")
@@ -263,5 +281,72 @@ export class FilesController {
       mimeType: file.mimetype,
       size: file.size,
     };
+  }
+
+  // ─── Chunk Upload Endpoints ────────────────────────────────────────
+
+  @ApiOperation({ summary: "Initialize a chunked upload session" })
+  @ApiBody({ type: InitUploadDto })
+  @Public()
+  @Post("upload/init")
+  initUpload(@Body() dto: InitUploadDto) {
+    return this.chunkUploadService.initUpload(dto);
+  }
+
+  @ApiOperation({ summary: "Upload a single chunk" })
+  @ApiConsumes("application/octet-stream")
+  @ApiHeader({ name: "upload-id", required: true, description: "Upload session ID" })
+  @ApiHeader({ name: "chunk-index", required: true, description: "Zero-based chunk index" })
+  @ApiHeader({ name: "total-chunks", required: true, description: "Total number of chunks" })
+  @ApiHeader({ name: "chunk-hash", required: false, description: "SHA-256 hash of the chunk for validation" })
+  @Public()
+  @Post("upload/chunk")
+  uploadChunk(
+    @Headers("upload-id") uploadId: string,
+    @Headers("chunk-index") chunkIndex: string,
+    @Headers("total-chunks") totalChunks: string,
+    @Headers("chunk-hash") chunkHash: string | undefined,
+    @Req() req: Request,
+  ) {
+    if (!uploadId || !chunkIndex || !totalChunks) {
+      throw new BadRequestException("upload-id, chunk-index, and total-chunks headers are required");
+    }
+    return this.chunkUploadService.uploadChunk(
+      uploadId,
+      parseInt(chunkIndex, 10),
+      parseInt(totalChunks, 10),
+      chunkHash,
+      req,
+    );
+  }
+
+  @ApiOperation({ summary: "Get upload status for resume" })
+  @ApiQuery({ name: "uploadId", required: true, description: "Upload session ID" })
+  @Public()
+  @Get("upload/status")
+  getUploadStatus(@Query("uploadId") uploadId: string) {
+    if (!uploadId) {
+      throw new BadRequestException("uploadId query parameter is required");
+    }
+    return this.chunkUploadService.getStatus(uploadId);
+  }
+
+  @ApiOperation({ summary: "Complete upload — merge all chunks into final file" })
+  @ApiBody({ type: CompleteUploadDto })
+  @Public()
+  @Post("upload/complete")
+  completeUpload(@Body() dto: CompleteUploadDto) {
+    return this.chunkUploadService.completeUpload(dto.uploadId);
+  }
+
+  @ApiOperation({ summary: "Cancel an in-progress upload and clean up chunks" })
+  @ApiQuery({ name: "uploadId", required: true, description: "Upload session ID" })
+  @Public()
+  @Delete("upload/cancel")
+  cancelUpload(@Query("uploadId") uploadId: string) {
+    if (!uploadId) {
+      throw new BadRequestException("uploadId query parameter is required");
+    }
+    return this.chunkUploadService.cancelUpload(uploadId);
   }
 }
