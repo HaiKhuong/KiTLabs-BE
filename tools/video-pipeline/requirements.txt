@@ -1,28 +1,40 @@
-faster-whisper==1.2.1
+# ─── Core ───
 python-dotenv>=1.0.0
-google-genai
-ctranslate2>=4.0,<5
-# PyTorch 2.9+ ép dùng torchcodec (libtorchcodec + FFmpeg) — dễ lỗi trên Linux; pin torch<2.9 cho OmniVoice/torchaudio.
+numpy>=1.24,<2.4
+tqdm
+Pillow
+
+# ─── PyTorch (Whisper / EasyOCR / OmniVoice) ───
+# PyTorch 2.9+ ép dùng torchcodec — dễ lỗi trên Linux; pin <2.9 cho OmniVoice/torchaudio.
 torch>=2.2,<2.9
 torchvision
 torchaudio>=2.2,<2.9
-edge-tts
-tqdm
-easyocr
-opencv-python-headless
 
-# OmniVoice yêu cầu transformers>=5.3.0.
+# ─── Whisper ───
+faster-whisper==1.2.1
+ctranslate2>=4.0,<5
+
+# ─── Step2: Gemini translation ───
+google-genai
+
+# ─── Step3: TTS ───
+edge-tts
+
+# ─── Step3: OmniVoice (optional: --step3-tts-engine omnivoice) ───
 transformers>=5.3.0
 huggingface_hub
 underthesea
 vinorm
-
-# Optional Step3 engine: --step3-tts-engine omnivoice (https://huggingface.co/splendor1811/omnivoice-vietnamese)
 omnivoice
 
-# VSE (--step1-subtitle-source vse): PaddleOCR + VideoSubFinder, GPU-first.
-# Install paddlepaddle-gpu for CUDA 11.8/12.x: pip install paddlepaddle-gpu
-# See: https://www.paddlepaddle.org.cn/install/quick
+# ─── OCR: EasyOCR ───
+easyocr
+opencv-python-headless
+
+# ─── OCR: PaddleOCR ───
+# Install paddlepaddle riêng (CPU, tránh conflict CUDA với torch):
+#   pip install paddlepaddle -i https://www.paddlepaddle.org.cn/packages/stable/cpu/
+# Do NOT pip install paddlepaddle-gpu cùng venv với torch-gpu.
 paddleocr>=3.4.0
 rapidfuzz>=3.0.0
 Levenshtein
@@ -30,4 +42,3 @@ pysrt
 shapely
 pyclipper
 scikit-image
-Pillow
