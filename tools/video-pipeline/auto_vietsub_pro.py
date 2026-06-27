@@ -286,7 +286,7 @@ EASYOCR_CLEANUP_DEBUG_AFTER_STEP7 = True
 
 # PaddleOCR config (STEP1_SUBTITLE_SOURCE = "paddleocr")
 PADDLEOCR_LANG = "ch"               # "ch" = Chinese+English unified (PP-OCRv6); "en", "japan", v.v.
-PADDLEOCR_USE_GPU = True
+PADDLEOCR_USE_GPU = False             # CPU tránh conflict CUDA với torch; subtitle strip nhỏ nên CPU đủ nhanh
 PADDLEOCR_USE_ANGLE_CLS = True      # nhận diện sub bị xoay/ngược
 PADDLEOCR_MIN_CONFIDENCE = 0.5      # loại bỏ kết quả dưới ngưỡng
 PADDLEOCR_LOW_CONF_FLOOR = 0.003    # ngưỡng tối thiểu để xem xét rescue cluster
