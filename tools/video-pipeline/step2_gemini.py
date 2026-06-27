@@ -31,6 +31,9 @@ STEP2_VI_SKIP_TEXTS: tuple[str, ...] = (
     "A!",
     "Ừm",
     "Ừm!",
+    "Hì hì.",
+    "Ồ.",
+    "Khụ khụ.",
 )
 
 # Gemini clients initialized after configure
@@ -237,6 +240,14 @@ def _strip_vi_noise_keywords(text: str) -> str:
     return _normalize_skip_text(t)
 
 
+def _has_substantive_vi_text(text: str) -> bool:
+    """False nếu rỗng hoặc chỉ còn dấu câu / khoảng trắng (sau khi gỡ keyword)."""
+    norm = _normalize_skip_text(text)
+    if not norm:
+        return False
+    return bool(re.search(r"[\w]", norm, flags=re.UNICODE))
+
+
 def translate_batch_with_gemini(batch, batch_start_index):
     global _active_key_index
 
@@ -393,11 +404,13 @@ def step2_translate_srt(srt_path):
         for local_idx, b in enumerate(batch):
             translated_text = mapping[local_idx]
             cleaned = _strip_vi_noise_keywords(translated_text)
-            if not cleaned:
+            if not _has_substantive_vi_text(cleaned):
                 skipped_count += 1
+                residue = cleaned or _normalize_skip_text(translated_text)
                 log(
                     f"Step2: bỏ block #{b['index']} khỏi vi.srt "
                     f"(lọc): {_normalize_skip_text(translated_text)!r}"
+                    + (f" → residue {residue!r}" if residue else "")
                 )
                 continue
             if cleaned != _normalize_skip_text(translated_text):

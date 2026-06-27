@@ -9,6 +9,15 @@ import { UserSetting } from "../../tools/settings/user-setting.entity";
 import { AudioHistory } from "../../tools/audio/audio-history.entity";
 import { TranslateHistory } from "../../tools/translate/translate-history.entity";
 import { User } from "../../tools/users/user.entity";
+import {
+  YouTubeChannel,
+  YouTubeVideo,
+  Movie,
+  MovieTrend,
+  AnalyticsSnapshot,
+  Recommendation,
+  AiChatHistory,
+} from "../../tools/youtube/entities";
 
 export const TOOL_DB_ENTITIES = [
   User,
@@ -22,4 +31,11 @@ export const TOOL_DB_ENTITIES = [
   Setting,
   UserSettingProfile,
   UserSetting,
+  YouTubeChannel,
+  YouTubeVideo,
+  Movie,
+  MovieTrend,
+  AnalyticsSnapshot,
+  Recommendation,
+  AiChatHistory,
 ];

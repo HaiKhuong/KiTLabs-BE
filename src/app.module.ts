@@ -27,6 +27,7 @@ import { AudioModule } from "./tools/audio/audio.module";
 import { ToolsRealtimeModule } from "./tools/realtime/tools-realtime.module";
 import { TranslateModule } from "./tools/translate/translate.module";
 import { UsersModule } from "./tools/users/users.module";
+import { YouTubeModule } from "./tools/youtube/youtube.module";
 
 @Module({
   imports: [
@@ -99,6 +100,7 @@ import { UsersModule } from "./tools/users/users.module";
     FilesModule,
     DatabaseModule,
     AntiSpamModule,
+    YouTubeModule,
   ],
   controllers: [AppController],
   providers: [
