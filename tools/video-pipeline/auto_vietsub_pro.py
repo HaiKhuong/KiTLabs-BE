@@ -3250,6 +3250,8 @@ def apply_cli_config(args):
     global PADDLEOCR_FUZZY_THRESHOLD
     global PADDLEOCR_MAX_STRIP_HEIGHT_RATIO
     global PADDLEOCR_CLEANUP_DEBUG_AFTER_STEP7
+    global PADDLEOCR_WATERMARK_BLACKLIST
+    global PADDLEOCR_WATERMARK_MIN_FRAMES
 
     SUBTITLE_FONT = args.subtitle_font
     SUBTITLE_FONTSIZE = args.subtitle_fontsize
