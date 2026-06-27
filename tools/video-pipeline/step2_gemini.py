@@ -37,6 +37,10 @@ STEP2_VI_SKIP_TEXTS: tuple[str, ...] = (
     "Hì hì.",
     "Ồ.",
     "Khụ khụ.",
+    "Á!",
+    "Ư...",
+    "Ư.",
+    "Xì!",
 )
 
 # Gemini clients initialized after configure

@@ -1227,6 +1227,17 @@ def _try_prefetch_step1_zh_srt_from_existing_dir():
 
     dest = get_zh_srt_path()
     SUBTITLE_DIR.mkdir(parents=True, exist_ok=True)
+
+    if file_ready(dest):
+        with open(dest, encoding="utf8") as f:
+            blocks = parse_srt(f.read())
+        if blocks:
+            log(
+                f"Step1: subtitle đã tồn tại tại {dest} ({len(blocks)} cues), "
+                f"bỏ qua copy (bỏ qua Whisper/EasyOCR)."
+            )
+            return dest
+
     shutil.copyfile(source, dest)
     if not file_ready(dest):
         raise RuntimeError(f"Step1 prefetch copy failed: {source} -> {dest}")
