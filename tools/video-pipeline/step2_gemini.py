@@ -16,6 +16,23 @@ from google import genai
 
 _cfg: dict[str, Any] = {}
 
+# Các cụm noise/laugh — dùng cho 2 việc:
+# 1) Block chỉ còn đúng một cụm → bỏ hẳn khỏi vi.srt (giữ nguyên id các block khác).
+# 2) Cụm xuất hiện trong câu dài (vd. "HAHA xin chào") → xóa cụm, giữ phần còn lại.
+# Thứ tự trong tuple không quan trọng; khi replace luôn ưu tiên cụm dài trước.
+STEP2_VI_SKIP_TEXTS: tuple[str, ...] = (
+    "HAHA",
+    "HAHAHA",
+    "HAHAHAHAHA",
+    "HA HA",
+    "HA HA HA",
+    "Hừ",
+    "Hừ!",
+    "A!",
+    "Ừm",
+    "Ừm!",
+)
+
 # Gemini clients initialized after configure
 _gemini_api_keys: List[str] = []
 _gemini_clients: List[genai.Client] = []
@@ -195,6 +212,31 @@ def _parse_response(text: str) -> dict[int, str]:
     raise ValueError(f"Cannot parse response (not JSON or line format): {text[:200]}")
 
 
+def _normalize_skip_text(text: str) -> str:
+    """Gom khoảng trắng thừa."""
+    return " ".join(str(text or "").strip().split())
+
+
+def _keyword_to_remove_pattern(keyword: str) -> str:
+    """Regex xóa keyword khỏi câu (không partial trong từ khác)."""
+    parts = keyword.split()
+    if len(parts) > 1:
+        core = r"\s+".join(re.escape(p) for p in parts)
+    else:
+        core = re.escape(keyword)
+    if keyword.isascii():
+        return rf"(?i)\b{core}\b"
+    return core
+
+
+def _strip_vi_noise_keywords(text: str) -> str:
+    """Xóa các keyword noise khỏi text; trả về chuỗi đã chuẩn hóa khoảng trắng."""
+    t = str(text or "")
+    for keyword in sorted(STEP2_VI_SKIP_TEXTS, key=len, reverse=True):
+        t = re.sub(_keyword_to_remove_pattern(keyword), "", t)
+    return _normalize_skip_text(t)
+
+
 def translate_batch_with_gemini(batch, batch_start_index):
     global _active_key_index
 
@@ -343,14 +385,35 @@ def step2_translate_srt(srt_path):
         blocks = parse_srt(f.read())
 
     translated_blocks = []
+    skipped_count = 0
+    stripped_count = 0
     for i in progressbar(range(0, len(blocks), translate_batch_size), desc="Translate"):
         batch = blocks[i : i + translate_batch_size]
         mapping = translate_batch_with_gemini(batch, i)
         for local_idx, b in enumerate(batch):
             translated_text = mapping[local_idx]
+            cleaned = _strip_vi_noise_keywords(translated_text)
+            if not cleaned:
+                skipped_count += 1
+                log(
+                    f"Step2: bỏ block #{b['index']} khỏi vi.srt "
+                    f"(lọc): {_normalize_skip_text(translated_text)!r}"
+                )
+                continue
+            if cleaned != _normalize_skip_text(translated_text):
+                stripped_count += 1
+                log(
+                    f"Step2: block #{b['index']} gỡ keyword → "
+                    f"{_normalize_skip_text(translated_text)!r} → {cleaned!r}"
+                )
             translated_blocks.append(
-                {"index": b["index"], "time": b["time"], "text": translated_text}
+                {"index": b["index"], "time": b["time"], "text": cleaned}
             )
+
+    if skipped_count:
+        log(f"Step2: đã lọc {skipped_count} block khỏi vi.srt (giữ nguyên id các block còn lại).")
+    if stripped_count:
+        log(f"Step2: đã gỡ keyword trong {stripped_count} block (giữ block, xóa cụm noise).")
 
     out_path = get_vi_srt_path()
     write_srt(translated_blocks, out_path)
