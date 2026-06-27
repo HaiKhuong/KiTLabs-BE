@@ -31,7 +31,7 @@ export class YouTubeSchedulerService {
     private readonly authService: YouTubeAuthService,
   ) {}
 
-  @Cron(CronExpression.EVERY_6_HOURS)
+  @Cron(CronExpression.EVERY_DAY_AT_6AM)
   async syncYouTubeAnalytics(): Promise<void> {
     this.logger.log("Starting YouTube analytics sync...");
 
@@ -62,7 +62,7 @@ export class YouTubeSchedulerService {
     this.logger.log("YouTube analytics sync completed");
   }
 
-  @Cron(CronExpression.EVERY_DAY_AT_3AM)
+  @Cron(CronExpression.EVERY_DAY_AT_6AM)
   async syncGoogleTrends(): Promise<void> {
     this.logger.log("Starting Google Trends sync...");
 
