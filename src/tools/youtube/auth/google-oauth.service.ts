@@ -15,10 +15,11 @@ export class GoogleOAuthService {
     );
   }
 
-  getAuthUrl(): string {
+  getAuthUrl(userId?: string): string {
     return this.oauth2Client.generateAuthUrl({
       access_type: "offline",
       prompt: "consent",
+      state: userId ?? "",
       scope: [
         "https://www.googleapis.com/auth/youtube.readonly",
         "https://www.googleapis.com/auth/yt-analytics.readonly",

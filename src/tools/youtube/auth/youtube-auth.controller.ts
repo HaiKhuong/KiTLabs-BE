@@ -3,6 +3,7 @@ import { ApiTags, ApiOperation } from "@nestjs/swagger";
 import { Response } from "express";
 
 import { CurrentUser } from "../../../common/decorators/current-user.decorator";
+import { Public } from "../../../common/decorators/public.decorator";
 import { YouTubeAuthService } from "./youtube-auth.service";
 
 @ApiTags("YouTube Auth")
@@ -10,22 +11,23 @@ import { YouTubeAuthService } from "./youtube-auth.service";
 export class YouTubeAuthController {
   constructor(private readonly youtubeAuthService: YouTubeAuthService) {}
 
+  @Public()
   @Get("google")
   @ApiOperation({ summary: "Redirect to Google OAuth consent screen" })
-  async googleAuth(@Res() res: Response) {
-    const url = this.youtubeAuthService.getGoogleAuthUrl();
+  async googleAuth(@Query("userId") userId: string, @Res() res: Response) {
+    const url = this.youtubeAuthService.getGoogleAuthUrl(userId);
     return res.redirect(url);
   }
 
+  @Public()
   @Get("google/callback")
   @ApiOperation({ summary: "Handle Google OAuth callback" })
   async googleCallback(
     @Query("code") code: string,
     @Query("state") state: string,
-    @CurrentUser() user: { userId: string },
     @Res() res: Response,
   ) {
-    await this.youtubeAuthService.handleCallback(code, user.userId);
+    await this.youtubeAuthService.handleCallback(code, state);
     const frontendUrl = process.env.FRONTEND_URL ?? "http://localhost:3001";
     return res.redirect(`${frontendUrl}/tools/youtube/settings?oauth=success`);
   }

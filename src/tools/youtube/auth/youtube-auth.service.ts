@@ -17,8 +17,8 @@ export class YouTubeAuthService {
     private readonly youtubeApi: YouTubeApiService,
   ) {}
 
-  getGoogleAuthUrl(): string {
-    return this.googleOAuth.getAuthUrl();
+  getGoogleAuthUrl(userId?: string): string {
+    return this.googleOAuth.getAuthUrl(userId);
   }
 
   async handleCallback(code: string, userId: string): Promise<void> {
