@@ -3416,8 +3416,12 @@ def apply_cli_config(args):
         _pstrip = _pstrip / 100.0
     PADDLEOCR_MAX_STRIP_HEIGHT_RATIO = max(0.0, min(1.0, _pstrip))
     PADDLEOCR_CLEANUP_DEBUG_AFTER_STEP7 = getattr(args, "paddleocr_cleanup_debug_after_step7", "on") == "on"
-    PADDLEOCR_WATERMARK_BLACKLIST = getattr(args, "paddleocr_watermark_blacklist", PADDLEOCR_WATERMARK_BLACKLIST)
-    PADDLEOCR_WATERMARK_MIN_FRAMES = int(getattr(args, "paddleocr_watermark_min_frames", PADDLEOCR_WATERMARK_MIN_FRAMES))
+    _wm_bl = getattr(args, "paddleocr_watermark_blacklist", None)
+    if _wm_bl is not None:
+        PADDLEOCR_WATERMARK_BLACKLIST = _wm_bl
+    _wm_mf = getattr(args, "paddleocr_watermark_min_frames", None)
+    if _wm_mf is not None:
+        PADDLEOCR_WATERMARK_MIN_FRAMES = int(_wm_mf)
 
 
 def parse_step_range(step_arg, min_step=1, max_step=6):

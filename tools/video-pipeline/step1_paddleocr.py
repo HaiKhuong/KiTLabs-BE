@@ -464,9 +464,8 @@ def _ocr_with_paddleocr(video_path: Path) -> Path:
 
     ocr = PaddleOCR(
         lang=_cfg["lang"],
-        use_gpu=_cfg["use_gpu"],
         use_angle_cls=_cfg["use_angle_cls"],
-        show_log=False,
+        device="gpu" if _cfg["use_gpu"] else "cpu",
     )
     log(f"Step1 PaddleOCR: init lang={_cfg['lang']} gpu={_cfg['use_gpu']} angle_cls={_cfg['use_angle_cls']}")
 
