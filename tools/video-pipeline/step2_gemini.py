@@ -30,6 +30,7 @@ STEP2_VI_SKIP_TEXTS: tuple[str, ...] = (
     "Hừ",
     "Hừ!",
     "A!",
+    "A !",
     "Ừm",
     "Ừm!",
     "Hừm",
@@ -230,7 +231,9 @@ def _keyword_to_remove_pattern(keyword: str) -> str:
     else:
         core = re.escape(keyword)
     if keyword.isascii():
-        return rf"(?i)\b{core}\b"
+        # Keyword kết thúc bằng dấu câu (A!, …): \b sau ! không khớp cuối chuỗi / trước space.
+        trailing = r"(?!\w)" if re.search(r"\W$", keyword) else r"\b"
+        return rf"(?i)\b{core}{trailing}"
     return core
 
 
