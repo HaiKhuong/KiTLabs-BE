@@ -31,6 +31,7 @@ STEP2_VI_SKIP_TEXTS: tuple[str, ...] = (
     "A!",
     "Ừm",
     "Ừm!",
+    "Hừm",
     "Hì hì.",
     "Ồ.",
     "Khụ khụ.",
@@ -232,11 +233,19 @@ def _keyword_to_remove_pattern(keyword: str) -> str:
     return core
 
 
+def _trim_orphan_edge_punctuation(text: str) -> str:
+    """Xóa dấu câu thừa ở đầu sau khi gỡ keyword (vd. ', ở đây...!' → 'ở đây...!')."""
+    t = str(text or "")
+    return re.sub(r"^[\s,.!?;:'\"…\-—、，。！？]+", "", t)
+
+
 def _strip_vi_noise_keywords(text: str) -> str:
     """Xóa các keyword noise khỏi text; trả về chuỗi đã chuẩn hóa khoảng trắng."""
     t = str(text or "")
     for keyword in sorted(STEP2_VI_SKIP_TEXTS, key=len, reverse=True):
         t = re.sub(_keyword_to_remove_pattern(keyword), "", t)
+    t = _normalize_skip_text(t)
+    t = _trim_orphan_edge_punctuation(t)
     return _normalize_skip_text(t)
 
 
