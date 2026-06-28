@@ -6,17 +6,9 @@ import {
 } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { createHash, randomUUID } from "crypto";
-import {
-  createReadStream,
-  createWriteStream,
-  existsSync,
-  mkdirSync,
-  readdirSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} from "fs";
-import { basename, extname, join } from "path";
+import { createWriteStream, existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "fs";
+import { open } from "fs/promises";
+import { join } from "path";
 import { pipeline } from "stream/promises";
 import { Readable } from "stream";
 import { Repository } from "typeorm";
@@ -26,12 +18,7 @@ import { InitUploadDto } from "./dto/chunk-upload.dto";
 
 const DEFAULT_CHUNK_SIZE = 20 * 1024 * 1024; // 20 MB
 const MAX_FILE_SIZE = Number(process.env.CHUNK_UPLOAD_MAX_FILE_BYTES ?? 10 * 1024 * 1024 * 1024); // 10 GB
-
-const sanitizeFileName = (name: string): string =>
-  name
-    .replace(/[\\/:*?"<>|]/g, "_")
-    .replace(/\s+/g, " ")
-    .trim();
+const MERGE_BUFFER_SIZE = 1024 * 1024; // 1 MB
 
 @Injectable()
 export class ChunkUploadService {
@@ -267,22 +254,30 @@ export class ChunkUploadService {
   }
 
   private async mergeChunks(chunkDir: string, outputPath: string, totalChunks: number): Promise<void> {
-    const writeStream = createWriteStream(outputPath);
+    const outHandle = await open(outputPath, "w");
+    const buffer = Buffer.alloc(MERGE_BUFFER_SIZE);
 
-    for (let i = 0; i < totalChunks; i++) {
-      const partPath = join(chunkDir, `${String(i).padStart(6, "0")}.part`);
-      if (!existsSync(partPath)) {
-        writeStream.destroy();
-        throw new BadRequestException(`Missing chunk ${i}`);
+    try {
+      for (let i = 0; i < totalChunks; i++) {
+        const partPath = join(chunkDir, `${String(i).padStart(6, "0")}.part`);
+        if (!existsSync(partPath)) {
+          throw new BadRequestException(`Missing chunk ${i}`);
+        }
+
+        const inHandle = await open(partPath, "r");
+        try {
+          while (true) {
+            const { bytesRead } = await inHandle.read(buffer, 0, MERGE_BUFFER_SIZE, null);
+            if (bytesRead === 0) break;
+            await outHandle.write(buffer, 0, bytesRead);
+          }
+        } finally {
+          await inHandle.close();
+        }
       }
-      const readStream = createReadStream(partPath, { highWaterMark: 1024 * 1024 });
-      await pipeline(readStream, writeStream, { end: false });
+    } finally {
+      await outHandle.close();
     }
-
-    await new Promise<void>((resolve, reject) => {
-      writeStream.end(() => resolve());
-      writeStream.on("error", reject);
-    });
   }
 
   private countUploadedParts(chunkDir: string): number {
