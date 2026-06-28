@@ -218,9 +218,9 @@ def ffmpeg_video_encode_args(use_gpu):
 OUTPUT_METADATA_ENABLED = True
 # True: title/artist/comment = stem file đầu ra (vd. Ten_vs_tm từ Ten_vs_tm.mp4). False: dùng 3 biến bên dưới.
 OUTPUT_METADATA_FROM_FILENAME = True
-OUTPUT_METADATA_TITLE = "Vạn Giới Vietsub"
-OUTPUT_METADATA_ARTIST = "Vạn Giới Vietsub"
-OUTPUT_METADATA_COMMENT = "Vạn Giới Vietsub"
+OUTPUT_METADATA_TITLE = ""
+OUTPUT_METADATA_ARTIST = ""
+OUTPUT_METADATA_COMMENT = ""
 
 STEP1_VAD_FILTER = True  # Nếu False thì sẽ không dùng các ngưỡng VAD/Whisper phía dưới
 # Whisper/VAD: ngưỡng theo --mode basic|advance (STEP1_PROFILES). Không còn override qua CLI.
