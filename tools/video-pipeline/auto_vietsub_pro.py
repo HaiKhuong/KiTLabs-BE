@@ -38,6 +38,7 @@ from step1_paddleocr import configure_step1_paddleocr
 from step1_paddleocr import run as _step1_paddleocr_run
 from step2_gemini import (
     configure_step2_gemini,
+    resolve_gemini_api_keys_for_tier,
     step2_translate_srt,
 )
 from step3_edge import (
@@ -61,6 +62,8 @@ WHISPER_MODEL = "large-v3"
 WHISPER_LANGUAGE = "zh"
 STEP1_SUBTITLE_SOURCE = "embedded"
 GEMINI_MODEL_NAME = "gemini-2.5-flash"
+# standard = GEMINI_API_KEY (+ GOOGLE_API_KEY); vip = GEMINI_API_KEY_VIP
+GEMINI_KEY_TIER = "standard"
 EDGE_TTS_VOICE = "vi-VN-HoaiMyNeural"
 EDGE_TTS_RATE = "+30%"
 EDGE_TTS_VOLUME = "+10%"
@@ -386,9 +389,8 @@ def parse_api_keys(raw_value):
 _raw_gemini_api_keys = []
 _raw_gemini_api_keys.extend(parse_api_keys(os.environ.get("GEMINI_API_KEY")))
 _raw_gemini_api_keys.extend(parse_api_keys(os.environ.get("GOOGLE_API_KEY")))
+# Legacy module-level alias (tier resolved at preflight via step2_gemini).
 GEMINI_API_KEYS = list(dict.fromkeys(_raw_gemini_api_keys))
-GEMINI_CLIENTS = [genai.Client(api_key=api_key) for api_key in GEMINI_API_KEYS]
-ACTIVE_GEMINI_KEY_INDEX = 0
 
 
 def mask_secret(secret, show_prefix=4, show_suffix=4):
@@ -684,10 +686,7 @@ def resolve_ffprobe_binary():
 def preflight_checks():
     global FFMPEG_BIN
     global FFPROBE_BIN
-    if not GEMINI_CLIENTS:
-        raise EnvironmentError(
-            "Missing Gemini API key. Set GEMINI_API_KEY or GOOGLE_API_KEY in .env or the environment."
-        )
+    gemini_api_keys = resolve_gemini_api_keys_for_tier(GEMINI_KEY_TIER)
     FFMPEG_BIN = resolve_ffmpeg_binary()
     if FFMPEG_BIN is None:
         raise EnvironmentError(
@@ -711,7 +710,8 @@ def preflight_checks():
         retry_call=retry_call,
         get_vi_srt_path=get_vi_srt_path,
         log_dir=LOG_DIR,
-        gemini_api_keys=GEMINI_API_KEYS,
+        gemini_api_keys=gemini_api_keys,
+        gemini_key_tier=GEMINI_KEY_TIER,
         gemini_model_name=GEMINI_MODEL_NAME,
         gemini_retry_max=GEMINI_RETRY_MAX,
         translate_batch_size=TRANSLATE_BATCH_SIZE,
@@ -719,7 +719,7 @@ def preflight_checks():
         step2_multi_keys_enabled=STEP2_MULTI_KEYS_ENABLED,
     )
     log(
-        f"Preflight OK (Gemini keys={len(GEMINI_API_KEYS)}, ffmpeg+ffprobe ready)."
+        f"Preflight OK (Gemini tier={GEMINI_KEY_TIER}, keys={len(gemini_api_keys)}, ffmpeg+ffprobe ready)."
     )
 
 
@@ -3136,6 +3136,12 @@ def parse_cli_args():
         help="Custom context/instructions for Gemini translation. Overrides default Han-Viet prompt.",
     )
     parser.add_argument(
+        "--gemini-key-tier",
+        choices=["standard", "vip"],
+        default=GEMINI_KEY_TIER,
+        help="Gemini key pool: standard=GEMINI_API_KEY, vip=GEMINI_API_KEY_VIP.",
+    )
+    parser.add_argument(
         "--step",
         default=None,
         help="Run only selected steps: N or A,B (inclusive). Example: --step 3 or --step 1,5",
@@ -3209,6 +3215,7 @@ def apply_cli_config(args):
     global STEP3_TTS_MAX_RETRY_ACTION
     global STEP3_VOICE_RESUME
     global TRANSLATION_CONTEXT
+    global GEMINI_KEY_TIER
     WHISPER_LANGUAGE = str(args.whisper_language).strip() or None
     STEP1_SUBTITLE_SOURCE = (
         str(args.step1_subtitle_source or STEP1_SUBTITLE_SOURCE).strip().lower()
@@ -3333,6 +3340,9 @@ def apply_cli_config(args):
     )
     STEP3_VOICE_RESUME = args.step3_voice_resume == "on"
     TRANSLATION_CONTEXT = args.translation_context or ""
+    GEMINI_KEY_TIER = str(args.gemini_key_tier or "standard").strip().lower()
+    if GEMINI_KEY_TIER not in {"standard", "vip"}:
+        GEMINI_KEY_TIER = "standard"
 
     prof = STEP1_PROFILES[args.mode]
     STEP1_VAD_THRESHOLD = prof["vad_threshold"]

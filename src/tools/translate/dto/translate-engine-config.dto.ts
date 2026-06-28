@@ -434,6 +434,19 @@ export class TranslateEngineConfigDto {
 
   @IsOptional()
   @IsString()
+  translation_context?: string;
+
+  /** Gemini key pool: standard = GEMINI_API_KEY; vip = GEMINI_API_KEY_VIP */
+  @IsOptional()
+  @IsIn(["standard", "vip"])
+  geminiKeyTier?: string;
+
+  @IsOptional()
+  @IsIn(["standard", "vip"])
+  gemini_key_tier?: string;
+
+  @IsOptional()
+  @IsString()
   mode?: string;
 
   /** Step1 subtitle source: whisper | vse | easyocr | paddleocr (embedded = ffmpeg stream, legacy) */

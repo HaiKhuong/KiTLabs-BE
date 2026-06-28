@@ -7,6 +7,7 @@ Gọi configure_step2_gemini(...) trước khi dùng step2_translate_srt.
 from __future__ import annotations
 
 import json
+import os
 import re
 import time
 from pathlib import Path
@@ -54,6 +55,39 @@ _gemini_clients: List[genai.Client] = []
 _active_key_index: int = 0
 
 
+def _parse_api_keys(raw_value: Optional[str]) -> List[str]:
+    if not raw_value:
+        return []
+    parts = [p.strip() for p in re.split(r"[,\n;]+", str(raw_value)) if p and str(p).strip()]
+    return list(dict.fromkeys(parts))
+
+
+def get_gemini_api_key_pools_from_env() -> tuple[List[str], List[str]]:
+    """standard = GEMINI_API_KEY + GOOGLE_API_KEY; vip = GEMINI_API_KEY_VIP."""
+    standard: List[str] = []
+    standard.extend(_parse_api_keys(os.environ.get("GEMINI_API_KEY")))
+    standard.extend(_parse_api_keys(os.environ.get("GOOGLE_API_KEY")))
+    standard = list(dict.fromkeys(standard))
+    vip = list(dict.fromkeys(_parse_api_keys(os.environ.get("GEMINI_API_KEY_VIP"))))
+    return standard, vip
+
+
+def resolve_gemini_api_keys_for_tier(tier: str) -> List[str]:
+    standard, vip = get_gemini_api_key_pools_from_env()
+    tier_norm = str(tier or "standard").strip().lower()
+    if tier_norm == "vip":
+        if not vip:
+            raise RuntimeError(
+                "Missing Gemini VIP API key. Set GEMINI_API_KEY_VIP in .env or the environment."
+            )
+        return vip
+    if not standard:
+        raise RuntimeError(
+            "Missing Gemini API key. Set GEMINI_API_KEY or GOOGLE_API_KEY in .env or the environment."
+        )
+    return standard
+
+
 def configure_step2_gemini(
     *,
     log: Callable[[str], None],
@@ -65,7 +99,8 @@ def configure_step2_gemini(
     retry_call: Callable,
     get_vi_srt_path: Callable[[], Path],
     log_dir: Path,
-    gemini_api_keys: List[str],
+    gemini_api_keys: Optional[List[str]] = None,
+    gemini_key_tier: str = "standard",
     gemini_model_name: str,
     gemini_retry_max: int,
     translate_batch_size: int,
@@ -73,6 +108,11 @@ def configure_step2_gemini(
     step2_multi_keys_enabled: bool,
 ) -> None:
     global _gemini_api_keys, _gemini_clients, _active_key_index
+
+    tier_norm = str(gemini_key_tier or "standard").strip().lower()
+    if tier_norm not in {"standard", "vip"}:
+        tier_norm = "standard"
+    resolved_keys = list(gemini_api_keys or []) or resolve_gemini_api_keys_for_tier(tier_norm)
 
     _cfg.clear()
     _cfg.update(
@@ -85,6 +125,7 @@ def configure_step2_gemini(
         retry_call=retry_call,
         get_vi_srt_path=get_vi_srt_path,
         log_dir=Path(log_dir),
+        gemini_key_tier=tier_norm,
         gemini_model_name=str(gemini_model_name or ""),
         gemini_retry_max=int(gemini_retry_max),
         translate_batch_size=int(translate_batch_size),
@@ -92,7 +133,7 @@ def configure_step2_gemini(
         step2_multi_keys_enabled=bool(step2_multi_keys_enabled),
     )
 
-    _gemini_api_keys = list(gemini_api_keys or [])
+    _gemini_api_keys = resolved_keys
     _gemini_clients = [genai.Client(api_key=key) for key in _gemini_api_keys]
     _active_key_index = 0
 
@@ -410,8 +451,9 @@ def step2_translate_srt(srt_path):
     translate_batch_size = _cfg["translate_batch_size"]
     step2_multi_keys_enabled = _cfg["step2_multi_keys_enabled"]
 
+    gemini_key_tier = _cfg.get("gemini_key_tier", "standard")
     key_mode = "multi-keys on" if step2_multi_keys_enabled else "multi-keys off"
-    log(f"Step2: Gemini ({key_mode})…")
+    log(f"Step2: Gemini (tier={gemini_key_tier}, {key_mode})…")
     with open(srt_path, encoding="utf8") as f:
         blocks = parse_srt(f.read())
 

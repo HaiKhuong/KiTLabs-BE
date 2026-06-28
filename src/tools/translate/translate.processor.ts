@@ -145,6 +145,11 @@ const OPTION_MAPPINGS: Array<{
     allowedTypes: ["string"],
   },
   { cliFlag: "--translation-context", keys: ["translationContext", "translation_context"], allowedTypes: ["string"] },
+  {
+    cliFlag: "--gemini-key-tier",
+    keys: ["geminiKeyTier", "gemini_key_tier"],
+    allowedTypes: ["string"],
+  },
   { cliFlag: "--mode", keys: ["mode", "mode"], allowedTypes: ["string"] },
   {
     cliFlag: "--step1-subtitle-source",
