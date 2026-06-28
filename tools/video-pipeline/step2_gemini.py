@@ -27,10 +27,12 @@ STEP2_VI_SKIP_TEXTS: tuple[str, ...] = (
     "HA HA",
     "HA HA HA",
     "Haiz",
+    "hừ hừ",
     "Hừ",
     "Hừ!",
     "A!",
     "A !",
+    "A.",
     "Ừm",
     "Ừm!",
     "Hừm",
@@ -38,9 +40,12 @@ STEP2_VI_SKIP_TEXTS: tuple[str, ...] = (
     "Ồ.",
     "Khụ khụ.",
     "Á!",
+    "Á.",
     "Ư...",
     "Ư.",
+    "Ư!",
     "Xì!",
+    "Xì.",
 )
 
 # Gemini clients initialized after configure
@@ -231,14 +236,12 @@ def _keyword_to_remove_pattern(keyword: str) -> str:
     """Regex xóa keyword khỏi câu (không partial trong từ khác)."""
     parts = keyword.split()
     if len(parts) > 1:
-        core = r"\s+".join(re.escape(p) for p in parts)
-    else:
-        core = re.escape(keyword)
-    if keyword.isascii():
-        # Keyword kết thúc bằng dấu câu (A!, …): \b sau ! không khớp cuối chuỗi / trước space.
-        trailing = r"(?!\w)" if re.search(r"\W$", keyword) else r"\b"
-        return rf"(?i)\b{core}{trailing}"
-    return core
+        core = r"\s+".join(rf"\b{re.escape(p)}\b" for p in parts)
+        return rf"(?i){core}"
+    core = re.escape(keyword)
+    # Keyword kết thúc bằng dấu câu (A!, Hừ!, …): \b sau ! không khớp cuối chuỗi / trước space.
+    trailing = r"(?!\w)" if re.search(r"\W$", keyword) else r"\b"
+    return rf"(?i)\b{core}{trailing}"
 
 
 def _trim_orphan_edge_punctuation(text: str) -> str:
