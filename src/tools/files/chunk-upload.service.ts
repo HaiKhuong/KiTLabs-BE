@@ -122,23 +122,24 @@ export class ChunkUploadService {
 
     const partPath = join(chunkDir, `${String(chunkIndex).padStart(6, "0")}.part`);
 
+    const hashDigest = chunkHash ? createHash("sha256") : null;
     const writeStream = createWriteStream(partPath);
-    const hashStream = chunkHash ? createHash("sha256") : null;
 
-    await new Promise<void>((resolve, reject) => {
-      body.on("data", (chunk: Buffer) => {
-        writeStream.write(chunk);
-        hashStream?.update(chunk);
+    if (hashDigest) {
+      const { Transform } = await import("stream");
+      const hashTransform = new Transform({
+        transform(chunk, _encoding, callback) {
+          hashDigest.update(chunk);
+          callback(null, chunk);
+        },
       });
-      body.on("end", () => {
-        writeStream.end(() => resolve());
-      });
-      body.on("error", reject);
-      writeStream.on("error", reject);
-    });
+      await pipeline(body, hashTransform, writeStream);
+    } else {
+      await pipeline(body, writeStream);
+    }
 
-    if (chunkHash && hashStream) {
-      const computed = hashStream.digest("hex");
+    if (chunkHash && hashDigest) {
+      const computed = hashDigest.digest("hex");
       if (computed !== chunkHash.toLowerCase()) {
         rmSync(partPath, { force: true });
         throw new BadRequestException(
