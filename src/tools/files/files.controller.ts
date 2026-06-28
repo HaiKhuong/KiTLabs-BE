@@ -12,6 +12,7 @@ import {
   UseInterceptors,
 } from "@nestjs/common";
 import { ApiBearerAuth, ApiBody, ApiConsumes, ApiHeader, ApiOperation, ApiQuery, ApiTags } from "@nestjs/swagger";
+import { SkipThrottle } from "@nestjs/throttler";
 import { FileInterceptor } from "@nestjs/platform-express";
 import { Request } from "express";
 import { existsSync, mkdirSync } from "fs";
@@ -287,6 +288,7 @@ export class FilesController {
 
   @ApiOperation({ summary: "Initialize a chunked upload session" })
   @ApiBody({ type: InitUploadDto })
+  @SkipThrottle()
   @Public()
   @Post("upload/init")
   initUpload(@Body() dto: InitUploadDto) {
@@ -299,6 +301,7 @@ export class FilesController {
   @ApiHeader({ name: "chunk-index", required: true, description: "Zero-based chunk index" })
   @ApiHeader({ name: "total-chunks", required: true, description: "Total number of chunks" })
   @ApiHeader({ name: "chunk-hash", required: false, description: "SHA-256 hash of the chunk for validation" })
+  @SkipThrottle()
   @Public()
   @Post("upload/chunk")
   uploadChunk(
@@ -322,6 +325,7 @@ export class FilesController {
 
   @ApiOperation({ summary: "Get upload status for resume" })
   @ApiQuery({ name: "uploadId", required: true, description: "Upload session ID" })
+  @SkipThrottle()
   @Public()
   @Get("upload/status")
   getUploadStatus(@Query("uploadId") uploadId: string) {
@@ -333,6 +337,7 @@ export class FilesController {
 
   @ApiOperation({ summary: "Complete upload — merge all chunks into final file" })
   @ApiBody({ type: CompleteUploadDto })
+  @SkipThrottle()
   @Public()
   @Post("upload/complete")
   completeUpload(@Body() dto: CompleteUploadDto) {
@@ -341,6 +346,7 @@ export class FilesController {
 
   @ApiOperation({ summary: "Cancel an in-progress upload and clean up chunks" })
   @ApiQuery({ name: "uploadId", required: true, description: "Upload session ID" })
+  @SkipThrottle()
   @Public()
   @Delete("upload/cancel")
   cancelUpload(@Query("uploadId") uploadId: string) {
