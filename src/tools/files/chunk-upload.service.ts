@@ -216,13 +216,7 @@ export class ChunkUploadService {
         mkdirSync(finalDir, { recursive: true });
       }
 
-      const fileExt = extname(record.filename);
-      const rawBaseName = basename(record.filename, fileExt);
-      const safeBaseName = sanitizeFileName(rawBaseName) || `upload_${Date.now()}`;
-      let fileName = `${safeBaseName}${fileExt}`;
-      if (existsSync(join(finalDir, fileName))) {
-        fileName = `${safeBaseName}_${Date.now()}${fileExt}`;
-      }
+      const fileName = record.filename;
 
       const finalPath = join(finalDir, fileName);
 
