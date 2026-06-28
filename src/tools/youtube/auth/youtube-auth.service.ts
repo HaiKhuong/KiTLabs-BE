@@ -22,6 +22,10 @@ export class YouTubeAuthService {
   }
 
   async handleCallback(code: string, userId: string): Promise<void> {
+    if (!userId) {
+      throw new BadRequestException("userId is required");
+    }
+
     const tokens = await this.googleOAuth.getTokensFromCode(code);
 
     if (!tokens.access_token) {
@@ -58,11 +62,28 @@ export class YouTubeAuthService {
           googleRefreshToken: tokens.refresh_token ?? null,
           tokenExpiresAt: tokens.expiry_date ? new Date(tokens.expiry_date) : null,
           userId,
-          isActive: channels.length === 1,
+          isActive: false,
         });
         await this.channelRepo.save(newChannel);
       }
     }
+
+    await this.ensureActiveChannel(userId);
+  }
+
+  private async ensureActiveChannel(userId: string): Promise<void> {
+    const active = await this.channelRepo.findOne({ where: { userId, isActive: true } });
+    if (active) return;
+
+    const first = await this.channelRepo.findOne({
+      where: { userId },
+      order: { createdAt: "ASC" },
+    });
+    if (!first) return;
+
+    await this.channelRepo.update({ userId }, { isActive: false });
+    first.isActive = true;
+    await this.channelRepo.save(first);
   }
 
   async getUserChannels(userId: string): Promise<YouTubeChannel[]> {
@@ -88,9 +109,13 @@ export class YouTubeAuthService {
   }
 
   async getActiveChannel(userId: string): Promise<YouTubeChannel | null> {
-    return this.channelRepo.findOne({
+    const active = await this.channelRepo.findOne({
       where: { userId, isActive: true },
     });
+    if (active) return active;
+
+    await this.ensureActiveChannel(userId);
+    return this.channelRepo.findOne({ where: { userId, isActive: true } });
   }
 
   async getConnectionStatus(userId: string) {

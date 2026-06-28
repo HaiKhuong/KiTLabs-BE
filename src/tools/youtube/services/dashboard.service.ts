@@ -22,7 +22,15 @@ export class YouTubeDashboardService {
   ) {}
 
   async getDashboardData(userId: string) {
-    const channel = await this.channelRepo.findOne({ where: { userId, isActive: true } });
+    const channels = await this.channelRepo.find({ where: { userId } });
+    let channel = channels.find((c) => c.isActive) ?? null;
+
+    if (!channel && channels.length > 0) {
+      channel = channels[0];
+      await this.channelRepo.update({ userId }, { isActive: false });
+      channel.isActive = true;
+      await this.channelRepo.save(channel);
+    }
 
     if (!channel) {
       return { connected: false, overview: null, topVideos: [], recommendations: [], summary: null };
