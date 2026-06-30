@@ -8,7 +8,6 @@ import { Movie } from "./entities/movie.entity";
 import { MovieTrend } from "./entities/movie-trend.entity";
 import { AnalyticsSnapshot } from "./entities/analytics-snapshot.entity";
 import { Recommendation } from "./entities/recommendation.entity";
-import { AiChatHistory } from "./entities/ai-chat-history.entity";
 import { Setting } from "../settings/setting.entity";
 
 import { YouTubeController } from "./youtube.controller";
@@ -19,7 +18,6 @@ import { YouTubeAuthService } from "./auth/youtube-auth.service";
 import { YouTubeApiService } from "./services/youtube-api.service";
 import { TrendsService } from "./services/trends.service";
 import { RecommendationService } from "./services/recommendation.service";
-import { AiChatService } from "./services/ai-chat.service";
 import { YouTubeDashboardService } from "./services/dashboard.service";
 import { MovieService } from "./services/movie.service";
 import { AnalyticsService } from "./services/analytics.service";
@@ -43,7 +41,6 @@ import { DatabaseModule } from "../../database/database.module";
         MovieTrend,
         AnalyticsSnapshot,
         Recommendation,
-        AiChatHistory,
         Setting,
       ],
       "tool",
@@ -57,7 +54,6 @@ import { DatabaseModule } from "../../database/database.module";
     YouTubeApiService,
     TrendsService,
     RecommendationService,
-    AiChatService,
     YouTubeDashboardService,
     MovieService,
     AnalyticsService,

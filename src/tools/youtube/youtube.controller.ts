@@ -18,11 +18,9 @@ import { YouTubeDashboardService } from "./services/dashboard.service";
 import { MovieService } from "./services/movie.service";
 import { AnalyticsService } from "./services/analytics.service";
 import { RecommendationService } from "./services/recommendation.service";
-import { AiChatService } from "./services/ai-chat.service";
 import { YouTubeSettingsService } from "./services/youtube-settings.service";
 import { YouTubeSchedulerService } from "./scheduler/youtube-scheduler.service";
 import { CreateMovieDto, UpdateMovieDto, MovieFilterDto } from "./dto/movie.dto";
-import { SendMessageDto } from "./dto/chat.dto";
 import { AnalyticsQueryDto } from "./dto/analytics.dto";
 import { UpdateYouTubeSettingsDto } from "./dto/settings.dto";
 import { TrendsDashboardQueryDto } from "./dto/trends.dto";
@@ -37,7 +35,6 @@ export class YouTubeController {
     private readonly movieService: MovieService,
     private readonly analyticsService: AnalyticsService,
     private readonly recommendationService: RecommendationService,
-    private readonly chatService: AiChatService,
     private readonly settingsService: YouTubeSettingsService,
     private readonly schedulerService: YouTubeSchedulerService,
     private readonly trendsDashboardService: TrendsDashboardService,
@@ -162,45 +159,6 @@ export class YouTubeController {
   @ApiOperation({ summary: "Manually regenerate recommendations" })
   async refreshRecommendations(@Query("userId") userId?: string) {
     return this.recommendationService.generateRecommendations(requireUserId(userId));
-  }
-
-  // === AI Chat ===
-
-  @Public()
-  @Post("chat")
-  @ApiOperation({ summary: "Send a chat message" })
-  async sendMessage(
-    @Query("userId") userId: string | undefined,
-    @Body() dto: SendMessageDto,
-  ) {
-    return this.chatService.sendMessage(requireUserId(userId), dto.message, dto.chatId);
-  }
-
-  @Public()
-  @Get("chat/history")
-  @ApiOperation({ summary: "Get chat history list" })
-  async getChatHistory(@Query("userId") userId?: string) {
-    return this.chatService.getChatHistory(requireUserId(userId));
-  }
-
-  @Public()
-  @Get("chat/:id")
-  @ApiOperation({ summary: "Get chat messages" })
-  async getChatMessages(
-    @Query("userId") userId: string | undefined,
-    @Param("id") id: string,
-  ) {
-    return this.chatService.getChatMessages(requireUserId(userId), id);
-  }
-
-  @Public()
-  @Delete("chat/:id")
-  @ApiOperation({ summary: "Delete a chat" })
-  async deleteChat(
-    @Query("userId") userId: string | undefined,
-    @Param("id") id: string,
-  ) {
-    return this.chatService.deleteChat(requireUserId(userId), id);
   }
 
   // === Settings ===

@@ -17,8 +17,8 @@ import {
   MovieTrend,
   AnalyticsSnapshot,
   Recommendation,
-  AiChatHistory,
 } from "../../tools/youtube/entities";
+import { AiChatHistory } from "../../tools/youtube/entities/ai-chat-history.entity";
 
 export const TOOL_DB_ENTITIES = [
   User,

@@ -32,7 +32,7 @@ export class YouTubeAuthController {
   ) {
     await this.youtubeAuthService.handleCallback(code, state);
     const frontendUrl = process.env.FRONTEND_URL ?? "http://localhost:3001";
-    return res.redirect(`${frontendUrl}/tools/youtube/settings?oauth=success`);
+    return res.redirect(`${frontendUrl}/tools/settings?section=youtube&oauth=success`);
   }
 
   @Public()

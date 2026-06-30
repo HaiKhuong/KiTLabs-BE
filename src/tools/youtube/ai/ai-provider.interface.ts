@@ -53,12 +53,6 @@ export interface AiRecommendationOutput {
   nextActions: string[];
 }
 
-export interface AiChatResponse {
-  content: string;
-  structuredData?: Record<string, unknown>;
-}
-
 export interface AiProvider {
   analyze(input: AiAnalysisInput): Promise<AiRecommendationOutput>;
-  chat(systemContext: string, userMessage: string, history?: Array<{ role: string; content: string }>): Promise<AiChatResponse>;
 }

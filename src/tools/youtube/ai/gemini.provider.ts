@@ -2,10 +2,9 @@ import { Injectable, Logger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { GoogleGenerativeAI, GenerativeModel } from "@google/generative-ai";
 
-import { AiProvider, AiAnalysisInput, AiRecommendationOutput, AiChatResponse } from "./ai-provider.interface";
+import { AiProvider, AiAnalysisInput, AiRecommendationOutput } from "./ai-provider.interface";
 import { SYSTEM_PROMPT } from "./prompts/system.prompt";
 import { RECOMMENDATION_PROMPT } from "./prompts/recommendation.prompt";
-import { CHAT_CONTEXT_PROMPT } from "./prompts/chat.prompt";
 
 @Injectable()
 export class GeminiProvider implements AiProvider {
@@ -110,43 +109,6 @@ export class GeminiProvider implements AiProvider {
         warnings: ["AI analysis encountered an error. Please try again."],
         nextActions: [],
       };
-    }
-  }
-
-  async chat(
-    systemContext: string,
-    userMessage: string,
-    history?: Array<{ role: string; content: string }>,
-  ): Promise<AiChatResponse> {
-    const contextPrompt = CHAT_CONTEXT_PROMPT.replace("{CONTEXT}", systemContext);
-
-    const contents = [
-      { role: "user" as const, parts: [{ text: contextPrompt }] },
-      { role: "model" as const, parts: [{ text: "I understand the context. I'm ready to help manage your YouTube channel." }] },
-    ];
-
-    if (history) {
-      for (const msg of history) {
-        contents.push({
-          role: msg.role === "user" ? ("user" as const) : ("model" as const),
-          parts: [{ text: msg.content }],
-        });
-      }
-    }
-
-    contents.push({ role: "user" as const, parts: [{ text: userMessage }] });
-
-    try {
-      const text = await this.withRetry(async (genAI) => {
-        const chatModel = this.getModel(genAI, false);
-        const result = await chatModel.generateContent({ contents });
-        return result.response.text();
-      });
-
-      return { content: text };
-    } catch (error) {
-      this.logger.error(`Gemini chat failed: ${error}`);
-      return { content: "Xin lỗi, đã có lỗi xảy ra khi xử lý câu hỏi của bạn. Vui lòng thử lại." };
     }
   }
 }
