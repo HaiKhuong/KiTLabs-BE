@@ -25,7 +25,9 @@ import { CreateMovieDto, UpdateMovieDto, MovieFilterDto } from "./dto/movie.dto"
 import { SendMessageDto } from "./dto/chat.dto";
 import { AnalyticsQueryDto } from "./dto/analytics.dto";
 import { UpdateYouTubeSettingsDto } from "./dto/settings.dto";
+import { TrendsDashboardQueryDto } from "./dto/trends.dto";
 import { requireUserId } from "./utils/require-user-id";
+import { TrendsDashboardService } from "./services/trends-dashboard.service";
 
 @ApiTags("YouTube")
 @Controller("youtube")
@@ -38,6 +40,7 @@ export class YouTubeController {
     private readonly chatService: AiChatService,
     private readonly settingsService: YouTubeSettingsService,
     private readonly schedulerService: YouTubeSchedulerService,
+    private readonly trendsDashboardService: TrendsDashboardService,
   ) {}
 
   // === Dashboard ===
@@ -217,6 +220,22 @@ export class YouTubeController {
     @Body() dto: UpdateYouTubeSettingsDto,
   ) {
     return this.settingsService.updateSettings(requireUserId(userId), dto);
+  }
+
+  // === Trends ===
+
+  @Public()
+  @Get("trends/dashboard")
+  @ApiOperation({ summary: "Get Google Trends dashboard data" })
+  async getTrendsDashboard(
+    @Query("userId") userId: string | undefined,
+    @Query() query: TrendsDashboardQueryDto,
+  ) {
+    return this.trendsDashboardService.getDashboard(
+      requireUserId(userId),
+      query.days ?? 30,
+      query.region ?? "VN",
+    );
   }
 
   // === Manual Sync ===

@@ -25,6 +25,7 @@ import { MovieService } from "./services/movie.service";
 import { AnalyticsService } from "./services/analytics.service";
 import { YouTubeSettingsService } from "./services/youtube-settings.service";
 import { YouTubeSchedulerService } from "./scheduler/youtube-scheduler.service";
+import { TrendsDashboardService } from "./services/trends-dashboard.service";
 
 import { AiService } from "./ai/ai.service";
 import { GeminiProvider } from "./ai/gemini.provider";
@@ -62,6 +63,7 @@ import { DatabaseModule } from "../../database/database.module";
     AnalyticsService,
     YouTubeSettingsService,
     YouTubeSchedulerService,
+    TrendsDashboardService,
     AiService,
     GeminiProvider,
   ],
