@@ -150,6 +150,11 @@ const OPTION_MAPPINGS: Array<{
     keys: ["geminiKeyTier", "gemini_key_tier"],
     allowedTypes: ["string"],
   },
+  {
+    cliFlag: "--step2-vi-skip-texts",
+    keys: ["step2ViSkipTexts", "step2_vi_skip_texts"],
+    allowedTypes: ["string"],
+  },
   { cliFlag: "--mode", keys: ["mode", "mode"], allowedTypes: ["string"] },
   {
     cliFlag: "--step1-subtitle-source",

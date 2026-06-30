@@ -106,6 +106,7 @@ def configure_step2_gemini(
     translate_batch_size: int,
     translation_context: str,
     step2_multi_keys_enabled: bool,
+    step2_vi_skip_texts_enabled: bool = False,
 ) -> None:
     global _gemini_api_keys, _gemini_clients, _active_key_index
 
@@ -131,6 +132,7 @@ def configure_step2_gemini(
         translate_batch_size=int(translate_batch_size),
         translation_context=str(translation_context or ""),
         step2_multi_keys_enabled=bool(step2_multi_keys_enabled),
+        step2_vi_skip_texts_enabled=bool(step2_vi_skip_texts_enabled),
     )
 
     _gemini_api_keys = resolved_keys
@@ -450,10 +452,12 @@ def step2_translate_srt(srt_path):
     get_vi_srt_path = _cfg["get_vi_srt_path"]
     translate_batch_size = _cfg["translate_batch_size"]
     step2_multi_keys_enabled = _cfg["step2_multi_keys_enabled"]
+    step2_vi_skip_texts_enabled = bool(_cfg.get("step2_vi_skip_texts_enabled", False))
 
     gemini_key_tier = _cfg.get("gemini_key_tier", "standard")
     key_mode = "multi-keys on" if step2_multi_keys_enabled else "multi-keys off"
-    log(f"Step2: Gemini (tier={gemini_key_tier}, {key_mode})…")
+    skip_mode = "vi-skip-texts on" if step2_vi_skip_texts_enabled else "vi-skip-texts off"
+    log(f"Step2: Gemini (tier={gemini_key_tier}, {key_mode}, {skip_mode})…")
     with open(srt_path, encoding="utf8") as f:
         blocks = parse_srt(f.read())
 
@@ -465,29 +469,41 @@ def step2_translate_srt(srt_path):
         mapping = translate_batch_with_gemini(batch, i)
         for local_idx, b in enumerate(batch):
             translated_text = mapping[local_idx]
-            cleaned = _strip_vi_noise_keywords(translated_text)
-            if not _has_substantive_vi_text(cleaned):
-                skipped_count += 1
-                residue = cleaned or _normalize_skip_text(translated_text)
-                log(
-                    f"Step2: bỏ block #{b['index']} khỏi vi.srt "
-                    f"(lọc): {_normalize_skip_text(translated_text)!r}"
-                    + (f" → residue {residue!r}" if residue else "")
-                )
-                continue
-            if cleaned != _normalize_skip_text(translated_text):
-                stripped_count += 1
-                log(
-                    f"Step2: block #{b['index']} gỡ keyword → "
-                    f"{_normalize_skip_text(translated_text)!r} → {cleaned!r}"
-                )
+            if step2_vi_skip_texts_enabled:
+                cleaned = _strip_vi_noise_keywords(translated_text)
+                if not _has_substantive_vi_text(cleaned):
+                    skipped_count += 1
+                    residue = cleaned or _normalize_skip_text(translated_text)
+                    log(
+                        f"Step2: bỏ block #{b['index']} khỏi vi.srt "
+                        f"(lọc): {_normalize_skip_text(translated_text)!r}"
+                        + (f" → residue {residue!r}" if residue else "")
+                    )
+                    continue
+                if cleaned != _normalize_skip_text(translated_text):
+                    stripped_count += 1
+                    log(
+                        f"Step2: block #{b['index']} gỡ keyword → "
+                        f"{_normalize_skip_text(translated_text)!r} → {cleaned!r}"
+                    )
+            else:
+                cleaned = _normalize_skip_text(translated_text)
+                if not cleaned:
+                    skipped_count += 1
+                    log(
+                        f"Step2: bỏ block #{b['index']} khỏi vi.srt (rỗng): "
+                        f"{_normalize_skip_text(translated_text)!r}"
+                    )
+                    continue
             translated_blocks.append(
                 {"index": b["index"], "time": b["time"], "text": cleaned}
             )
 
-    if skipped_count:
+    if step2_vi_skip_texts_enabled and skipped_count:
         log(f"Step2: đã lọc {skipped_count} block khỏi vi.srt (giữ nguyên id các block còn lại).")
-    if stripped_count:
+    elif not step2_vi_skip_texts_enabled and skipped_count:
+        log(f"Step2: đã bỏ {skipped_count} block rỗng khỏi vi.srt.")
+    if step2_vi_skip_texts_enabled and stripped_count:
         log(f"Step2: đã gỡ keyword trong {stripped_count} block (giữ block, xóa cụm noise).")
 
     out_path = get_vi_srt_path()

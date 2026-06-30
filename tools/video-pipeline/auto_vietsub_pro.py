@@ -140,6 +140,8 @@ RETRY_MAX = 4
 GEMINI_RETRY_MAX = 1
 # Step 2 Gemini: on = thử xoay qua tất cả key khi lỗi; off = chỉ dùng key đang active.
 STEP2_MULTI_KEYS_ENABLED = True
+# Step 2: lọc cụm noise (HAHA, Hừ, …) khỏi vi.srt — CLI --step2-vi-skip-texts on|off.
+STEP2_VI_SKIP_TEXTS_ENABLED = False
 TTS_RETRY_MAX = 10
 FFMPEG_BIN = None
 FFPROBE_BIN = None
@@ -717,6 +719,7 @@ def preflight_checks():
         translate_batch_size=TRANSLATE_BATCH_SIZE,
         translation_context=TRANSLATION_CONTEXT,
         step2_multi_keys_enabled=STEP2_MULTI_KEYS_ENABLED,
+        step2_vi_skip_texts_enabled=STEP2_VI_SKIP_TEXTS_ENABLED,
     )
     log(
         f"Preflight OK (Gemini tier={GEMINI_KEY_TIER}, keys={len(gemini_api_keys)}, ffmpeg+ffprobe ready)."
@@ -3142,6 +3145,12 @@ def parse_cli_args():
         help="Gemini key pool: standard=GEMINI_API_KEY, vip=GEMINI_API_KEY_VIP.",
     )
     parser.add_argument(
+        "--step2-vi-skip-texts",
+        choices=["on", "off"],
+        default="on" if STEP2_VI_SKIP_TEXTS_ENABLED else "off",
+        help="on=lọc cụm noise (HAHA, Hừ, …) khỏi vi.srt sau dịch; off=giữ nguyên bản dịch.",
+    )
+    parser.add_argument(
         "--step",
         default=None,
         help="Run only selected steps: N or A,B (inclusive). Example: --step 3 or --step 1,5",
@@ -3216,6 +3225,7 @@ def apply_cli_config(args):
     global STEP3_VOICE_RESUME
     global TRANSLATION_CONTEXT
     global GEMINI_KEY_TIER
+    global STEP2_VI_SKIP_TEXTS_ENABLED
     WHISPER_LANGUAGE = str(args.whisper_language).strip() or None
     STEP1_SUBTITLE_SOURCE = (
         str(args.step1_subtitle_source or STEP1_SUBTITLE_SOURCE).strip().lower()
@@ -3343,6 +3353,7 @@ def apply_cli_config(args):
     GEMINI_KEY_TIER = str(args.gemini_key_tier or "standard").strip().lower()
     if GEMINI_KEY_TIER not in {"standard", "vip"}:
         GEMINI_KEY_TIER = "standard"
+    STEP2_VI_SKIP_TEXTS_ENABLED = str(args.step2_vi_skip_texts or "off").strip().lower() == "on"
 
     prof = STEP1_PROFILES[args.mode]
     STEP1_VAD_THRESHOLD = prof["vad_threshold"]

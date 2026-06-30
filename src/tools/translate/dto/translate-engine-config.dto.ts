@@ -445,6 +445,15 @@ export class TranslateEngineConfigDto {
   @IsIn(["standard", "vip"])
   gemini_key_tier?: string;
 
+  /** Step2: lọc cụm noise (HAHA, Hừ, …) khỏi vi.srt — on | off */
+  @IsOptional()
+  @IsIn(["on", "off"])
+  step2ViSkipTexts?: string;
+
+  @IsOptional()
+  @IsIn(["on", "off"])
+  step2_vi_skip_texts?: string;
+
   @IsOptional()
   @IsString()
   mode?: string;
