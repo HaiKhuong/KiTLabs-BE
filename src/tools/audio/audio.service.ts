@@ -19,8 +19,8 @@ import {
   AUDIO_OUTPUT_DIR,
   AUDIO_PREVIEW_CACHE_DIR,
   AUDIO_PRESET_VOICES,
+  resolvePipelineVoiceDir,
   VIDEO_PIPELINE_DIR,
-  VOICE_SAMPLES_DIR,
   findPresetVoice,
   resolveOmnivoiceLanguage,
   resolvePreviewTtsText,
@@ -48,6 +48,8 @@ export type PipelineVoiceDto = {
 @Injectable()
 export class AudioService {
   private readonly logger = new Logger(AudioService.name);
+  private readonly activeChildren = new Map<string, ChildProcess>();
+  private readonly cancelledJobs = new Set<string>();
 
   constructor(
     @InjectQueue(AUDIO_QUEUE_NAME)
@@ -89,16 +91,56 @@ export class AudioService {
     return Number.isFinite(n) ? n : 42;
   }
 
-  private async spawnOmnivoiceTts(opts: {
-    text: string;
-    outWav: string;
-    refAudio: string;
-    refText: string;
-    language?: string;
-    seed?: number;
-    pauseSettings?: Record<string, number>;
-    playbackSpeed?: number;
-  }): Promise<string> {
+  private resolveCmdTimeoutMs(): number {
+    return Number(process.env.AUDIO_CMD_TIMEOUT_MS ?? process.env.TRANSLATE_CMD_TIMEOUT_MS ?? 600_000);
+  }
+
+  /** BullMQ lock must outlive the Python TTS subprocess (default 30s is too short). */
+  static resolveQueueLockDurationMs(): number {
+    const explicit = Number(process.env.AUDIO_QUEUE_LOCK_MS ?? 0);
+    if (Number.isFinite(explicit) && explicit > 0) {
+      return explicit;
+    }
+    const cmdTimeout = Number(process.env.AUDIO_CMD_TIMEOUT_MS ?? process.env.TRANSLATE_CMD_TIMEOUT_MS ?? 600_000);
+    return cmdTimeout + 120_000;
+  }
+
+  requestCancel(audioHistoryId: string): void {
+    this.cancelledJobs.add(audioHistoryId);
+    const child = this.activeChildren.get(audioHistoryId);
+    if (child && !child.killed) {
+      this.logger.warn(`Cancelling active OmniVoice process for audio ${audioHistoryId}`);
+      child.kill("SIGTERM");
+      setTimeout(() => {
+        if (!child.killed) {
+          child.kill("SIGKILL");
+        }
+      }, 5_000).unref();
+    }
+  }
+
+  isCancelled(audioHistoryId: string): boolean {
+    return this.cancelledJobs.has(audioHistoryId);
+  }
+
+  private clearCancel(audioHistoryId: string): void {
+    this.cancelledJobs.delete(audioHistoryId);
+    this.activeChildren.delete(audioHistoryId);
+  }
+
+  private async spawnOmnivoiceTts(
+    opts: {
+      text: string;
+      outWav: string;
+      refAudio: string;
+      refText: string;
+      language?: string;
+      seed?: number;
+      pauseSettings?: Record<string, number>;
+      playbackSpeed?: number;
+    },
+    audioHistoryId?: string,
+  ): Promise<string> {
     const refAudio = isAbsolute(opts.refAudio) ? opts.refAudio : resolve(process.cwd(), opts.refAudio);
     if (!existsSync(refAudio)) {
       throw new Error(`Reference audio not found: ${refAudio}`);
@@ -107,7 +149,7 @@ export class AudioService {
     const outWav = isAbsolute(opts.outWav) ? opts.outWav : resolve(process.cwd(), opts.outWav);
 
     const scriptDir = resolve(process.cwd(), VIDEO_PIPELINE_DIR);
-    const timeoutMs = Number(process.env.AUDIO_CMD_TIMEOUT_MS ?? process.env.TRANSLATE_CMD_TIMEOUT_MS ?? 600_000);
+    const timeoutMs = this.resolveCmdTimeoutMs();
 
     const seed = opts.seed ?? this.resolveOmnivoiceSeed();
 
@@ -129,12 +171,21 @@ export class AudioService {
         : {}),
     };
 
+    const pythonBin = this.resolvePythonBin();
+    this.logger.log(
+      `OmniVoice spawn: historyId=${audioHistoryId ?? "-"} python=${pythonBin} cwd=${scriptDir} textLen=${opts.text.length} refAudio=${refAudio} outWav=${outWav} timeoutMs=${timeoutMs}`,
+    );
+
     await new Promise<void>((resolvePromise, rejectPromise) => {
-      const child: ChildProcess = spawn(this.resolvePythonBin(), ["-c", AudioService.OMNIVOICE_INLINE_PY], {
+      const child: ChildProcess = spawn(pythonBin, ["-c", AudioService.OMNIVOICE_INLINE_PY], {
         cwd: scriptDir,
         windowsHide: true,
         stdio: ["pipe", "pipe", "pipe"],
       });
+
+      if (audioHistoryId) {
+        this.activeChildren.set(audioHistoryId, child);
+      }
 
       let stderr = "";
       const timeoutHandle = setTimeout(() => {
@@ -142,22 +193,44 @@ export class AudioService {
         rejectPromise(new Error(`OmniVoice TTS timed out after ${timeoutMs}ms`));
       }, timeoutMs);
 
+      const cleanup = () => {
+        clearTimeout(timeoutHandle);
+        if (audioHistoryId) {
+          this.activeChildren.delete(audioHistoryId);
+        }
+      };
+
       child.stderr?.on("data", (buf: Buffer) => {
-        stderr += buf.toString("utf8");
+        const chunk = buf.toString("utf8");
+        stderr += chunk;
         if (stderr.length > AudioService.MAX_LOG_BUFFER) {
           stderr = stderr.slice(-AudioService.MAX_LOG_BUFFER);
         }
+        const line = chunk.trim();
+        if (line) {
+          this.logger.debug(`OmniVoice stderr [${audioHistoryId ?? "preview"}]: ${line}`);
+        }
       });
       child.on("error", (err) => {
-        clearTimeout(timeoutHandle);
+        cleanup();
         rejectPromise(err);
       });
-      child.on("close", (code) => {
-        clearTimeout(timeoutHandle);
-        if (code !== 0) {
-          rejectPromise(new Error(stderr.trim() || `OmniVoice exited with code ${code}`));
+      child.on("close", (code, signal) => {
+        cleanup();
+        if (audioHistoryId && this.isCancelled(audioHistoryId)) {
+          rejectPromise(new Error("Audio generation cancelled"));
           return;
         }
+        if (code !== 0) {
+          const suffix = signal ? ` (signal ${signal})` : "";
+          const detail = stderr.trim() || `OmniVoice exited with code ${code}${suffix}`;
+          this.logger.error(
+            `OmniVoice failed: historyId=${audioHistoryId ?? "-"} code=${code} signal=${signal ?? "-"} detail=${detail.slice(-500)}`,
+          );
+          rejectPromise(new Error(detail));
+          return;
+        }
+        this.logger.log(`OmniVoice done: historyId=${audioHistoryId ?? "-"} outWav=${outWav}`);
         resolvePromise();
       });
 
@@ -192,11 +265,37 @@ export class AudioService {
   }
 
   resolvePresetRefAudioPath(refWav: string): string {
-    const path = resolve(process.cwd(), VOICE_SAMPLES_DIR, basename(refWav));
+    const path = join(this.resolvePipelineVoiceDir(), basename(refWav));
     if (!existsSync(path)) {
       throw new BadRequestException(`Preset reference audio missing on server: ${basename(refWav)}`);
     }
     return path;
+  }
+
+  private sanitizeVoiceFileStem(raw: string): string {
+    return (
+      raw
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .replace(/[\\/:*?"<>|]/g, "_")
+        .replace(/\s+/g, "_")
+        .replace(/[^\w.-]/g, "_")
+        .replace(/_+/g, "_")
+        .replace(/^_|_$/g, "")
+        .trim() || `voice_${Date.now()}`
+    );
+  }
+
+  private resolvePipelineVoiceDir(): string {
+    return resolvePipelineVoiceDir();
+  }
+
+  private ensurePipelineVoiceDir(): string {
+    const dir = this.resolvePipelineVoiceDir();
+    if (!existsSync(dir)) {
+      mkdirSync(dir, { recursive: true, mode: 0o775 });
+    }
+    return dir;
   }
 
   /** Kiểm tra file giọng mẫu nằm đúng tools/video-pipeline/voice (dùng cho translate Step3). */
@@ -253,10 +352,6 @@ export class AudioService {
     return path;
   }
 
-  private resolvePipelineVoiceDir(): string {
-    return resolve(process.cwd(), VOICE_SAMPLES_DIR);
-  }
-
   private pipelineVoiceRefSidecarPath(fileName: string): string {
     const safeName = basename(fileName);
     const stem = basename(safeName, extname(safeName));
@@ -308,35 +403,58 @@ export class AudioService {
   }): PipelineVoiceDto {
     const refText = String(input.refText || "").trim();
     if (!refText) {
+      this.logger.warn("pipeline-voices/upload: refText is empty");
       throw new BadRequestException("refText is required");
+    }
+
+    const bufferSize = input.buffer?.length ?? 0;
+    if (bufferSize <= 0) {
+      this.logger.warn(
+        `pipeline-voices/upload: empty file buffer originalName=${input.originalName} voiceName=${input.voiceName ?? "-"}`,
+      );
+      throw new BadRequestException("Uploaded file is empty (0 bytes). Check multipart upload includes audio data.");
     }
 
     const ext = extname(input.originalName).toLowerCase();
     if (!PIPELINE_VOICE_ALLOWED_EXT.has(ext)) {
+      this.logger.warn(`pipeline-voices/upload: invalid ext=${ext} file=${input.originalName}`);
       throw new BadRequestException("Only .wav, .mp3, .m4a are allowed.");
     }
 
     const rawBase =
       String(input.voiceName || "").trim() ||
       basename(input.originalName, extname(input.originalName));
-    const safeBase =
-      rawBase
-        .replace(/[\\/:*?"<>|]/g, "_")
-        .replace(/\s+/g, "_")
-        .trim() || `voice_${Date.now()}`;
+    const safeBase = this.sanitizeVoiceFileStem(rawBase);
     const fileName = `${safeBase}${ext}`;
 
-    const dir = this.resolvePipelineVoiceDir();
-    if (!existsSync(dir)) {
-      mkdirSync(dir, { recursive: true });
-    }
-
+    const dir = this.ensurePipelineVoiceDir();
     const abs = join(dir, fileName);
-    writeFileSync(abs, input.buffer);
-    this.writePipelineVoiceRefText(fileName, refText);
+    this.logger.log(
+      `pipeline-voices/upload: writing ${fileName} (${bufferSize} bytes) → ${abs.replace(/\\/g, "/")}`,
+    );
+
+    try {
+      writeFileSync(abs, input.buffer);
+      this.writePipelineVoiceRefText(fileName, refText);
+    } catch (err) {
+      const code = err && typeof err === "object" && "code" in err ? String((err as NodeJS.ErrnoException).code) : "";
+      this.logger.error(
+        `pipeline-voices/upload: write failed file=${fileName} dir=${dir} code=${code}`,
+        err instanceof Error ? err.stack : String(err),
+      );
+      if (code === "EACCES" || code === "EPERM") {
+        throw new BadRequestException(
+          `Cannot write to ${dir.replace(/\\/g, "/")}. Grant write permission to the Nest process user, e.g. chown -R www-data tools/video-pipeline/voice`,
+        );
+      }
+      throw err;
+    }
 
     const verified = this.assertPipelineVoiceReady(fileName, refText);
     const stats = statSync(abs);
+    this.logger.log(
+      `pipeline-voices/upload: ok file=${fileName} size=${stats.size} refTextLen=${verified.refText.length}`,
+    );
     return {
       fileName,
       refText: verified.refText,
@@ -493,6 +611,10 @@ export class AudioService {
     created.queueJobId = queueJob.id ? String(queueJob.id) : null;
     const saved = await this.audioRepository.save(created);
 
+    this.logger.log(
+      `enqueue: audioHistoryId=${saved.id} queueJobId=${saved.queueJobId} voiceMode=${saved.voiceMode} refAudio=${refAudioPath}`,
+    );
+
     await this.logsService.createLog({
       userId: user.id,
       action: "audio.queued",
@@ -525,11 +647,24 @@ export class AudioService {
       throw new NotFoundException("Job not found");
     }
 
+    if (row.status === QueueJobStatus.PENDING || row.status === QueueJobStatus.RUNNING) {
+      this.requestCancel(id);
+    }
+
     if (row.queueJobId) {
       try {
         const job = await this.audioQueue.getJob(row.queueJobId);
         if (job) {
-          await job.remove();
+          const state = await job.getState();
+          if (state === "waiting" || state === "delayed") {
+            await job.remove();
+          } else if (state === "active") {
+            this.logger.warn(
+              `Queue job ${row.queueJobId} for audio ${id} is active; OmniVoice process cancelled, queue entry will clear when worker finishes`,
+            );
+          } else {
+            await job.remove();
+          }
         }
       } catch (err) {
         this.logger.warn(
@@ -554,6 +689,7 @@ export class AudioService {
     }
 
     await this.audioRepository.delete({ id, userId });
+    this.clearCancel(id);
 
     await this.logsService.createLog({
       userId,
@@ -662,15 +798,18 @@ export class AudioService {
     const rawSpeed = Number(config.speed ?? 1);
     const playbackSpeed = Number.isFinite(rawSpeed) ? Math.min(2, Math.max(0.5, rawSpeed)) : 1;
 
-    await this.spawnOmnivoiceTts({
-      text: history.inputText,
-      outWav: outPath,
-      refAudio: refAudioPath,
-      refText,
-      language,
-      pauseSettings,
-      playbackSpeed,
-    });
+    await this.spawnOmnivoiceTts(
+      {
+        text: history.inputText,
+        outWav: outPath,
+        refAudio: refAudioPath,
+        refText,
+        language,
+        pauseSettings,
+        playbackSpeed,
+      },
+      history.id,
+    );
 
     return outPath.replaceAll("\\", "/");
   }

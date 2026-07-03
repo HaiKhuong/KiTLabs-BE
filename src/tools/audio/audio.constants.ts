@@ -21,6 +21,15 @@ export const AUDIO_CLONE_UPLOAD_DIR = join(AUDIO_DATA_ROOT, "audio-clone");
 export const AUDIO_OUTPUT_DIR = join(AUDIO_DATA_ROOT, "audio-tts");
 export const AUDIO_PREVIEW_CACHE_DIR = join(AUDIO_DATA_ROOT, "audio-previews");
 
+/** Voice mẫu pipeline — mặc định trong repo: `tools/video-pipeline/voice`. */
+export function resolvePipelineVoiceDir(): string {
+  const raw = (process.env.PIPELINE_VOICE_DIR ?? process.env.AUDIO_PIPELINE_VOICE_DIR ?? "").trim();
+  if (raw) {
+    return resolve(raw);
+  }
+  return resolve(process.cwd(), VOICE_SAMPLES_DIR);
+}
+
 export const AUDIO_MAX_TEXT_CHARS = 2000;
 export const AUDIO_DEMO_PREVIEW_TEXT = "Xin chào, tôi là giọng đọc nhân tạo của AutoVietsub.";
 

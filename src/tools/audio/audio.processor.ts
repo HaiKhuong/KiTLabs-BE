@@ -1,11 +1,16 @@
 import { Logger } from "@nestjs/common";
 import { Processor, WorkerHost } from "@nestjs/bullmq";
-import { Job } from "bullmq";
+import { Job, UnrecoverableError } from "bullmq";
 
 import { ToolsRealtimeGateway } from "../realtime/tools-realtime.gateway";
 import { AUDIO_QUEUE_NAME, AudioService } from "./audio.service";
 
-@Processor(AUDIO_QUEUE_NAME)
+@Processor(AUDIO_QUEUE_NAME, {
+  concurrency: 1,
+  lockDuration: AudioService.resolveQueueLockDurationMs(),
+  stalledInterval: 120_000,
+  maxStalledCount: 2,
+})
 export class AudioProcessor extends WorkerHost {
   private readonly logger = new Logger(AudioProcessor.name);
 
@@ -19,18 +24,28 @@ export class AudioProcessor extends WorkerHost {
   async process(job: Job<{ audioHistoryId: string }>): Promise<void> {
     const audioHistoryId = job.data?.audioHistoryId;
     if (!audioHistoryId) {
-      throw new Error("audioHistoryId is required");
+      throw new UnrecoverableError("audioHistoryId is required");
     }
 
     const history = await this.audioService.getById(audioHistoryId);
     if (!history) {
-      throw new Error(`Audio history not found: ${audioHistoryId}`);
+      throw new UnrecoverableError(`Audio history not found: ${audioHistoryId}`);
+    }
+    if (this.audioService.isCancelled(audioHistoryId)) {
+      throw new UnrecoverableError(`Audio generation cancelled: ${audioHistoryId}`);
     }
 
     try {
+      this.logger.log(`Audio job ${job.id} started → historyId=${audioHistoryId}`);
       await this.audioService.processStarted(audioHistoryId);
+
+      if (this.audioService.isCancelled(audioHistoryId)) {
+        throw new UnrecoverableError(`Audio generation cancelled: ${audioHistoryId}`);
+      }
+
       const resultPath = await this.audioService.runGeneration(history);
       await this.audioService.processCompleted(audioHistoryId, resultPath);
+      this.logger.log(`Audio job ${job.id} completed → ${resultPath}`);
 
       const completed = await this.audioService.getById(audioHistoryId);
       const mapped = completed ? this.audioService.mapHistoryForClient(completed) : null;
@@ -45,7 +60,9 @@ export class AudioProcessor extends WorkerHost {
       const message = error instanceof Error ? error.message : String(error);
       const maxAttempts = job.opts.attempts != null ? Number(job.opts.attempts) : 1;
       const attemptsMade = job.attemptsMade != null ? Number(job.attemptsMade) : 0;
-      const willRetry = attemptsMade + 1 < maxAttempts;
+      const isUnrecoverable =
+        error instanceof UnrecoverableError || (error instanceof Error && error.name === "UnrecoverableError");
+      const willRetry = !isUnrecoverable && attemptsMade + 1 < maxAttempts;
 
       if (willRetry) {
         this.logger.warn(
@@ -54,13 +71,20 @@ export class AudioProcessor extends WorkerHost {
         throw error;
       }
 
-      await this.audioService.processFailed(audioHistoryId, message);
-      const failed = await this.audioService.getById(audioHistoryId);
-      this.realtimeGateway.notifyUser(failed?.userId ?? "all", "audio.failed", {
-        audioHistoryId,
-        errorMessage: message,
-        terminal: true,
-      });
+      this.logger.error(`Audio job ${job.id} failed (terminal): ${message}`);
+
+      const stillExists = await this.audioService.getById(audioHistoryId);
+      if (stillExists) {
+        await this.audioService.processFailed(audioHistoryId, message);
+        const failed = await this.audioService.getById(audioHistoryId);
+        this.realtimeGateway.notifyUser(failed?.userId ?? "all", "audio.failed", {
+          audioHistoryId,
+          errorMessage: message,
+          terminal: true,
+        });
+      } else {
+        this.logger.warn(`Audio job ${job.id} finished after history ${audioHistoryId} was deleted`);
+      }
       throw error;
     }
   }
