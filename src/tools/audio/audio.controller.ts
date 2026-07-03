@@ -4,7 +4,6 @@ import {
   Controller,
   Delete,
   Get,
-  Logger,
   Param,
   Post,
   Query,
@@ -46,8 +45,6 @@ const resolveCloneDestination = (req: UploadRequest): string => {
 @ApiBearerAuth("bearer")
 @Controller("tools/audio")
 export class AudioController {
-  private readonly logger = new Logger(AudioController.name);
-
   constructor(private readonly audioService: AudioService) {}
 
   @ApiOperation({ summary: "List OmniVoice preset voices" })
@@ -187,14 +184,8 @@ export class AudioController {
     @Query("voiceName") voiceName?: string,
   ) {
     if (!file) {
-      this.logger.warn("pipeline-voices/upload: missing file in multipart body");
       throw new BadRequestException("file is required");
     }
-
-    this.logger.log(
-      `pipeline-voices/upload: originalName=${file.originalname} size=${file.size} mimetype=${file.mimetype} voiceName=${voiceName ?? "-"} refTextLen=${refText?.length ?? 0}`,
-    );
-
     return this.audioService.savePipelineVoiceUpload({
       originalName: file.originalname,
       voiceName,
@@ -214,9 +205,6 @@ export class AudioController {
   @Public()
   @Post("generate")
   generate(@Body() dto: CreateAudioJobDto) {
-    this.logger.log(
-      `generate: userId=${dto.userId} voiceMode=${dto.voiceMode} voiceId=${dto.voiceId ?? "-"} textLen=${dto.text?.length ?? 0}`,
-    );
     return this.audioService.enqueue(dto);
   }
 

@@ -36,7 +36,6 @@ export class AudioProcessor extends WorkerHost {
     }
 
     try {
-      this.logger.log(`Audio job ${job.id} started → historyId=${audioHistoryId}`);
       await this.audioService.processStarted(audioHistoryId);
 
       if (this.audioService.isCancelled(audioHistoryId)) {
@@ -45,7 +44,6 @@ export class AudioProcessor extends WorkerHost {
 
       const resultPath = await this.audioService.runGeneration(history);
       await this.audioService.processCompleted(audioHistoryId, resultPath);
-      this.logger.log(`Audio job ${job.id} completed → ${resultPath}`);
 
       const completed = await this.audioService.getById(audioHistoryId);
       const mapped = completed ? this.audioService.mapHistoryForClient(completed) : null;
@@ -70,8 +68,6 @@ export class AudioProcessor extends WorkerHost {
         );
         throw error;
       }
-
-      this.logger.error(`Audio job ${job.id} failed (terminal): ${message}`);
 
       const stillExists = await this.audioService.getById(audioHistoryId);
       if (stillExists) {

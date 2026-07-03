@@ -1,4 +1,4 @@
-import { ArgumentsHost, Catch, ExceptionFilter, HttpException, HttpStatus, Logger } from "@nestjs/common";
+import { ArgumentsHost, Catch, ExceptionFilter, HttpException, HttpStatus } from "@nestjs/common";
 import { Request, Response } from "express";
 
 type RequestWithId = Request & {
@@ -7,8 +7,6 @@ type RequestWithId = Request & {
 
 @Catch()
 export class HttpExceptionFilter implements ExceptionFilter {
-  private readonly logger = new Logger(HttpExceptionFilter.name);
-
   catch(exception: unknown, host: ArgumentsHost): void {
     const ctx = host.switchToHttp();
     const response = ctx.getResponse<Response>();
@@ -27,19 +25,6 @@ export class HttpExceptionFilter implements ExceptionFilter {
         : String(exceptionResponse.message);
     } else if (exception instanceof Error) {
       message = exception.message;
-    }
-
-    const path = request.originalUrl ?? request.url;
-    if (path.includes("/tools/audio")) {
-      const requestId = request.requestId ?? "-";
-      if (status >= 500) {
-        this.logger.error(
-          `[${requestId}] ${request.method} ${path} → ${status}: ${message}`,
-          exception instanceof Error ? exception.stack : undefined,
-        );
-      } else {
-        this.logger.warn(`[${requestId}] ${request.method} ${path} → ${status}: ${message}`);
-      }
     }
 
     response.status(status).json({

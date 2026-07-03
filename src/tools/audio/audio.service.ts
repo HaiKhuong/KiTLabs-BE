@@ -172,9 +172,6 @@ export class AudioService {
     };
 
     const pythonBin = this.resolvePythonBin();
-    this.logger.log(
-      `OmniVoice spawn: historyId=${audioHistoryId ?? "-"} python=${pythonBin} cwd=${scriptDir} textLen=${opts.text.length} refAudio=${refAudio} outWav=${outWav} timeoutMs=${timeoutMs}`,
-    );
 
     await new Promise<void>((resolvePromise, rejectPromise) => {
       const child: ChildProcess = spawn(pythonBin, ["-c", AudioService.OMNIVOICE_INLINE_PY], {
@@ -201,14 +198,9 @@ export class AudioService {
       };
 
       child.stderr?.on("data", (buf: Buffer) => {
-        const chunk = buf.toString("utf8");
-        stderr += chunk;
+        stderr += buf.toString("utf8");
         if (stderr.length > AudioService.MAX_LOG_BUFFER) {
           stderr = stderr.slice(-AudioService.MAX_LOG_BUFFER);
-        }
-        const line = chunk.trim();
-        if (line) {
-          this.logger.debug(`OmniVoice stderr [${audioHistoryId ?? "preview"}]: ${line}`);
         }
       });
       child.on("error", (err) => {
@@ -223,14 +215,9 @@ export class AudioService {
         }
         if (code !== 0) {
           const suffix = signal ? ` (signal ${signal})` : "";
-          const detail = stderr.trim() || `OmniVoice exited with code ${code}${suffix}`;
-          this.logger.error(
-            `OmniVoice failed: historyId=${audioHistoryId ?? "-"} code=${code} signal=${signal ?? "-"} detail=${detail.slice(-500)}`,
-          );
-          rejectPromise(new Error(detail));
+          rejectPromise(new Error(stderr.trim() || `OmniVoice exited with code ${code}${suffix}`));
           return;
         }
-        this.logger.log(`OmniVoice done: historyId=${audioHistoryId ?? "-"} outWav=${outWav}`);
         resolvePromise();
       });
 
@@ -403,21 +390,16 @@ export class AudioService {
   }): PipelineVoiceDto {
     const refText = String(input.refText || "").trim();
     if (!refText) {
-      this.logger.warn("pipeline-voices/upload: refText is empty");
       throw new BadRequestException("refText is required");
     }
 
     const bufferSize = input.buffer?.length ?? 0;
     if (bufferSize <= 0) {
-      this.logger.warn(
-        `pipeline-voices/upload: empty file buffer originalName=${input.originalName} voiceName=${input.voiceName ?? "-"}`,
-      );
       throw new BadRequestException("Uploaded file is empty (0 bytes). Check multipart upload includes audio data.");
     }
 
     const ext = extname(input.originalName).toLowerCase();
     if (!PIPELINE_VOICE_ALLOWED_EXT.has(ext)) {
-      this.logger.warn(`pipeline-voices/upload: invalid ext=${ext} file=${input.originalName}`);
       throw new BadRequestException("Only .wav, .mp3, .m4a are allowed.");
     }
 
@@ -429,19 +411,11 @@ export class AudioService {
 
     const dir = this.ensurePipelineVoiceDir();
     const abs = join(dir, fileName);
-    this.logger.log(
-      `pipeline-voices/upload: writing ${fileName} (${bufferSize} bytes) → ${abs.replace(/\\/g, "/")}`,
-    );
-
     try {
       writeFileSync(abs, input.buffer);
       this.writePipelineVoiceRefText(fileName, refText);
     } catch (err) {
       const code = err && typeof err === "object" && "code" in err ? String((err as NodeJS.ErrnoException).code) : "";
-      this.logger.error(
-        `pipeline-voices/upload: write failed file=${fileName} dir=${dir} code=${code}`,
-        err instanceof Error ? err.stack : String(err),
-      );
       if (code === "EACCES" || code === "EPERM") {
         throw new BadRequestException(
           `Cannot write to ${dir.replace(/\\/g, "/")}. Grant write permission to the Nest process user, e.g. chown -R www-data tools/video-pipeline/voice`,
@@ -452,9 +426,6 @@ export class AudioService {
 
     const verified = this.assertPipelineVoiceReady(fileName, refText);
     const stats = statSync(abs);
-    this.logger.log(
-      `pipeline-voices/upload: ok file=${fileName} size=${stats.size} refTextLen=${verified.refText.length}`,
-    );
     return {
       fileName,
       refText: verified.refText,
@@ -610,10 +581,6 @@ export class AudioService {
     );
     created.queueJobId = queueJob.id ? String(queueJob.id) : null;
     const saved = await this.audioRepository.save(created);
-
-    this.logger.log(
-      `enqueue: audioHistoryId=${saved.id} queueJobId=${saved.queueJobId} voiceMode=${saved.voiceMode} refAudio=${refAudioPath}`,
-    );
 
     await this.logsService.createLog({
       userId: user.id,
