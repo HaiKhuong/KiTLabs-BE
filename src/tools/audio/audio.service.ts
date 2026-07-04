@@ -3,7 +3,7 @@ import { InjectQueue } from "@nestjs/bullmq";
 import { InjectRepository } from "@nestjs/typeorm";
 import { ChildProcess, spawn } from "child_process";
 import { Queue } from "bullmq";
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "fs";
 import { unlink } from "fs/promises";
 import { basename, extname, isAbsolute, join, resolve } from "path";
 import { Repository } from "typeorm";
@@ -236,6 +236,20 @@ export class AudioService {
     return outWav;
   }
 
+  /** Tìm file trong voice dir (khớp tên không phân biệt hoa thường). */
+  private findVoiceFileOnDisk(fileName: string): string | null {
+    const dir = this.resolvePipelineVoiceDir();
+    const safeName = basename(fileName);
+    if (!safeName || !existsSync(dir)) return null;
+
+    const exact = join(dir, safeName);
+    if (existsSync(exact)) return exact;
+
+    const target = safeName.toLowerCase();
+    const found = readdirSync(dir).find((name) => name.toLowerCase() === target);
+    return found ? join(dir, found) : null;
+  }
+
   listPresetVoices() {
     return AUDIO_PRESET_VOICES.map((voice) => ({
       id: voice.id,
@@ -257,8 +271,8 @@ export class AudioService {
   }
 
   resolvePresetRefAudioPath(refWav: string): string {
-    const path = join(this.resolvePipelineVoiceDir(), basename(refWav));
-    if (!existsSync(path)) {
+    const path = this.findVoiceFileOnDisk(refWav);
+    if (!path) {
       throw new BadRequestException(`Preset reference audio missing on server: ${basename(refWav)}`);
     }
     return path;
@@ -643,11 +657,25 @@ export class AudioService {
     return saved;
   }
 
-  async getHistory(userId: string): Promise<AudioHistory[]> {
-    return this.audioRepository.find({
+  async getHistory(
+    userId: string,
+    options?: { page?: number; limit?: number },
+  ): Promise<{ items: AudioHistory[]; total: number; page: number; limit: number; hasMore: boolean }> {
+    const page = Math.max(1, Number(options?.page ?? 1) || 1);
+    const limit = Math.min(50, Math.max(1, Number(options?.limit ?? 20) || 20));
+    const [items, total] = await this.audioRepository.findAndCount({
       where: { userId },
       order: { createdAt: "DESC" },
+      skip: (page - 1) * limit,
+      take: limit,
     });
+    return {
+      items,
+      total,
+      page,
+      limit,
+      hasMore: page * limit < total,
+    };
   }
 
   async getById(id: string): Promise<AudioHistory | null> {
@@ -711,11 +739,19 @@ export class AudioService {
     });
   }
 
+  async deleteAllHistory(userId: string): Promise<{ deleted: number }> {
+    const rows = await this.audioRepository.find({ where: { userId } });
+    for (const row of rows) {
+      await this.deleteHistory(userId, row.id);
+    }
+    return { deleted: rows.length };
+  }
+
   mapHistoryForClient(row: AudioHistory) {
     return {
       id: row.id,
       name: row.displayName,
-      detail: `${row.voiceMode === "preset" ? "Giọng mẫu" : "Clone"} · ${row.status}`,
+      detail: row.voiceMode === "preset" ? "Giọng mẫu" : "Clone",
       completed: row.status === QueueJobStatus.COMPLETED,
       status: row.status,
       voiceMode: row.voiceMode,

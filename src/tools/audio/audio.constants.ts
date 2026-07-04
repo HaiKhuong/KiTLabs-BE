@@ -87,6 +87,17 @@ export const AUDIO_PRESET_VOICES: AudioPresetVoice[] = [
     refText:
       "Chào bạn, tôi đang thực hiện một thử nghiệm để tạo ra bản sao kỹ thuật số cho giọng nói của mình. Quá trình này đòi hỏi sự rõ ràng, nhịp điệu tự nhiên và một chút cảm xúc trong từng câu chữ.",
   },
+  {
+    id: "minh-quan",
+    name: "Minh Quân",
+    tags: ["Nam", "MP3"],
+    language: "vi",
+    gender: "male",
+    avatar: "👨",
+    refWav: "Minh_Quan.mp3",
+    refText:
+      "Chào bạn, tôi đang thực hiện một thử nghiệm để tạo ra bản sao kỹ thuật số cho giọng nói của mình. Quá trình này đòi hỏi sự rõ ràng, nhịp điệu tự nhiên và một chút cảm xúc trong từng câu chữ.",
+  },
 ];
 
 export function findPresetVoice(voiceId: string): AudioPresetVoice | undefined {
