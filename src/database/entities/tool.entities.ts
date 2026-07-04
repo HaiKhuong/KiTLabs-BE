@@ -6,6 +6,7 @@ import { Notification } from "../../tools/notifications/notification.entity";
 import { Setting } from "../../tools/settings/setting.entity";
 import { UserSettingProfile } from "../../tools/settings/user-setting-profile.entity";
 import { UserSetting } from "../../tools/settings/user-setting.entity";
+import { AudioCloneVoice } from "../../tools/audio/audio-clone-voice.entity";
 import { AudioHistory } from "../../tools/audio/audio-history.entity";
 import { TranslateHistory } from "../../tools/translate/translate-history.entity";
 import { User } from "../../tools/users/user.entity";
@@ -25,6 +26,7 @@ export const TOOL_DB_ENTITIES = [
   CreditHistory,
   UserActionLog,
   AudioHistory,
+  AudioCloneVoice,
   TranslateHistory,
   DownloadHistory,
   VideoDownload,

@@ -3,7 +3,7 @@ import { InjectQueue } from "@nestjs/bullmq";
 import { InjectRepository } from "@nestjs/typeorm";
 import { ChildProcess, spawn } from "child_process";
 import { Queue } from "bullmq";
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "fs";
 import { unlink } from "fs/promises";
 import { basename, extname, isAbsolute, join, resolve } from "path";
 import { Repository } from "typeorm";
@@ -25,6 +25,7 @@ import {
   resolveOmnivoiceLanguage,
   resolvePreviewTtsText,
 } from "./audio.constants";
+import { AudioCloneVoice } from "./audio-clone-voice.entity";
 import { AudioHistory } from "./audio-history.entity";
 import { CreateAudioJobDto } from "./dto/create-audio-job.dto";
 
@@ -33,6 +34,8 @@ export const AUDIO_QUEUE_NAME = "audio-tts";
 const PIPELINE_VOICE_ALLOWED_EXT = new Set([".wav", ".mp3", ".m4a"]);
 
 export type PipelineVoiceDto = {
+  id?: string;
+  displayName?: string;
   fileName: string;
   refText: string;
   size: number;
@@ -56,6 +59,8 @@ export class AudioService {
     private readonly audioQueue: Queue,
     @InjectRepository(AudioHistory, "tool")
     private readonly audioRepository: Repository<AudioHistory>,
+    @InjectRepository(AudioCloneVoice, "tool")
+    private readonly cloneVoiceRepository: Repository<AudioCloneVoice>,
     @InjectRepository(User, "tool")
     private readonly userRepository: Repository<User>,
     @InjectRepository(CreditHistory, "tool")
@@ -286,10 +291,10 @@ export class AudioService {
   }
 
   /** Kiểm tra file giọng mẫu nằm đúng tools/video-pipeline/voice (dùng cho translate Step3). */
-  assertPipelineVoiceReady(
+  async assertPipelineVoiceReady(
     refWav: string,
     refTextOverride?: string,
-  ): { fileName: string; voiceDir: string; absolutePath: string; refText: string } {
+  ): Promise<{ fileName: string; voiceDir: string; absolutePath: string; refText: string }> {
     const fileName = basename(String(refWav || "").trim());
     if (!fileName) {
       throw new BadRequestException("omnivoiceRefWav is required");
@@ -301,8 +306,14 @@ export class AudioService {
       );
     }
 
+    const row = await this.cloneVoiceRepository.findOne({ where: { fileName } });
     const voiceDir = this.resolvePipelineVoiceDir();
-    const absolutePath = join(voiceDir, fileName);
+    const absolutePath = row?.filePath
+      ? isAbsolute(row.filePath)
+        ? row.filePath
+        : resolve(process.cwd(), row.filePath)
+      : join(voiceDir, fileName);
+
     if (!existsSync(absolutePath)) {
       throw new BadRequestException(
         `Voice sample not found: ${fileName}. Expected under ${voiceDir.replace(/\\/g, "/")}. Upload via Clone Voice menu.`,
@@ -315,7 +326,9 @@ export class AudioService {
     }
 
     const refText =
-      String(refTextOverride || "").trim() || this.readPipelineVoiceRefText(fileName);
+      String(refTextOverride || "").trim() ||
+      row?.refText?.trim() ||
+      this.readPipelineVoiceRefText(fileName);
     if (!refText) {
       throw new BadRequestException(
         `Missing ref text for voice "${fileName}". Upload with refText or add ${basename(fileName, ext)}.ref.txt in voice folder.`,
@@ -361,33 +374,36 @@ export class AudioService {
     writeFileSync(this.pipelineVoiceRefSidecarPath(fileName), trimmed, "utf8");
   }
 
-  listPipelineVoices(): PipelineVoiceDto[] {
-    const dir = this.resolvePipelineVoiceDir();
-    if (!existsSync(dir)) {
-      return [];
-    }
-
-    return readdirSync(dir)
-      .filter((name) => PIPELINE_VOICE_ALLOWED_EXT.has(extname(name).toLowerCase()))
-      .map((fileName) => {
-        const abs = join(dir, fileName);
-        const stats = statSync(abs);
-        return {
-          fileName,
-          refText: this.readPipelineVoiceRefText(fileName),
-          size: stats.size,
-          updatedAt: stats.mtime.toISOString(),
-        };
-      })
-      .sort((a, b) => a.fileName.localeCompare(b.fileName));
+  private mapCloneVoiceRow(row: AudioCloneVoice): PipelineVoiceDto {
+    const abs = isAbsolute(row.filePath) ? row.filePath : resolve(process.cwd(), row.filePath);
+    const sizeOnDisk = existsSync(abs) ? statSync(abs).size : row.fileSize;
+    return {
+      id: row.id,
+      displayName: row.displayName,
+      fileName: row.fileName,
+      refText: row.refText,
+      size: sizeOnDisk,
+      updatedAt: row.updatedAt.toISOString(),
+      voiceDir: this.resolvePipelineVoiceDir().replace(/\\/g, "/"),
+      absolutePath: abs.replace(/\\/g, "/"),
+      verified: existsSync(abs) && sizeOnDisk > 0,
+    };
   }
 
-  savePipelineVoiceUpload(input: {
+  async listPipelineVoices(): Promise<PipelineVoiceDto[]> {
+    const rows = await this.cloneVoiceRepository.find({
+      order: { updatedAt: "DESC" },
+    });
+    return rows.map((row) => this.mapCloneVoiceRow(row));
+  }
+
+  async savePipelineVoiceUpload(input: {
     originalName: string;
     voiceName?: string;
     refText: string;
     buffer: Buffer;
-  }): PipelineVoiceDto {
+    userId?: string;
+  }): Promise<PipelineVoiceDto> {
     const refText = String(input.refText || "").trim();
     if (!refText) {
       throw new BadRequestException("refText is required");
@@ -403,10 +419,10 @@ export class AudioService {
       throw new BadRequestException("Only .wav, .mp3, .m4a are allowed.");
     }
 
-    const rawBase =
+    const displayName =
       String(input.voiceName || "").trim() ||
       basename(input.originalName, extname(input.originalName));
-    const safeBase = this.sanitizeVoiceFileStem(rawBase);
+    const safeBase = this.sanitizeVoiceFileStem(displayName);
     const fileName = `${safeBase}${ext}`;
 
     const dir = this.ensurePipelineVoiceDir();
@@ -424,22 +440,52 @@ export class AudioService {
       throw err;
     }
 
-    const verified = this.assertPipelineVoiceReady(fileName, refText);
+    const verified = await this.assertPipelineVoiceReady(fileName, refText);
     const stats = statSync(abs);
+    const relativePath = join("tools", "video-pipeline", "voice", fileName).replace(/\\/g, "/");
+    const mimeType =
+      ext === ".mp3" ? "audio/mpeg" : ext === ".m4a" ? "audio/mp4" : ext === ".wav" ? "audio/wav" : null;
+
+    let userId: string | null = null;
+    if (input.userId?.trim()) {
+      const user = await this.userRepository.findOne({ where: { id: input.userId.trim() } });
+      userId = user?.id ?? null;
+    }
+
+    const existing = await this.cloneVoiceRepository.findOne({ where: { fileName } });
+    const row = existing
+      ? Object.assign(existing, {
+          displayName,
+          refText,
+          filePath: relativePath,
+          fileSize: stats.size,
+          mimeType,
+          userId: userId ?? existing.userId,
+        })
+      : this.cloneVoiceRepository.create({
+          displayName,
+          fileName,
+          refText,
+          filePath: relativePath,
+          fileSize: stats.size,
+          mimeType,
+          userId,
+        });
+
+    const saved = await this.cloneVoiceRepository.save(row);
     return {
-      fileName,
-      refText: verified.refText,
-      size: stats.size,
-      updatedAt: stats.mtime.toISOString(),
+      ...this.mapCloneVoiceRow(saved),
       voiceDir: verified.voiceDir.replace(/\\/g, "/"),
       absolutePath: verified.absolutePath.replace(/\\/g, "/"),
       verified: true,
     };
   }
 
-  private resolveCloneReference(dto: CreateAudioJobDto): { refAudioPath: string; refText: string } {
+  private async resolveCloneReference(
+    dto: CreateAudioJobDto,
+  ): Promise<{ refAudioPath: string; refText: string }> {
     if (dto.pipelineRefWav?.trim()) {
-      const verified = this.assertPipelineVoiceReady(
+      const verified = await this.assertPipelineVoiceReady(
         dto.pipelineRefWav.trim(),
         dto.cloneRefText?.trim(),
       );
@@ -534,7 +580,7 @@ export class AudioService {
       refAudioPath = this.resolvePresetRefAudioPath(preset.refWav);
       refText = preset.refText;
     } else {
-      const resolved = this.resolveCloneReference(dto);
+      const resolved = await this.resolveCloneReference(dto);
       refAudioPath = resolved.refAudioPath;
       refText = resolved.refText;
     }

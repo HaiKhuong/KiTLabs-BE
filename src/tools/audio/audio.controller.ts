@@ -151,14 +151,15 @@ export class AudioController {
   @ApiOperation({ summary: "List voice samples under tools/video-pipeline/voice (translate Step3)" })
   @Public()
   @Get("pipeline-voices")
-  listPipelineVoices() {
+  async listPipelineVoices() {
     return this.audioService.listPipelineVoices();
   }
 
-  @ApiOperation({ summary: "Upload voice sample + ref text to tools/video-pipeline/voice" })
+  @ApiOperation({ summary: "Upload voice sample + ref text (file on disk + row in DB)" })
   @ApiConsumes("multipart/form-data")
   @ApiQuery({ name: "refText", required: true, description: "Transcript of the reference clip" })
-  @ApiQuery({ name: "voiceName", required: false, description: "Optional safe filename stem" })
+  @ApiQuery({ name: "voiceName", required: false, description: "Optional display name / filename stem" })
+  @ApiQuery({ name: "userId", required: false, description: "Owner user id (optional)" })
   @ApiBody({
     schema: { type: "object", properties: { file: { type: "string", format: "binary" } }, required: ["file"] },
   })
@@ -178,10 +179,11 @@ export class AudioController {
       },
     }),
   )
-  uploadPipelineVoice(
+  async uploadPipelineVoice(
     @UploadedFile() file: Express.Multer.File,
     @Query("refText") refText?: string,
     @Query("voiceName") voiceName?: string,
+    @Query("userId") userId?: string,
   ) {
     if (!file) {
       throw new BadRequestException("file is required");
@@ -191,14 +193,28 @@ export class AudioController {
       voiceName,
       refText: refText ?? "",
       buffer: file.buffer,
+      userId,
     });
   }
 
   @ApiOperation({ summary: "Verify pipeline voice file exists under tools/video-pipeline/voice" })
   @Public()
   @Get("pipeline-voices/:fileName/verify")
-  verifyPipelineVoice(@Param("fileName") fileName: string) {
+  async verifyPipelineVoice(@Param("fileName") fileName: string) {
     return this.audioService.assertPipelineVoiceReady(fileName);
+  }
+
+  @ApiOperation({ summary: "Stream reference audio file for a pipeline voice" })
+  @Public()
+  @Get("pipeline-voices/:fileName/stream")
+  async streamPipelineVoice(@Param("fileName") fileName: string, @Res() res: Response) {
+    const info = await this.audioService.assertPipelineVoiceReady(fileName);
+    const ext = extname(fileName).toLowerCase();
+    let contentType = "audio/wav";
+    if (ext === ".mp3") contentType = "audio/mpeg";
+    if (ext === ".m4a") contentType = "audio/mp4";
+    res.setHeader("Content-Type", contentType);
+    return res.sendFile(info.absolutePath);
   }
 
   @ApiOperation({ summary: "Enqueue OmniVoice TTS job" })

@@ -61,7 +61,7 @@ export class TranslateService {
     const normalizedSteps = this.normalizeSteps(dto.stepNbr);
     const functionUsed = normalizedSteps.map((step) => STEP_TO_FUNCTION_CODE[step]);
 
-    this.validateOmnivoiceConfigForTranslate(normalizedSteps, dto.engineConfig);
+    await this.validateOmnivoiceConfigForTranslate(normalizedSteps, dto.engineConfig);
 
     const history = this.translateRepository.create({
       userId: dto.userId,
@@ -350,10 +350,10 @@ export class TranslateService {
     return normalized;
   }
 
-  private validateOmnivoiceConfigForTranslate(
+  private async validateOmnivoiceConfigForTranslate(
     steps: number[],
     engineConfig?: TranslateEngineConfigDto | null,
-  ): void {
+  ): Promise<void> {
     if (!steps.includes(3) || !engineConfig) {
       return;
     }
@@ -373,7 +373,7 @@ export class TranslateService {
       this.pickConfigValue(config, ["omnivoiceRefText", "omnivoice_ref_text"]) ?? "",
     ).trim();
 
-    this.audioService.assertPipelineVoiceReady(refWav, refText || undefined);
+    await this.audioService.assertPipelineVoiceReady(refWav, refText || undefined);
   }
 
   private pickConfigValue(engineConfig: Record<string, unknown>, keys: string[]): unknown {
