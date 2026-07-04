@@ -1,5 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
-import { IsNotEmpty, IsOptional, IsString, IsUUID } from "class-validator";
+import { IsIn, IsNotEmpty, IsOptional, IsString, IsUUID } from "class-validator";
 
 export class ExecuteAiTaskDto {
   @ApiPropertyOptional({ description: "User UUID" })
@@ -7,15 +7,25 @@ export class ExecuteAiTaskDto {
   @IsUUID()
   userId?: string;
 
-  @ApiPropertyOptional({ description: "Provider id", default: "openai" })
-  @IsOptional()
+  @ApiProperty({ description: "Provider id", default: "openai", example: "openai" })
   @IsString()
-  provider?: string;
+  @IsNotEmpty()
+  provider!: string;
 
-  @ApiProperty({ description: "Model id, e.g. gpt-2.5-flash" })
+  @ApiProperty({ description: "Model id, e.g. gpt-2.5-flash", example: "gpt-2.5-flash" })
   @IsString()
   @IsNotEmpty()
   model!: string;
+
+  @ApiProperty({
+    description: "Gemini key pool — normal = GEMINI_API_KEY; vip = GEMINI_API_KEY_VIP",
+    enum: ["normal", "vip"],
+    default: "normal",
+    example: "normal",
+  })
+  @IsString()
+  @IsIn(["normal", "vip"])
+  apiKeyTier: "normal" | "vip" = "normal";
 
   @ApiProperty({ description: "Prompt template; may contain {{script}}" })
   @IsString()
