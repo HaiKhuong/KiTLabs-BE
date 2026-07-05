@@ -1,8 +1,6 @@
 import { BadRequestException, Injectable, Logger } from "@nestjs/common";
 
-import { QueueJobStatus } from "../../common/enums/domain.enums";
-import { AudioService } from "../audio/audio.service";
-import { CreateAudioJobDto } from "../audio/dto/create-audio-job.dto";
+import { AudioService } from "../audio/audio.service";import { CreateAudioJobDto } from "../audio/dto/create-audio-job.dto";
 import { ExecuteVoiceDto } from "./dto/execute-voice.dto";
 
 type SceneRow = {
@@ -34,16 +32,7 @@ export type ExecuteVoiceResult = {
   failedCount: number;
 };
 
-type PollResult =
-  | { status: "completed" }
-  | { status: "failed"; message: string };
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function asRecord(value: unknown): Record<string, unknown> | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+function asRecord(value: unknown): Record<string, unknown> | null {  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   return value as Record<string, unknown>;
 }
 
@@ -154,16 +143,7 @@ export class VideosVoiceService {
 
   constructor(private readonly audioService: AudioService) {}
 
-  private resolvePollTimeoutMs(): number {
-    return Number(process.env.VIDEOS_VOICE_POLL_TIMEOUT_MS ?? 600_000);
-  }
-
-  private resolvePollIntervalMs(): number {
-    return Number(process.env.VIDEOS_VOICE_POLL_INTERVAL_MS ?? 1_500);
-  }
-
-  /** Số scene mỗi cụm TTS (1–10). Env VIDEOS_VOICE_BATCH_SIZE, mặc định 5. */
-  private resolveBatchSize(override?: number): number {
+  /** Số scene mỗi cụm TTS (1–10). Env VIDEOS_VOICE_BATCH_SIZE, mặc định 5. */  private resolveBatchSize(override?: number): number {
     const fromDto = override != null && Number.isFinite(override) ? Math.floor(override) : 0;
     const fromEnv = Number(process.env.VIDEOS_VOICE_BATCH_SIZE ?? 5);
     const raw = fromDto > 0 ? fromDto : fromEnv;
@@ -190,65 +170,34 @@ export class VideosVoiceService {
       `[Voice] Cụm ${batchNo}/${batchTotal} — bắt đầu ${batch.length} scene [${sceneNumbers}] | tiến độ trước cụm: ${doneBefore}/${progress.total} (OK ${progress.completed}, lỗi ${progress.failed})`,
     );
 
-    const queued: { scene: SceneRow; jobId: string }[] = [];
-
-    for (const scene of batch) {
+    for (const scene of batch) {      const sceneStarted = Date.now();
       try {
-        const history = await this.audioService.enqueue(this.buildJobDto(dto, scene.voiceOver));
-        queued.push({ scene, jobId: history.id });
-      } catch (err) {
-        const message = errorMessage(err);
+        const history = await this.audioService.synthesizeInline(this.buildJobDto(dto, scene.voiceOver), {
+          fastDirect: true,
+        });
+        const elapsedSec = ((Date.now() - sceneStarted) / 1000).toFixed(1);
+        const mapped = this.audioService.mapHistoryForClient(history);
+        progress.completed += 1;
+        this.logger.log(
+          `[Voice] Cụm ${batchNo}/${batchTotal} scene ${scene.sceneNumber} OK (${elapsedSec}s) — đã generate ${progress.completed}/${progress.total}, lỗi ${progress.failed}`,
+        );
+        segments.push({
+          sceneNumber: scene.sceneNumber,
+          startTime: scene.startTime,
+          endTime: scene.endTime,
+          voiceOver: scene.voiceOver,
+          jobId: history.id,
+          status: "completed",
+          playUrl: mapped.playUrl,
+          downloadUrl: mapped.downloadUrl,
+        });
+      } catch (err) {        const message = errorMessage(err);
         progress.failed += 1;
         this.logger.warn(
-          `[Voice] Cụm ${batchNo}/${batchTotal} enqueue scene ${scene.sceneNumber} FAIL — đã xử lý ${progress.completed + progress.failed}/${progress.total}: ${message}`,
+          `[Voice] Cụm ${batchNo}/${batchTotal} scene ${scene.sceneNumber} TTS FAIL — đã xử lý ${progress.completed + progress.failed}/${progress.total}: ${message}`,
         );
         segments.push(failedSegment(scene, message));
       }
-    }
-
-    this.logger.log(
-      `[Voice] Cụm ${batchNo}/${batchTotal} — đã enqueue ${queued.length}/${batch.length} job, chờ TTS…`,
-    );
-
-    for (const { scene, jobId } of queued) {
-      const pollStarted = Date.now();
-      const outcome = await this.pollAudioJob(jobId);
-      const elapsedSec = ((Date.now() - pollStarted) / 1000).toFixed(1);
-
-      if (outcome.status === "failed") {
-        progress.failed += 1;
-        this.logger.warn(
-          `[Voice] Cụm ${batchNo}/${batchTotal} scene ${scene.sceneNumber} TTS FAIL (${elapsedSec}s) — đã generate ${progress.completed}/${progress.total}, lỗi ${progress.failed}: ${outcome.message}`,
-        );
-        segments.push(failedSegment(scene, outcome.message, jobId));
-        continue;
-      }
-
-      const row = await this.audioService.getById(jobId);
-      if (!row) {
-        progress.failed += 1;
-        this.logger.warn(
-          `[Voice] Cụm ${batchNo}/${batchTotal} scene ${scene.sceneNumber} missing job sau complete — đã xử lý ${progress.completed + progress.failed}/${progress.total}`,
-        );
-        segments.push(failedSegment(scene, `Audio job not found after complete: ${jobId}`, jobId));
-        continue;
-      }
-
-      const mapped = this.audioService.mapHistoryForClient(row);
-      progress.completed += 1;
-      this.logger.log(
-        `[Voice] Cụm ${batchNo}/${batchTotal} scene ${scene.sceneNumber} OK (${elapsedSec}s) — đã generate ${progress.completed}/${progress.total}, lỗi ${progress.failed}`,
-      );
-      segments.push({
-        sceneNumber: scene.sceneNumber,
-        startTime: scene.startTime,
-        endTime: scene.endTime,
-        voiceOver: scene.voiceOver,
-        jobId,
-        status: "completed",
-        playUrl: mapped.playUrl,
-        downloadUrl: mapped.downloadUrl,
-      });
     }
 
     this.logger.log(
@@ -256,31 +205,7 @@ export class VideosVoiceService {
     );
   }
 
-  /** Poll job — không throw, để caller tiếp tục scene khác. */
-  private async pollAudioJob(jobId: string): Promise<PollResult> {
-    const timeoutMs = this.resolvePollTimeoutMs();
-    const intervalMs = this.resolvePollIntervalMs();
-    const started = Date.now();
-
-    while (Date.now() - started < timeoutMs) {
-      const row = await this.audioService.getById(jobId);
-      if (!row) {
-        return { status: "failed", message: `Audio job not found: ${jobId}` };
-      }
-      if (row.status === QueueJobStatus.COMPLETED) {
-        return { status: "completed" };
-      }
-      if (row.status === QueueJobStatus.FAILED) {
-        return { status: "failed", message: row.errorMessage?.trim() || "TTS failed" };
-      }
-      await sleep(intervalMs);
-    }
-
-    return { status: "failed", message: `TTS timed out after ${timeoutMs}ms` };
-  }
-
-  private buildJobDto(dto: ExecuteVoiceDto, text: string): CreateAudioJobDto {
-    const job: CreateAudioJobDto = {
+  private buildJobDto(dto: ExecuteVoiceDto, text: string): CreateAudioJobDto {    const job: CreateAudioJobDto = {
       userId: dto.userId,
       text,
       voiceMode: dto.voiceMode,

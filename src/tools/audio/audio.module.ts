@@ -9,6 +9,7 @@ import { User } from "../users/user.entity";
 import { AudioController } from "./audio.controller";
 import { AudioCloneVoice } from "./audio-clone-voice.entity";
 import { AudioHistory } from "./audio-history.entity";
+import { OmnivoiceDaemonClient } from "./omnivoice-daemon.client";
 import { AudioProcessor } from "./audio.processor";
 import { AUDIO_QUEUE_NAME, AudioService } from "./audio.service";
 
@@ -20,7 +21,7 @@ import { AUDIO_QUEUE_NAME, AudioService } from "./audio.service";
     NotificationsModule,
   ],
   controllers: [AudioController],
-  providers: [AudioService, AudioProcessor],
+  providers: [AudioService, AudioProcessor, OmnivoiceDaemonClient],
   exports: [AudioService],
 })
 export class AudioModule {}
