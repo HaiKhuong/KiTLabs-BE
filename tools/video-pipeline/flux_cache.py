@@ -3,11 +3,15 @@ Cache HF / torch cho FLUX text-to-image (riêng, không đụng pipeline_cache.p
 
 Mặc định: tools/video-pipeline/cache/flux (ngang hàng cache/omnivoice)
 Token: HF_TOKEN
+
+Kích thước kỳ vọng (Linux + symlink): ~23–34 GiB cho FLUX.1-schnell (một revision).
+Tránh HF_HUB_DISABLE_SYMLINKS trên Linux — mỗi lần tải/revision sẽ COPY full file → 2×–3× disk.
 """
 
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 _PIPELINE_DIR = Path(__file__).resolve().parent
@@ -38,9 +42,16 @@ def configure_flux_cache_env() -> Path:
         path.mkdir(parents=True, exist_ok=True)
     os.environ["HF_HOME"] = str(hf_home)
     os.environ["HUGGINGFACE_HUB_CACHE"] = str(hub)
-    os.environ["TRANSFORMERS_CACHE"] = str(hf_home)
+    # Cùng cây với hub — tránh tải model 2 lần (hub + thư mục transformers legacy dưới HF_HOME).
+    os.environ["TRANSFORMERS_CACHE"] = str(hub)
     os.environ["TORCH_HOME"] = str(torch_home)
-    os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS", "1")
+
+    # Chỉ Windows cần tắt symlink. Linux/WSL: BẮT BUỘC symlink để blobs dedup (~23GB, không phải 54GB+).
+    if sys.platform == "win32":
+        os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS", "1")
+    else:
+        os.environ.pop("HF_HUB_DISABLE_SYMLINKS", None)
+
     resolve_hf_token()
     return base
 

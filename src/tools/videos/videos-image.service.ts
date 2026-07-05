@@ -1,8 +1,8 @@
 import { BadRequestException, Injectable, Logger } from "@nestjs/common";
 import { ChildProcess, spawn } from "child_process";
 import { randomUUID } from "crypto";
-import { existsSync, mkdirSync } from "fs";
-import { join, resolve } from "path";
+import { existsSync, mkdirSync, rmSync } from "fs";
+import { dirname, join, resolve } from "path";
 
 import { VIDEO_PIPELINE_DIR } from "../audio/audio.constants";
 import { GenerateStudioImageDto } from "../images/dto/generate-studio-image.dto";
@@ -144,6 +144,8 @@ function failedImage(scene: SceneRow, message: string): ImageSegmentResult {
 @Injectable()
 export class VideosImageService {
   private readonly logger = new Logger(VideosImageService.name);
+  /** Chỉ 1 process Python FLUX tại một thời điểm — tránh OOM khi nhiều job chồng nhau. */
+  private fluxChain: Promise<unknown> = Promise.resolve();
 
   private resolvePythonBin(): string {
     return (
@@ -194,7 +196,27 @@ export class VideosImageService {
     };
   }
 
+  private runExclusiveFlux<T>(task: () => Promise<T>): Promise<T> {
+    const run = this.fluxChain.then(task);
+    this.fluxChain = run.catch(() => undefined);
+    return run;
+  }
+
+  private removeStudioOutputIfEmpty(outPath: string): void {
+    try {
+      if (existsSync(outPath)) return;
+      const dir = dirname(outPath);
+      rmSync(dir, { recursive: true, force: true });
+    } catch {
+      // best-effort — thư mục output rỗng sau job fail
+    }
+  }
+
   private async spawnFluxImageGen(payload: Record<string, unknown>): Promise<PythonImageResult[]> {
+    return this.runExclusiveFlux(() => this.spawnFluxImageGenInner(payload));
+  }
+
+  private async spawnFluxImageGenInner(payload: Record<string, unknown>): Promise<PythonImageResult[]> {
     const pythonBin = this.resolvePythonBin();
     const scriptPath = this.resolveFluxScript();
     const scriptDir = resolve(process.cwd(), VIDEO_PIPELINE_DIR);
@@ -232,17 +254,28 @@ export class VideosImageService {
         clearTimeout(timeoutHandle);
         rejectPromise(err);
       });
-      child.on("close", (code) => {
+      child.on("close", (code, signal) => {
         clearTimeout(timeoutHandle);
+        const stderrTail = stderr.trim().slice(-4000);
         if (code !== 0) {
-          rejectPromise(new Error(stderr.trim() || `video_image_flux exited with code ${code}`));
+          const killed = signal ? ` (signal ${signal})` : "";
+          const detail = stderrTail || `video_image_flux exited with code ${code}${killed}`;
+          if (signal === "SIGKILL" || /oom|out of memory/i.test(stderr)) {
+            rejectPromise(
+              new Error(
+                `${detail} — FLUX bị kill (thường do thiếu RAM/VRAM). Cần GPU CUDA ≥12GB hoặc không chạy song song nhiều job.`,
+              ),
+            );
+          } else {
+            rejectPromise(new Error(detail));
+          }
           return;
         }
         try {
           const parsed = JSON.parse(stdout.trim()) as { images?: PythonImageResult[] };
           resolvePromise(Array.isArray(parsed.images) ? parsed.images : []);
         } catch {
-          rejectPromise(new Error(stderr.trim() || "Invalid JSON from video_image_flux.py"));
+          rejectPromise(new Error(stderrTail || "Invalid JSON from video_image_flux.py"));
         }
       });
 
@@ -278,7 +311,7 @@ export class VideosImageService {
       pythonResults = await this.spawnFluxImageGen({
         model_id: model,
         device_map: (process.env.FLUX_DEVICE_MAP ?? "").trim() || undefined,
-        dtype_str: (process.env.FLUX_DTYPE ?? "bfloat16").trim(),
+        dtype_str: (process.env.FLUX_DTYPE ?? "float16").trim(),
         guidance_scale: Number(process.env.FLUX_GUIDANCE_SCALE ?? 0),
         num_inference_steps: Number(process.env.FLUX_NUM_INFERENCE_STEPS ?? 4),
         max_sequence_length: Number(process.env.FLUX_MAX_SEQUENCE_LENGTH ?? 256),
@@ -380,7 +413,7 @@ export class VideosImageService {
       pythonResults = await this.spawnFluxImageGen({
         model_id: model,
         device_map: (process.env.FLUX_DEVICE_MAP ?? "").trim() || undefined,
-        dtype_str: (process.env.FLUX_DTYPE ?? "bfloat16").trim(),
+        dtype_str: (process.env.FLUX_DTYPE ?? "float16").trim(),
         guidance_scale: Number(process.env.FLUX_GUIDANCE_SCALE ?? 0),
         num_inference_steps: numInferenceSteps,
         max_sequence_length: Number(process.env.FLUX_MAX_SEQUENCE_LENGTH ?? 256),
@@ -398,6 +431,7 @@ export class VideosImageService {
       });
     } catch (err) {
       const message = errorMessage(err);
+      this.removeStudioOutputIfEmpty(outPath);
       this.logger.error(
         `[Image Studio] DONE FAILED (${((Date.now() - runStartedAt) / 1000).toFixed(1)}s) jobId=${resolvedJobId} — ${message}`,
       );
@@ -407,6 +441,7 @@ export class VideosImageService {
     const outcome = pythonResults.find((row) => row.sceneNumber === 1);
     if (!outcome?.ok || !existsSync(outPath)) {
       const message = outcome?.error?.trim() || "FLUX generation failed";
+      this.removeStudioOutputIfEmpty(outPath);
       this.logger.error(
         `[Image Studio] DONE FAILED (${((Date.now() - runStartedAt) / 1000).toFixed(1)}s) jobId=${resolvedJobId} — ${message}`,
       );
