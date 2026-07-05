@@ -1,6 +1,7 @@
 import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
 import { Type } from "class-transformer";
 import {
+  IsBoolean,
   IsIn,
   IsNotEmpty,
   IsNumber,
@@ -55,4 +56,13 @@ export class ExecuteVoiceDto {
   @Min(0.5)
   @Max(2)
   speed?: number;
+
+  @ApiPropertyOptional({
+    description: "Ghép tất cả scene thành 1 file WAV (gap 0.2s giữa mỗi đoạn)",
+    default: false,
+  })
+  @IsOptional()
+  @Type(() => Boolean)
+  @IsBoolean()
+  merge?: boolean;
 }

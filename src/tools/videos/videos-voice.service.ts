@@ -28,14 +28,23 @@ export type VoiceSegmentResult = {
   errorMessage?: string;
 };
 
+export type VoiceMergedResult = {
+  jobId: string;
+  playUrl: string | null;
+  downloadUrl: string | null;
+  duration: number;
+};
+
 export type ExecuteVoiceResult = {
   language: string;
   duration: number;
   voiceMode: "preset" | "clone";
   voiceId: string;
+  outputMode: "segments" | "merge";
   segments: VoiceSegmentResult[];
   completedCount: number;
   failedCount: number;
+  merged?: VoiceMergedResult | null;
 };
 
 type SceneJob = {
@@ -164,6 +173,10 @@ export class VideosVoiceService {
     return resolve(process.cwd(), "tools/video-pipeline/video_voice_tts.py");
   }
 
+  private resolveVideoVoiceMergeScript(): string {
+    return resolve(process.cwd(), "tools/video-pipeline/video_voice_merge.py");
+  }
+
   private async spawnVideoVoiceTts(payload: Record<string, unknown>): Promise<PythonSegmentResult[]> {
     const pythonBin = this.resolvePythonBin();
     const scriptPath = this.resolveVideoVoiceScript();
@@ -213,6 +226,116 @@ export class VideosVoiceService {
     });
   }
 
+  private async spawnVideoVoiceMerge(payload: Record<string, unknown>): Promise<{ duration_sec: number }> {
+    const pythonBin = this.resolvePythonBin();
+    const scriptPath = this.resolveVideoVoiceMergeScript();
+    const scriptDir = resolve(process.cwd(), VIDEO_PIPELINE_DIR);
+    const timeoutMs = this.resolveCmdTimeoutMs();
+
+    return new Promise((resolvePromise, rejectPromise) => {
+      const child: ChildProcess = spawn(pythonBin, [scriptPath], {
+        cwd: scriptDir,
+        windowsHide: true,
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+
+      let stdout = "";
+      let stderr = "";
+      const timeoutHandle = setTimeout(() => {
+        child.kill("SIGTERM");
+        rejectPromise(new Error(`Video voice merge timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+
+      child.stdout?.on("data", (buf: Buffer) => {
+        stdout += buf.toString("utf8");
+      });
+      child.stderr?.on("data", (buf: Buffer) => {
+        stderr += buf.toString("utf8");
+      });
+      child.on("error", (err) => {
+        clearTimeout(timeoutHandle);
+        rejectPromise(err);
+      });
+      child.on("close", (code) => {
+        clearTimeout(timeoutHandle);
+        if (code !== 0) {
+          rejectPromise(new Error(stderr.trim() || `video_voice_merge exited with code ${code}`));
+          return;
+        }
+        try {
+          const parsed = JSON.parse(stdout.trim()) as { ok?: boolean; duration_sec?: number };
+          resolvePromise({ duration_sec: Number(parsed.duration_sec ?? 0) });
+        } catch {
+          rejectPromise(new Error(stderr.trim() || "Invalid JSON from video_voice_merge.py"));
+        }
+      });
+
+      child.stdin?.write(JSON.stringify(payload));
+      child.stdin?.end();
+    });
+  }
+
+  private async mergeCompletedSegments(input: {
+    dto: ExecuteVoiceDto;
+    voiceRef: { refAudioPath: string; refText: string };
+    duration: number;
+    sceneJobs: SceneJob[];
+    segments: VoiceSegmentResult[];
+  }): Promise<VoiceMergedResult | null> {
+    const completed = input.segments.filter((row) => row.status === "completed");
+    if (completed.length === 0) return null;
+
+    const outWavByScene = new Map(
+      input.sceneJobs.map((item) => [item.scene.sceneNumber, item.outWav] as const),
+    );
+
+    const mergeJobId = randomUUID();
+    const mergeOutWav = this.audioService.buildOutputPath(input.dto.userId, mergeJobId);
+    const mergeLabel = `[Video merge] ${completed.length} scene`;
+
+    await this.audioService.createVideoVoiceHistory({
+      id: mergeJobId,
+      userId: input.dto.userId,
+      voiceMode: input.dto.voiceMode,
+      voiceId: input.dto.voiceMode === "preset" ? input.dto.voiceId!.trim() : null,
+      text: mergeLabel,
+      refAudioPath: input.voiceRef.refAudioPath,
+      refText: input.voiceRef.refText,
+    });
+
+    try {
+      const mergeResult = await this.spawnVideoVoiceMerge({
+        out_wav: mergeOutWav,
+        gap_sec: 0.2,
+        segments: completed.map((row) => ({
+          wav: outWavByScene.get(row.sceneNumber),
+          scene_number: row.sceneNumber,
+        })),
+      });
+
+      if (!existsSync(mergeOutWav)) {
+        throw new Error("Merged wav was not created");
+      }
+
+      await this.audioService.completeVideoVoiceHistory(mergeJobId, mergeOutWav);
+      const mapped = this.audioService.mapHistoryForClient(
+        (await this.audioService.getById(mergeJobId))!,
+      );
+
+      return {
+        jobId: mergeJobId,
+        playUrl: mapped.playUrl,
+        downloadUrl: mapped.downloadUrl,
+        duration: mergeResult.duration_sec || input.duration,
+      };
+    } catch (err) {
+      const message = errorMessage(err);
+      this.logger.warn(`[Voice] Merge failed: ${message}`);
+      await this.audioService.failVideoVoiceHistory(mergeJobId, message);
+      return null;
+    }
+  }
+
   async executeVoice(dto: ExecuteVoiceDto): Promise<ExecuteVoiceResult> {
     if (dto.voiceMode === "preset" && !dto.voiceId?.trim()) {
       throw new BadRequestException("voiceId is required for preset mode");
@@ -223,6 +346,7 @@ export class VideosVoiceService {
 
     const { language, duration, scenes } = parseScenesJson(dto.scenes);
     const voiceId = dto.voiceMode === "preset" ? dto.voiceId!.trim() : dto.pipelineRefWav!.trim();
+    const merge = dto.merge === true;
     const runStartedAt = Date.now();
 
     this.logger.log(
@@ -275,9 +399,11 @@ export class VideosVoiceService {
         duration,
         voiceMode: dto.voiceMode,
         voiceId,
+        outputMode: merge ? "merge" : "segments",
         segments: scenes.map((scene) => failedSegment(scene, message)),
         completedCount: 0,
         failedCount: scenes.length,
+        merged: null,
       };
     }
 
@@ -314,8 +440,19 @@ export class VideosVoiceService {
 
     segments.sort((a, b) => a.sceneNumber - b.sceneNumber);
 
+    let merged: VoiceMergedResult | null = null;
+    if (merge && completedCount > 0) {
+      merged = await this.mergeCompletedSegments({
+        dto,
+        voiceRef,
+        duration,
+        sceneJobs,
+        segments,
+      });
+    }
+
     this.logger.log(
-      `[Voice] Hoàn tất (${((Date.now() - runStartedAt) / 1000).toFixed(1)}s) — OK ${completedCount}/${scenes.length}, lỗi ${failedCount}`,
+      `[Voice] Hoàn tất (${((Date.now() - runStartedAt) / 1000).toFixed(1)}s) — OK ${completedCount}/${scenes.length}, lỗi ${failedCount}${merged ? ", merged" : ""}`,
     );
 
     return {
@@ -323,9 +460,11 @@ export class VideosVoiceService {
       duration,
       voiceMode: dto.voiceMode,
       voiceId,
+      outputMode: merge ? "merge" : "segments",
       segments,
       completedCount,
       failedCount,
+      ...(merge ? { merged } : {}),
     };
   }
 }
