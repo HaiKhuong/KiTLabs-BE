@@ -137,8 +137,6 @@ export class AudioService {
     const payload: OmnivoiceTtsPayload = {
       text: history.inputText,
       out_wav: outPath,
-      user_id: history.userId,
-      job_id: history.id,
       ref_audio: refAudio,
       ref_text: refText,
       model_id: (process.env.OMNIVOICE_MODEL_ID ?? "k2-fsa/OmniVoice").trim(),
@@ -515,8 +513,6 @@ export class AudioService {
       await this.omnivoiceRunner.execute({
         text: previewText,
         out_wav: cachePath,
-        user_id: "preview",
-        job_id: voiceId,
         ref_audio: refPath,
         ref_text: voice.refText,
         model_id: (process.env.OMNIVOICE_MODEL_ID ?? "k2-fsa/OmniVoice").trim(),
