@@ -1,23 +1,29 @@
-import { BadRequestException, Body, Controller, Get, NotFoundException, Param, Post, Res } from "@nestjs/common";
+import { Body, Controller, Get, NotFoundException, Param, Post, Res } from "@nestjs/common";
 import { ApiBearerAuth, ApiBody, ApiOperation, ApiTags } from "@nestjs/swagger";
 import type { Response } from "express";
 
 import { Public } from "../../common/decorators/public.decorator";
 import { GenerateStudioImageDto } from "./dto/generate-studio-image.dto";
+import { ImagesJobsService } from "./images-jobs.service";
 import { VideosImageService } from "../videos/videos-image.service";
 
 @ApiTags("Images")
 @ApiBearerAuth("bearer")
 @Controller("tools/images")
 export class ImagesController {
-  constructor(private readonly videosImageService: VideosImageService) {}
+  constructor(
+    private readonly imagesJobsService: ImagesJobsService,
+    private readonly videosImageService: VideosImageService,
+  ) {}
 
-  @ApiOperation({ summary: "Generate a single image from text prompt (FLUX Schnell, sync)" })
+  @ApiOperation({
+    summary: "Queue studio image generation — kết quả qua socket images.studio.completed / failed",
+  })
   @ApiBody({ type: GenerateStudioImageDto })
   @Public()
   @Post("generate")
   async generate(@Body() dto: GenerateStudioImageDto) {
-    return this.videosImageService.generateStudioImage(dto);
+    return this.imagesJobsService.submitStudioImage(dto);
   }
 
   @ApiOperation({ summary: "Serve generated studio image PNG" })

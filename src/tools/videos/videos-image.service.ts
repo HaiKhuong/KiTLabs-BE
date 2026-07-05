@@ -75,6 +75,12 @@ function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+function previewLogText(text: string, max = 80): string {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (!normalized) return "(empty)";
+  return normalized.length <= max ? normalized : `${normalized.slice(0, max)}…`;
+}
+
 function parseScenesJson(raw: string): SceneRow[] {
   let parsed: unknown;
   try {
@@ -246,6 +252,10 @@ export class VideosImageService {
       outPath: join(outputDir, `scene-${scene.sceneNumber}.png`),
     }));
 
+    this.logger.log(
+      `[Image] Nhận yêu cầu userId=${dto.userId.trim()} nodeId=${dto.nodeId.trim()} — ${scenes.length} scene, aspect=${aspectRatio}, steps=${Number(process.env.FLUX_NUM_INFERENCE_STEPS ?? 4)}, style=${style}, model=${model}`,
+    );
+
     let pythonResults: PythonImageResult[] = [];
     try {
       pythonResults = await this.spawnFluxImageGen({
@@ -266,7 +276,9 @@ export class VideosImageService {
       });
     } catch (err) {
       const message = errorMessage(err);
-      this.logger.error(`[Image] FLUX batch failed: ${message}`);
+      this.logger.error(
+        `[Image] DONE FAILED (${((Date.now() - runStartedAt) / 1000).toFixed(1)}s) nodeId=${dto.nodeId.trim()} — ${message}`,
+      );
       return {
         style,
         aspectRatio,
@@ -307,7 +319,7 @@ export class VideosImageService {
     }
 
     this.logger.log(
-      `[Image] Hoàn tất (${((Date.now() - runStartedAt) / 1000).toFixed(1)}s) — OK ${completedCount}/${scenes.length}, lỗi ${failedCount}`,
+      `[Image] DONE (${((Date.now() - runStartedAt) / 1000).toFixed(1)}s) — OK ${completedCount}/${scenes.length}, lỗi ${failedCount}, nodeId=${dto.nodeId.trim()}`,
     );
 
     return {
@@ -331,23 +343,27 @@ export class VideosImageService {
     return existsSync(candidate) ? candidate : null;
   }
 
-  async generateStudioImage(dto: GenerateStudioImageDto): Promise<StudioImageResult> {
+  async generateStudioImage(dto: GenerateStudioImageDto, jobId?: string): Promise<StudioImageResult> {
     const prompt = dto.prompt.trim();
     if (!prompt) {
       throw new BadRequestException("prompt is required");
     }
 
     const userId = dto.userId.trim();
-    const jobId = randomUUID();
+    const resolvedJobId = (jobId ?? randomUUID()).trim();
     const model = this.resolveModelId(dto.model ?? "flux");
     const style = (dto.style ?? "cinematic").trim() || "cinematic";
     const aspectRatio = (dto.aspectRatio ?? "9:16").trim() || "9:16";
     const negativePrompt = (dto.negativePrompt ?? "").trim();
-    const outputDir = this.buildOutputDir(userId, jobId);
+    const outputDir = this.buildOutputDir(userId, resolvedJobId);
     const outPath = join(outputDir, STUDIO_IMAGE_FILENAME);
     const numInferenceSteps =
       dto.numInferenceSteps ?? Number(process.env.FLUX_NUM_INFERENCE_STEPS ?? 4);
     const runStartedAt = Date.now();
+
+    this.logger.log(
+      `[Image Studio] Xử lý jobId=${resolvedJobId} userId=${userId} — aspect=${aspectRatio}, steps=${numInferenceSteps}, style=${style}, model=${model}, prompt="${previewLogText(prompt)}"`,
+    );
 
     let pythonResults: PythonImageResult[] = [];
     try {
@@ -372,22 +388,28 @@ export class VideosImageService {
       });
     } catch (err) {
       const message = errorMessage(err);
-      this.logger.error(`[Image Studio] FLUX failed: ${message}`);
+      this.logger.error(
+        `[Image Studio] DONE FAILED (${((Date.now() - runStartedAt) / 1000).toFixed(1)}s) jobId=${resolvedJobId} — ${message}`,
+      );
       throw new BadRequestException(message);
     }
 
     const outcome = pythonResults.find((row) => row.sceneNumber === 1);
     if (!outcome?.ok || !existsSync(outPath)) {
-      throw new BadRequestException(outcome?.error?.trim() || "FLUX generation failed");
+      const message = outcome?.error?.trim() || "FLUX generation failed";
+      this.logger.error(
+        `[Image Studio] DONE FAILED (${((Date.now() - runStartedAt) / 1000).toFixed(1)}s) jobId=${resolvedJobId} — ${message}`,
+      );
+      throw new BadRequestException(message);
     }
 
-    const imageUrl = buildStudioImageRelativeUrl(userId, jobId);
+    const imageUrl = buildStudioImageRelativeUrl(userId, resolvedJobId);
     this.logger.log(
-      `[Image Studio] Hoàn tất (${((Date.now() - runStartedAt) / 1000).toFixed(1)}s) — job ${jobId}`,
+      `[Image Studio] DONE (${((Date.now() - runStartedAt) / 1000).toFixed(1)}s) jobId=${resolvedJobId} — ${imageUrl}`,
     );
 
     return {
-      jobId,
+      jobId: resolvedJobId,
       imageUrl,
       downloadUrl: imageUrl,
       model,

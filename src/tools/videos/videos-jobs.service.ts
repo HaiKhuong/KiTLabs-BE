@@ -43,6 +43,9 @@ export class VideosJobsService {
     const jobId = randomUUID();
     const nodeId = dto.nodeId.trim();
     const userId = dto.userId.trim();
+    this.logger.log(
+      `[Image Job] Nhận yêu cầu jobId=${jobId} userId=${userId} nodeId=${nodeId}`,
+    );
     void this.runImage(jobId, userId, nodeId, dto);
     return { jobId, nodeId, type: "image", status: "queued" };
   }
@@ -109,6 +112,9 @@ export class VideosJobsService {
   ): Promise<void> {
     try {
       const result = await this.videosImageService.executeImage(dto);
+      this.logger.log(
+        `[Image Job] DONE jobId=${jobId} nodeId=${nodeId} — OK ${result.completedCount}/${result.images.length}, lỗi ${result.failedCount}`,
+      );
       this.realtimeGateway.notifyUser(userId, "videos.job.completed", {
         jobId,
         nodeId,
@@ -117,7 +123,7 @@ export class VideosJobsService {
       });
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      this.logger.warn(`Image job ${jobId} failed: ${errorMessage}`);
+      this.logger.warn(`[Image Job] DONE FAILED jobId=${jobId} nodeId=${nodeId} — ${errorMessage}`);
       this.realtimeGateway.notifyUser(userId, "videos.job.failed", {
         jobId,
         nodeId,

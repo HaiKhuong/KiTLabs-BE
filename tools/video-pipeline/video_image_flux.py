@@ -42,12 +42,13 @@ def _resolve_seed(raw: Any) -> int:
 
 
 def _aspect_to_size(aspect_ratio: str) -> tuple[int, int]:
+    """Map aspect ratio → pixel size (720p baseline, multiples of 16 for FLUX)."""
     key = str(aspect_ratio or "9:16").strip()
     mapping = {
-        "9:16": (768, 1344),
-        "16:9": (1344, 768),
-        "1:1": (1024, 1024),
-        "4:5": (896, 1120),
+        "9:16": (720, 1280),   # portrait 720p (Shorts)
+        "16:9": (1280, 720),   # landscape 720p (HD)
+        "1:1": (720, 720),
+        "4:5": (576, 720),     # 4:5 with 720px height
     }
     return mapping.get(key, mapping["9:16"])
 
