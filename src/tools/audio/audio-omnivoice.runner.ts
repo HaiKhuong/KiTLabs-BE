@@ -22,7 +22,21 @@ export class AudioOmnivoiceRunner {
 
   resolveScriptPath(): string {
     const raw = (process.env.AUDIO_PYTHON_SCRIPT ?? AUDIO_PYTHON_SCRIPT).trim();
-    return isAbsolute(raw) ? raw : resolve(process.cwd(), raw);
+    let abs = isAbsolute(raw) ? raw : resolve(process.cwd(), raw);
+
+    // omnivoice_tts.py là library — chạy trực tiếp sẽ exit 0 ngay, không tạo WAV.
+    if (basename(abs).toLowerCase() === "omnivoice_tts.py") {
+      const studio = resolve(dirname(abs), "audio_studio_tts.py");
+      this.logger.warn(
+        `AUDIO_PYTHON_SCRIPT=omnivoice_tts.py — chuyển sang ${studio.replace(/\\/g, "/")}`,
+      );
+      abs = studio;
+    }
+
+    if (!existsSync(abs)) {
+      throw new Error(`Audio Python script not found: ${abs.replace(/\\/g, "/")}`);
+    }
+    return abs;
   }
 
   requestCancel(audioHistoryId: string): void {
@@ -150,6 +164,16 @@ export class AudioOmnivoiceRunner {
           rejectPromise(
             new Error(
               `${detail} | script=${absScriptPath.replace(/\\/g, "/")} out_wav=${outWav.replace(/\\/g, "/")}`,
+            ),
+          );
+          return;
+        }
+
+        if (outWav && !existsSync(outWav)) {
+          rejectPromise(
+            new Error(
+              `${basename(absScriptPath)} thoát 0 (${elapsedMs}ms) nhưng không tạo WAV. ` +
+                `Dùng audio_studio_tts.py — omnivoice_tts.py chỉ là library import.`,
             ),
           );
           return;
