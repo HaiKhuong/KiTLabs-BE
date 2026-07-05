@@ -1,6 +1,9 @@
 """
 OmniVoice Vietnamese TTS (splendor1811/omnivoice-vietnamese) — dùng cho Step3 trong auto_vietsub_pro.
 
+Đường dẫn output WAV: caller truyền ``out_wav``, hoặc dùng ``audio_paths.build_output_wav_path``
+(cùng env ``AUDIO_DATA_ROOT`` / ``AUDIO_OUTPUT_DIR`` với Nest ``audio.constants.ts``).
+
 Cài: pip install omnivoice
 Tham khảo: https://huggingface.co/splendor1811/omnivoice-vietnamese
 
@@ -24,10 +27,15 @@ Tham khảo: https://huggingface.co/splendor1811/omnivoice-vietnamese
 
 from __future__ import annotations
 
+import json
 import os
 import re
+import sys
 from pathlib import Path
 from typing import Any, Optional, Tuple
+
+import pipeline_cache  # noqa: F401 — HF cache → cache/omnivoice (phải import trước omnivoice)
+from audio_paths import build_output_wav_path, resolve_audio_data_root, resolve_audio_output_dir
 
 # Cache theo (model_id, device_map, dtype_str)
 _session_model: Optional[Any] = None
@@ -271,8 +279,31 @@ def ensure_voice_clone_prompt(
 ) -> Any:
     """
     Tạo / cache voice_clone_prompt từ file giọng mẫu + transcript.
-
+    
+    ⚠️ QUAN TRỌNG - VOICE CONSISTENCY:
+    Đây là KEY để đảm bảo tone giọng nhất quán giữa các câu!
+    
+    Voice clone prompt chứa embedding của đặc trưng giọng nói từ ref_audio.
+    Bằng cách tạo và cache prompt này một lần duy nhất, tất cả các câu sau đó
+    sẽ sử dụng cùng một embedding → tone giọng giữ nguyên 100%.
+    
+    Nếu mỗi lần generate đều encode lại từ raw audio thì:
+    - Neural network có tính stochastic → embedding hơi khác mỗi lần
+    - Dẫn đến tone giọng "nhảy" giữa các câu
+    
     Cache key: (resolved ref_audio path, ref_text)
+    - Chỉ tạo lại khi đổi file audio mẫu hoặc transcript
+    - Cùng file audio + transcript → tái sử dụng prompt đã cache
+    
+    Args:
+        ref_audio: Đường dẫn file audio mẫu (nên là transcript khớp với audio)
+        ref_text: Transcript của audio mẫu (giúp model align tốt hơn)
+        model_id: HuggingFace model ID
+        device_map: Device để chạy model
+        dtype_str: Data type của model
+        
+    Returns:
+        Cached voice clone prompt object (dùng cho model.generate())
     """
     global _session_prompt, _session_prompt_key
     ra = str(Path(ref_audio).resolve())
@@ -303,7 +334,25 @@ def synthesize_to_wav(
     guidance_scale: Optional[float] = 2.0,
     seed: Optional[int] = None,
 ) -> None:
-    """Sinh một đoạn thoại, ghi WAV mono 24 kHz."""
+    """
+    Sinh một đoạn thoại, ghi WAV mono 24 kHz (theo model card).
+    Dùng cached model + voice prompt khi ref_audio/ref_text/model không đổi.
+    
+    ✨ QUAN TRỌNG: Sử dụng cached voice_clone_prompt để đảm bảo tone giọng ổn định giữa các câu.
+    
+    Args:
+        text: Nội dung cần tổng hợp giọng nói
+        out_wav: Đường dẫn file WAV output
+        ref_audio: File audio mẫu để clone giọng (sẽ được cache)
+        ref_text: Transcript của audio mẫu (sẽ được cache cùng ref_audio)
+        model_id: HuggingFace model ID
+        device_map: Device để chạy model (cuda:0, cpu, etc.)
+        dtype_str: Data type (float16, bfloat16, float32)
+        language: Ngôn ngữ bắt buộc — vietnamese | english | korean | japanese
+        num_step: Số bước generation (càng cao càng chất lượng nhưng chậm hơn)
+        guidance_scale: Độ mạnh của guidance (càng cao càng sát prompt nhưng ít tự nhiên)
+        seed: Random seed để tạo output deterministic (giúp tái tạo chính xác cùng output)
+    """
     try:
         import numpy as np
         import soundfile as sf
@@ -328,7 +377,10 @@ def synthesize_to_wav(
         raise ValueError("OmniVoice: text rỗng.")
 
     rt = str(ref_text or "").strip()
-
+    
+    # 🔧 FIX: Sử dụng cached voice clone prompt để đảm bảo tone giọng nhất quán
+    # Thay vì truyền trực tiếp ref_audio/ref_text vào mỗi lần generate,
+    # ta tạo và cache voice prompt một lần, sau đó tái sử dụng.
     voice_prompt = ensure_voice_clone_prompt(
         ref_audio=ref_audio_path,
         ref_text=rt,
@@ -337,6 +389,7 @@ def synthesize_to_wav(
         dtype_str=dtype_str,
     )
 
+    # 🎲 Set seed cho deterministic output (nếu được chỉ định)
     if seed is not None:
         torch.manual_seed(seed)
         if torch.cuda.is_available():
@@ -366,15 +419,20 @@ def synthesize_to_wav(
     try:
         audio = model.generate(**gen_kw)
     except TypeError:
+        # Fallback nếu version không hỗ trợ voice_clone_prompt parameter
+        # hoặc không nhận language/generation_config
         try:
+            # Thử với voice_clone_prompt đơn giản hơn
             slim_kw = {"text": t, "voice_clone_prompt": voice_prompt}
             audio = model.generate(**slim_kw)
         except TypeError:
+            # Fallback cuối cùng: dùng ref_audio/ref_text trực tiếp (cách cũ, không ổn định)
+            # ⚠️ WARNING: Cách này có thể gây tone giọng không nhất quán giữa các câu
             import warnings
-
             warnings.warn(
                 "OmniVoice: Version này không hỗ trợ voice_clone_prompt. "
-                "Đang sử dụng ref_audio trực tiếp - có thể gây tone giọng không ổn định.",
+                "Đang sử dụng ref_audio trực tiếp - có thể gây tone giọng không ổn định. "
+                "Nên update lên version mới hơn.",
                 UserWarning,
             )
             slim_kw = {"text": t, "ref_audio": ref_audio_path}
@@ -382,6 +440,7 @@ def synthesize_to_wav(
                 slim_kw["ref_text"] = rt
             audio = model.generate(**slim_kw)
 
+    # Theo mẫu official: audio là list[np.ndarray] shape (T,) at 24kHz.
     if isinstance(audio, (list, tuple)) and len(audio) > 0:
         wave = audio[0]
     else:
@@ -395,6 +454,94 @@ def synthesize_to_wav(
     if wave_np.ndim == 0:
         raise RuntimeError("OmniVoice: audio output rỗng/không hợp lệ (scalar).")
     if wave_np.ndim > 1:
+        # Giữ theo mẫu out mono: [T]. Nếu có batch/channel thì dẹt về 1 chiều.
         wave_np = wave_np.reshape(-1)
 
     sf.write(str(out), wave_np, 24000)
+
+
+def _resolve_seed(raw: Any) -> int | None:
+    if raw is None or str(raw).strip() == "":
+        env = (os.getenv("OMNIVOICE_SEED") or "42").strip()
+        if not env or env.lower() in ("none", "null"):
+            return None
+        try:
+            return int(env)
+        except ValueError:
+            return 42
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def main() -> None:
+    """
+    CLI — stdin JSON (Nest Audio API / preview):
+      text, out_wav, ref_audio, ref_text?,
+      model_id?, device_map?, dtype_str?, language?, num_step?, guidance_scale?, seed?,
+      pause_settings?, playback_speed?
+    """
+    from audio_tts_worker import resolve_device_map
+
+    payload = json.load(sys.stdin)
+    text = str(payload.get("text") or "").strip()
+    out_wav = str(payload.get("out_wav") or payload.get("outWav") or "").strip()
+    ref_audio = str(Path(str(payload.get("ref_audio") or payload.get("refAudio") or "")).expanduser().resolve())
+    if not text:
+        raise ValueError("text is required")
+    if not out_wav:
+        raise ValueError("out_wav is required")
+    if not Path(ref_audio).is_file():
+        raise FileNotFoundError(f"ref_audio not found: {ref_audio}")
+
+    ref_text = str(payload.get("ref_text") or payload.get("refText") or "")
+    model_id = str(payload.get("model_id") or os.getenv("OMNIVOICE_MODEL_ID", "k2-fsa/OmniVoice")).strip()
+    device_map = resolve_device_map(str(payload.get("device_map") or os.getenv("OMNIVOICE_DEVICE_MAP") or ""))
+    dtype_str = str(payload.get("dtype_str") or os.getenv("OMNIVOICE_DTYPE") or "float16").strip() or "float16"
+    language_raw = payload.get("language") or os.getenv("OMNIVOICE_LANGUAGE")
+    language = resolve_omnivoice_language(str(language_raw) if language_raw else None)
+    num_step = int(payload.get("num_step") or os.getenv("OMNIVOICE_NUM_STEP") or 8)
+    guidance_scale = float(payload.get("guidance_scale") or os.getenv("OMNIVOICE_GUIDANCE_SCALE") or 2)
+    seed = _resolve_seed(payload.get("seed"))
+    pause_settings = payload.get("pause_settings") or payload.get("pauseSettings")
+    playback_speed = payload.get("playback_speed")
+    if playback_speed is None:
+        playback_speed = payload.get("playbackSpeed")
+
+    out_path = Path(out_wav)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    omnivoice_kw = dict(
+        text=text,
+        out_wav=str(out_path),
+        ref_audio=ref_audio,
+        ref_text=ref_text,
+        model_id=model_id,
+        device_map=device_map,
+        dtype_str=dtype_str,
+        language=language,
+        num_step=num_step if num_step > 0 else None,
+        guidance_scale=guidance_scale if num_step > 0 else None,
+        seed=seed,
+    )
+
+    has_pause = isinstance(pause_settings, dict) and bool(pause_settings)
+    speed = float(playback_speed) if playback_speed is not None else 1.0
+    if has_pause or abs(speed - 1.0) > 1e-6:
+        from audio_tts_with_pauses import synthesize_with_pause_settings
+
+        synthesize_with_pause_settings(
+            **omnivoice_kw,
+            pause_settings=pause_settings if has_pause else None,
+            playback_speed=speed if abs(speed - 1.0) > 1e-6 else None,
+        )
+    else:
+        synthesize_to_wav(**omnivoice_kw)
+
+    if not out_path.is_file() or out_path.stat().st_size <= 0:
+        raise RuntimeError(f"empty output: {out_path}")
+
+
+if __name__ == "__main__":
+    main()

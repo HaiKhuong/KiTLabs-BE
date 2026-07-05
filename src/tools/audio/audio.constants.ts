@@ -1,27 +1,63 @@
-import { mkdirSync } from "fs";
+import { accessSync, constants, mkdirSync } from "fs";
 import { join, resolve } from "path";
 
 export const VIDEO_PIPELINE_DIR = join("tools", "video-pipeline");
 export const VOICE_SAMPLES_DIR = join(VIDEO_PIPELINE_DIR, "voice");
-export const AUDIO_PYTHON_SCRIPT = join(VIDEO_PIPELINE_DIR, "audio_studio_tts.py");
 
-/** Gốc uploads — mặc định `<cwd>/uploads`, ghi đè bằng `AUDIO_DATA_ROOT` nếu cần. */
-export const AUDIO_DATA_ROOT = (() => {
+const AUDIO_DATA_PLACEHOLDERS = new Set(["/path", "/path/", "path", "/tmp/path"]);
+
+/**
+ * Thư mục gốc cho `audio-tts`, `audio-clone`, `audio-previews` (phải ghi được bởi user chạy Nest).
+ * Mặc định: `<cwd>/uploads`. Nếu repo không cho mkdir (permission), đặt env đường dẫn tuyệt đối có quyền ghi,
+ * ví dụ `AUDIO_DATA_ROOT=/var/tmp/kitools-audio` hoặc `KITLABS_AUDIO_DATA_ROOT` (cùng ý nghĩa).
+ * `AUDIO_OUTPUT_DIR` — ghi đè thư mục TTS (mặc định `{AUDIO_DATA_ROOT}/audio-tts`), khớp Python `audio_paths.py`.
+ */
+function resolveAudioDataRoot(): string {
   const raw = (process.env.AUDIO_DATA_ROOT ?? process.env.KITLABS_AUDIO_DATA_ROOT ?? "").trim();
-  return raw ? resolve(raw) : resolve(process.cwd(), "uploads");
-})();
-
-export const AUDIO_CLONE_UPLOAD_DIR = join(AUDIO_DATA_ROOT, "audio-clone");
-export const AUDIO_PREVIEW_CACHE_DIR = join(AUDIO_DATA_ROOT, "audio-previews");
-
-/** `{uploads}/audio-tts/{userId}/{jobId}.wav` */
-export function buildAudioTtsOutputPath(userId: string, jobId: string): string {
-  const dir = resolve(AUDIO_DATA_ROOT, "audio-tts", userId);
-  mkdirSync(dir, { recursive: true });
-  return join(dir, `${jobId}.wav`);
+  if (raw) {
+    const resolved = resolve(raw);
+    const key = resolved.replace(/\\/g, "/").toLowerCase();
+    if (AUDIO_DATA_PLACEHOLDERS.has(key) || key.endsWith("/path")) {
+      throw new Error(
+        `AUDIO_DATA_ROOT="${raw}" là placeholder — đặt đường dẫn thật có quyền ghi ` +
+          `(vd. /var/tmp/kitools-audio hoặc ${resolve(process.cwd(), "uploads")})`,
+      );
+    }
+    return resolved;
+  }
+  return resolve(process.cwd(), "uploads");
 }
 
-/** Subprocess OmniVoice — bỏ cache HF kế thừa từ Nest/FLUX; path truyền qua stdin JSON. */
+/** Tạo thư mục và kiểm tra quyền ghi — lỗi rõ ràng hơn Python Errno 13. */
+export function ensureWritableDir(dir: string): void {
+  const abs = resolve(dir);
+  try {
+    mkdirSync(abs, { recursive: true, mode: 0o775 });
+    accessSync(abs, constants.W_OK);
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    throw new Error(
+      `Không ghi được thư mục ${abs.replace(/\\/g, "/")} — ${detail}. ` +
+        `Chown cho user chạy Nest (vd. www-data) hoặc đặt AUDIO_DATA_ROOT trong .env.`,
+    );
+  }
+}
+
+export const AUDIO_DATA_ROOT = resolveAudioDataRoot();
+
+function resolveAudioOutputDir(): string {
+  const raw = (process.env.AUDIO_OUTPUT_DIR ?? "").trim();
+  if (raw) {
+    return resolve(raw);
+  }
+  return join(AUDIO_DATA_ROOT, "audio-tts");
+}
+
+export const AUDIO_CLONE_UPLOAD_DIR = join(AUDIO_DATA_ROOT, "audio-clone");
+export const AUDIO_OUTPUT_DIR = resolveAudioOutputDir();
+export const AUDIO_PREVIEW_CACHE_DIR = join(AUDIO_DATA_ROOT, "audio-previews");
+
+/** Env truyền xuống subprocess OmniVoice — khớp ``tools/video-pipeline/audio_paths.py``. */
 export function buildOmnivoiceSpawnEnv(): NodeJS.ProcessEnv {
   const env = { ...process.env };
   for (const key of [
@@ -30,35 +66,14 @@ export function buildOmnivoiceSpawnEnv(): NodeJS.ProcessEnv {
     "TRANSFORMERS_CACHE",
     "XDG_CACHE_HOME",
     "HF_HUB_DISABLE_SYMLINKS",
-    "KITLABS_PYTHON_CACHE_DIR",
-    "OMNIVOICE_CACHE_ROOT",
   ]) {
     delete env[key];
   }
   env.PYTHONUNBUFFERED = "1";
   env.PYTHONIOENCODING = "utf-8";
+  env.AUDIO_DATA_ROOT = AUDIO_DATA_ROOT;
+  env.AUDIO_OUTPUT_DIR = AUDIO_OUTPUT_DIR;
   return env;
-}
-
-export function resolveAudioPythonBin(): string {
-  return (
-    process.env.AUDIO_PYTHON_BIN ??
-    process.env.TRANSLATE_PYTHON_BIN ??
-    (process.platform === "win32" ? "py" : "python3")
-  );
-}
-
-export function resolveAudioPythonTimeoutMs(): number {
-  return Number(process.env.AUDIO_CMD_TIMEOUT_MS ?? process.env.TRANSLATE_CMD_TIMEOUT_MS ?? 600_000);
-}
-
-/** BullMQ lock must outlive the Python TTS subprocess (default 30s is too short). */
-export function resolveAudioQueueLockDurationMs(): number {
-  const explicit = Number(process.env.AUDIO_QUEUE_LOCK_MS ?? 0);
-  if (Number.isFinite(explicit) && explicit > 0) {
-    return explicit;
-  }
-  return resolveAudioPythonTimeoutMs() + 120_000;
 }
 
 /** Voice mẫu pipeline — mặc định trong repo: `tools/video-pipeline/voice`. */
