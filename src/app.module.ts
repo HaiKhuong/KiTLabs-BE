@@ -28,6 +28,7 @@ import { ToolsRealtimeModule } from "./tools/realtime/tools-realtime.module";
 import { TranslateModule } from "./tools/translate/translate.module";
 import { UsersModule } from "./tools/users/users.module";
 import { VideosModule } from "./tools/videos/videos.module";
+import { ImagesModule } from "./tools/images/images.module";
 import { YouTubeModule } from "./tools/youtube/youtube.module";
 
 @Module({
@@ -103,6 +104,7 @@ import { YouTubeModule } from "./tools/youtube/youtube.module";
     AntiSpamModule,
     YouTubeModule,
     VideosModule,
+    ImagesModule,
   ],
   controllers: [AppController],
   providers: [

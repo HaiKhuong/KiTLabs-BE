@@ -1,11 +1,13 @@
-import { BadRequestException, Body, Controller, Get, Post, Put, Query } from "@nestjs/common";
+import { BadRequestException, Body, Controller, Get, NotFoundException, Param, Post, Put, Query, Res } from "@nestjs/common";
 import { ApiBearerAuth, ApiBody, ApiOperation, ApiQuery, ApiTags } from "@nestjs/swagger";
+import type { Response } from "express";
 
 import { Public } from "../../common/decorators/public.decorator";
 import { ExecuteAiTaskDto } from "./dto/execute-ai-task.dto";
 import { ExecuteImageDto } from "./dto/execute-image.dto";
 import { ExecuteVoiceDto } from "./dto/execute-voice.dto";
 import { UpsertVideoWorkflowDto } from "./dto/upsert-video-workflow.dto";
+import { VideosImageService } from "./videos-image.service";
 import { VideosJobsService } from "./videos-jobs.service";
 import { VideosService } from "./videos.service";
 
@@ -16,6 +18,7 @@ export class VideosController {
   constructor(
     private readonly videosService: VideosService,
     private readonly videosJobsService: VideosJobsService,
+    private readonly videosImageService: VideosImageService,
   ) {}
 
   @ApiOperation({ summary: "Get video workflow by userId" })
@@ -60,5 +63,23 @@ export class VideosController {
   @Post("image/generate")
   async executeImage(@Body() dto: ExecuteImageDto) {
     return this.videosJobsService.submitImage(dto);
+  }
+
+  @ApiOperation({ summary: "Serve generated scene image (FLUX output PNG)" })
+  @Public()
+  @Get("images/:userId/:nodeId/:filename")
+  async serveSceneImage(
+    @Param("userId") userId: string,
+    @Param("nodeId") nodeId: string,
+    @Param("filename") filename: string,
+    @Res() res: Response,
+  ) {
+    const abs = this.videosImageService.resolveImageFilePath(userId, nodeId, filename);
+    if (!abs) {
+      throw new NotFoundException("Image not found");
+    }
+    res.setHeader("Content-Type", "image/png");
+    res.setHeader("Cache-Control", "public, max-age=86400");
+    return res.sendFile(abs);
   }
 }
