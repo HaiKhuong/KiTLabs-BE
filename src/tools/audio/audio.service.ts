@@ -19,6 +19,12 @@ import {
   AUDIO_OUTPUT_DIR,
   AUDIO_PREVIEW_CACHE_DIR,
   AUDIO_PRESET_VOICES,
+  AUDIO_SOURCE_AUTO,
+  AUDIO_SOURCE_STUDIO,
+  type AudioSourceType,
+  buildOmnivoiceSpawnEnv,
+  ensureWritableDir,
+  resolveAudioSourceType,
   resolvePipelineVoiceDir,
   VIDEO_PIPELINE_DIR,
   findPresetVoice,
@@ -72,12 +78,9 @@ export class AudioService {
     private readonly notificationsService: NotificationsService,
   ) {}
 
-  private static readonly OMNIVOICE_INLINE_PY = [
-    "import json,sys",
-    "p=json.load(sys.stdin)",
-    "from audio_tts_with_pauses import synthesize_with_pause_settings",
-    "synthesize_with_pause_settings(**{k:v for k,v in p.items() if v is not None})",
-  ].join(";");
+  private resolveOmnivoiceTtsScript(): string {
+    return resolve(process.cwd(), VIDEO_PIPELINE_DIR, "omnivoice_tts.py");
+  }
 
   private static readonly MAX_LOG_BUFFER = 64 * 1024;
 
@@ -87,6 +90,10 @@ export class AudioService {
       process.env.TRANSLATE_PYTHON_BIN ??
       (process.platform === "win32" ? "py" : "python3")
     );
+  }
+
+  private buildOmnivoicePythonEnv(): NodeJS.ProcessEnv {
+    return buildOmnivoiceSpawnEnv();
   }
 
   /** Mặc định 42 — khớp OMNIVOICE_SEED trong auto_vietsub_pro.py. Set env `none` để random. */
@@ -186,12 +193,14 @@ export class AudioService {
     };
 
     const pythonBin = this.resolvePythonBin();
+    const scriptPath = this.resolveOmnivoiceTtsScript();
 
     await new Promise<void>((resolvePromise, rejectPromise) => {
-      const child: ChildProcess = spawn(pythonBin, ["-c", AudioService.OMNIVOICE_INLINE_PY], {
+      const child: ChildProcess = spawn(pythonBin, [scriptPath], {
         cwd: scriptDir,
         windowsHide: true,
         stdio: ["pipe", "pipe", "pipe"],
+        env: this.buildOmnivoicePythonEnv(),
       });
 
       if (audioHistoryId) {
@@ -650,6 +659,7 @@ export class AudioService {
       displayName,
       voiceMode: dto.voiceMode,
       voiceId,
+      sourceType: AUDIO_SOURCE_STUDIO,
       engineConfig: {
         refAudioPath,
         refText,
@@ -738,6 +748,7 @@ export class AudioService {
       displayName,
       voiceMode: input.voiceMode,
       voiceId: input.voiceId,
+      sourceType: AUDIO_SOURCE_AUTO,
       engineConfig: {
         refAudioPath: input.refAudioPath,
         refText: input.refText,
@@ -771,12 +782,15 @@ export class AudioService {
 
   async getHistory(
     userId: string,
-    options?: { page?: number; limit?: number },
+    options?: { page?: number; limit?: number; sourceType?: AudioSourceType },
   ): Promise<{ items: AudioHistory[]; total: number; page: number; limit: number; hasMore: boolean }> {
     const page = Math.max(1, Number(options?.page ?? 1) || 1);
     const limit = Math.min(50, Math.max(1, Number(options?.limit ?? 20) || 20));
     const [items, total] = await this.audioRepository.findAndCount({
-      where: { userId },
+      where: {
+        userId,
+        ...(options?.sourceType ? { sourceType: options.sourceType } : {}),
+      },
       order: { createdAt: "DESC" },
       skip: (page - 1) * limit,
       take: limit,
@@ -851,8 +865,11 @@ export class AudioService {
     });
   }
 
-  async deleteAllHistory(userId: string): Promise<{ deleted: number }> {
-    const rows = await this.audioRepository.find({ where: { userId } });
+  async deleteAllHistory(
+    userId: string,
+    sourceType: AudioSourceType = AUDIO_SOURCE_STUDIO,
+  ): Promise<{ deleted: number }> {
+    const rows = await this.audioRepository.find({ where: { userId, sourceType } });
     for (const row of rows) {
       await this.deleteHistory(userId, row.id);
     }
@@ -868,6 +885,7 @@ export class AudioService {
       status: row.status,
       voiceMode: row.voiceMode,
       voiceId: row.voiceId,
+      sourceType: row.sourceType,
       resultFileName: row.resultFileName,
       errorMessage: row.errorMessage,
       createdAt: row.createdAt,
@@ -936,7 +954,7 @@ export class AudioService {
 
   buildOutputPath(userId: string, audioHistoryId: string): string {
     const dir = resolve(AUDIO_OUTPUT_DIR, userId);
-    mkdirSync(dir, { recursive: true });
+    ensureWritableDir(dir);
     return join(dir, `${audioHistoryId}.wav`);
   }
 

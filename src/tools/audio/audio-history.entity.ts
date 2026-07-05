@@ -3,6 +3,8 @@ import { Column, Entity, JoinColumn, ManyToOne } from "typeorm";
 import { BaseEntity } from "../../common/entities/base.entity";
 import { QueueJobStatus } from "../../common/enums/domain.enums";
 import { User } from "../users/user.entity";
+import type { AudioSourceType } from "./audio.constants";
+import { AUDIO_SOURCE_STUDIO } from "./audio.constants";
 
 export type AudioVoiceMode = "preset" | "clone";
 
@@ -26,6 +28,9 @@ export class AudioHistory extends BaseEntity {
 
   @Column({ name: "voice_id", type: "varchar", length: 64, nullable: true })
   voiceId!: string | null;
+
+  @Column({ name: "source_type", type: "varchar", length: 16, default: AUDIO_SOURCE_STUDIO })
+  sourceType!: AudioSourceType;
 
   @Column({ name: "engine_config", type: "jsonb", nullable: true })
   engineConfig!: Record<string, unknown> | null;

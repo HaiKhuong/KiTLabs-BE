@@ -6,7 +6,7 @@ import { randomUUID } from "crypto";
 
 import { QueueJobStatus } from "../../common/enums/domain.enums";
 import { AudioService } from "../audio/audio.service";
-import { VIDEO_PIPELINE_DIR } from "../audio/audio.constants";
+import { VIDEO_PIPELINE_DIR, buildOmnivoiceSpawnEnv } from "../audio/audio.constants";
 import { ExecuteVoiceDto } from "./dto/execute-voice.dto";
 
 type SceneRow = {
@@ -178,20 +178,7 @@ export class VideosVoiceService {
   }
 
   private buildOmnivoicePythonEnv(): NodeJS.ProcessEnv {
-    const env = { ...process.env };
-    // Tránh subprocess Voice kế thừa cache FLUX / HF từ Nest (.env).
-    for (const key of [
-      "HF_HOME",
-      "HUGGINGFACE_HUB_CACHE",
-      "TRANSFORMERS_CACHE",
-      "XDG_CACHE_HOME",
-      "HF_HUB_DISABLE_SYMLINKS",
-    ]) {
-      delete env[key];
-    }
-    env.PYTHONUNBUFFERED = "1";
-    env.PYTHONIOENCODING = "utf-8";
-    return env;
+    return buildOmnivoiceSpawnEnv();
   }
 
   private async spawnVideoVoiceTts(payload: Record<string, unknown>): Promise<PythonSegmentResult[]> {
