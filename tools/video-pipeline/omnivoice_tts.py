@@ -499,13 +499,12 @@ def main() -> None:
         out_path = out_path.resolve()
     out_key = str(out_path).replace("\\", "/").lower()
     if out_key in ("/path", "/path/", "path") or out_key.startswith("/path/"):
-        fallback = build_output_wav_path(
-            str(payload.get("user_id") or payload.get("userId") or "unknown"),
-            str(payload.get("job_id") or payload.get("jobId") or "output"),
-        )
-        raise ValueError(
-            f"out_wav={out_wav!r} là placeholder — Nest phải truyền đường dẫn thật "
-            f"(vd. {fallback}). Kiểm tra AUDIO_DATA_ROOT / AUDIO_OUTPUT_DIR trong .env.",
+        user_id = str(payload.get("user_id") or payload.get("userId") or "unknown")
+        job_id = str(payload.get("job_id") or payload.get("jobId") or "output")
+        out_path = build_output_wav_path(user_id, job_id)
+        print(
+            f"[omnivoice] out_wav placeholder — dùng {out_path}",
+            file=sys.stderr,
         )
     if not Path(ref_audio).is_file():
         raise FileNotFoundError(f"ref_audio not found: {ref_audio}")

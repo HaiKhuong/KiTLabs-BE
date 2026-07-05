@@ -3,6 +3,7 @@ import { join, resolve } from "path";
 
 export const VIDEO_PIPELINE_DIR = join("tools", "video-pipeline");
 export const VOICE_SAMPLES_DIR = join(VIDEO_PIPELINE_DIR, "voice");
+export const AUDIO_PYTHON_SCRIPT = join(VIDEO_PIPELINE_DIR, "omnivoice_tts.py");
 
 const AUDIO_DATA_PLACEHOLDERS = new Set(["/path", "/path/", "path", "/tmp/path"]);
 
@@ -80,6 +81,10 @@ export function buildOmnivoiceSpawnEnv(): NodeJS.ProcessEnv {
     "TRANSFORMERS_CACHE",
     "XDG_CACHE_HOME",
     "HF_HUB_DISABLE_SYMLINKS",
+    "AUDIO_DATA_ROOT",
+    "KITLABS_AUDIO_DATA_ROOT",
+    "AUDIO_OUTPUT_DIR",
+    "AUDIO_REF_CACHE_DIR",
   ]) {
     delete env[key];
   }
@@ -89,6 +94,34 @@ export function buildOmnivoiceSpawnEnv(): NodeJS.ProcessEnv {
   env.AUDIO_OUTPUT_DIR = AUDIO_OUTPUT_DIR;
   env.AUDIO_REF_CACHE_DIR = join(AUDIO_DATA_ROOT, "audio-ref-cache");
   return env;
+}
+
+export function resolveAudioPythonBin(): string {
+  return (
+    process.env.AUDIO_PYTHON_BIN ??
+    process.env.TRANSLATE_PYTHON_BIN ??
+    (process.platform === "win32" ? "py" : "python3")
+  );
+}
+
+export function resolveAudioPythonTimeoutMs(): number {
+  return Number(process.env.AUDIO_CMD_TIMEOUT_MS ?? process.env.TRANSLATE_CMD_TIMEOUT_MS ?? 600_000);
+}
+
+/** BullMQ lock must outlive the Python TTS subprocess (default 30s is too short). */
+export function resolveAudioQueueLockDurationMs(): number {
+  const explicit = Number(process.env.AUDIO_QUEUE_LOCK_MS ?? 0);
+  if (Number.isFinite(explicit) && explicit > 0) {
+    return explicit;
+  }
+  return resolveAudioPythonTimeoutMs() + 120_000;
+}
+
+/** Thư mục TTS cố định: ``{AUDIO_DATA_ROOT}/audio-tts`` — không phụ thuộc env lỗi `/path`. */
+export function buildAudioTtsOutputPath(userId: string, jobId: string): string {
+  const dir = resolve(join(AUDIO_DATA_ROOT, "audio-tts"), userId);
+  ensureWritableDir(dir);
+  return join(dir, `${jobId}.wav`);
 }
 
 /** Voice mẫu pipeline — mặc định trong repo: `tools/video-pipeline/voice`. */
