@@ -43,7 +43,7 @@ def resolve_omnivoice_cache_root() -> Path:
         or os.getenv("KITLABS_PYTHON_CACHE_DIR")
         or ""
     ).strip()
-    if raw:
+    if raw and raw not in ("/path", "path"):
         return Path(raw).expanduser().resolve()
     return _DEFAULT_CACHE_ROOT.resolve()
 

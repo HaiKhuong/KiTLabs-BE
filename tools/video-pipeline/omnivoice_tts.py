@@ -1,10 +1,5 @@
 """
-OmniVoice Vietnamese TTS (splendor1811/omnivoice-vietnamese) — dùng cho Step3 trong auto_vietsub_pro.
-
-Đường dẫn output WAV: caller truyền ``out_wav``, hoặc dùng ``audio_paths.build_output_wav_path``
-(cùng env ``AUDIO_DATA_ROOT`` / ``AUDIO_OUTPUT_DIR`` với Nest ``audio.constants.ts``).
-
-Cài: pip install omnivoice
+OmniVoice Vietnamese TTS — Nest gọi qua ``omnivoice_tts.py`` (stdin JSON: text, out_wav, ref_audio, …).
 Tham khảo: https://huggingface.co/splendor1811/omnivoice-vietnamese
 
 ⚠️ QUAN TRỌNG - VOICE CONSISTENCY:
@@ -35,7 +30,6 @@ from pathlib import Path
 from typing import Any, Optional, Tuple
 
 import pipeline_cache  # noqa: F401 — HF cache → cache/omnivoice (phải import trước omnivoice)
-from audio_paths import build_output_wav_path, resolve_audio_data_root, resolve_audio_output_dir
 
 # Cache theo (model_id, device_map, dtype_str)
 _session_model: Optional[Any] = None
@@ -492,20 +486,7 @@ def main() -> None:
         raise ValueError("text is required")
     if not out_wav:
         raise ValueError("out_wav is required")
-    out_path = Path(out_wav).expanduser()
-    if not out_path.is_absolute():
-        out_path = (Path.cwd() / out_path).resolve()
-    else:
-        out_path = out_path.resolve()
-    out_key = str(out_path).replace("\\", "/").lower()
-    if out_key in ("/path", "/path/", "path") or out_key.startswith("/path/"):
-        user_id = str(payload.get("user_id") or payload.get("userId") or "unknown")
-        job_id = str(payload.get("job_id") or payload.get("jobId") or "output")
-        out_path = build_output_wav_path(user_id, job_id)
-        print(
-            f"[omnivoice] out_wav placeholder — dùng {out_path}",
-            file=sys.stderr,
-        )
+    out_path = Path(out_wav).expanduser().resolve()
     if not Path(ref_audio).is_file():
         raise FileNotFoundError(f"ref_audio not found: {ref_audio}")
 
