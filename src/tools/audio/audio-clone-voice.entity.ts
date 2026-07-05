@@ -25,6 +25,10 @@ export class AudioCloneVoice extends BaseEntity {
   @Column({ name: "ref_text", type: "text" })
   refText!: string;
 
+  /** Ngôn ngữ OmniVoice khi clone — vietnamese | english | korean | japanese */
+  @Column({ name: "omnivoice_language", type: "varchar", length: 32, nullable: true })
+  omnivoiceLanguage!: string | null;
+
   @Column({ name: "file_path", type: "varchar", length: 1024 })
   filePath!: string;
 

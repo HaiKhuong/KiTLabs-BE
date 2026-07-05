@@ -29,12 +29,12 @@ def run_synthesis(
     model_id: str = "",
     device_map: str = "",
     dtype: str = "float16",
-    language: str = "vietnamese",
+    language: str | None = None,
     num_step: int = 8,
     guidance_scale: float = 2.0,
     seed: Optional[int] = None,
 ) -> str:
-    from omnivoice_tts import synthesize_to_wav
+    from omnivoice_tts import resolve_omnivoice_language, synthesize_to_wav
 
     mid = str(model_id or os.getenv("OMNIVOICE_MODEL_ID", "k2-fsa/OmniVoice")).strip()
     if not mid:
@@ -56,7 +56,7 @@ def run_synthesis(
         model_id=mid,
         device_map=dev,
         dtype_str=str(dtype or "float16"),
-        language=str(language or "vietnamese"),
+        language=resolve_omnivoice_language(language),
         num_step=int(num_step) if num_step is not None else 8,
         guidance_scale=float(guidance_scale) if guidance_scale is not None else 2.0,
         seed=int(seed) if seed is not None else None,
@@ -75,7 +75,7 @@ def run_synthesis_from_payload(payload: dict[str, Any]) -> str:
         model_id=str(payload.get("model_id") or ""),
         device_map=str(payload.get("device_map") or ""),
         dtype=str(payload.get("dtype") or "float16"),
-        language=str(payload.get("language") or "vietnamese"),
+        language=payload.get("language"),
         num_step=int(payload.get("num_step") or 8),
         guidance_scale=float(payload.get("guidance_scale") or 2.0),
         seed=seed,

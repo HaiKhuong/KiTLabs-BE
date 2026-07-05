@@ -36,6 +36,36 @@ _session_model_key: Optional[Tuple[str, str, str]] = None
 _session_prompt: Optional[Any] = None
 _session_prompt_key: Optional[Tuple[str, str]] = None
 
+SUPPORTED_OMNIVOICE_LANGUAGES = ("vietnamese", "english", "korean", "japanese")
+
+_OMNIVOICE_LANGUAGE_ALIASES: dict[str, str] = {
+    "vietnamese": "vietnamese",
+    "vi": "vietnamese",
+    "vie": "vietnamese",
+    "english": "english",
+    "en": "english",
+    "eng": "english",
+    "korean": "korean",
+    "ko": "korean",
+    "kor": "korean",
+    "japanese": "japanese",
+    "ja": "japanese",
+    "jpn": "japanese",
+}
+
+
+def resolve_omnivoice_language(raw: str | None) -> str:
+    """Chuẩn hóa language OmniVoice — bắt buộc truyền, không mặc định vietnamese."""
+    key = str(raw or "").strip().lower().replace("-", "_")
+    if not key:
+        supported = ", ".join(SUPPORTED_OMNIVOICE_LANGUAGES)
+        raise ValueError(f"omnivoice: thiếu language (hỗ trợ: {supported})")
+    resolved = _OMNIVOICE_LANGUAGE_ALIASES.get(key)
+    if not resolved:
+        supported = ", ".join(SUPPORTED_OMNIVOICE_LANGUAGES)
+        raise ValueError(f"omnivoice: language không hỗ trợ {raw!r} (hỗ trợ: {supported})")
+    return resolved
+
 
 def _resolve_hf_token() -> str:
     # Ưu tiên HF_TOKEN; fallback các tên env phổ biến.
@@ -155,10 +185,14 @@ def apply_omnivoice_lexical_replacements(text: str) -> str:
     return t
 
 
-def prepare_omnivoice_input_text(text: str) -> str:
-    """Replace lexical → lowercase → chuẩn hóa dấu câu (pipeline chung Audio + auto_vietsub)."""
-    t = apply_omnivoice_lexical_replacements(text)
-    t = t.lower()
+def prepare_omnivoice_input_text(text: str, language: str | None = None) -> str:
+    """Replace lexical (vi) → lowercase (vi/en) → chuẩn hóa dấu câu."""
+    lang = resolve_omnivoice_language(language) if language else None
+    if lang == "vietnamese":
+        t = apply_omnivoice_lexical_replacements(text)
+        t = t.lower()
+    else:
+        t = str(text or "").strip()
     return _normalize_tts_text_for_audio(t)
 
 
@@ -287,7 +321,7 @@ def synthesize_to_wav(
     model_id: str,
     device_map: str,
     dtype_str: str = "float16",
-    language: str = "vietnamese",
+    language: str | None = None,
     num_step: Optional[int] = 8,
     guidance_scale: Optional[float] = 2.0,
     seed: Optional[int] = None,
@@ -306,7 +340,7 @@ def synthesize_to_wav(
         model_id: HuggingFace model ID
         device_map: Device để chạy model (cuda:0, cpu, etc.)
         dtype_str: Data type (float16, bfloat16, float32)
-        language: Ngôn ngữ (vietnamese, english, etc.)
+        language: Ngôn ngữ bắt buộc — vietnamese | english | korean | japanese
         num_step: Số bước generation (càng cao càng chất lượng nhưng chậm hơn)
         guidance_scale: Độ mạnh của guidance (càng cao càng sát prompt nhưng ít tự nhiên)
         seed: Random seed để tạo output deterministic (giúp tái tạo chính xác cùng output)
@@ -328,7 +362,9 @@ def synthesize_to_wav(
     if not Path(ref_audio_path).is_file():
         raise FileNotFoundError(f"OmniVoice: không tìm thấy ref_audio: {ref_audio_path}")
 
-    t = prepare_omnivoice_input_text(text)
+    resolved_language = resolve_omnivoice_language(language)
+
+    t = prepare_omnivoice_input_text(text, resolved_language)
     if not t:
         raise ValueError("OmniVoice: text rỗng.")
 
@@ -354,11 +390,9 @@ def synthesize_to_wav(
     gen_kw: dict = dict(
         text=t,
         voice_clone_prompt=voice_prompt,
+        language=resolved_language,
     )
 
-    lang = str(language or "").strip()
-    if lang:
-        gen_kw["language"] = lang
     if (
         num_step is not None
         and guidance_scale is not None

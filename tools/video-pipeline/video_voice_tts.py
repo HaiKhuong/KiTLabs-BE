@@ -19,7 +19,7 @@ from typing import Any
 
 from audio_tts_worker import resolve_device_map
 import pipeline_cache  # noqa: F401 — HF cache → cache/omnivoice
-from omnivoice_tts import synthesize_to_wav
+from omnivoice_tts import resolve_omnivoice_language, synthesize_to_wav
 
 
 def _resolve_seed(raw: Any) -> int | None:
@@ -47,7 +47,8 @@ def main() -> None:
     model_id = str(payload.get("model_id") or os.getenv("OMNIVOICE_MODEL_ID", "k2-fsa/OmniVoice")).strip()
     device_map = resolve_device_map(str(payload.get("device_map") or os.getenv("OMNIVOICE_DEVICE_MAP") or ""))
     dtype_str = str(payload.get("dtype_str") or os.getenv("OMNIVOICE_DTYPE") or "float16").strip() or "float16"
-    language = str(payload.get("language") or os.getenv("OMNIVOICE_LANGUAGE") or "vietnamese").strip() or "vietnamese"
+    language_raw = payload.get("language") or os.getenv("OMNIVOICE_LANGUAGE")
+    language = resolve_omnivoice_language(str(language_raw) if language_raw else None)
     num_step = int(payload.get("num_step") or os.getenv("OMNIVOICE_NUM_STEP") or 8)
     guidance_scale = float(payload.get("guidance_scale") or os.getenv("OMNIVOICE_GUIDANCE_SCALE") or 2)
     seed = _resolve_seed(payload.get("seed"))

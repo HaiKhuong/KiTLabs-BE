@@ -158,6 +158,11 @@ export class AudioController {
   @ApiOperation({ summary: "Upload voice sample + ref text (file on disk + row in DB)" })
   @ApiConsumes("multipart/form-data")
   @ApiQuery({ name: "refText", required: true, description: "Transcript of the reference clip" })
+  @ApiQuery({
+    name: "omnivoiceLanguage",
+    required: true,
+    description: "OmniVoice language: vietnamese | english | korean | japanese",
+  })
   @ApiQuery({ name: "voiceName", required: false, description: "Optional display name / filename stem" })
   @ApiQuery({ name: "userId", required: false, description: "Owner user id (optional)" })
   @ApiBody({
@@ -182,16 +187,21 @@ export class AudioController {
   async uploadPipelineVoice(
     @UploadedFile() file: Express.Multer.File,
     @Query("refText") refText?: string,
+    @Query("omnivoiceLanguage") omnivoiceLanguage?: string,
     @Query("voiceName") voiceName?: string,
     @Query("userId") userId?: string,
   ) {
     if (!file) {
       throw new BadRequestException("file is required");
     }
+    if (!omnivoiceLanguage?.trim()) {
+      throw new BadRequestException("omnivoiceLanguage is required");
+    }
     return this.audioService.savePipelineVoiceUpload({
       originalName: file.originalname,
       voiceName,
       refText: refText ?? "",
+      omnivoiceLanguage: omnivoiceLanguage.trim(),
       buffer: file.buffer,
       userId,
     });

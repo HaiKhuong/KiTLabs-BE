@@ -13,7 +13,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from omnivoice_tts import prepare_omnivoice_input_text, synthesize_to_wav
+from omnivoice_tts import prepare_omnivoice_input_text, resolve_omnivoice_language, synthesize_to_wav
 
 FFMPEG_BIN = (os.getenv("FFMPEG_BIN") or "ffmpeg").strip() or "ffmpeg"
 _step3_ref_cfg_ready = False
@@ -307,7 +307,7 @@ def synthesize_with_pause_settings(
     model_id: str,
     device_map: str,
     dtype_str: str = "float16",
-    language: str = "vietnamese",
+    language: str | None = None,
     num_step: Optional[int] = 8,
     guidance_scale: Optional[float] = 2.0,
     seed: Optional[int] = None,
@@ -324,13 +324,15 @@ def synthesize_with_pause_settings(
     if not chunks:
         raise ValueError("text is empty after tokenize")
 
+    resolved_language = resolve_omnivoice_language(language)
+
     omnivoice_kw = dict(
         ref_audio=str(ref_prepared),
         ref_text=ref_text,
         model_id=model_id,
         device_map=device_map,
         dtype_str=dtype_str,
-        language=language,
+        language=resolved_language,
         num_step=num_step,
         guidance_scale=guidance_scale,
         seed=resolved_seed,

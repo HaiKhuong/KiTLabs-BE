@@ -47,7 +47,7 @@ export type AudioPresetVoice = {
    * Ngôn ngữ gửi xuống OmniVoice (khác `language` dùng cho UI / lọc danh sách).
    * Mặc định: `en` → english, còn lại → vietnamese.
    */
-  omnivoiceLanguage?: "english" | "vietnamese";
+  omnivoiceLanguage?: OmnivoiceLanguage;
   /** Câu dùng để render `/preview` (cache WAV). Mặc định: AUDIO_DEMO_PREVIEW_TEXT. */
   previewTtsText?: string;
 };
@@ -100,13 +100,47 @@ export const AUDIO_PRESET_VOICES: AudioPresetVoice[] = [
   },
 ];
 
+export const OMNIVOICE_LANGUAGE_OPTIONS = [
+  { label: "Việt", value: "vietnamese" },
+  { label: "Anh", value: "english" },
+  { label: "Hàn", value: "korean" },
+  { label: "Nhật", value: "japanese" },
+] as const;
+
+export type OmnivoiceLanguage = (typeof OMNIVOICE_LANGUAGE_OPTIONS)[number]["value"];
+
+const OMNIVOICE_LANGUAGE_ALIASES: Record<string, OmnivoiceLanguage> = {
+  vietnamese: "vietnamese",
+  vi: "vietnamese",
+  english: "english",
+  en: "english",
+  korean: "korean",
+  ko: "korean",
+  japanese: "japanese",
+  ja: "japanese",
+};
+
+export function resolveOmnivoiceLanguageValue(raw?: string | null): OmnivoiceLanguage {
+  const key = String(raw ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/-/g, "_");
+  const resolved = OMNIVOICE_LANGUAGE_ALIASES[key];
+  if (!resolved) {
+    throw new Error(
+      `Invalid OmniVoice language: ${raw ?? "(empty)"}. Supported: vietnamese, english, korean, japanese`,
+    );
+  }
+  return resolved;
+}
+
 export function findPresetVoice(voiceId: string): AudioPresetVoice | undefined {
   return AUDIO_PRESET_VOICES.find((v) => v.id === voiceId);
 }
 
-export function resolveOmnivoiceLanguage(voice: AudioPresetVoice): "english" | "vietnamese" {
+export function resolveOmnivoiceLanguage(voice: AudioPresetVoice): OmnivoiceLanguage {
   if (voice.omnivoiceLanguage) return voice.omnivoiceLanguage;
-  return voice.language === "en" ? "english" : "vietnamese";
+  return voice.language === 'en' ? 'english' : 'vietnamese';
 }
 
 export function resolvePreviewTtsText(voice: AudioPresetVoice): string {

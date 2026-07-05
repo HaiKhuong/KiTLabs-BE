@@ -23,6 +23,7 @@ import {
   VIDEO_PIPELINE_DIR,
   findPresetVoice,
   resolveOmnivoiceLanguage,
+  resolveOmnivoiceLanguageValue,
   resolvePreviewTtsText,
 } from "./audio.constants";
 import { AudioCloneVoice } from "./audio-clone-voice.entity";
@@ -39,6 +40,7 @@ export type PipelineVoiceDto = {
   displayName?: string;
   fileName: string;
   refText: string;
+  omnivoiceLanguage?: string | null;
   size: number;
   updatedAt: string;
   /** Thư mục voice trên server (tools/video-pipeline/voice). */
@@ -167,7 +169,13 @@ export class AudioService {
       model_id: (process.env.OMNIVOICE_MODEL_ID ?? "k2-fsa/OmniVoice").trim(),
       device_map: (process.env.OMNIVOICE_DEVICE_MAP ?? "").trim() || "cuda:0",
       dtype_str: (process.env.OMNIVOICE_DTYPE ?? "float16").trim(),
-      language: opts.language ?? process.env.OMNIVOICE_LANGUAGE ?? "vietnamese",
+      language: opts.language
+        ? resolveOmnivoiceLanguageValue(opts.language)
+        : process.env.OMNIVOICE_LANGUAGE
+          ? resolveOmnivoiceLanguageValue(process.env.OMNIVOICE_LANGUAGE)
+          : (() => {
+              throw new Error("OmniVoice language is required");
+            })(),
       num_step: Number(process.env.OMNIVOICE_NUM_STEP ?? 8),
       guidance_scale: Number(process.env.OMNIVOICE_GUIDANCE_SCALE ?? 2),
       ...(seed != null ? { seed } : {}),
@@ -309,7 +317,13 @@ export class AudioService {
   async assertPipelineVoiceReady(
     refWav: string,
     refTextOverride?: string,
-  ): Promise<{ fileName: string; voiceDir: string; absolutePath: string; refText: string }> {
+  ): Promise<{
+    fileName: string;
+    voiceDir: string;
+    absolutePath: string;
+    refText: string;
+    omnivoiceLanguage: string | null;
+  }> {
     const fileName = basename(String(refWav || "").trim());
     if (!fileName) {
       throw new BadRequestException("omnivoiceRefWav is required");
@@ -355,7 +369,19 @@ export class AudioService {
       voiceDir,
       absolutePath,
       refText,
+      omnivoiceLanguage: row?.omnivoiceLanguage?.trim() || null,
     };
+  }
+
+  async resolvePipelineVoiceLanguage(fileName: string): Promise<string> {
+    const safeName = basename(String(fileName || "").trim());
+    const row = await this.cloneVoiceRepository.findOne({ where: { fileName: safeName } });
+    if (!row?.omnivoiceLanguage?.trim()) {
+      throw new BadRequestException(
+        `Giọng clone "${safeName}" chưa có ngôn ngữ. Tạo lại giọng và chọn Việt/Anh/Hàn/Nhật.`,
+      );
+    }
+    return resolveOmnivoiceLanguageValue(row.omnivoiceLanguage);
   }
 
   resolveCloneRefAudioPath(userId: string, fileName: string): string {
@@ -397,6 +423,7 @@ export class AudioService {
       displayName: row.displayName,
       fileName: row.fileName,
       refText: row.refText,
+      omnivoiceLanguage: row.omnivoiceLanguage,
       size: sizeOnDisk,
       updatedAt: row.updatedAt.toISOString(),
       voiceDir: this.resolvePipelineVoiceDir().replace(/\\/g, "/"),
@@ -416,12 +443,19 @@ export class AudioService {
     originalName: string;
     voiceName?: string;
     refText: string;
+    omnivoiceLanguage: string;
     buffer: Buffer;
     userId?: string;
   }): Promise<PipelineVoiceDto> {
     const refText = String(input.refText || "").trim();
     if (!refText) {
       throw new BadRequestException("refText is required");
+    }
+    let omnivoiceLanguage: string;
+    try {
+      omnivoiceLanguage = resolveOmnivoiceLanguageValue(input.omnivoiceLanguage);
+    } catch (err) {
+      throw new BadRequestException(err instanceof Error ? err.message : "Invalid omnivoice language");
     }
 
     const bufferSize = input.buffer?.length ?? 0;
@@ -472,6 +506,7 @@ export class AudioService {
       ? Object.assign(existing, {
           displayName,
           refText,
+          omnivoiceLanguage,
           filePath: relativePath,
           fileSize: stats.size,
           mimeType,
@@ -481,6 +516,7 @@ export class AudioService {
           displayName,
           fileName,
           refText,
+          omnivoiceLanguage,
           filePath: relativePath,
           fileSize: stats.size,
           mimeType,
@@ -585,6 +621,7 @@ export class AudioService {
     let refAudioPath: string;
     let refText: string;
     let voiceId: string | null = null;
+    let omnivoiceLanguage: string | undefined;
 
     if (dto.voiceMode === "preset") {
       if (!dto.voiceId) {
@@ -598,6 +635,9 @@ export class AudioService {
       const resolved = await this.resolveCloneReference(dto);
       refAudioPath = resolved.refAudioPath;
       refText = resolved.refText;
+      if (dto.pipelineRefWav?.trim()) {
+        omnivoiceLanguage = await this.resolvePipelineVoiceLanguage(dto.pipelineRefWav.trim());
+      }
     }
 
     const estimatedCost = dto.estimatedCost ?? 0;
@@ -625,6 +665,7 @@ export class AudioService {
           ellipsis: dto.pauseEllipsisSec ?? 0.55,
         },
         cloneRefWav: dto.cloneRefWav ?? dto.pipelineRefWav ?? null,
+        ...(omnivoiceLanguage ? { omnivoiceLanguage } : {}),
       },
       status: QueueJobStatus.PENDING,
       cost: estimatedCost.toFixed(2),
@@ -676,7 +717,7 @@ export class AudioService {
     return {
       refAudioPath: verified.absolutePath,
       refText: verified.refText,
-      language: process.env.OMNIVOICE_LANGUAGE ?? "vietnamese",
+      language: await this.resolvePipelineVoiceLanguage(dto.pipelineRefWav!.trim()),
     };
   }
 
@@ -909,7 +950,21 @@ export class AudioService {
 
     const outPath = this.buildOutputPath(history.userId, history.id);
     const preset = history.voiceId ? findPresetVoice(history.voiceId) : undefined;
-    const language = preset ? resolveOmnivoiceLanguage(preset) : (process.env.OMNIVOICE_LANGUAGE ?? "vietnamese");
+    let language: string;
+    if (preset) {
+      language = resolveOmnivoiceLanguage(preset);
+    } else {
+      const fromConfig = String(config.omnivoiceLanguage ?? "").trim();
+      if (fromConfig) {
+        language = resolveOmnivoiceLanguageValue(fromConfig);
+      } else {
+        const refWav = String(config.cloneRefWav ?? config.pipelineRefWav ?? "").trim();
+        if (!refWav) {
+          throw new Error("engine_config missing clone voice reference for language");
+        }
+        language = await this.resolvePipelineVoiceLanguage(refWav);
+      }
+    }
 
     const pauseSettings =
       config.pauseSettings && typeof config.pauseSettings === "object"
