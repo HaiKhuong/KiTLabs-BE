@@ -196,9 +196,6 @@ export class VideosVoiceService {
       try {
         const history = await this.audioService.enqueue(this.buildJobDto(dto, scene.voiceOver));
         queued.push({ scene, jobId: history.id });
-        this.logger.debug(
-          `[Voice] Cụm ${batchNo}/${batchTotal} enqueue scene ${scene.sceneNumber} → job ${history.id}`,
-        );
       } catch (err) {
         const message = errorMessage(err);
         progress.failed += 1;
