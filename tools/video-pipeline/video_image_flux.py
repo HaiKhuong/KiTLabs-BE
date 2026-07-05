@@ -93,8 +93,21 @@ def _get_pipe(model_id: str, device_map: str, dtype_str: str):
     import torch
     from diffusers import FluxPipeline
 
+    import sys
+
     dtype = _resolve_dtype(dtype_str)
     token = resolve_hf_token()
+
+    if token:
+        print(f"[flux] HF_TOKEN có ({len(token)} ký tự)", file=sys.stderr)
+        try:
+            from huggingface_hub import login
+
+            login(token=token, add_to_git_credential=False)
+        except Exception as login_exc:
+            print(f"[flux] WARN: huggingface_hub.login thất bại: {login_exc}", file=sys.stderr)
+    else:
+        print("[flux] WARN: HF_TOKEN trống — gated model sẽ 403", file=sys.stderr)
 
     try:
         _pipe = FluxPipeline.from_pretrained(
@@ -105,10 +118,17 @@ def _get_pipe(model_id: str, device_map: str, dtype_str: str):
     except Exception as exc:
         err = str(exc)
         if "GatedRepoError" in exc.__class__.__name__ or "gated repo" in err.lower():
+            if token:
+                raise RuntimeError(
+                    "FLUX.1-schnell: token HF đã có nhưng tài khoản chưa được duyệt. "
+                    "Đăng nhập Hugging Face bằng đúng tài khoản tạo token, mở "
+                    "https://huggingface.co/black-forest-labs/FLUX.1-schnell → Accept license, "
+                    "rồi thử lại (token Read, restart Nest sau khi sửa .env)."
+                ) from exc
             raise RuntimeError(
-                "FLUX.1-schnell là model gated trên Hugging Face. "
-                "1) Agree tại https://huggingface.co/black-forest-labs/FLUX.1-schnell "
-                "2) Thêm HF_TOKEN=hf_... vào .env Nest rồi restart."
+                "FLUX.1-schnell là model gated. Thêm HF_TOKEN=hf_... vào .env Nest, "
+                "restart service, và Accept license tại "
+                "https://huggingface.co/black-forest-labs/FLUX.1-schnell"
             ) from exc
         raise
 

@@ -180,22 +180,39 @@ export class VideosImageService {
     return dir;
   }
 
+  private buildPythonEnv(): NodeJS.ProcessEnv {
+    const token = (
+      process.env.HF_TOKEN ??
+      process.env.HUGGINGFACE_HUB_TOKEN ??
+      ""
+    ).trim();
+    return {
+      ...process.env,
+      PYTHONUNBUFFERED: "1",
+      PYTHONIOENCODING: "utf-8",
+      ...(token ? { HF_TOKEN: token, HUGGINGFACE_HUB_TOKEN: token } : {}),
+    };
+  }
+
   private async spawnFluxImageGen(payload: Record<string, unknown>): Promise<PythonImageResult[]> {
     const pythonBin = this.resolvePythonBin();
     const scriptPath = this.resolveFluxScript();
     const scriptDir = resolve(process.cwd(), VIDEO_PIPELINE_DIR);
     const timeoutMs = this.resolveCmdTimeoutMs();
+    const env = this.buildPythonEnv();
+
+    if (!env.HF_TOKEN) {
+      this.logger.warn(
+        "HF_TOKEN trống trong process Nest — FLUX gated model sẽ 403. Kiểm tra .env và restart service.",
+      );
+    }
 
     return new Promise((resolvePromise, rejectPromise) => {
       const child: ChildProcess = spawn(pythonBin, [scriptPath], {
         cwd: scriptDir,
         windowsHide: true,
         stdio: ["pipe", "pipe", "pipe"],
-        env: {
-          ...process.env,
-          PYTHONUNBUFFERED: "1",
-          PYTHONIOENCODING: "utf-8",
-        },
+        env,
       });
 
       let stdout = "";

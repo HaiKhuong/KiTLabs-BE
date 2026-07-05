@@ -15,7 +15,16 @@ FLUX_CACHE_ROOT = (_PIPELINE_DIR / "cache" / "flux").resolve()
 
 
 def resolve_hf_token() -> str | None:
-    token = (os.getenv("HF_TOKEN") or "").strip()
+    token = (
+        os.getenv("HF_TOKEN")
+        or os.getenv("HUGGINGFACE_HUB_TOKEN")
+        or os.getenv("HUGGING_FACE_HUB_TOKEN")
+        or ""
+    )
+    token = str(token).strip()
+    if token:
+        os.environ.setdefault("HF_TOKEN", token)
+        os.environ.setdefault("HUGGINGFACE_HUB_TOKEN", token)
     return token or None
 
 
@@ -32,6 +41,7 @@ def configure_flux_cache_env() -> Path:
     os.environ["TRANSFORMERS_CACHE"] = str(hf_home)
     os.environ["TORCH_HOME"] = str(torch_home)
     os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS", "1")
+    resolve_hf_token()
     return base
 
 
