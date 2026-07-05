@@ -16,7 +16,7 @@ export class GenerateStudioImageDto {
   @IsString()
   aspectRatio?: string;
 
-  @ApiPropertyOptional({ default: "cinematic" })
+  @ApiPropertyOptional({ default: "anime" })
   @IsOptional()
   @IsString()
   style?: string;

@@ -396,7 +396,7 @@ export class VideosImageService {
     const userId = dto.userId.trim();
     const resolvedJobId = (jobId ?? randomUUID()).trim();
     const model = this.resolveModelId(dto.model ?? "flux");
-    const style = (dto.style ?? "cinematic").trim() || "cinematic";
+    const style = (dto.style ?? "anime").trim() || "anime";
     const aspectRatio = (dto.aspectRatio ?? "9:16").trim() || "9:16";
     const negativePrompt = (dto.negativePrompt ?? "").trim();
     const outputDir = this.buildOutputDir(userId, resolvedJobId);

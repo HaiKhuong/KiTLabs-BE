@@ -141,6 +141,7 @@ def _aspect_to_size(aspect_ratio: str, vram_gb: float | None = None) -> tuple[in
 
 
 def _style_suffix(style: str) -> str:
+    # Đồng bộ IMAGE_STYLE_OPTIONS (KiTLabs images.constants.ts)
     key = str(style or "anime").strip().lower()
     suffixes = {
         "anime": (
@@ -159,10 +160,15 @@ def _style_suffix(style: str) -> str:
             "minimal background, educational infographic style, motion-graphics friendly"
         ),
         "kurzgesagt": (
-            "modern flat vector illustration, colorful geometric shapes, "
-            "clean outlines, smooth gradients, bold color palette, "
-            "educational infographic aesthetic, highly readable composition, "
-            "simple background, scalable SVG-like artwork"
+            "modern flat vector illustration, educational infographic, "
+            "simple geometric shapes, circles, rounded rectangles and clean curves, "
+            "bold vibrant color palette with harmonious blue, orange, yellow, red and purple tones, "
+            "flat colors with subtle smooth gradients, minimal shading with one or two shadow layers, "
+            "clean crisp edges, minimal or no outlines, "
+            "high visual clarity, simplified objects without unnecessary details, "
+            "single clear focal subject, uncluttered background, "
+            "balanced composition, motion-graphics friendly, "
+            "2D vector artwork, SVG-style, no textures, no photorealism"
         ),
     }
     return suffixes.get(key, suffixes["anime"])
@@ -360,7 +366,8 @@ def main() -> None:
         payload.get("max_sequence_length") or os.getenv("FLUX_MAX_SEQUENCE_LENGTH") or 256
     )
     seed = _resolve_seed(payload.get("seed"))
-    style = str(payload.get("style") or "cinematic")
+    style = str(payload.get("style") or "anime")
+    print(f"[flux] style={style!r}", file=sys.stderr)
     aspect_ratio = str(payload.get("aspect_ratio") or "9:16")
     vram_gb = _get_vram_gb()
     width, height = _aspect_to_size(aspect_ratio, vram_gb)
