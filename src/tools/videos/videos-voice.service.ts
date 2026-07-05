@@ -30,7 +30,13 @@ export type ExecuteVoiceResult = {
   voiceMode: "preset" | "clone";
   voiceId: string;
   segments: VoiceSegmentResult[];
+  completedCount: number;
+  failedCount: number;
 };
+
+type PollResult =
+  | { status: "completed" }
+  | { status: "failed"; message: string };
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -49,6 +55,10 @@ function toNumber(value: unknown, fallback = 0): number {
 
 function toString(value: unknown): string {
   return typeof value === "string" ? value : value != null ? String(value) : "";
+}
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
 
 function parseScenesJson(raw: string): {
@@ -110,6 +120,34 @@ function parseScenesJson(raw: string): {
   return { language, duration, scenes };
 }
 
+function failedSegment(scene: SceneRow, message: string, jobId: string | null = null): VoiceSegmentResult {
+  return {
+    sceneNumber: scene.sceneNumber,
+    startTime: scene.startTime,
+    endTime: scene.endTime,
+    voiceOver: scene.voiceOver,
+    jobId,
+    status: "failed",
+    playUrl: null,
+    downloadUrl: null,
+    errorMessage: message,
+  };
+}
+
+function chunkScenes<T>(items: T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let i = 0; i < items.length; i += size) {
+    chunks.push(items.slice(i, i + size));
+  }
+  return chunks;
+}
+
+type BatchProgress = {
+  completed: number;
+  failed: number;
+  total: number;
+};
+
 @Injectable()
 export class VideosVoiceService {
   private readonly logger = new Logger(VideosVoiceService.name);
@@ -124,7 +162,105 @@ export class VideosVoiceService {
     return Number(process.env.VIDEOS_VOICE_POLL_INTERVAL_MS ?? 1_500);
   }
 
-  private async waitForAudioJob(jobId: string): Promise<void> {
+  /** Số scene mỗi cụm TTS (1–10). Env VIDEOS_VOICE_BATCH_SIZE, mặc định 5. */
+  private resolveBatchSize(override?: number): number {
+    const fromDto = override != null && Number.isFinite(override) ? Math.floor(override) : 0;
+    const fromEnv = Number(process.env.VIDEOS_VOICE_BATCH_SIZE ?? 5);
+    const raw = fromDto > 0 ? fromDto : fromEnv;
+    if (!Number.isFinite(raw)) return 5;
+    return Math.min(10, Math.max(1, Math.floor(raw)));
+  }
+
+  private async processSceneBatch(
+    dto: ExecuteVoiceDto,
+    batchIndex: number,
+    batchTotal: number,
+    batch: SceneRow[],
+    segments: VoiceSegmentResult[],
+    progress: BatchProgress,
+  ): Promise<void> {
+    const batchNo = batchIndex + 1;
+    const sceneNumbers = batch.map((scene) => scene.sceneNumber).join(", ");
+    const doneBefore = progress.completed + progress.failed;
+    const completedBefore = progress.completed;
+    const failedBefore = progress.failed;
+    const batchStartedAt = Date.now();
+
+    this.logger.log(
+      `[Voice] Cụm ${batchNo}/${batchTotal} — bắt đầu ${batch.length} scene [${sceneNumbers}] | tiến độ trước cụm: ${doneBefore}/${progress.total} (OK ${progress.completed}, lỗi ${progress.failed})`,
+    );
+
+    const queued: { scene: SceneRow; jobId: string }[] = [];
+
+    for (const scene of batch) {
+      try {
+        const history = await this.audioService.enqueue(this.buildJobDto(dto, scene.voiceOver));
+        queued.push({ scene, jobId: history.id });
+        this.logger.debug(
+          `[Voice] Cụm ${batchNo}/${batchTotal} enqueue scene ${scene.sceneNumber} → job ${history.id}`,
+        );
+      } catch (err) {
+        const message = errorMessage(err);
+        progress.failed += 1;
+        this.logger.warn(
+          `[Voice] Cụm ${batchNo}/${batchTotal} enqueue scene ${scene.sceneNumber} FAIL — đã xử lý ${progress.completed + progress.failed}/${progress.total}: ${message}`,
+        );
+        segments.push(failedSegment(scene, message));
+      }
+    }
+
+    this.logger.log(
+      `[Voice] Cụm ${batchNo}/${batchTotal} — đã enqueue ${queued.length}/${batch.length} job, chờ TTS…`,
+    );
+
+    for (const { scene, jobId } of queued) {
+      const pollStarted = Date.now();
+      const outcome = await this.pollAudioJob(jobId);
+      const elapsedSec = ((Date.now() - pollStarted) / 1000).toFixed(1);
+
+      if (outcome.status === "failed") {
+        progress.failed += 1;
+        this.logger.warn(
+          `[Voice] Cụm ${batchNo}/${batchTotal} scene ${scene.sceneNumber} TTS FAIL (${elapsedSec}s) — đã generate ${progress.completed}/${progress.total}, lỗi ${progress.failed}: ${outcome.message}`,
+        );
+        segments.push(failedSegment(scene, outcome.message, jobId));
+        continue;
+      }
+
+      const row = await this.audioService.getById(jobId);
+      if (!row) {
+        progress.failed += 1;
+        this.logger.warn(
+          `[Voice] Cụm ${batchNo}/${batchTotal} scene ${scene.sceneNumber} missing job sau complete — đã xử lý ${progress.completed + progress.failed}/${progress.total}`,
+        );
+        segments.push(failedSegment(scene, `Audio job not found after complete: ${jobId}`, jobId));
+        continue;
+      }
+
+      const mapped = this.audioService.mapHistoryForClient(row);
+      progress.completed += 1;
+      this.logger.log(
+        `[Voice] Cụm ${batchNo}/${batchTotal} scene ${scene.sceneNumber} OK (${elapsedSec}s) — đã generate ${progress.completed}/${progress.total}, lỗi ${progress.failed}`,
+      );
+      segments.push({
+        sceneNumber: scene.sceneNumber,
+        startTime: scene.startTime,
+        endTime: scene.endTime,
+        voiceOver: scene.voiceOver,
+        jobId,
+        status: "completed",
+        playUrl: mapped.playUrl,
+        downloadUrl: mapped.downloadUrl,
+      });
+    }
+
+    this.logger.log(
+      `[Voice] Cụm ${batchNo}/${batchTotal} xong (${((Date.now() - batchStartedAt) / 1000).toFixed(1)}s) — cụm này +${progress.completed - completedBefore} OK, +${progress.failed - failedBefore} lỗi | tổng đã generate ${progress.completed}/${progress.total}, lỗi ${progress.failed}`,
+    );
+  }
+
+  /** Poll job — không throw, để caller tiếp tục scene khác. */
+  private async pollAudioJob(jobId: string): Promise<PollResult> {
     const timeoutMs = this.resolvePollTimeoutMs();
     const intervalMs = this.resolvePollIntervalMs();
     const started = Date.now();
@@ -132,16 +268,18 @@ export class VideosVoiceService {
     while (Date.now() - started < timeoutMs) {
       const row = await this.audioService.getById(jobId);
       if (!row) {
-        throw new Error(`Audio job not found: ${jobId}`);
+        return { status: "failed", message: `Audio job not found: ${jobId}` };
       }
-      if (row.status === QueueJobStatus.COMPLETED) return;
+      if (row.status === QueueJobStatus.COMPLETED) {
+        return { status: "completed" };
+      }
       if (row.status === QueueJobStatus.FAILED) {
-        throw new Error(row.errorMessage?.trim() || "TTS failed");
+        return { status: "failed", message: row.errorMessage?.trim() || "TTS failed" };
       }
       await sleep(intervalMs);
     }
 
-    throw new Error(`TTS timed out after ${timeoutMs}ms`);
+    return { status: "failed", message: `TTS timed out after ${timeoutMs}ms` };
   }
 
   private buildJobDto(dto: ExecuteVoiceDto, text: string): CreateAudioJobDto {
@@ -175,49 +313,33 @@ export class VideosVoiceService {
 
     const { language, duration, scenes } = parseScenesJson(dto.scenes);
     const voiceId = dto.voiceMode === "preset" ? dto.voiceId!.trim() : dto.pipelineRefWav!.trim();
+    const batchSize = this.resolveBatchSize(dto.batchSize);
     const segments: VoiceSegmentResult[] = [];
+    const batches = chunkScenes(scenes, batchSize);
+    const progress: BatchProgress = {
+      completed: 0,
+      failed: 0,
+      total: scenes.length,
+    };
+    const runStartedAt = Date.now();
 
-    for (const scene of scenes) {
-      try {
-        const history = await this.audioService.enqueue(this.buildJobDto(dto, scene.voiceOver));
-        await this.waitForAudioJob(history.id);
-        const mapped = this.audioService.mapHistoryForClient(
-          (await this.audioService.getById(history.id))!,
-        );
+    this.logger.log(
+      `[Voice] Bắt đầu generate userId=${dto.userId} mode=${dto.voiceMode} voice=${voiceId} — ${scenes.length} scene, ${batches.length} cụm (tối đa ${batchSize}/cụm)`,
+    );
 
-        segments.push({
-          sceneNumber: scene.sceneNumber,
-          startTime: scene.startTime,
-          endTime: scene.endTime,
-          voiceOver: scene.voiceOver,
-          jobId: history.id,
-          status: "completed",
-          playUrl: mapped.playUrl,
-          downloadUrl: mapped.downloadUrl,
-        });
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        this.logger.warn(`Voice TTS failed for scene ${scene.sceneNumber}: ${message}`);
-        segments.push({
-          sceneNumber: scene.sceneNumber,
-          startTime: scene.startTime,
-          endTime: scene.endTime,
-          voiceOver: scene.voiceOver,
-          jobId: null,
-          status: "failed",
-          playUrl: null,
-          downloadUrl: null,
-          errorMessage: message,
-        });
-      }
+    for (let index = 0; index < batches.length; index += 1) {
+      const batch = batches[index];
+      await this.processSceneBatch(dto, index, batches.length, batch, segments, progress);
     }
 
-    const failedCount = segments.filter((item) => item.status === "failed").length;
-    if (failedCount === segments.length) {
-      throw new BadRequestException(
-        segments[0]?.errorMessage ?? "All voice segments failed",
-      );
-    }
+    segments.sort((a, b) => a.sceneNumber - b.sceneNumber);
+
+    const completedCount = progress.completed;
+    const failedCount = progress.failed;
+
+    this.logger.log(
+      `[Voice] Hoàn tất (${((Date.now() - runStartedAt) / 1000).toFixed(1)}s) — đã generate ${completedCount}/${progress.total} voice, lỗi ${failedCount}`,
+    );
 
     return {
       language,
@@ -225,6 +347,8 @@ export class VideosVoiceService {
       voiceMode: dto.voiceMode,
       voiceId,
       segments,
+      completedCount,
+      failedCount,
     };
   }
 }
