@@ -49,7 +49,7 @@ export class AudioOmnivoiceRunner {
   }
 
   /**
-   * Gọi ``omnivoice_tts.py`` — cùng pattern spawn như ``translate.processor`` + ``auto_vietsub_pro.py``.
+   * Gọi ``audio_studio_tts.py`` (stdin JSON → audio_tts_with_pauses → omnivoice_tts).
    */
   async execute(payload: OmnivoiceTtsPayload, audioHistoryId?: string): Promise<void> {
     const pythonBin = resolveAudioPythonBin();

@@ -3,7 +3,7 @@ import { join, resolve } from "path";
 
 export const VIDEO_PIPELINE_DIR = join("tools", "video-pipeline");
 export const VOICE_SAMPLES_DIR = join(VIDEO_PIPELINE_DIR, "voice");
-export const AUDIO_PYTHON_SCRIPT = join(VIDEO_PIPELINE_DIR, "omnivoice_tts.py");
+export const AUDIO_PYTHON_SCRIPT = join(VIDEO_PIPELINE_DIR, "audio_studio_tts.py");
 
 /** Gốc uploads — mặc định `<cwd>/uploads`, ghi đè bằng `AUDIO_DATA_ROOT` nếu cần. */
 export const AUDIO_DATA_ROOT = (() => {
