@@ -18,6 +18,7 @@ import os
 import sys
 from pathlib import Path
 
+
 def _resolve_log_level() -> int:
     name = (os.getenv("OMNIVOICE_LOG_LEVEL") or "WARNING").strip().upper()
     return getattr(logging, name, logging.WARNING)
@@ -48,38 +49,31 @@ def resolve_omnivoice_cache_root() -> Path:
     return _DEFAULT_CACHE_ROOT.resolve()
 
 
-def _repair_cache_path(path: Path) -> None:
-    """Xóa path nếu tồn tại nhưng không phải thư mục (gây FileExistsError Errno 17)."""
+def _ensure_cache_dir(path: Path) -> None:
+    """Tạo thư mục cache; sửa khi path tồn tại nhưng là file (gây FileExistsError: Errno 17)."""
     if path.exists() and not path.is_dir():
-        log.warning("cache path là file, xóa: %s", path)
+        log.warning("cache path là file, xóa và tạo lại thư mục: %s", path)
         path.unlink()
+    path.mkdir(parents=True, exist_ok=True)
 
 
 def configure_omnivoice_cache_env() -> Path:
-    """
-    Đặt HF/torch cache → cache/omnivoice.
-
-    Không mkdir `huggingface/` trước — HuggingFace tự tạo; tạo sẵn gây FileExistsError
-    khi lib gọi os.mkdir(.../huggingface) không có exist_ok (đặc biệt với XDG_CACHE_HOME).
-    """
+    """Đặt HF/torch cache → cache/omnivoice (ghi đè env Nest/FLUX kế thừa)."""
     global _configured
     base = resolve_omnivoice_cache_root()
     hf_home = base / "huggingface"
     hub = hf_home / "hub"
     torch_home = base / "torch"
 
-    base.mkdir(parents=True, exist_ok=True)
-    torch_home.mkdir(parents=True, exist_ok=True)
-    _repair_cache_path(hf_home)
-    _repair_cache_path(hub)
+    for path in (base, hf_home, hub, torch_home):
+        _ensure_cache_dir(path)
 
-    # Ghi đè env Nest/FLUX — subprocess Voice không dùng cache FLUX.
+    # Ghi đè — không dùng setdefault (Nest có thể set HF_HOME cho FLUX).
     os.environ["HF_HOME"] = str(hf_home)
     os.environ["HUGGINGFACE_HUB_CACHE"] = str(hub)
     os.environ["TRANSFORMERS_CACHE"] = str(hub)
     os.environ["TORCH_HOME"] = str(torch_home)
-    # Không set XDG_CACHE_HOME=base — lib sẽ mkdir base/huggingface và đụng thư mục đã tạo sẵn.
-    os.environ.pop("XDG_CACHE_HOME", None)
+    os.environ["XDG_CACHE_HOME"] = str(base)
 
     if sys.platform == "win32":
         os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS", "1")

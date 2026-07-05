@@ -19,7 +19,7 @@ import { diskStorage, memoryStorage } from "multer";
 import { basename, extname, join, resolve } from "path";
 
 import { Public } from "../../common/decorators/public.decorator";
-import { AUDIO_CLONE_UPLOAD_DIR, AUDIO_SOURCE_STUDIO, resolveAudioSourceType } from "./audio.constants";
+import { AUDIO_CLONE_UPLOAD_DIR } from "./audio.constants";
 import { AudioService } from "./audio.service";
 import { CreateAudioJobDto } from "./dto/create-audio-job.dto";
 
@@ -238,23 +238,19 @@ export class AudioController {
   @ApiQuery({ name: "userId", required: true })
   @ApiQuery({ name: "page", required: false })
   @ApiQuery({ name: "limit", required: false })
-  @ApiQuery({ name: "sourceType", required: false, description: "auto | studio (mặc định studio cho trang Audio)" })
   @Public()
   @Get("jobs")
   async listJobs(
     @Query("userId") userId?: string,
     @Query("page") page?: string,
     @Query("limit") limit?: string,
-    @Query("sourceType") sourceType?: string,
   ) {
     if (!userId) {
       throw new BadRequestException("userId is required");
     }
-    const resolvedSource = resolveAudioSourceType(sourceType) ?? AUDIO_SOURCE_STUDIO;
     const result = await this.audioService.getHistory(userId, {
       page: page ? Number(page) : 1,
       limit: limit ? Number(limit) : 20,
-      sourceType: resolvedSource,
     });
     return {
       items: result.items.map((row) => this.audioService.mapHistoryForClient(row)),
@@ -267,15 +263,13 @@ export class AudioController {
 
   @ApiOperation({ summary: "Delete all audio generation jobs for a user" })
   @ApiQuery({ name: "userId", required: true })
-  @ApiQuery({ name: "sourceType", required: false, description: "auto | studio (mặc định: studio)" })
   @Public()
   @Delete("jobs")
-  async deleteAllJobs(@Query("userId") userId?: string, @Query("sourceType") sourceType?: string) {
+  async deleteAllJobs(@Query("userId") userId?: string) {
     if (!userId) {
       throw new BadRequestException("userId is required");
     }
-    const resolvedSource = resolveAudioSourceType(sourceType) ?? AUDIO_SOURCE_STUDIO;
-    return this.audioService.deleteAllHistory(userId, resolvedSource);
+    return this.audioService.deleteAllHistory(userId);
   }
 
   @ApiOperation({ summary: "Get audio job by id" })

@@ -6,7 +6,7 @@ import { randomUUID } from "crypto";
 
 import { QueueJobStatus } from "../../common/enums/domain.enums";
 import { AudioService } from "../audio/audio.service";
-import { VIDEO_PIPELINE_DIR, buildOmnivoiceSpawnEnv } from "../audio/audio.constants";
+import { VIDEO_PIPELINE_DIR } from "../audio/audio.constants";
 import { ExecuteVoiceDto } from "./dto/execute-voice.dto";
 
 type SceneRow = {
@@ -177,23 +177,17 @@ export class VideosVoiceService {
     return resolve(process.cwd(), "tools/video-pipeline/video_voice_merge.py");
   }
 
-  private buildOmnivoicePythonEnv(): NodeJS.ProcessEnv {
-    return buildOmnivoiceSpawnEnv();
-  }
-
   private async spawnVideoVoiceTts(payload: Record<string, unknown>): Promise<PythonSegmentResult[]> {
     const pythonBin = this.resolvePythonBin();
     const scriptPath = this.resolveVideoVoiceScript();
     const scriptDir = resolve(process.cwd(), VIDEO_PIPELINE_DIR);
     const timeoutMs = this.resolveCmdTimeoutMs();
-    const env = this.buildOmnivoicePythonEnv();
 
     return new Promise((resolvePromise, rejectPromise) => {
       const child: ChildProcess = spawn(pythonBin, [scriptPath], {
         cwd: scriptDir,
         windowsHide: true,
         stdio: ["pipe", "pipe", "pipe"],
-        env,
       });
 
       let stdout = "";

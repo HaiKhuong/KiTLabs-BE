@@ -1,9 +1,6 @@
 """
 OmniVoice Vietnamese TTS (splendor1811/omnivoice-vietnamese) — dùng cho Step3 trong auto_vietsub_pro.
 
-Đường dẫn output WAV: caller truyền ``out_wav``, hoặc dùng ``audio_paths.build_output_wav_path``
-(cùng env ``AUDIO_DATA_ROOT`` / ``AUDIO_OUTPUT_DIR`` với Nest ``audio.constants.ts``).
-
 Cài: pip install omnivoice
 Tham khảo: https://huggingface.co/splendor1811/omnivoice-vietnamese
 
@@ -27,15 +24,10 @@ Tham khảo: https://huggingface.co/splendor1811/omnivoice-vietnamese
 
 from __future__ import annotations
 
-import json
 import os
 import re
-import sys
 from pathlib import Path
 from typing import Any, Optional, Tuple
-
-import pipeline_cache  # noqa: F401 — HF cache → cache/omnivoice (phải import trước omnivoice)
-from audio_paths import build_output_wav_path, resolve_audio_data_root, resolve_audio_output_dir
 
 # Cache theo (model_id, device_map, dtype_str)
 _session_model: Optional[Any] = None
@@ -458,90 +450,3 @@ def synthesize_to_wav(
         wave_np = wave_np.reshape(-1)
 
     sf.write(str(out), wave_np, 24000)
-
-
-def _resolve_seed(raw: Any) -> int | None:
-    if raw is None or str(raw).strip() == "":
-        env = (os.getenv("OMNIVOICE_SEED") or "42").strip()
-        if not env or env.lower() in ("none", "null"):
-            return None
-        try:
-            return int(env)
-        except ValueError:
-            return 42
-    try:
-        return int(raw)
-    except (TypeError, ValueError):
-        return None
-
-
-def main() -> None:
-    """
-    CLI — stdin JSON (Nest Audio API / preview):
-      text, out_wav, ref_audio, ref_text?,
-      model_id?, device_map?, dtype_str?, language?, num_step?, guidance_scale?, seed?,
-      pause_settings?, playback_speed?
-    """
-    from audio_tts_worker import resolve_device_map
-
-    payload = json.load(sys.stdin)
-    text = str(payload.get("text") or "").strip()
-    out_wav = str(payload.get("out_wav") or payload.get("outWav") or "").strip()
-    ref_audio = str(Path(str(payload.get("ref_audio") or payload.get("refAudio") or "")).expanduser().resolve())
-    if not text:
-        raise ValueError("text is required")
-    if not out_wav:
-        raise ValueError("out_wav is required")
-    if not Path(ref_audio).is_file():
-        raise FileNotFoundError(f"ref_audio not found: {ref_audio}")
-
-    ref_text = str(payload.get("ref_text") or payload.get("refText") or "")
-    model_id = str(payload.get("model_id") or os.getenv("OMNIVOICE_MODEL_ID", "k2-fsa/OmniVoice")).strip()
-    device_map = resolve_device_map(str(payload.get("device_map") or os.getenv("OMNIVOICE_DEVICE_MAP") or ""))
-    dtype_str = str(payload.get("dtype_str") or os.getenv("OMNIVOICE_DTYPE") or "float16").strip() or "float16"
-    language_raw = payload.get("language") or os.getenv("OMNIVOICE_LANGUAGE")
-    language = resolve_omnivoice_language(str(language_raw) if language_raw else None)
-    num_step = int(payload.get("num_step") or os.getenv("OMNIVOICE_NUM_STEP") or 8)
-    guidance_scale = float(payload.get("guidance_scale") or os.getenv("OMNIVOICE_GUIDANCE_SCALE") or 2)
-    seed = _resolve_seed(payload.get("seed"))
-    pause_settings = payload.get("pause_settings") or payload.get("pauseSettings")
-    playback_speed = payload.get("playback_speed")
-    if playback_speed is None:
-        playback_speed = payload.get("playbackSpeed")
-
-    out_path = Path(out_wav)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-
-    omnivoice_kw = dict(
-        text=text,
-        out_wav=str(out_path),
-        ref_audio=ref_audio,
-        ref_text=ref_text,
-        model_id=model_id,
-        device_map=device_map,
-        dtype_str=dtype_str,
-        language=language,
-        num_step=num_step if num_step > 0 else None,
-        guidance_scale=guidance_scale if num_step > 0 else None,
-        seed=seed,
-    )
-
-    has_pause = isinstance(pause_settings, dict) and bool(pause_settings)
-    speed = float(playback_speed) if playback_speed is not None else 1.0
-    if has_pause or abs(speed - 1.0) > 1e-6:
-        from audio_tts_with_pauses import synthesize_with_pause_settings
-
-        synthesize_with_pause_settings(
-            **omnivoice_kw,
-            pause_settings=pause_settings if has_pause else None,
-            playback_speed=speed if abs(speed - 1.0) > 1e-6 else None,
-        )
-    else:
-        synthesize_to_wav(**omnivoice_kw)
-
-    if not out_path.is_file() or out_path.stat().st_size <= 0:
-        raise RuntimeError(f"empty output: {out_path}")
-
-
-if __name__ == "__main__":
-    main()

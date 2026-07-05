@@ -17,8 +17,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
-import pipeline_cache  # noqa: F401 — HF cache → cache/omnivoice (phải import trước)
 from audio_tts_worker import resolve_device_map
+import pipeline_cache  # noqa: F401 — HF cache → cache/omnivoice
 from omnivoice_tts import resolve_omnivoice_language, synthesize_to_wav
 
 
