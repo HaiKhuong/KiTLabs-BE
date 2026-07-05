@@ -17,6 +17,11 @@ export class ExecuteVoiceDto {
   @IsUUID()
   userId!: string;
 
+  @ApiProperty({ description: "Workflow node id (FE correlation)" })
+  @IsString()
+  @IsNotEmpty()
+  nodeId!: string;
+
   @ApiProperty({ description: "Scene JSON (SceneReviewPayload) or scenes array" })
   @IsString()
   @IsNotEmpty()

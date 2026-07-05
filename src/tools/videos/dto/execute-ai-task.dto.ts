@@ -2,10 +2,14 @@ import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
 import { IsIn, IsNotEmpty, IsOptional, IsString, IsUUID } from "class-validator";
 
 export class ExecuteAiTaskDto {
-  @ApiPropertyOptional({ description: "User UUID" })
-  @IsOptional()
+  @ApiProperty({ description: "User UUID — dùng cho socket room" })
   @IsUUID()
-  userId?: string;
+  userId!: string;
+
+  @ApiProperty({ description: "Workflow node id (FE correlation)" })
+  @IsString()
+  @IsNotEmpty()
+  nodeId!: string;
 
   @ApiProperty({ description: "Provider id", default: "openai", example: "openai" })
   @IsString()

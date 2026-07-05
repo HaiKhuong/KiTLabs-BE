@@ -3,11 +3,11 @@ import { ApiBearerAuth, ApiBody, ApiOperation, ApiQuery, ApiTags } from "@nestjs
 
 import { Public } from "../../common/decorators/public.decorator";
 import { ExecuteAiTaskDto } from "./dto/execute-ai-task.dto";
+import { ExecuteImageDto } from "./dto/execute-image.dto";
 import { ExecuteVoiceDto } from "./dto/execute-voice.dto";
 import { UpsertVideoWorkflowDto } from "./dto/upsert-video-workflow.dto";
-import { VideosAiService } from "./videos-ai.service";
+import { VideosJobsService } from "./videos-jobs.service";
 import { VideosService } from "./videos.service";
-import { VideosVoiceService } from "./videos-voice.service";
 
 @ApiTags("Videos")
 @ApiBearerAuth("bearer")
@@ -15,8 +15,7 @@ import { VideosVoiceService } from "./videos-voice.service";
 export class VideosController {
   constructor(
     private readonly videosService: VideosService,
-    private readonly videosAiService: VideosAiService,
-    private readonly videosVoiceService: VideosVoiceService,
+    private readonly videosJobsService: VideosJobsService,
   ) {}
 
   @ApiOperation({ summary: "Get video workflow by userId" })
@@ -39,19 +38,27 @@ export class VideosController {
     return this.videosService.upsert(dto);
   }
 
-  @ApiOperation({ summary: "Execute AI Task (script + prompt → JSON result)" })
+  @ApiOperation({ summary: "Queue AI Task — kết quả qua socket videos.job.completed / failed" })
   @ApiBody({ type: ExecuteAiTaskDto })
   @Public()
   @Post("ai-task/execute")
   async executeAiTask(@Body() dto: ExecuteAiTaskDto) {
-    return this.videosAiService.executeAiTask(dto);
+    return this.videosJobsService.submitAiTask(dto);
   }
 
-  @ApiOperation({ summary: "Generate voice segments from scenes JSON (OmniVoice TTS)" })
+  @ApiOperation({ summary: "Queue Voice TTS — kết quả qua socket videos.job.completed / failed" })
   @ApiBody({ type: ExecuteVoiceDto })
   @Public()
   @Post("voice/generate")
   async executeVoice(@Body() dto: ExecuteVoiceDto) {
-    return this.videosVoiceService.executeVoice(dto);
+    return this.videosJobsService.submitVoice(dto);
+  }
+
+  @ApiOperation({ summary: "Queue Image gen — kết quả qua socket videos.job.completed / failed" })
+  @ApiBody({ type: ExecuteImageDto })
+  @Public()
+  @Post("image/generate")
+  async executeImage(@Body() dto: ExecuteImageDto) {
+    return this.videosJobsService.submitImage(dto);
   }
 }
