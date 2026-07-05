@@ -238,12 +238,18 @@ export class AudioController {
   @ApiQuery({ name: "userId", required: true })
   @ApiQuery({ name: "page", required: false })
   @ApiQuery({ name: "limit", required: false })
+  @ApiQuery({
+    name: "sourceType",
+    required: false,
+    description: "studio = trang Audio (mặc định); auto = workflow video voice",
+  })
   @Public()
   @Get("jobs")
   async listJobs(
     @Query("userId") userId?: string,
     @Query("page") page?: string,
     @Query("limit") limit?: string,
+    @Query("sourceType") sourceType?: string,
   ) {
     if (!userId) {
       throw new BadRequestException("userId is required");
@@ -251,6 +257,7 @@ export class AudioController {
     const result = await this.audioService.getHistory(userId, {
       page: page ? Number(page) : 1,
       limit: limit ? Number(limit) : 20,
+      sourceType,
     });
     return {
       items: result.items.map((row) => this.audioService.mapHistoryForClient(row)),
@@ -263,13 +270,18 @@ export class AudioController {
 
   @ApiOperation({ summary: "Delete all audio generation jobs for a user" })
   @ApiQuery({ name: "userId", required: true })
+  @ApiQuery({
+    name: "sourceType",
+    required: false,
+    description: "studio = trang Audio (mặc định); auto = workflow video voice",
+  })
   @Public()
   @Delete("jobs")
-  async deleteAllJobs(@Query("userId") userId?: string) {
+  async deleteAllJobs(@Query("userId") userId?: string, @Query("sourceType") sourceType?: string) {
     if (!userId) {
       throw new BadRequestException("userId is required");
     }
-    return this.audioService.deleteAllHistory(userId);
+    return this.audioService.deleteAllHistory(userId, { sourceType });
   }
 
   @ApiOperation({ summary: "Get audio job by id" })

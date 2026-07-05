@@ -6,7 +6,7 @@ import { Queue } from "bullmq";
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "fs";
 import { unlink } from "fs/promises";
 import { basename, extname, isAbsolute, join, resolve } from "path";
-import { Repository } from "typeorm";
+import { Repository, SelectQueryBuilder } from "typeorm";
 
 import { NotificationType, QueueJobStatus } from "../../common/enums/domain.enums";
 import { CreditHistory } from "../credits/credit-history.entity";
@@ -32,6 +32,12 @@ import { CreateAudioJobDto } from "./dto/create-audio-job.dto";
 import { ExecuteVoiceDto } from "../videos/dto/execute-voice.dto";
 
 export const AUDIO_QUEUE_NAME = "audio-tts";
+
+/** engine_config.source cho audio sinh từ node Voice (page Videos). */
+export const AUDIO_HISTORY_SOURCE_VIDEO_VOICE = "video_voice";
+
+/** studio = trang Audio; auto = workflow (video voice, …). */
+export type AudioHistoryListSourceType = "studio" | "auto";
 
 const PIPELINE_VOICE_ALLOWED_EXT = new Set([".wav", ".mp3", ".m4a"]);
 
@@ -741,7 +747,7 @@ export class AudioService {
       engineConfig: {
         refAudioPath: input.refAudioPath,
         refText: input.refText,
-        source: "video_voice",
+        source: AUDIO_HISTORY_SOURCE_VIDEO_VOICE,
       },
       status: QueueJobStatus.RUNNING,
       cost: "0",
@@ -769,18 +775,51 @@ export class AudioService {
     await this.processFailed(audioHistoryId, errorMessage);
   }
 
+  resolveHistoryListSourceType(raw?: string | null): AudioHistoryListSourceType {
+    const key = String(raw ?? "studio").trim().toLowerCase();
+    return key === "auto" ? "auto" : "studio";
+  }
+
+  resolveHistorySourceType(row: AudioHistory): AudioHistoryListSourceType {
+    const source = String((row.engineConfig as Record<string, unknown> | null)?.source ?? "").trim();
+    return source === AUDIO_HISTORY_SOURCE_VIDEO_VOICE ? "auto" : "studio";
+  }
+
+  private applyHistorySourceFilter(
+    qb: SelectQueryBuilder<AudioHistory>,
+    sourceType: AudioHistoryListSourceType,
+  ): SelectQueryBuilder<AudioHistory> {
+    if (sourceType === "auto") {
+      return qb.andWhere("audio.engine_config->>'source' = :videoSource", {
+        videoSource: AUDIO_HISTORY_SOURCE_VIDEO_VOICE,
+      });
+    }
+    return qb.andWhere(
+      "(audio.engine_config IS NULL OR audio.engine_config->>'source' IS NULL OR audio.engine_config->>'source' != :videoSource)",
+      { videoSource: AUDIO_HISTORY_SOURCE_VIDEO_VOICE },
+    );
+  }
+
+  private buildHistoryQuery(
+    userId: string,
+    sourceType: AudioHistoryListSourceType,
+  ): SelectQueryBuilder<AudioHistory> {
+    const qb = this.audioRepository.createQueryBuilder("audio").where("audio.user_id = :userId", { userId });
+    return this.applyHistorySourceFilter(qb, sourceType);
+  }
+
   async getHistory(
     userId: string,
-    options?: { page?: number; limit?: number },
+    options?: { page?: number; limit?: number; sourceType?: string },
   ): Promise<{ items: AudioHistory[]; total: number; page: number; limit: number; hasMore: boolean }> {
     const page = Math.max(1, Number(options?.page ?? 1) || 1);
     const limit = Math.min(50, Math.max(1, Number(options?.limit ?? 20) || 20));
-    const [items, total] = await this.audioRepository.findAndCount({
-      where: { userId },
-      order: { createdAt: "DESC" },
-      skip: (page - 1) * limit,
-      take: limit,
-    });
+    const sourceType = this.resolveHistoryListSourceType(options?.sourceType);
+    const [items, total] = await this.buildHistoryQuery(userId, sourceType)
+      .orderBy("audio.created_at", "DESC")
+      .skip((page - 1) * limit)
+      .take(limit)
+      .getManyAndCount();
     return {
       items,
       total,
@@ -851,8 +890,12 @@ export class AudioService {
     });
   }
 
-  async deleteAllHistory(userId: string): Promise<{ deleted: number }> {
-    const rows = await this.audioRepository.find({ where: { userId } });
+  async deleteAllHistory(
+    userId: string,
+    options?: { sourceType?: string },
+  ): Promise<{ deleted: number }> {
+    const sourceType = this.resolveHistoryListSourceType(options?.sourceType);
+    const rows = await this.buildHistoryQuery(userId, sourceType).getMany();
     for (const row of rows) {
       await this.deleteHistory(userId, row.id);
     }
@@ -868,6 +911,7 @@ export class AudioService {
       status: row.status,
       voiceMode: row.voiceMode,
       voiceId: row.voiceId,
+      sourceType: this.resolveHistorySourceType(row),
       resultFileName: row.resultFileName,
       errorMessage: row.errorMessage,
       createdAt: row.createdAt,

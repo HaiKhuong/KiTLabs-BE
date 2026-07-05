@@ -13,6 +13,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import pipeline_cache  # noqa: F401 — HF cache → cache/omnivoice
 from omnivoice_tts import prepare_omnivoice_input_text, resolve_omnivoice_language, synthesize_to_wav
 
 FFMPEG_BIN = (os.getenv("FFMPEG_BIN") or "ffmpeg").strip() or "ffmpeg"
