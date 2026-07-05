@@ -1,13 +1,15 @@
 """
-Cache HF / torch riêng cho FLUX text-to-image (video_image_flux.py).
+Cache HF / torch riêng cho FLUX — ngang hàng cache/omnivoice (cùng cây cache/).
 
-Tách khỏi cache/omnivoice — OmniVoice giữ nguyên pipeline_cache.py.
+Mặc định: <repo>/tools/video-pipeline/cache/flux
+Ghi đè: FLUX_CACHE_ROOT hoặc KITLABS_FLUX_CACHE_DIR
 
-Ưu tiên:
-  1. FLUX_CACHE_ROOT (env — Nest thường set uploads/flux-cache)
-  2. $AUDIO_DATA_ROOT/flux-cache hoặc $UPLOAD_DIR/flux-cache
-  3. <repo>/tools/video-pipeline/cache/flux
-  4. /var/tmp/kitools-flux
+Cấu trúc (song song omnivoice):
+  cache/
+  ├── omnivoice/   ← pipeline_cache.py
+  └── flux/        ← file này
+      ├── huggingface/hub/
+      └── torch/
 """
 
 from __future__ import annotations
@@ -27,76 +29,40 @@ if not logging.getLogger().handlers:
 log = logging.getLogger("flux-cache")
 
 _PIPELINE_DIR = Path(__file__).resolve().parent
-_DEFAULT_FLUX_CACHE_ROOT = _PIPELINE_DIR / "cache" / "flux"
+_CACHE_DIR = _PIPELINE_DIR / "cache"
+_DEFAULT_FLUX_CACHE_ROOT = _CACHE_DIR / "flux"
 _configured = False
 
 
-def _ensure_writable_dir(path: Path) -> Path:
-    resolved = path.expanduser().resolve()
-    resolved.mkdir(parents=True, exist_ok=True)
-    probe = resolved / ".write_probe"
-    probe.write_text("ok", encoding="utf-8")
-    probe.unlink(missing_ok=True)
-    return resolved
-
-
-def _fallback_candidates() -> list[Path]:
-    out: list[Path] = []
-
-    for key in ("AUDIO_DATA_ROOT", "KITLABS_AUDIO_DATA_ROOT", "UPLOAD_DIR"):
-        raw = (os.getenv(key) or "").strip()
-        if raw:
-            out.append(Path(raw).expanduser() / "flux-cache")
-
-    out.append(_DEFAULT_FLUX_CACHE_ROOT)
-    out.append(Path("/var/tmp/kitools-flux"))
-    return out
-
-
 def resolve_flux_cache_root() -> Path:
-    raw = (os.getenv("FLUX_CACHE_ROOT") or "").strip()
+    raw = (
+        os.getenv("FLUX_CACHE_ROOT")
+        or os.getenv("KITLABS_FLUX_CACHE_DIR")
+        or ""
+    ).strip()
     if raw:
-        return _ensure_writable_dir(Path(raw))
-
-    errors: list[str] = []
-    for candidate in _fallback_candidates():
-        try:
-            resolved = _ensure_writable_dir(candidate)
-            if candidate == _DEFAULT_FLUX_CACHE_ROOT:
-                log.warning("flux cache root=%s", resolved)
-            else:
-                log.warning(
-                    "flux cache fallback → %s (repo cache/flux không ghi được)",
-                    resolved,
-                )
-            return resolved
-        except OSError as exc:
-            errors.append(f"{candidate}: {exc}")
-
-    raise PermissionError(
-        "Không ghi được FLUX cache. Set FLUX_CACHE_ROOT trong .env Nest, ví dụ:\n"
-        "  FLUX_CACHE_ROOT=/var/cache/kitools-flux\n"
-        + "\n".join(errors)
-    )
+        return Path(raw).expanduser().resolve()
+    return _DEFAULT_FLUX_CACHE_ROOT.resolve()
 
 
 def configure_flux_cache_env() -> Path:
-    """Ghi đè HF/torch env cho process FLUX (không đụng cache/omnivoice)."""
+    """HF/torch env cho FLUX — cache/flux (không dùng cache/omnivoice)."""
     global _configured
     base = resolve_flux_cache_root()
-
     hf_home = base / "huggingface"
     hub = hf_home / "hub"
     torch_home = base / "torch"
+    hf_home.mkdir(parents=True, exist_ok=True)
+    hub.mkdir(parents=True, exist_ok=True)
     torch_home.mkdir(parents=True, exist_ok=True)
 
     os.environ["HF_HOME"] = str(hf_home)
     os.environ["HUGGINGFACE_HUB_CACHE"] = str(hub)
-    os.environ["TRANSFORMERS_CACHE"] = str(hub)
+    os.environ["TRANSFORMERS_CACHE"] = str(hf_home)
     os.environ["TORCH_HOME"] = str(torch_home)
     os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS", "1")
 
     if not _configured:
         _configured = True
-        log.warning("flux HF_HOME=%s", hf_home)
+        log.debug("flux cache root=%s HF_HOME=%s HUB=%s", base, hf_home, hub)
     return base
