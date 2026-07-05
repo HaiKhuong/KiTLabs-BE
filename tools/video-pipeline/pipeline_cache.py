@@ -4,11 +4,11 @@ Cache HF / torch cho OmniVoice, translate, voice TTS.
 Mặc định: <repo>/tools/video-pipeline/cache/omnivoice
 Ghi đè: OMNIVOICE_CACHE_ROOT hoặc KITLABS_PYTHON_CACHE_DIR
 
-FLUX dùng cache riêng ngang hàng: cache/flux (flux_cache.py).
+FLUX text-to-image cấu hình cache trong video_image_flux.py (cache/flux).
 
   cache/
-  ├── omnivoice/   ← OmniVoice / voice workflow
-  └── flux/        ← FLUX text-to-image
+  ├── omnivoice/   ← pipeline_cache.py
+  └── flux/        ← video_image_flux.py
 """
 
 from __future__ import annotations
@@ -77,5 +77,5 @@ def configure_omnivoice_cache_env() -> Path:
     return base
 
 
-# Import từ script OmniVoice / voice workflow (FLUX dùng flux_cache.py).
+# Import từ script OmniVoice / voice workflow.
 configure_omnivoice_cache_env()

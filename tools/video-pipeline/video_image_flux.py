@@ -1,6 +1,8 @@
 """
 Video workflow — text-to-image per scene using FLUX.1 Schnell (diffusers).
 
+Cache cố định: tools/video-pipeline/cache/flux — flux_cache.py
+
 Stdin JSON:
   model_id?, device_map?, dtype_str?, guidance_scale?, num_inference_steps?, max_sequence_length?, seed?,
   style?, aspect_ratio?,
@@ -21,9 +23,8 @@ from pathlib import Path
 from typing import Any
 
 from audio_tts_worker import resolve_device_map
-from flux_cache import configure_flux_cache_env
-
-configure_flux_cache_env()
+import flux_cache  # noqa: F401 — cache/flux
+from flux_cache import resolve_hf_token
 
 _pipe = None
 
@@ -93,13 +94,23 @@ def _get_pipe(model_id: str, device_map: str, dtype_str: str):
     from diffusers import FluxPipeline
 
     dtype = _resolve_dtype(dtype_str)
-    token = (os.getenv("FLUX_HF_TOKEN") or os.getenv("HUGGINGFACE_HUB_TOKEN") or "").strip() or None
+    token = resolve_hf_token()
 
-    _pipe = FluxPipeline.from_pretrained(
-        model_id,
-        torch_dtype=dtype,
-        token=token,
-    )
+    try:
+        _pipe = FluxPipeline.from_pretrained(
+            model_id,
+            torch_dtype=dtype,
+            token=token,
+        )
+    except Exception as exc:
+        err = str(exc)
+        if "GatedRepoError" in exc.__class__.__name__ or "gated repo" in err.lower():
+            raise RuntimeError(
+                "FLUX.1-schnell là model gated trên Hugging Face. "
+                "1) Agree tại https://huggingface.co/black-forest-labs/FLUX.1-schnell "
+                "2) Thêm HF_TOKEN=hf_... vào .env Nest rồi restart."
+            ) from exc
+        raise
 
     if device_map == "cpu":
         _pipe.to("cpu")
