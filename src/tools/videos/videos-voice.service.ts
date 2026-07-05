@@ -177,17 +177,36 @@ export class VideosVoiceService {
     return resolve(process.cwd(), "tools/video-pipeline/video_voice_merge.py");
   }
 
+  private buildOmnivoicePythonEnv(): NodeJS.ProcessEnv {
+    const env = { ...process.env };
+    // Tránh subprocess Voice kế thừa cache FLUX / HF từ Nest (.env).
+    for (const key of [
+      "HF_HOME",
+      "HUGGINGFACE_HUB_CACHE",
+      "TRANSFORMERS_CACHE",
+      "XDG_CACHE_HOME",
+      "HF_HUB_DISABLE_SYMLINKS",
+    ]) {
+      delete env[key];
+    }
+    env.PYTHONUNBUFFERED = "1";
+    env.PYTHONIOENCODING = "utf-8";
+    return env;
+  }
+
   private async spawnVideoVoiceTts(payload: Record<string, unknown>): Promise<PythonSegmentResult[]> {
     const pythonBin = this.resolvePythonBin();
     const scriptPath = this.resolveVideoVoiceScript();
     const scriptDir = resolve(process.cwd(), VIDEO_PIPELINE_DIR);
     const timeoutMs = this.resolveCmdTimeoutMs();
+    const env = this.buildOmnivoicePythonEnv();
 
     return new Promise((resolvePromise, rejectPromise) => {
       const child: ChildProcess = spawn(pythonBin, [scriptPath], {
         cwd: scriptDir,
         windowsHide: true,
         stdio: ["pipe", "pipe", "pipe"],
+        env,
       });
 
       let stdout = "";
