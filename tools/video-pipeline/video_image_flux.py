@@ -54,14 +54,46 @@ def _get_vram_gb() -> float | None:
 
 
 def _resolve_offload_mode(device_map: str) -> str:
-    """cuda | model | sequential — auto sequential khi VRAM ≤12.5 GiB (RTX 3060)."""
-    raw = str(os.getenv("FLUX_OFFLOAD") or "").strip().lower()
-    if raw in ("cuda", "model", "sequential"):
-        return raw
+    """
+    auto | sequential | model | cuda
+
+    Model FLUX fp16 ~24GB — KHÔNG load full lên card 12GB.
+    Mặc định auto: VRAM ≤12.5 GiB → sequential (peak VRAM ~8–10 GiB, phần còn lại RAM).
+    """
+    import sys
+
+    raw = str(os.getenv("FLUX_OFFLOAD") or "auto").strip().lower()
     if device_map == "cpu":
         return "cpu"
+
+    if raw in ("sequential", "model"):
+        return raw
+
+    if raw == "cuda":
+        vram = _get_vram_gb()
+        force = str(os.getenv("FLUX_OFFLOAD_FORCE_CUDA") or "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+        )
+        if vram is not None and vram <= 12.5 and not force:
+            print(
+                f"[flux] WARN: FLUX_OFFLOAD=cuda nhưng VRAM ~{vram:.1f} GiB — model ~24GB fp16 "
+                "không vừa GPU. Dùng sequential (peak VRAM ~8–10 GiB). "
+                "Ép full GPU: FLUX_OFFLOAD_FORCE_CUDA=1 (dễ OOM).",
+                file=sys.stderr,
+            )
+            return "sequential"
+        return "cuda"
+
+    # auto — theo VRAM thực tế
     vram = _get_vram_gb()
     if vram is not None and vram <= 12.5:
+        print(
+            f"[flux] VRAM ~{vram:.1f} GiB → sequential_cpu_offload "
+            "(model ~24GB trên RAM, GPU chỉ giữ từng block lúc infer).",
+            file=sys.stderr,
+        )
         return "sequential"
     if vram is not None and vram <= 16:
         return "model"
@@ -99,9 +131,11 @@ def _apply_pipe_memory_opts(pipe: Any, offload_mode: str, device_map: str) -> No
     gpu_id = _gpu_index(device_map)
     if offload_mode == "sequential":
         pipe.enable_sequential_cpu_offload(gpu_id=gpu_id)
+        vram = _get_vram_gb()
+        vram_note = f" (card ~{vram:.1f} GiB)" if vram is not None else ""
         print(
-            "[flux] sequential_cpu_offload — VRAM thấp, ít ngốn RAM hơn model_offload; "
-            "GPU % thấp là bình thường (chờ copy CPU→GPU).",
+            f"[flux] sequential_cpu_offload{vram_note} — peak VRAM ~8–10 GiB, "
+            "weights chủ yếu trên RAM. Đây là chế độ đúng cho card 12GB.",
             file=sys.stderr,
         )
     elif offload_mode == "model":
@@ -143,16 +177,20 @@ def _aspect_to_size(aspect_ratio: str, vram_gb: float | None = None) -> tuple[in
 def _style_suffix(style: str) -> str:
     # Đồng bộ IMAGE_STYLE_OPTIONS (KiTLabs images.constants.ts)
     key = str(style or "anime").strip().lower()
+    if key == "minimalist_illustration":
+        key = "illustration"
     suffixes = {
         "anime": (
             "high-quality anime illustration, clean line art, expressive characters, "
             "vibrant colors, cel shading, dynamic composition, crisp details, "
             "2D animation style, soft lighting"
         ),
-        "minimalist_illustration": (
-            "minimalist flat illustration, clean composition, simple geometric shapes, "
-            "limited color palette, soft muted colors, subtle gradients, "
-            "large negative space, uncluttered design, modern editorial illustration"
+        "illustration": (
+            "flat vector editorial illustration, modern YouTube explainer style, clean geometric shapes, "
+            "bold colorful palette, smooth soft gradients, crisp edges, minimal texture, simple background, "
+            "high contrast, vibrant colors, professional infographic illustration, expressive character design, "
+            "clean composition, subtle ambient lighting, large readable shapes, Adobe Illustrator style, "
+            "premium flat design, 2D vector artwork, no outlines, no photorealism, no 3D, highly detailed, ultra clean"
         ),
         "stick_figure": (
             "minimal stick figure illustration, round head, simple line limbs, "
@@ -407,6 +445,8 @@ def main() -> None:
         out_path = Path(out_path_raw)
         out_path.parent.mkdir(parents=True, exist_ok=True)
         try:
+            if torch.cuda.is_available():
+                torch.cuda.reset_peak_memory_stats()
             with torch.inference_mode():
                 output = pipe(
                     prompt,
@@ -420,6 +460,9 @@ def main() -> None:
             image = output.images[0]
             image.save(out_path, format="PNG")
             if torch.cuda.is_available():
+                peak_gb = torch.cuda.max_memory_allocated() / (1024**3)
+                print(f"[flux] scene {scene_number} peak VRAM ~{peak_gb:.2f} GiB", file=sys.stderr)
+                torch.cuda.reset_peak_memory_stats()
                 torch.cuda.empty_cache()
             if not out_path.is_file() or out_path.stat().st_size <= 0:
                 raise RuntimeError(f"empty output: {out_path}")
