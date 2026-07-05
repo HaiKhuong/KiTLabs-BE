@@ -238,7 +238,12 @@ export class AudioService {
         }
         if (code !== 0) {
           const suffix = signal ? ` (signal ${signal})` : "";
-          rejectPromise(new Error(stderr.trim() || `OmniVoice exited with code ${code}${suffix}`));
+          const detail = stderr.trim() || `OmniVoice exited with code ${code}${suffix}`;
+          rejectPromise(
+            new Error(
+              `${detail} | out_wav=${outWav.replace(/\\/g, "/")} ref_audio=${refAudio.replace(/\\/g, "/")}`,
+            ),
+          );
           return;
         }
         resolvePromise();
@@ -967,6 +972,10 @@ export class AudioService {
     }
 
     const outPath = this.buildOutputPath(history.userId, history.id);
+    this.logger.log(
+      `Audio TTS start: historyId=${history.id} out=${outPath.replace(/\\/g, "/")} ` +
+        `AUDIO_OUTPUT_DIR=${AUDIO_OUTPUT_DIR.replace(/\\/g, "/")}`,
+    );
     const preset = history.voiceId ? findPresetVoice(history.voiceId) : undefined;
     let language: string;
     if (preset) {

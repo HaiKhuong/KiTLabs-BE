@@ -6,6 +6,28 @@ export const VOICE_SAMPLES_DIR = join(VIDEO_PIPELINE_DIR, "voice");
 
 const AUDIO_DATA_PLACEHOLDERS = new Set(["/path", "/path/", "path", "/tmp/path"]);
 
+function isAudioPathPlaceholder(resolved: string): boolean {
+  const key = resolved.replace(/\\/g, "/").toLowerCase();
+  return AUDIO_DATA_PLACEHOLDERS.has(key) || key.endsWith("/path");
+}
+
+function defaultAudioDataRoot(): string {
+  return resolve(process.cwd(), "uploads");
+}
+
+function sanitizeAudioPath(raw: string, fallback: string, label: string): string {
+  const resolved = resolve(raw);
+  if (isAudioPathPlaceholder(resolved)) {
+    // eslint-disable-next-line no-console
+    console.error(
+      `[audio] ${label}="${raw}" là placeholder — dùng ${fallback.replace(/\\/g, "/")}. ` +
+        `Sửa hoặc xóa dòng này trong .env / systemd.`,
+    );
+    return fallback;
+  }
+  return resolved;
+}
+
 /**
  * Thư mục gốc cho `audio-tts`, `audio-clone`, `audio-previews` (phải ghi được bởi user chạy Nest).
  * Mặc định: `<cwd>/uploads`. Nếu repo không cho mkdir (permission), đặt env đường dẫn tuyệt đối có quyền ghi,
@@ -15,17 +37,9 @@ const AUDIO_DATA_PLACEHOLDERS = new Set(["/path", "/path/", "path", "/tmp/path"]
 function resolveAudioDataRoot(): string {
   const raw = (process.env.AUDIO_DATA_ROOT ?? process.env.KITLABS_AUDIO_DATA_ROOT ?? "").trim();
   if (raw) {
-    const resolved = resolve(raw);
-    const key = resolved.replace(/\\/g, "/").toLowerCase();
-    if (AUDIO_DATA_PLACEHOLDERS.has(key) || key.endsWith("/path")) {
-      throw new Error(
-        `AUDIO_DATA_ROOT="${raw}" là placeholder — đặt đường dẫn thật có quyền ghi ` +
-          `(vd. /var/tmp/kitools-audio hoặc ${resolve(process.cwd(), "uploads")})`,
-      );
-    }
-    return resolved;
+    return sanitizeAudioPath(raw, defaultAudioDataRoot(), "AUDIO_DATA_ROOT");
   }
-  return resolve(process.cwd(), "uploads");
+  return defaultAudioDataRoot();
 }
 
 /** Tạo thư mục và kiểm tra quyền ghi — lỗi rõ ràng hơn Python Errno 13. */
@@ -48,7 +62,7 @@ export const AUDIO_DATA_ROOT = resolveAudioDataRoot();
 function resolveAudioOutputDir(): string {
   const raw = (process.env.AUDIO_OUTPUT_DIR ?? "").trim();
   if (raw) {
-    return resolve(raw);
+    return sanitizeAudioPath(raw, join(AUDIO_DATA_ROOT, "audio-tts"), "AUDIO_OUTPUT_DIR");
   }
   return join(AUDIO_DATA_ROOT, "audio-tts");
 }
@@ -73,6 +87,7 @@ export function buildOmnivoiceSpawnEnv(): NodeJS.ProcessEnv {
   env.PYTHONIOENCODING = "utf-8";
   env.AUDIO_DATA_ROOT = AUDIO_DATA_ROOT;
   env.AUDIO_OUTPUT_DIR = AUDIO_OUTPUT_DIR;
+  env.AUDIO_REF_CACHE_DIR = join(AUDIO_DATA_ROOT, "audio-ref-cache");
   return env;
 }
 

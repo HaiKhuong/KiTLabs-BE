@@ -492,6 +492,21 @@ def main() -> None:
         raise ValueError("text is required")
     if not out_wav:
         raise ValueError("out_wav is required")
+    out_path = Path(out_wav).expanduser()
+    if not out_path.is_absolute():
+        out_path = (Path.cwd() / out_path).resolve()
+    else:
+        out_path = out_path.resolve()
+    out_key = str(out_path).replace("\\", "/").lower()
+    if out_key in ("/path", "/path/", "path") or out_key.startswith("/path/"):
+        fallback = build_output_wav_path(
+            str(payload.get("user_id") or payload.get("userId") or "unknown"),
+            str(payload.get("job_id") or payload.get("jobId") or "output"),
+        )
+        raise ValueError(
+            f"out_wav={out_wav!r} là placeholder — Nest phải truyền đường dẫn thật "
+            f"(vd. {fallback}). Kiểm tra AUDIO_DATA_ROOT / AUDIO_OUTPUT_DIR trong .env.",
+        )
     if not Path(ref_audio).is_file():
         raise FileNotFoundError(f"ref_audio not found: {ref_audio}")
 
@@ -509,7 +524,6 @@ def main() -> None:
     if playback_speed is None:
         playback_speed = payload.get("playbackSpeed")
 
-    out_path = Path(out_wav)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     omnivoice_kw = dict(

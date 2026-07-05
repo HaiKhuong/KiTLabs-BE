@@ -23,23 +23,36 @@ def _is_placeholder_path(resolved: Path) -> bool:
     return key in _AUDIO_DATA_PLACEHOLDERS or key.endswith("/path")
 
 
+def _default_audio_data_root() -> Path:
+    return _DEFAULT_AUDIO_DATA_ROOT.resolve()
+
+
+def _sanitize_audio_path(raw: str, fallback: Path, label: str) -> Path:
+    resolved = Path(raw).expanduser().resolve()
+    if _is_placeholder_path(resolved):
+        import sys
+
+        print(
+            f"[audio] {label}={raw!r} là placeholder — dùng {fallback}. "
+            "Sửa hoặc xóa dòng này trong .env / systemd.",
+            file=sys.stderr,
+        )
+        return fallback
+    return resolved
+
+
 def resolve_audio_data_root() -> Path:
     raw = (os.getenv("AUDIO_DATA_ROOT") or os.getenv("KITLABS_AUDIO_DATA_ROOT") or "").strip()
     if raw:
-        resolved = Path(raw).expanduser().resolve()
-        if _is_placeholder_path(resolved):
-            raise ValueError(
-                f'AUDIO_DATA_ROOT="{raw}" là placeholder — đặt đường dẫn thật có quyền ghi '
-                f"(vd. /var/tmp/kitools-audio hoặc {_DEFAULT_AUDIO_DATA_ROOT})"
-            )
-        return resolved
-    return _DEFAULT_AUDIO_DATA_ROOT.resolve()
+        return _sanitize_audio_path(raw, _default_audio_data_root(), "AUDIO_DATA_ROOT")
+    return _default_audio_data_root()
 
 
 def resolve_audio_output_dir() -> Path:
     raw = (os.getenv("AUDIO_OUTPUT_DIR") or "").strip()
     if raw:
-        return Path(raw).expanduser().resolve()
+        fallback = (resolve_audio_data_root() / "audio-tts").resolve()
+        return _sanitize_audio_path(raw, fallback, "AUDIO_OUTPUT_DIR")
     return (resolve_audio_data_root() / "audio-tts").resolve()
 
 
