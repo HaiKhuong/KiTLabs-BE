@@ -141,15 +141,31 @@ def _aspect_to_size(aspect_ratio: str, vram_gb: float | None = None) -> tuple[in
 
 
 def _style_suffix(style: str) -> str:
-    key = str(style or "cinematic").strip().lower()
+    key = str(style or "anime").strip().lower()
     suffixes = {
-        "cinematic": "cinematic lighting, film still, dramatic composition, high detail",
-        "anime": "anime style, vibrant colors, clean line art",
-        "realistic": "photorealistic, natural lighting, sharp focus",
-        "illustration": "digital illustration, artistic, detailed",
-        "3d": "3d render, octane render, soft lighting",
+        "anime": (
+            "high-quality anime illustration, clean line art, expressive characters, "
+            "vibrant colors, cel shading, dynamic composition, crisp details, "
+            "2D animation style, soft lighting"
+        ),
+        "minimalist_illustration": (
+            "minimalist flat illustration, clean composition, simple geometric shapes, "
+            "limited color palette, soft muted colors, subtle gradients, "
+            "large negative space, uncluttered design, modern editorial illustration"
+        ),
+        "stick_figure": (
+            "minimal stick figure illustration, round head, simple line limbs, "
+            "clear expressive poses, clean vector line art, flat colors, "
+            "minimal background, educational infographic style, motion-graphics friendly"
+        ),
+        "kurzgesagt": (
+            "modern flat vector illustration, colorful geometric shapes, "
+            "clean outlines, smooth gradients, bold color palette, "
+            "educational infographic aesthetic, highly readable composition, "
+            "simple background, scalable SVG-like artwork"
+        ),
     }
-    return suffixes.get(key, suffixes["cinematic"])
+    return suffixes.get(key, suffixes["anime"])
 
 
 def _build_prompt(base: str, style: str) -> str:
