@@ -28,7 +28,7 @@ import {
 import { AudioCloneVoice } from "./audio-clone-voice.entity";
 import { AudioHistory } from "./audio-history.entity";
 import { CreateAudioJobDto } from "./dto/create-audio-job.dto";
-import { OmnivoiceDaemonClient } from "./omnivoice-daemon.client";
+import { ExecuteVoiceDto } from "../videos/dto/execute-voice.dto";
 
 export const AUDIO_QUEUE_NAME = "audio-tts";
 
@@ -68,14 +68,13 @@ export class AudioService {
     private readonly creditHistoryRepository: Repository<CreditHistory>,
     private readonly logsService: LogsService,
     private readonly notificationsService: NotificationsService,
-    private readonly omnivoiceDaemon: OmnivoiceDaemonClient,
   ) {}
 
   private static readonly OMNIVOICE_INLINE_PY = [
     "import json,sys",
     "p=json.load(sys.stdin)",
-    "from audio_tts_bridge import run_synthesize_payload",
-    "run_synthesize_payload({k:v for k,v in p.items() if v is not None})",
+    "from audio_tts_with_pauses import synthesize_with_pause_settings",
+    "synthesize_with_pause_settings(**{k:v for k,v in p.items() if v is not None})",
   ].join(";");
 
   private static readonly MAX_LOG_BUFFER = 64 * 1024;
@@ -114,9 +113,6 @@ export class AudioService {
 
   requestCancel(audioHistoryId: string): void {
     this.cancelledJobs.add(audioHistoryId);
-    if (this.omnivoiceDaemon.isEnabled()) {
-      this.omnivoiceDaemon.cancelActive(audioHistoryId);
-    }
     const child = this.activeChildren.get(audioHistoryId);
     if (child && !child.killed) {
       this.logger.warn(`Cancelling active OmniVoice process for audio ${audioHistoryId}`);
@@ -138,43 +134,6 @@ export class AudioService {
     this.activeChildren.delete(audioHistoryId);
   }
 
-  private buildOmnivoicePayload(
-    opts: {
-      text: string;
-      outWav: string;
-      refAudio: string;
-      refText: string;
-      language?: string;
-      seed?: number;
-      pauseSettings?: Record<string, number>;
-      playbackSpeed?: number;
-      mode?: "direct" | "pauses";
-    },
-  ): Record<string, unknown> {
-    const refAudio = isAbsolute(opts.refAudio) ? opts.refAudio : resolve(process.cwd(), opts.refAudio);
-    const outWav = isAbsolute(opts.outWav) ? opts.outWav : resolve(process.cwd(), opts.outWav);
-    const seed = opts.seed ?? this.resolveOmnivoiceSeed();
-
-    return {
-      text: opts.text,
-      out_wav: outWav,
-      ref_audio: refAudio,
-      ref_text: opts.refText ?? "",
-      model_id: (process.env.OMNIVOICE_MODEL_ID ?? "k2-fsa/OmniVoice").trim(),
-      device_map: (process.env.OMNIVOICE_DEVICE_MAP ?? "").trim() || "cuda:0",
-      dtype_str: (process.env.OMNIVOICE_DTYPE ?? "float16").trim(),
-      language: opts.language ?? process.env.OMNIVOICE_LANGUAGE ?? "vietnamese",
-      num_step: Number(process.env.OMNIVOICE_NUM_STEP ?? 8),
-      guidance_scale: Number(process.env.OMNIVOICE_GUIDANCE_SCALE ?? 2),
-      mode: opts.mode ?? "pauses",
-      ...(seed != null ? { seed } : {}),
-      ...(opts.pauseSettings ? { pause_settings: opts.pauseSettings } : {}),
-      ...(opts.playbackSpeed != null && Math.abs(opts.playbackSpeed - 1) > 1e-6
-        ? { playback_speed: opts.playbackSpeed }
-        : {}),
-    };
-  }
-
   private async spawnOmnivoiceTts(
     opts: {
       text: string;
@@ -185,7 +144,6 @@ export class AudioService {
       seed?: number;
       pauseSettings?: Record<string, number>;
       playbackSpeed?: number;
-      mode?: "direct" | "pauses";
     },
     audioHistoryId?: string,
   ): Promise<string> {
@@ -195,29 +153,30 @@ export class AudioService {
     }
 
     const outWav = isAbsolute(opts.outWav) ? opts.outWav : resolve(process.cwd(), opts.outWav);
-    const timeoutMs = this.resolveCmdTimeoutMs();
-    const payload = this.buildOmnivoicePayload({ ...opts, outWav, refAudio });
-
-    if (this.omnivoiceDaemon.isEnabled()) {
-      try {
-        await this.omnivoiceDaemon.synthesize(payload, audioHistoryId, timeoutMs);
-        if (audioHistoryId && this.isCancelled(audioHistoryId)) {
-          throw new Error("Audio generation cancelled");
-        }
-        if (!existsSync(outWav)) {
-          throw new Error(`OmniVoice did not produce output: ${outWav}`);
-        }
-        return outWav;
-      } catch (err) {
-        this.logger.warn(
-          `OmniVoice daemon unavailable, falling back to one-shot CLI: ${
-            err instanceof Error ? err.message : String(err)
-          }`,
-        );
-      }
-    }
 
     const scriptDir = resolve(process.cwd(), VIDEO_PIPELINE_DIR);
+    const timeoutMs = this.resolveCmdTimeoutMs();
+
+    const seed = opts.seed ?? this.resolveOmnivoiceSeed();
+
+    const payload = {
+      text: opts.text,
+      out_wav: outWav,
+      ref_audio: refAudio,
+      ref_text: opts.refText ?? "",
+      model_id: (process.env.OMNIVOICE_MODEL_ID ?? "k2-fsa/OmniVoice").trim(),
+      device_map: (process.env.OMNIVOICE_DEVICE_MAP ?? "").trim() || "cuda:0",
+      dtype_str: (process.env.OMNIVOICE_DTYPE ?? "float16").trim(),
+      language: opts.language ?? process.env.OMNIVOICE_LANGUAGE ?? "vietnamese",
+      num_step: Number(process.env.OMNIVOICE_NUM_STEP ?? 8),
+      guidance_scale: Number(process.env.OMNIVOICE_GUIDANCE_SCALE ?? 2),
+      ...(seed != null ? { seed } : {}),
+      ...(opts.pauseSettings ? { pause_settings: opts.pauseSettings } : {}),
+      ...(opts.playbackSpeed != null && Math.abs(opts.playbackSpeed - 1) > 1e-6
+        ? { playback_speed: opts.playbackSpeed }
+        : {}),
+    };
+
     const pythonBin = this.resolvePythonBin();
 
     await new Promise<void>((resolvePromise, rejectPromise) => {
@@ -699,97 +658,74 @@ export class AudioService {
     return saved;
   }
 
-  /**
-   * TTS đồng bộ qua OmniVoice daemon (không BullMQ) — dùng cho Video Voice workflow.
-   * `fastDirect=true`: gọi synthesize_to_wav trực tiếp như auto_vietsub_pro (nhanh nhất).
-   */
-  async synthesizeInline(
-    dto: CreateAudioJobDto,
-    options?: { fastDirect?: boolean },
-  ): Promise<AudioHistory> {
-    const text = dto.text.trim();
-    if (!text) {
-      throw new BadRequestException("text is required");
-    }
-    if (text.length > AUDIO_MAX_TEXT_CHARS) {
-      throw new BadRequestException(`text exceeds ${AUDIO_MAX_TEXT_CHARS} characters`);
-    }
-
-    const user = await this.userRepository.findOne({ where: { id: dto.userId } });
-    if (!user) {
-      throw new BadRequestException("User not found");
-    }
-
-    let refAudioPath: string;
-    let refText: string;
-    let voiceId: string | null = null;
-
+  async resolveVideoVoiceReference(
+    dto: ExecuteVoiceDto,
+  ): Promise<{ refAudioPath: string; refText: string; language: string }> {
     if (dto.voiceMode === "preset") {
-      if (!dto.voiceId) {
-        throw new BadRequestException("voiceId is required for preset mode");
-      }
-      const preset = this.getPresetVoice(dto.voiceId);
-      voiceId = preset.id;
-      refAudioPath = this.resolvePresetRefAudioPath(preset.refWav);
-      refText = preset.refText;
-    } else {
-      const resolved = await this.resolveCloneReference(dto);
-      refAudioPath = resolved.refAudioPath;
-      refText = resolved.refText;
+      const preset = this.getPresetVoice(dto.voiceId!.trim());
+      return {
+        refAudioPath: this.resolvePresetRefAudioPath(preset.refWav),
+        refText: preset.refText,
+        language: resolveOmnivoiceLanguage(preset),
+      };
     }
+    const verified = await this.assertPipelineVoiceReady(
+      dto.pipelineRefWav!.trim(),
+      dto.cloneRefText?.trim(),
+    );
+    return {
+      refAudioPath: verified.absolutePath,
+      refText: verified.refText,
+      language: process.env.OMNIVOICE_LANGUAGE ?? "vietnamese",
+    };
+  }
 
-    const displayName = text.length > 80 ? `${text.slice(0, 77).trim()}...` : text;
-    const fastDirect = options?.fastDirect ?? true;
-
+  async createVideoVoiceHistory(input: {
+    id: string;
+    userId: string;
+    voiceMode: "preset" | "clone";
+    voiceId: string | null;
+    text: string;
+    refAudioPath: string;
+    refText: string;
+  }): Promise<AudioHistory> {
+    const displayName = input.text.length > 80 ? `${input.text.slice(0, 77).trim()}...` : input.text;
     const history = this.audioRepository.create({
-      userId: dto.userId,
-      inputText: text,
+      id: input.id,
+      userId: input.userId,
+      inputText: input.text,
       displayName,
-      voiceMode: dto.voiceMode,
-      voiceId,
+      voiceMode: input.voiceMode,
+      voiceId: input.voiceId,
       engineConfig: {
-        refAudioPath,
-        refText,
-        speed: dto.speed ?? 1,
-        fastDirect,
-        pauseSettings: fastDirect
-          ? undefined
-          : {
-              period: dto.pausePeriodSec ?? 0.45,
-              comma: dto.pauseCommaSec ?? 0.25,
-              semicolon: dto.pauseSemicolonSec ?? 0.3,
-              newline: dto.pauseNewlineSec ?? 0.6,
-              question: dto.pauseQuestionSec ?? 0.45,
-              exclamation: dto.pauseExclamationSec ?? 0.45,
-              colon: dto.pauseColonSec ?? 0.3,
-              ellipsis: dto.pauseEllipsisSec ?? 0.55,
-            },
-        cloneRefWav: dto.cloneRefWav ?? dto.pipelineRefWav ?? null,
+        refAudioPath: input.refAudioPath,
+        refText: input.refText,
+        source: "video_voice",
       },
-      status: QueueJobStatus.PENDING,
-      cost: (dto.estimatedCost ?? 0).toFixed(2),
+      status: QueueJobStatus.RUNNING,
+      cost: "0",
       queueJobId: null,
       resultPath: null,
       resultFileName: null,
       errorMessage: null,
     });
-    const created = await this.audioRepository.save(history);
+    return this.audioRepository.save(history);
+  }
 
-    try {
-      await this.processStarted(created.id);
-      const resultPath = await this.runGeneration(created);
-      await this.processCompleted(created.id, resultPath);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      await this.processFailed(created.id, message);
-      throw err;
-    }
+  async completeVideoVoiceHistory(audioHistoryId: string, resultPath: string): Promise<void> {
+    await this.audioRepository.update(
+      { id: audioHistoryId },
+      {
+        status: QueueJobStatus.COMPLETED,
+        resultPath: resultPath.replaceAll("\\", "/"),
+        resultFileName: basename(resultPath),
+        errorMessage: null,
+      },
+    );
+  }
 
-    const saved = await this.getById(created.id);
-    if (!saved) {
-      throw new Error(`Audio history missing after inline synthesize: ${created.id}`);
-    }
-    return saved;
+  async failVideoVoiceHistory(audioHistoryId: string, errorMessage: string): Promise<void> {
+    await this.processFailed(audioHistoryId, errorMessage);
   }
 
   async getHistory(
@@ -981,8 +917,6 @@ export class AudioService {
         : undefined;
     const rawSpeed = Number(config.speed ?? 1);
     const playbackSpeed = Number.isFinite(rawSpeed) ? Math.min(2, Math.max(0.5, rawSpeed)) : 1;
-    const fastDirect = config.fastDirect === true;
-
     await this.spawnOmnivoiceTts(
       {
         text: history.inputText,
@@ -990,9 +924,8 @@ export class AudioService {
         refAudio: refAudioPath,
         refText,
         language,
-        pauseSettings: fastDirect ? undefined : pauseSettings,
+        pauseSettings,
         playbackSpeed,
-        mode: fastDirect ? "direct" : "pauses",
       },
       history.id,
     );

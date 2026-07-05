@@ -50,17 +50,4 @@ export class ExecuteVoiceDto {
   @Min(0.5)
   @Max(2)
   speed?: number;
-
-  @ApiPropertyOptional({
-    description: "Scenes per TTS batch (1–10). Default from VIDEOS_VOICE_BATCH_SIZE env.",
-    default: 5,
-    minimum: 1,
-    maximum: 10,
-  })
-  @IsOptional()
-  @Type(() => Number)
-  @IsNumber()
-  @Min(1)
-  @Max(10)
-  batchSize?: number;
 }
