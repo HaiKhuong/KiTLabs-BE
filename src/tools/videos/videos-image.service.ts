@@ -12,6 +12,7 @@ import {
   STUDIO_IMAGE_FILENAME,
   buildSceneImageRelativeUrl,
   buildStudioImageRelativeUrl,
+  resolveFluxCacheRoot,
   resolveVideoImagesOutputDir,
 } from "./video-image.constants";
 
@@ -193,6 +194,7 @@ export class VideosImageService {
         stdio: ["pipe", "pipe", "pipe"],
         env: {
           ...process.env,
+          FLUX_CACHE_ROOT: process.env.FLUX_CACHE_ROOT?.trim() || resolveFluxCacheRoot(),
           PYTHONUNBUFFERED: "1",
           PYTHONIOENCODING: "utf-8",
         },

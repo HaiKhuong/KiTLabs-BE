@@ -32,3 +32,12 @@ export const STUDIO_IMAGE_FILENAME = "output.png";
 export function buildStudioImageRelativeUrl(userId: string, jobId: string): string {
   return `/api/tools/images/${encodeURIComponent(userId)}/${encodeURIComponent(jobId)}/${STUDIO_IMAGE_FILENAME}`;
 }
+
+/** FLUX HF hub — mặc định cùng cây uploads (Nest thường có quyền ghi, tránh cache/ root-owned). */
+export function resolveFluxCacheRoot(): string {
+  const raw = (process.env.FLUX_CACHE_ROOT ?? "").trim();
+  if (raw) {
+    return resolve(raw);
+  }
+  return resolve(AUDIO_DATA_ROOT, "flux-cache");
+}
