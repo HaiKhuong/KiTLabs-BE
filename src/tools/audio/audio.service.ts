@@ -114,9 +114,8 @@ export class AudioService {
 
   requestCancel(audioHistoryId: string): void {
     this.cancelledJobs.add(audioHistoryId);
-    if (this.omnivoiceDaemon.isReady()) {
+    if (this.omnivoiceDaemon.isEnabled()) {
       this.omnivoiceDaemon.cancelActive(audioHistoryId);
-      return;
     }
     const child = this.activeChildren.get(audioHistoryId);
     if (child && !child.killed) {
@@ -199,15 +198,23 @@ export class AudioService {
     const timeoutMs = this.resolveCmdTimeoutMs();
     const payload = this.buildOmnivoicePayload({ ...opts, outWav, refAudio });
 
-    if (this.omnivoiceDaemon.isReady()) {
-      await this.omnivoiceDaemon.synthesize(payload, audioHistoryId, timeoutMs);
-      if (audioHistoryId && this.isCancelled(audioHistoryId)) {
-        throw new Error("Audio generation cancelled");
+    if (this.omnivoiceDaemon.isEnabled()) {
+      try {
+        await this.omnivoiceDaemon.synthesize(payload, audioHistoryId, timeoutMs);
+        if (audioHistoryId && this.isCancelled(audioHistoryId)) {
+          throw new Error("Audio generation cancelled");
+        }
+        if (!existsSync(outWav)) {
+          throw new Error(`OmniVoice did not produce output: ${outWav}`);
+        }
+        return outWav;
+      } catch (err) {
+        this.logger.warn(
+          `OmniVoice daemon unavailable, falling back to one-shot CLI: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
       }
-      if (!existsSync(outWav)) {
-        throw new Error(`OmniVoice did not produce output: ${outWav}`);
-      }
-      return outWav;
     }
 
     const scriptDir = resolve(process.cwd(), VIDEO_PIPELINE_DIR);
