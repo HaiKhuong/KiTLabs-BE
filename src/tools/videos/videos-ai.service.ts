@@ -52,6 +52,13 @@ export class VideosAiService {
     return this.configService.get<string>("VIDEOS_AI_MODEL") ?? "gemini-2.5-flash";
   }
 
+  private resolveMaxOutputTokens(): number {
+    const raw = this.configService.get<string>("VIDEOS_AI_MAX_OUTPUT_TOKENS");
+    const parsed = raw ? Number.parseInt(raw, 10) : Number.NaN;
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+    return 65_536;
+  }
+
   /** Replace {{script}} when script is provided; otherwise leave prompt unchanged. */
   buildFinalPrompt(prompt: string, script?: string): string {
     const scriptValue = script?.trim() ?? "";
@@ -84,6 +91,8 @@ export class VideosAiService {
     prompt: string;
     result: unknown;
     raw: string;
+    finishReason: string | null;
+    truncated: boolean;
   }> {
     const prompt = dto.prompt?.trim();
     if (!prompt) {
@@ -101,6 +110,7 @@ export class VideosAiService {
     }
     const modelName = this.resolveModelName(modelInput);
     const apiKeyTier = resolveGeminiKeyTier(dto.apiKeyTier);
+    const maxOutputTokens = this.resolveMaxOutputTokens();
     const keyPool = this.getKeyPool(apiKeyTier);
     const maxAttempts = Math.max(keyPool.length, 1);
     let lastError: unknown;
@@ -113,12 +123,21 @@ export class VideosAiService {
           generationConfig: {
             temperature: 0.4,
             responseMimeType: "application/json",
+            maxOutputTokens,
           },
         });
 
         const response = await model.generateContent(finalPrompt);
         const raw = response.response.text() ?? "";
         const result = this.tryParseJson(raw);
+        const finishReason = response.response.candidates?.[0]?.finishReason ?? null;
+        const truncated = finishReason === "MAX_TOKENS";
+
+        if (truncated) {
+          this.logger.warn(
+            `AI Task output truncated (MAX_TOKENS, limit=${maxOutputTokens}, rawLength=${raw.length})`,
+          );
+        }
 
         return {
           provider,
@@ -127,6 +146,8 @@ export class VideosAiService {
           prompt: finalPrompt,
           result,
           raw,
+          finishReason,
+          truncated,
         };
       } catch (error: any) {
         lastError = error;
