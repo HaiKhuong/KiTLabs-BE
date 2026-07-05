@@ -21,9 +21,9 @@ from pathlib import Path
 from typing import Any
 
 from audio_tts_worker import resolve_device_map
-from pipeline_cache import configure_omnivoice_cache_env
+from flux_cache import configure_flux_cache_env
 
-configure_omnivoice_cache_env()
+configure_flux_cache_env()
 
 _pipe = None
 

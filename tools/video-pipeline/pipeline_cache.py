@@ -1,8 +1,10 @@
 """
-Cache HF / torch dùng chung cho OmniVoice (API audio daemon + auto_vietsub_pro + CLI).
+Cache HF / torch dùng chung cho OmniVoice (translate, voice TTS, audio daemon).
 
 Mặc định: <repo>/tools/video-pipeline/cache/omnivoice
 Ghi đè: OMNIVOICE_CACHE_ROOT hoặc KITLABS_PYTHON_CACHE_DIR (đường dẫn tuyệt đối khuyến nghị trên server).
+
+FLUX text-to-image dùng folder riêng — xem flux_cache.py (cache/flux).
 """
 
 from __future__ import annotations
@@ -43,7 +45,7 @@ def resolve_omnivoice_cache_root() -> Path:
 
 
 def configure_omnivoice_cache_env() -> Path:
-    """Đặt HF_HOME / hub / torch về cùng một cây thư mục (idempotent)."""
+    """Đặt HF_HOME / hub / torch về cùng một cây thư mục OmniVoice (idempotent)."""
     global _configured
     base = resolve_omnivoice_cache_root()
     hf_home = base / "huggingface"
@@ -70,5 +72,5 @@ def configure_omnivoice_cache_env() -> Path:
     return base
 
 
-# Cấu hình ngay khi import (auto_vietsub, daemon, CLI đều dùng omnivoice_tts).
+# Import module này từ script OmniVoice / translate (không import từ video_image_flux).
 configure_omnivoice_cache_env()

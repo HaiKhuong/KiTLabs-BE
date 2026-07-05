@@ -299,11 +299,7 @@ export class VideosImageService {
       const outcome = resultByScene.get(item.scene.sceneNumber);
       if (outcome?.ok && existsSync(item.outPath)) {
         completedCount += 1;
-        const imageUrl = buildSceneImageRelativeUrl(
-          dto.userId.trim(),
-          dto.nodeId.trim(),
-          item.scene.sceneNumber,
-        );
+        const imageUrl = buildSceneImageRelativeUrl(dto.userId.trim(), dto.nodeId.trim(), item.scene.sceneNumber);
         images.push({
           sceneNumber: item.scene.sceneNumber,
           status: "completed",
@@ -312,9 +308,7 @@ export class VideosImageService {
         });
       } else {
         failedCount += 1;
-        images.push(
-          failedImage(item.scene, outcome?.error?.trim() || "FLUX generation failed"),
-        );
+        images.push(failedImage(item.scene, outcome?.error?.trim() || "FLUX generation failed"));
       }
     }
 
@@ -357,8 +351,7 @@ export class VideosImageService {
     const negativePrompt = (dto.negativePrompt ?? "").trim();
     const outputDir = this.buildOutputDir(userId, resolvedJobId);
     const outPath = join(outputDir, STUDIO_IMAGE_FILENAME);
-    const numInferenceSteps =
-      dto.numInferenceSteps ?? Number(process.env.FLUX_NUM_INFERENCE_STEPS ?? 4);
+    const numInferenceSteps = dto.numInferenceSteps ?? Number(process.env.FLUX_NUM_INFERENCE_STEPS ?? 4);
     const runStartedAt = Date.now();
 
     this.logger.log(
