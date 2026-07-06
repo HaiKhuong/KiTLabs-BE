@@ -86,20 +86,17 @@ def _resolve_offload_mode(device_map: str) -> str:
             return "sequential"
         return "cuda"
 
-    # auto — ưu tiên model_cpu_offload cho GPU 12GB+
+    # auto — theo VRAM thực tế
     vram = _get_vram_gb()
-
     if vram is not None and vram <= 12.5:
         print(
-            f"[flux] VRAM ~{vram:.1f} GiB → model_cpu_offload "
-            "(GPU giữ nhiều layer hơn để tăng tốc, RAM vẫn chứa phần còn lại).",
+            f"[flux] VRAM ~{vram:.1f} GiB → sequential_cpu_offload "
+            "(model ~24GB trên RAM, GPU chỉ giữ từng block lúc infer).",
             file=sys.stderr,
         )
+        return "sequential"
+    if vram is not None and vram <= 16:
         return "model"
-
-    if vram is not None and vram <= 24:
-        return "model"
-
     return "cuda"
 
 
@@ -125,11 +122,11 @@ def _apply_pipe_memory_opts(pipe: Any, offload_mode: str, device_map: str) -> No
     elif getattr(pipe, "vae", None) is not None and hasattr(pipe.vae, "enable_tiling"):
         pipe.vae.enable_tiling()
 
-    # if hasattr(pipe, "enable_attention_slicing"):
-    #     try:
-    #         pipe.enable_attention_slicing()
-    #     except Exception as exc:
-    #         print(f"[flux] WARN: attention_slicing: {exc}", file=sys.stderr)
+    if hasattr(pipe, "enable_attention_slicing"):
+        try:
+            pipe.enable_attention_slicing()
+        except Exception as exc:
+            print(f"[flux] WARN: attention_slicing: {exc}", file=sys.stderr)
 
     gpu_id = _gpu_index(device_map)
     if offload_mode == "sequential":
@@ -144,8 +141,8 @@ def _apply_pipe_memory_opts(pipe: Any, offload_mode: str, device_map: str) -> No
     elif offload_mode == "model":
         pipe.enable_model_cpu_offload(gpu_id=gpu_id)
         print(
-            "[flux] model_cpu_offload — ưu tiên GPU để tăng tốc, "
-            "một phần weights vẫn ở RAM.",
+            "[flux] model_cpu_offload — weights trên RAM (~24GB), VRAM đầy + disk 100% "
+            "thường do swap; cân nhắc FLUX_OFFLOAD=sequential.",
             file=sys.stderr,
         )
     elif offload_mode == "cuda":
