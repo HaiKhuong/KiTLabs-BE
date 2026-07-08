@@ -48,4 +48,16 @@ export class ImageHistory extends BaseEntity {
 
   @Column({ name: "error_message", type: "text", nullable: true })
   errorMessage!: string | null;
+
+  @Column({ name: "prompt_sent", type: "text", nullable: true })
+  promptSent!: string | null;
+
+  @Column({ name: "negative_sent", type: "text", nullable: true })
+  negativeSent!: string | null;
+
+  @Column({ name: "enriched_prompt", type: "text", nullable: true })
+  enrichedPrompt!: string | null;
+
+  @Column({ name: "gemini_analysis", type: "jsonb", nullable: true })
+  geminiAnalysis!: Record<string, unknown> | null;
 }

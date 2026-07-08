@@ -59,7 +59,13 @@ def _resolve_offload_mode(device_map: str) -> str:
     auto | sequential | model | cuda
 
     Model FLUX fp16 ~24GB — KHÔNG load full lên card 12GB.
-    Mặc định auto: VRAM ≤12.5 GiB → sequential (peak VRAM ~8–10 GiB, phần còn lại RAM).
+    Mặc định auto:
+      - VRAM ≤12.5 GiB → model (peak VRAM ~6–10 GiB, giữ cả module trên GPU khi infer).
+      - VRAM ≤16 GiB → model
+      - VRAM >16 GiB → cuda (full GPU)
+
+    sequential: chỉ 1 block trên GPU (VRAM rất thấp ~1–2 GiB nhưng chậm do transfer liên tục).
+    model: giữ cả module đang chạy trên GPU (peak ~6–10 GiB, nhanh hơn sequential đáng kể).
     """
     import sys
 
@@ -80,23 +86,21 @@ def _resolve_offload_mode(device_map: str) -> str:
         if vram is not None and vram <= 12.5 and not force:
             print(
                 f"[flux] WARN: FLUX_OFFLOAD=cuda nhưng VRAM ~{vram:.1f} GiB — model ~24GB fp16 "
-                "không vừa GPU. Dùng sequential (peak VRAM ~8–10 GiB). "
+                "không vừa GPU. Dùng model_cpu_offload (peak VRAM ~6–10 GiB). "
                 "Ép full GPU: FLUX_OFFLOAD_FORCE_CUDA=1 (dễ OOM).",
                 file=sys.stderr,
             )
-            return "sequential"
+            return "model"
         return "cuda"
 
     # auto — theo VRAM thực tế
     vram = _get_vram_gb()
-    if vram is not None and vram <= 12.5:
+    if vram is not None and vram <= 16:
         print(
-            f"[flux] VRAM ~{vram:.1f} GiB → sequential_cpu_offload "
-            "(model ~24GB trên RAM, GPU chỉ giữ từng block lúc infer).",
+            f"[flux] VRAM ~{vram:.1f} GiB → model_cpu_offload "
+            "(weights trên RAM, GPU giữ cả module đang infer — peak ~6–10 GiB).",
             file=sys.stderr,
         )
-        return "sequential"
-    if vram is not None and vram <= 16:
         return "model"
     return "cuda"
 
@@ -135,15 +139,17 @@ def _apply_pipe_memory_opts(pipe: Any, offload_mode: str, device_map: str) -> No
         vram = _get_vram_gb()
         vram_note = f" (card ~{vram:.1f} GiB)" if vram is not None else ""
         print(
-            f"[flux] sequential_cpu_offload{vram_note} — peak VRAM ~8–10 GiB, "
-            "weights chủ yếu trên RAM. Đây là chế độ đúng cho card 12GB.",
+            f"[flux] sequential_cpu_offload{vram_note} — peak VRAM ~1–2 GiB, "
+            "chỉ 1 block trên GPU tại một thời điểm. Chậm nhưng tiết kiệm VRAM tối đa.",
             file=sys.stderr,
         )
     elif offload_mode == "model":
         pipe.enable_model_cpu_offload(gpu_id=gpu_id)
+        vram = _get_vram_gb()
+        vram_note = f" (card ~{vram:.1f} GiB)" if vram is not None else ""
         print(
-            "[flux] model_cpu_offload — weights trên RAM (~24GB), VRAM đầy + disk 100% "
-            "thường do swap; cân nhắc FLUX_OFFLOAD=sequential.",
+            f"[flux] model_cpu_offload{vram_note} — peak VRAM ~6–10 GiB, "
+            "giữ cả module đang chạy trên GPU. Cân bằng tốc độ/VRAM cho card 12GB.",
             file=sys.stderr,
         )
     elif offload_mode == "cuda":
@@ -235,6 +241,7 @@ Do NOT invent unnecessary objects.
 Do NOT describe the image in paragraph form.
 Only return valid JSON. Never wrap JSON inside markdown.
 If some information is missing, infer the most reasonable cinematic choice.
+If an image style preference is provided, reflect it in the "style" section of the JSON.
 
 The JSON schema must follow exactly:
 {
@@ -276,14 +283,18 @@ def _get_gemini_client():
         return None
 
 
-def _gemini_analyze_prompt(user_prompt: str, negative_prompt: str) -> dict | None:
+def _gemini_analyze_prompt(user_prompt: str, negative_prompt: str, style: str) -> dict | None:
     """Call Gemini to analyze prompt → structured JSON. Returns None on failure."""
     client = _get_gemini_client()
     if client is None:
         return None
 
     model_name = os.getenv("FLUX_GEMINI_MODEL", "gemini-2.5-flash")
-    request_text = f"Image request:\n\n{user_prompt}"
+    style_key = str(style or "anime").strip().lower()
+    style_hint = _style_suffix(style_key)
+    request_text = f"Image request:\n\n{user_prompt}\n\nImage style: {style_key}"
+    if style_hint:
+        request_text += f"\nStyle direction: {style_hint}"
     if negative_prompt:
         request_text += f"\n\nThings to avoid:\n{negative_prompt}"
 
@@ -369,24 +380,33 @@ def _structured_to_flux_prompt(data: dict, style: str) -> str:
     return prompt
 
 
-def _enrich_prompt(raw_prompt: str, negative_prompt: str, style: str) -> str:
+class EnrichResult:
+    __slots__ = ("prompt", "gemini_raw", "gemini_analysis")
+
+    def __init__(self, prompt: str, gemini_raw: str | None = None, gemini_analysis: dict | None = None):
+        self.prompt = prompt
+        self.gemini_raw = gemini_raw
+        self.gemini_analysis = gemini_analysis
+
+
+def _enrich_prompt(raw_prompt: str, negative_prompt: str, style: str) -> EnrichResult:
     """
     Enrich prompt via Gemini if available.
-    Fallback: original _build_prompt logic.
+    Returns EnrichResult with final prompt + Gemini metadata.
     """
     if not raw_prompt.strip():
-        return ""
+        return EnrichResult("")
 
     if os.getenv("FLUX_SKIP_GEMINI", "").strip().lower() in ("1", "true", "yes"):
-        return _build_prompt(raw_prompt, style)
+        return EnrichResult(_build_prompt(raw_prompt, style))
 
-    data = _gemini_analyze_prompt(raw_prompt, negative_prompt)
+    data = _gemini_analyze_prompt(raw_prompt, negative_prompt, style)
     if data is None:
-        return _build_prompt(raw_prompt, style)
+        return EnrichResult(_build_prompt(raw_prompt, style))
 
     enriched = _structured_to_flux_prompt(data, style)
     print(f"[flux] Gemini enriched prompt ({len(enriched)} chars)", file=sys.stderr)
-    return enriched
+    return EnrichResult(prompt=enriched, gemini_raw=raw_prompt, gemini_analysis=data)
 
 
 def _resolve_dtype(dtype_str: str):
@@ -602,7 +622,8 @@ def main() -> None:
         out_path_raw = str(item.get("out_path") or item.get("outPath") or "").strip()
         negative_prompt = str(item.get("negative_prompt") or "").strip()
 
-        prompt = _enrich_prompt(raw_prompt, negative_prompt, style)
+        enriched = _enrich_prompt(raw_prompt, negative_prompt, style)
+        prompt = enriched.prompt
 
         if not prompt or not out_path_raw:
             results.append(
@@ -640,7 +661,16 @@ def main() -> None:
                 torch.cuda.empty_cache()
             if not out_path.is_file() or out_path.stat().st_size <= 0:
                 raise RuntimeError(f"empty output: {out_path}")
-            results.append({"sceneNumber": scene_number, "ok": True, "path": str(out_path.resolve())})
+            result_entry: dict[str, Any] = {
+                "sceneNumber": scene_number,
+                "ok": True,
+                "path": str(out_path.resolve()),
+                "promptSent": raw_prompt,
+                "negativeSent": negative_prompt or None,
+                "enrichedPrompt": prompt,
+                "geminiAnalysis": enriched.gemini_analysis,
+            }
+            results.append(result_entry)
         except Exception as exc:
             results.append(
                 {

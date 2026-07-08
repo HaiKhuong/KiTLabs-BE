@@ -45,16 +45,31 @@ export class ImagesHistoryService {
     return this.imageHistoryRepository.save(history);
   }
 
-  async markCompleted(jobId: string, resultPath: string): Promise<void> {
-    await this.imageHistoryRepository.update(
-      { id: jobId },
-      {
+  async markCompleted(
+    jobId: string,
+    resultPath: string,
+    geminiData?: {
+      promptSent?: string;
+      negativeSent?: string | null;
+      enrichedPrompt?: string;
+      geminiAnalysis?: Record<string, unknown> | null;
+    },
+  ): Promise<void> {
+    await this.imageHistoryRepository
+      .createQueryBuilder()
+      .update(ImageHistory)
+      .set({
         status: QueueJobStatus.COMPLETED,
         resultPath: resultPath.replaceAll("\\", "/"),
         resultFileName: STUDIO_IMAGE_FILENAME,
         errorMessage: null,
-      },
-    );
+        promptSent: geminiData?.promptSent ?? null,
+        negativeSent: geminiData?.negativeSent ?? null,
+        enrichedPrompt: geminiData?.enrichedPrompt ?? null,
+        geminiAnalysis: (geminiData?.geminiAnalysis ?? null) as any,
+      })
+      .where("id = :id", { id: jobId })
+      .execute();
   }
 
   async markFailed(jobId: string, errorMessage: string): Promise<void> {
@@ -144,6 +159,10 @@ export class ImagesHistoryService {
       updatedAt: row.updatedAt,
       imageUrl,
       downloadUrl: imageUrl,
+      promptSent: row.promptSent,
+      negativeSent: row.negativeSent,
+      enrichedPrompt: row.enrichedPrompt,
+      geminiAnalysis: row.geminiAnalysis,
     };
   }
 }

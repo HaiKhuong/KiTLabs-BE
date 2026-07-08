@@ -36,7 +36,12 @@ export class ImagesJobsService {
     const resultPath = join(resolveVideoImagesOutputDir(), userId, jobId, STUDIO_IMAGE_FILENAME);
     try {
       const result = await this.videosImageService.generateStudioImage(dto, jobId);
-      await this.imagesHistoryService.markCompleted(jobId, resultPath);
+      await this.imagesHistoryService.markCompleted(jobId, resultPath, {
+        promptSent: result.promptSent,
+        negativeSent: result.negativeSent,
+        enrichedPrompt: result.enrichedPrompt,
+        geminiAnalysis: result.geminiAnalysis,
+      });
       this.realtimeGateway.notifyUser(userId, "images.studio.completed", {
         jobId,
         result,

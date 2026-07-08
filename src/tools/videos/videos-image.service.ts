@@ -47,6 +47,10 @@ export type StudioImageResult = {
   style: string;
   aspectRatio: string;
   prompt: string;
+  promptSent?: string;
+  negativeSent?: string | null;
+  enrichedPrompt?: string;
+  geminiAnalysis?: Record<string, unknown> | null;
 };
 
 type PythonImageResult = {
@@ -54,6 +58,10 @@ type PythonImageResult = {
   ok: boolean;
   path?: string;
   error?: string;
+  promptSent?: string;
+  negativeSent?: string | null;
+  enrichedPrompt?: string;
+  geminiAnalysis?: Record<string, unknown> | null;
 };
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -461,6 +469,10 @@ export class VideosImageService {
       style,
       aspectRatio,
       prompt,
+      promptSent: outcome.promptSent,
+      negativeSent: outcome.negativeSent,
+      enrichedPrompt: outcome.enrichedPrompt,
+      geminiAnalysis: outcome.geminiAnalysis,
     };
   }
 }
