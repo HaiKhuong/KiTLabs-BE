@@ -707,8 +707,6 @@ def main() -> None:
                 "sceneNumber": scene_number,
                 "ok": True,
                 "path": str(out_path.resolve()),
-                "promptSent": raw_prompt,
-                "negativeSent": negative_prompt or None,
                 "enrichedPrompt": prompt,
                 "geminiAnalysis": enriched.gemini_analysis,
             }

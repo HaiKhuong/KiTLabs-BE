@@ -49,8 +49,6 @@ export class ImagesHistoryService {
     jobId: string,
     resultPath: string,
     geminiData?: {
-      promptSent?: string;
-      negativeSent?: string | null;
       enrichedPrompt?: string;
       geminiAnalysis?: Record<string, unknown> | null;
     },
@@ -63,8 +61,6 @@ export class ImagesHistoryService {
         resultPath: resultPath.replaceAll("\\", "/"),
         resultFileName: STUDIO_IMAGE_FILENAME,
         errorMessage: null,
-        promptSent: geminiData?.promptSent ?? null,
-        negativeSent: geminiData?.negativeSent ?? null,
         enrichedPrompt: geminiData?.enrichedPrompt ?? null,
         geminiAnalysis: (geminiData?.geminiAnalysis ?? null) as any,
       })
@@ -159,8 +155,7 @@ export class ImagesHistoryService {
       updatedAt: row.updatedAt,
       imageUrl,
       downloadUrl: imageUrl,
-      promptSent: row.promptSent,
-      negativeSent: row.negativeSent,
+      negativePrompt: row.negativePrompt,
       enrichedPrompt: row.enrichedPrompt,
       geminiAnalysis: row.geminiAnalysis,
     };

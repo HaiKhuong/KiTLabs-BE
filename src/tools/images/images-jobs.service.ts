@@ -37,8 +37,6 @@ export class ImagesJobsService {
     try {
       const result = await this.videosImageService.generateStudioImage(dto, jobId);
       await this.imagesHistoryService.markCompleted(jobId, resultPath, {
-        promptSent: result.promptSent,
-        negativeSent: result.negativeSent,
         enrichedPrompt: result.enrichedPrompt,
         geminiAnalysis: result.geminiAnalysis,
       });
