@@ -10,6 +10,7 @@ import { ExecuteImageDto } from "./dto/execute-image.dto";
 import {
   FLUX_SCHNELL_MODEL_ID,
   STUDIO_IMAGE_FILENAME,
+  Z_IMAGE_TURBO_MODEL_ID,
   buildSceneImageRelativeUrl,
   buildStudioImageRelativeUrl,
   resolveVideoImagesOutputDir,
@@ -172,12 +173,77 @@ export class VideosImageService {
     return resolve(process.cwd(), "tools/video-pipeline/video_image_flux.py");
   }
 
+  private resolveZImageScript(): string {
+    const raw = (process.env.Z_IMAGE_PYTHON_SCRIPT ?? "").trim();
+    if (raw) {
+      return resolve(process.cwd(), raw);
+    }
+    return resolve(process.cwd(), "tools/video-pipeline/video_image_zimage.py");
+  }
+
+  private isZImageModel(model: string): boolean {
+    const key = model.trim().toLowerCase();
+    return (
+      key === "z-image-turbo" ||
+      key === "zimage" ||
+      key === "z-image" ||
+      key === Z_IMAGE_TURBO_MODEL_ID.toLowerCase()
+    );
+  }
+
+  private resolveImageScript(model: string): string {
+    if (this.isZImageModel(model)) {
+      return this.resolveZImageScript();
+    }
+    return this.resolveFluxScript();
+  }
+
   private resolveModelId(model?: string): string {
-    const raw = (model ?? process.env.FLUX_MODEL_ID ?? FLUX_SCHNELL_MODEL_ID).trim();
+    const defaultModel = (
+      process.env.IMAGE_DEFAULT_MODEL ??
+      process.env.Z_IMAGE_MODEL_ID ??
+      process.env.FLUX_MODEL_ID ??
+      Z_IMAGE_TURBO_MODEL_ID
+    ).trim();
+    const raw = (model ?? defaultModel).trim();
     if (raw === "flux" || raw === "flux-schnell" || raw === "FLUX.1-schnell") {
       return FLUX_SCHNELL_MODEL_ID;
     }
-    return raw || FLUX_SCHNELL_MODEL_ID;
+    if (this.isZImageModel(raw)) {
+      return Z_IMAGE_TURBO_MODEL_ID;
+    }
+    return raw || Z_IMAGE_TURBO_MODEL_ID;
+  }
+
+  private buildImagePayload(
+    model: string,
+    overrides: Record<string, unknown>,
+  ): Record<string, unknown> {
+    const isZImage = this.isZImageModel(model);
+    const base: Record<string, unknown> = {
+      model_id: model,
+      device_map:
+        (
+          (isZImage ? process.env.Z_IMAGE_DEVICE_MAP : undefined) ??
+          process.env.FLUX_DEVICE_MAP ??
+          ""
+        ).trim() || undefined,
+      dtype_str: (
+        (isZImage ? process.env.Z_IMAGE_DTYPE : undefined) ??
+        process.env.FLUX_DTYPE ??
+        (isZImage ? "bfloat16" : "float16")
+      ).trim(),
+      guidance_scale: isZImage ? 0 : Number(process.env.FLUX_GUIDANCE_SCALE ?? 0),
+      num_inference_steps:
+        overrides.num_inference_steps ??
+        Number(
+          (isZImage ? process.env.Z_IMAGE_NUM_INFERENCE_STEPS : undefined) ??
+          process.env.FLUX_NUM_INFERENCE_STEPS ??
+          (isZImage ? 9 : 4),
+        ),
+      ...(isZImage ? {} : { max_sequence_length: Number(process.env.FLUX_MAX_SEQUENCE_LENGTH ?? 256) }),
+    };
+    return { ...base, ...overrides };
   }
 
   private buildOutputDir(userId: string, nodeId: string): string {
@@ -222,14 +288,17 @@ export class VideosImageService {
 
   private async spawnFluxImageGenInner(payload: Record<string, unknown>): Promise<PythonImageResult[]> {
     const pythonBin = this.resolvePythonBin();
-    const scriptPath = this.resolveFluxScript();
+    const modelId = this.resolveModelId(
+      typeof payload.model_id === "string" ? payload.model_id : undefined,
+    );
+    const scriptPath = this.resolveImageScript(modelId);
     const scriptDir = resolve(process.cwd(), VIDEO_PIPELINE_DIR);
     const timeoutMs = this.resolveCmdTimeoutMs();
     const env = this.buildPythonEnv();
 
     if (!env.HF_TOKEN) {
       this.logger.warn(
-        "HF_TOKEN trống trong process Nest — FLUX gated model sẽ 403. Kiểm tra .env và restart service.",
+        "HF_TOKEN trống trong process Nest — image generation (FLUX / Z-Image) sẽ lỗi. Kiểm tra .env và restart service.",
       );
     }
 
@@ -245,7 +314,7 @@ export class VideosImageService {
       let stderr = "";
       const timeoutHandle = setTimeout(() => {
         child.kill("SIGTERM");
-        rejectPromise(new Error(`FLUX image generation timed out after ${timeoutMs}ms`));
+        rejectPromise(new Error(`Image generation timed out after ${timeoutMs}ms`));
       }, timeoutMs);
 
       child.stdout?.on("data", (buf: Buffer) => {
@@ -263,11 +332,12 @@ export class VideosImageService {
         const stderrTail = stderr.trim().slice(-4000);
         if (code !== 0) {
           const killed = signal ? ` (signal ${signal})` : "";
-          const detail = stderrTail || `video_image_flux exited with code ${code}${killed}`;
+          const scriptName = scriptPath.split(/[/\\]/).pop() ?? "image script";
+          const detail = stderrTail || `${scriptName} exited with code ${code}${killed}`;
           if (signal === "SIGKILL" || /oom|out of memory/i.test(stderr)) {
             rejectPromise(
               new Error(
-                `${detail} — FLUX bị kill (thường do thiếu RAM/VRAM). Cần GPU CUDA ≥12GB hoặc không chạy song song nhiều job.`,
+                `${detail} — process bị kill (thường do thiếu RAM/VRAM với FLUX local). Thử Z-Image-Turbo hoặc không chạy song song nhiều job.`,
               ),
             );
           } else {
@@ -279,7 +349,7 @@ export class VideosImageService {
           const parsed = JSON.parse(stdout.trim()) as { images?: PythonImageResult[] };
           resolvePromise(Array.isArray(parsed.images) ? parsed.images : []);
         } catch {
-          rejectPromise(new Error(stderrTail || "Invalid JSON from video_image_flux.py"));
+          rejectPromise(new Error(stderrTail || "Invalid JSON from image generation script"));
         }
       });
 
@@ -291,7 +361,9 @@ export class VideosImageService {
   async executeImage(dto: ExecuteImageDto): Promise<ExecuteImageResult> {
     const mode = (dto.mode ?? "generate").trim().toLowerCase();
     if (mode !== "generate") {
-      throw new BadRequestException(`Image mode "${mode}" chưa hỗ trợ — chỉ "generate" với FLUX Schnell`);
+      throw new BadRequestException(
+        `Image mode "${mode}" chưa hỗ trợ — chỉ "generate" với Z-Image-Turbo / FLUX Schnell`,
+      );
     }
 
     const model = this.resolveModelId(dto.model);
@@ -307,27 +379,23 @@ export class VideosImageService {
     }));
 
     this.logger.log(
-      `[Image] Nhận yêu cầu userId=${dto.userId.trim()} nodeId=${dto.nodeId.trim()} — ${scenes.length} scene, aspect=${aspectRatio}, steps=${Number(process.env.FLUX_NUM_INFERENCE_STEPS ?? 4)}, style=${style}, model=${model}`,
+      `[Image] Nhận yêu cầu userId=${dto.userId.trim()} nodeId=${dto.nodeId.trim()} — ${scenes.length} scene, aspect=${aspectRatio}, style=${style}, model=${model}`,
     );
 
     let pythonResults: PythonImageResult[] = [];
     try {
-      pythonResults = await this.spawnFluxImageGen({
-        model_id: model,
-        device_map: (process.env.FLUX_DEVICE_MAP ?? "").trim() || undefined,
-        dtype_str: (process.env.FLUX_DTYPE ?? "float16").trim(),
-        guidance_scale: Number(process.env.FLUX_GUIDANCE_SCALE ?? 0),
-        num_inference_steps: Number(process.env.FLUX_NUM_INFERENCE_STEPS ?? 4),
-        max_sequence_length: Number(process.env.FLUX_MAX_SEQUENCE_LENGTH ?? 256),
-        style,
-        aspect_ratio: aspectRatio,
-        scenes: sceneJobs.map((item) => ({
-          sceneNumber: item.scene.sceneNumber,
-          prompt: item.scene.imagePrompt,
-          negative_prompt: item.scene.imageNegativePrompt || undefined,
-          out_path: item.outPath,
-        })),
-      });
+      pythonResults = await this.spawnFluxImageGen(
+        this.buildImagePayload(model, {
+          style,
+          aspect_ratio: aspectRatio,
+          scenes: sceneJobs.map((item) => ({
+            sceneNumber: item.scene.sceneNumber,
+            prompt: item.scene.imagePrompt,
+            negative_prompt: item.scene.imageNegativePrompt || undefined,
+            out_path: item.outPath,
+          })),
+        }),
+      );
     } catch (err) {
       const message = errorMessage(err);
       this.logger.error(
@@ -362,7 +430,7 @@ export class VideosImageService {
         });
       } else {
         failedCount += 1;
-        images.push(failedImage(item.scene, outcome?.error?.trim() || "FLUX generation failed"));
+        images.push(failedImage(item.scene, outcome?.error?.trim() || "Image generation failed"));
       }
     }
 
@@ -399,40 +467,36 @@ export class VideosImageService {
 
     const userId = dto.userId.trim();
     const resolvedJobId = (jobId ?? randomUUID()).trim();
-    const model = this.resolveModelId(dto.model ?? "flux");
+    const model = this.resolveModelId(dto.model ?? "z-image-turbo");
     const style = (dto.style ?? "anime").trim() || "anime";
     const aspectRatio = (dto.aspectRatio ?? "9:16").trim() || "9:16";
     const negativePrompt = (dto.negativePrompt ?? "").trim();
     const outputDir = this.buildOutputDir(userId, resolvedJobId);
     const outPath = join(outputDir, STUDIO_IMAGE_FILENAME);
-    const numInferenceSteps = dto.numInferenceSteps ?? Number(process.env.FLUX_NUM_INFERENCE_STEPS ?? 4);
     const runStartedAt = Date.now();
 
     this.logger.log(
-      `[Image Studio] Xử lý jobId=${resolvedJobId} userId=${userId} — aspect=${aspectRatio}, steps=${numInferenceSteps}, style=${style}, model=${model}, prompt="${previewLogText(prompt)}"`,
+      `[Image Studio] Xử lý jobId=${resolvedJobId} userId=${userId} — aspect=${aspectRatio}, style=${style}, model=${model}, prompt="${previewLogText(prompt)}"`,
     );
 
     let pythonResults: PythonImageResult[] = [];
     try {
-      pythonResults = await this.spawnFluxImageGen({
-        model_id: model,
-        device_map: (process.env.FLUX_DEVICE_MAP ?? "").trim() || undefined,
-        dtype_str: (process.env.FLUX_DTYPE ?? "float16").trim(),
-        guidance_scale: Number(process.env.FLUX_GUIDANCE_SCALE ?? 0),
-        num_inference_steps: numInferenceSteps,
-        max_sequence_length: Number(process.env.FLUX_MAX_SEQUENCE_LENGTH ?? 256),
-        seed: dto.seed,
-        style,
-        aspect_ratio: aspectRatio,
-        scenes: [
-          {
-            sceneNumber: 1,
-            prompt,
-            negative_prompt: negativePrompt || undefined,
-            out_path: outPath,
-          },
-        ],
-      });
+      pythonResults = await this.spawnFluxImageGen(
+        this.buildImagePayload(model, {
+          num_inference_steps: dto.numInferenceSteps,
+          seed: dto.seed,
+          style,
+          aspect_ratio: aspectRatio,
+          scenes: [
+            {
+              sceneNumber: 1,
+              prompt,
+              negative_prompt: negativePrompt || undefined,
+              out_path: outPath,
+            },
+          ],
+        }),
+      );
     } catch (err) {
       const message = errorMessage(err);
       this.removeStudioOutputIfEmpty(outPath);
@@ -444,7 +508,7 @@ export class VideosImageService {
 
     const outcome = pythonResults.find((row) => row.sceneNumber === 1);
     if (!outcome?.ok || !existsSync(outPath)) {
-      const message = outcome?.error?.trim() || "FLUX generation failed";
+      const message = outcome?.error?.trim() || "Image generation failed";
       this.removeStudioOutputIfEmpty(outPath);
       this.logger.error(
         `[Image Studio] DONE FAILED (${((Date.now() - runStartedAt) / 1000).toFixed(1)}s) jobId=${resolvedJobId} — ${message}`,

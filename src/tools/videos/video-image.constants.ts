@@ -5,6 +5,7 @@ import { AUDIO_DATA_ROOT } from "../audio/audio.constants";
 export const VIDEO_IMAGES_OUTPUT_DIR = join(AUDIO_DATA_ROOT, "video-images");
 
 export const FLUX_SCHNELL_MODEL_ID = "black-forest-labs/FLUX.1-schnell";
+export const Z_IMAGE_TURBO_MODEL_ID = "Tongyi-MAI/Z-Image-Turbo";
 
 export function resolveVideoImagesOutputDir(): string {
   const raw = (process.env.VIDEO_IMAGES_DATA_ROOT ?? process.env.IMAGE_DATA_ROOT ?? "").trim();

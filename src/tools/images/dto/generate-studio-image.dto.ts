@@ -26,12 +26,12 @@ export class GenerateStudioImageDto {
   @IsString()
   negativePrompt?: string;
 
-  @ApiPropertyOptional({ default: "flux" })
+  @ApiPropertyOptional({ default: "z-image-turbo" })
   @IsOptional()
   @IsString()
   model?: string;
 
-  @ApiPropertyOptional({ description: "FLUX inference steps (1–12)", default: 4 })
+  @ApiPropertyOptional({ description: "Inference steps (Z-Image: 1–8, FLUX: 1–12)", default: 8 })
   @IsOptional()
   @IsInt()
   @Min(1)

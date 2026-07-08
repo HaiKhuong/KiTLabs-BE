@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -227,7 +228,7 @@ _GEMINI_SYSTEM_PROMPT = """\
 You are a Visual Prompt Analyzer for AI image generation.
 
 Your task is NOT to rewrite the prompt.
-Instead, extract the visual meaning from the prompt and convert it into a structured JSON that can later be used by an image generation model such as FLUX Schnell.
+Instead, extract the visual meaning from the prompt and convert it into a structured JSON that can later be used by an image generation model such as Z-Image-Turbo or FLUX Schnell.
 
 Focus only on visual information.
 Ignore storytelling.
@@ -440,6 +441,7 @@ def _enrich_prompt(raw_prompt: str, negative_prompt: str, style: str) -> EnrichR
         return EnrichResult("")
 
     if os.getenv("FLUX_SKIP_GEMINI", "").strip().lower() in ("1", "true", "yes"):
+        print("[flux] Gemini skipped (FLUX_SKIP_GEMINI=1) — dùng prompt gốc + style suffix", file=sys.stderr)
         return EnrichResult(_build_prompt(raw_prompt, style))
 
     data = _gemini_analyze_prompt(raw_prompt, negative_prompt, style)
@@ -578,6 +580,7 @@ def _get_pipe(model_id: str, device_map: str, dtype_str: str):
         print(f"[flux] offload={offload_mode} (VRAM ~{vram_gb:.1f} GiB)", file=sys.stderr)
 
     local_files_only = _resolve_local_files_only(model_id)
+    is_first_download = not local_files_only
     if local_files_only:
         print(
             "[flux] Cache local đã có — local_files_only=True (không download Hub, chỉ đọc disk)",
@@ -585,10 +588,11 @@ def _get_pipe(model_id: str, device_map: str, dtype_str: str):
         )
     else:
         print(
-            "[flux] Chưa có cache đủ weights — lần này sẽ tải từ Hugging Face (một lần, ~23GiB)",
+            f"[flux] Lần đầu tải model {model_id} từ Hugging Face (~23GiB) — có thể mất vài phút…",
             file=sys.stderr,
         )
 
+    load_started = time.monotonic()
     try:
         _pipe = FluxPipeline.from_pretrained(
             model_id,
@@ -618,6 +622,18 @@ def _get_pipe(model_id: str, device_map: str, dtype_str: str):
         _apply_pipe_memory_opts(_pipe, offload_mode, device_map)
     else:
         _pipe.to("cpu")
+
+    load_elapsed = time.monotonic() - load_started
+    if is_first_download:
+        print(
+            f"[flux] Tải model lần đầu xong ({load_elapsed:.1f}s) — {model_id} sẵn sàng infer",
+            file=sys.stderr,
+        )
+    else:
+        print(
+            f"[flux] Load model từ cache xong ({load_elapsed:.1f}s) — {model_id} sẵn sàng infer",
+            file=sys.stderr,
+        )
 
     return _pipe
 
