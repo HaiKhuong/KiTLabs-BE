@@ -59,13 +59,7 @@ def _resolve_offload_mode(device_map: str) -> str:
     auto | sequential | model | cuda
 
     Model FLUX fp16 ~24GB — KHÔNG load full lên card 12GB.
-    Mặc định auto:
-      - VRAM ≤12.5 GiB → model (peak VRAM ~6–10 GiB, giữ cả module trên GPU khi infer).
-      - VRAM ≤16 GiB → model
-      - VRAM >16 GiB → cuda (full GPU)
-
-    sequential: chỉ 1 block trên GPU (VRAM rất thấp ~1–2 GiB nhưng chậm do transfer liên tục).
-    model: giữ cả module đang chạy trên GPU (peak ~6–10 GiB, nhanh hơn sequential đáng kể).
+    Mặc định auto: VRAM ≤12.5 GiB → sequential (peak VRAM ~8–10 GiB, phần còn lại RAM).
     """
     import sys
 
@@ -86,21 +80,23 @@ def _resolve_offload_mode(device_map: str) -> str:
         if vram is not None and vram <= 12.5 and not force:
             print(
                 f"[flux] WARN: FLUX_OFFLOAD=cuda nhưng VRAM ~{vram:.1f} GiB — model ~24GB fp16 "
-                "không vừa GPU. Dùng model_cpu_offload (peak VRAM ~6–10 GiB). "
+                "không vừa GPU. Dùng sequential (peak VRAM ~8–10 GiB). "
                 "Ép full GPU: FLUX_OFFLOAD_FORCE_CUDA=1 (dễ OOM).",
                 file=sys.stderr,
             )
-            return "model"
+            return "sequential"
         return "cuda"
 
     # auto — theo VRAM thực tế
     vram = _get_vram_gb()
-    if vram is not None and vram <= 16:
+    if vram is not None and vram <= 12.5:
         print(
-            f"[flux] VRAM ~{vram:.1f} GiB → model_cpu_offload "
-            "(weights trên RAM, GPU giữ cả module đang infer — peak ~6–10 GiB).",
+            f"[flux] VRAM ~{vram:.1f} GiB → sequential_cpu_offload "
+            "(model ~24GB trên RAM, GPU chỉ giữ từng block lúc infer).",
             file=sys.stderr,
         )
+        return "sequential"
+    if vram is not None and vram <= 16:
         return "model"
     return "cuda"
 
@@ -139,17 +135,15 @@ def _apply_pipe_memory_opts(pipe: Any, offload_mode: str, device_map: str) -> No
         vram = _get_vram_gb()
         vram_note = f" (card ~{vram:.1f} GiB)" if vram is not None else ""
         print(
-            f"[flux] sequential_cpu_offload{vram_note} — peak VRAM ~1–2 GiB, "
-            "chỉ 1 block trên GPU tại một thời điểm. Chậm nhưng tiết kiệm VRAM tối đa.",
+            f"[flux] sequential_cpu_offload{vram_note} — peak VRAM ~8–10 GiB, "
+            "weights chủ yếu trên RAM. Đây là chế độ đúng cho card 12GB.",
             file=sys.stderr,
         )
     elif offload_mode == "model":
         pipe.enable_model_cpu_offload(gpu_id=gpu_id)
-        vram = _get_vram_gb()
-        vram_note = f" (card ~{vram:.1f} GiB)" if vram is not None else ""
         print(
-            f"[flux] model_cpu_offload{vram_note} — peak VRAM ~6–10 GiB, "
-            "giữ cả module đang chạy trên GPU. Cân bằng tốc độ/VRAM cho card 12GB.",
+            "[flux] model_cpu_offload — weights trên RAM (~24GB), VRAM đầy + disk 100% "
+            "thường do swap; cân nhắc FLUX_OFFLOAD=sequential.",
             file=sys.stderr,
         )
     elif offload_mode == "cuda":
