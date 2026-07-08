@@ -224,33 +224,41 @@ def _build_prompt(base: str, style: str) -> str:
 # ─── Gemini Prompt Enrichment ─────────────────────────────────────────────────
 
 _GEMINI_SYSTEM_PROMPT = """\
-You are an AI Image Director.
+You are a Visual Prompt Analyzer for AI image generation.
 
-Your task is NOT to generate an image prompt.
-Your task is to analyze the user's image description and convert it into a structured JSON for an image generation engine.
+Your task is NOT to rewrite the prompt.
+Instead, extract the visual meaning from the prompt and convert it into a structured JSON that can later be used by an image generation model such as FLUX Schnell.
 
-Always think like an art director.
-Extract every important visual element.
-Do NOT invent unnecessary objects.
-Do NOT describe the image in paragraph form.
+Focus only on visual information.
+Ignore storytelling.
+Ignore unnecessary adjectives.
+Normalize similar concepts.
 Only return valid JSON. Never wrap JSON inside markdown.
-If some information is missing, infer the most reasonable cinematic choice.
-If an image style preference is provided, reflect it in the "style" section of the JSON.
+If an image style preference is provided, reflect it in the "style" section.
 
-The JSON schema must follow exactly:
+OUTPUT FORMAT (JSON ONLY):
 {
-  "subject": {"type":"","name":"","count":1,"description":[]},
-  "action": {"primary":"","secondary":""},
-  "environment": {"location":"","background":"","weather":"","season":"","time_of_day":""},
-  "camera": {"shot":"","angle":"","lens":"","focus":"","composition":""},
+  "subject": {"type":"","species":"","description":"","pose":"","action":"","expression":"","anatomy":[],"focus":[]},
+  "environment": {"location":"","terrain":"","vegetation":[],"season":"","weather":"","time_of_day":""},
+  "composition": {"shot":"","camera_angle":"","perspective":"","framing":"","depth":""},
+  "motion": {"speed":"","effects":[]},
   "lighting": {"type":"","direction":"","mood":""},
-  "style": {"category":"","sub_style":"","render_type":"","outline":"","texture":""},
-  "colors": {"primary":[],"secondary":[],"accent":[]},
-  "effects": [],
-  "quality": [],
-  "avoid": [],
-  "purpose": ""
+  "style": {"art_style":"","render_type":"","line_art":"","shading":"","color_style":"","detail_level":"","quality":""},
+  "color_palette": [],
+  "background": {"elements":[],"atmosphere":""},
+  "keywords": [],
+  "negative": []
 }
+
+Rules:
+1. Merge duplicated concepts.
+2. Keep only visual information.
+3. Convert vague descriptions into concrete visual attributes.
+4. Separate: subject, environment, composition, lighting, style, motion, colors.
+5. Do NOT invent objects.
+6. Preserve important artistic style.
+7. Keep output concise.
+8. Output valid JSON only.
 """
 
 
@@ -286,11 +294,11 @@ def _gemini_analyze_prompt(user_prompt: str, negative_prompt: str, style: str) -
     model_name = os.getenv("FLUX_GEMINI_MODEL", "gemini-2.5-flash")
     style_key = str(style or "anime").strip().lower()
     style_hint = _style_suffix(style_key)
-    request_text = f"Image request:\n\n{user_prompt}\n\nImage style: {style_key}"
+    request_text = f"Analyze this image prompt:\n\n{user_prompt}\n\nPreferred style: {style_key}"
     if style_hint:
         request_text += f"\nStyle direction: {style_hint}"
     if negative_prompt:
-        request_text += f"\n\nThings to avoid:\n{negative_prompt}"
+        request_text += f"\n\nNegative (things to avoid):\n{negative_prompt}"
 
     try:
         response = client.models.generate_content(
@@ -311,65 +319,105 @@ def _gemini_analyze_prompt(user_prompt: str, negative_prompt: str, style: str) -
 
 
 def _structured_to_flux_prompt(data: dict, style: str) -> str:
-    """Convert Gemini structured JSON → flat text prompt optimized for FLUX."""
+    """Convert Gemini structured JSON (new schema) → flat text prompt optimized for FLUX."""
     parts: list[str] = []
 
+    # Subject
     subject = data.get("subject") or {}
-    if subject.get("name"):
-        desc = ", ".join(subject.get("description") or [])
-        count = subject.get("count", 1)
-        subj_text = subject["name"] if count == 1 else f"{count} {subject['name']}"
-        parts.append(f"{subj_text}, {desc}" if desc else subj_text)
+    subj_parts: list[str] = []
+    if subject.get("species"):
+        subj_parts.append(subject["species"])
+    if subject.get("description"):
+        subj_parts.append(subject["description"])
+    if subject.get("pose"):
+        subj_parts.append(subject["pose"])
+    if subject.get("action"):
+        subj_parts.append(subject["action"])
+    if subject.get("expression"):
+        subj_parts.append(subject["expression"])
+    for item in (subject.get("anatomy") or []):
+        if isinstance(item, str) and item:
+            subj_parts.append(item)
+    for item in (subject.get("focus") or []):
+        if isinstance(item, str) and item:
+            subj_parts.append(item)
+    if subj_parts:
+        parts.append(", ".join(subj_parts))
 
-    action = data.get("action") or {}
-    if action.get("primary"):
-        action_text = action["primary"]
-        if action.get("secondary"):
-            action_text += f", {action['secondary']}"
-        parts.append(action_text)
-
+    # Environment
     env = data.get("environment") or {}
-    env_parts = [v for k, v in env.items() if v and isinstance(v, str)]
+    env_parts: list[str] = []
+    for key in ("location", "terrain", "season", "weather", "time_of_day"):
+        val = env.get(key)
+        if val and isinstance(val, str):
+            env_parts.append(val)
+    for item in (env.get("vegetation") or []):
+        if isinstance(item, str) and item:
+            env_parts.append(item)
     if env_parts:
         parts.append(", ".join(env_parts))
 
-    camera = data.get("camera") or {}
-    cam_parts = [v for k, v in camera.items() if v and isinstance(v, str)]
-    if cam_parts:
-        parts.append(", ".join(cam_parts))
+    # Composition
+    comp = data.get("composition") or {}
+    comp_parts = [v for k, v in comp.items() if v and isinstance(v, str)]
+    if comp_parts:
+        parts.append(", ".join(comp_parts))
 
+    # Motion
+    motion = data.get("motion") or {}
+    motion_parts: list[str] = []
+    if motion.get("speed"):
+        motion_parts.append(motion["speed"])
+    for item in (motion.get("effects") or []):
+        if isinstance(item, str) and item:
+            motion_parts.append(item)
+    if motion_parts:
+        parts.append(", ".join(motion_parts))
+
+    # Lighting
     lighting = data.get("lighting") or {}
     light_parts = [v for k, v in lighting.items() if v and isinstance(v, str)]
     if light_parts:
         parts.append(", ".join(light_parts))
 
+    # Style (from Gemini analysis)
     style_data = data.get("style") or {}
     style_parts = [v for k, v in style_data.items() if v and isinstance(v, str)]
     if style_parts:
         parts.append(", ".join(style_parts))
 
-    colors = data.get("colors") or {}
-    all_colors = (colors.get("primary") or []) + (colors.get("secondary") or []) + (colors.get("accent") or [])
-    if all_colors:
-        parts.append("colors: " + ", ".join(all_colors))
+    # Color palette
+    color_palette = data.get("color_palette") or []
+    if color_palette:
+        parts.append(", ".join(color_palette))
 
-    effects = data.get("effects") or []
-    if effects:
-        parts.append(", ".join(effects))
+    # Background
+    bg = data.get("background") or {}
+    bg_parts: list[str] = []
+    for item in (bg.get("elements") or []):
+        if isinstance(item, str) and item:
+            bg_parts.append(item)
+    if bg.get("atmosphere"):
+        bg_parts.append(bg["atmosphere"])
+    if bg_parts:
+        parts.append(", ".join(bg_parts))
 
-    quality = data.get("quality") or []
-    if quality:
-        parts.append(", ".join(quality))
+    # Keywords
+    keywords = data.get("keywords") or []
+    if keywords:
+        parts.append(", ".join(keywords))
 
     prompt = ", ".join(parts)
 
+    # Append style suffix
     suffix = _style_suffix(style)
     if suffix:
         prompt = f"{prompt}, {suffix}"
 
-    avoid = data.get("avoid") or []
-    if avoid:
-        prompt += ", NOT " + ", NOT ".join(avoid)
+    # Negative
+    negative = data.get("negative") or []
+    if negative:
+        prompt += ", NOT " + ", NOT ".join(negative)
 
     return prompt
 
