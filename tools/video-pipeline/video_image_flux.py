@@ -27,6 +27,7 @@ import flux_cache  # noqa: F401 — cache/flux
 from flux_cache import resolve_hf_token
 
 _pipe = None
+_gemini_client = None
 
 
 def _resolve_seed(raw: Any) -> int:
@@ -218,6 +219,174 @@ def _build_prompt(base: str, style: str) -> str:
         return ""
     suffix = _style_suffix(style)
     return f"{text}, {suffix}" if suffix else text
+
+
+# ─── Gemini Prompt Enrichment ─────────────────────────────────────────────────
+
+_GEMINI_SYSTEM_PROMPT = """\
+You are an AI Image Director.
+
+Your task is NOT to generate an image prompt.
+Your task is to analyze the user's image description and convert it into a structured JSON for an image generation engine.
+
+Always think like an art director.
+Extract every important visual element.
+Do NOT invent unnecessary objects.
+Do NOT describe the image in paragraph form.
+Only return valid JSON. Never wrap JSON inside markdown.
+If some information is missing, infer the most reasonable cinematic choice.
+
+The JSON schema must follow exactly:
+{
+  "subject": {"type":"","name":"","count":1,"description":[]},
+  "action": {"primary":"","secondary":""},
+  "environment": {"location":"","background":"","weather":"","season":"","time_of_day":""},
+  "camera": {"shot":"","angle":"","lens":"","focus":"","composition":""},
+  "lighting": {"type":"","direction":"","mood":""},
+  "style": {"category":"","sub_style":"","render_type":"","outline":"","texture":""},
+  "colors": {"primary":[],"secondary":[],"accent":[]},
+  "effects": [],
+  "quality": [],
+  "avoid": [],
+  "purpose": ""
+}
+"""
+
+
+def _get_gemini_client():
+    global _gemini_client
+    if _gemini_client is not None:
+        return _gemini_client
+
+    api_key = (
+        os.getenv("GEMINI_API_KEY_VIP")
+        or os.getenv("GEMINI_API_KEY")
+        or os.getenv("GOOGLE_API_KEY")
+        or ""
+    ).strip()
+    if not api_key:
+        return None
+
+    try:
+        from google import genai
+        _gemini_client = genai.Client(api_key=api_key)
+        return _gemini_client
+    except Exception as exc:
+        print(f"[flux] WARN: không khởi tạo được Gemini client: {exc}", file=sys.stderr)
+        return None
+
+
+def _gemini_analyze_prompt(user_prompt: str, negative_prompt: str) -> dict | None:
+    """Call Gemini to analyze prompt → structured JSON. Returns None on failure."""
+    client = _get_gemini_client()
+    if client is None:
+        return None
+
+    model_name = os.getenv("FLUX_GEMINI_MODEL", "gemini-2.5-flash")
+    request_text = f"Image request:\n\n{user_prompt}"
+    if negative_prompt:
+        request_text += f"\n\nThings to avoid:\n{negative_prompt}"
+
+    try:
+        response = client.models.generate_content(
+            model=model_name,
+            contents=request_text,
+            config={"system_instruction": _GEMINI_SYSTEM_PROMPT, "temperature": 0.3},
+        )
+        raw = response.text.strip()
+        if raw.startswith("```"):
+            raw = raw.split("\n", 1)[1] if "\n" in raw else raw[3:]
+            if raw.endswith("```"):
+                raw = raw[:-3]
+            raw = raw.strip()
+        return json.loads(raw)
+    except Exception as exc:
+        print(f"[flux] WARN: Gemini analyze failed — fallback raw prompt: {exc}", file=sys.stderr)
+        return None
+
+
+def _structured_to_flux_prompt(data: dict, style: str) -> str:
+    """Convert Gemini structured JSON → flat text prompt optimized for FLUX."""
+    parts: list[str] = []
+
+    subject = data.get("subject") or {}
+    if subject.get("name"):
+        desc = ", ".join(subject.get("description") or [])
+        count = subject.get("count", 1)
+        subj_text = subject["name"] if count == 1 else f"{count} {subject['name']}"
+        parts.append(f"{subj_text}, {desc}" if desc else subj_text)
+
+    action = data.get("action") or {}
+    if action.get("primary"):
+        action_text = action["primary"]
+        if action.get("secondary"):
+            action_text += f", {action['secondary']}"
+        parts.append(action_text)
+
+    env = data.get("environment") or {}
+    env_parts = [v for k, v in env.items() if v and isinstance(v, str)]
+    if env_parts:
+        parts.append(", ".join(env_parts))
+
+    camera = data.get("camera") or {}
+    cam_parts = [v for k, v in camera.items() if v and isinstance(v, str)]
+    if cam_parts:
+        parts.append(", ".join(cam_parts))
+
+    lighting = data.get("lighting") or {}
+    light_parts = [v for k, v in lighting.items() if v and isinstance(v, str)]
+    if light_parts:
+        parts.append(", ".join(light_parts))
+
+    style_data = data.get("style") or {}
+    style_parts = [v for k, v in style_data.items() if v and isinstance(v, str)]
+    if style_parts:
+        parts.append(", ".join(style_parts))
+
+    colors = data.get("colors") or {}
+    all_colors = (colors.get("primary") or []) + (colors.get("secondary") or []) + (colors.get("accent") or [])
+    if all_colors:
+        parts.append("colors: " + ", ".join(all_colors))
+
+    effects = data.get("effects") or []
+    if effects:
+        parts.append(", ".join(effects))
+
+    quality = data.get("quality") or []
+    if quality:
+        parts.append(", ".join(quality))
+
+    prompt = ", ".join(parts)
+
+    suffix = _style_suffix(style)
+    if suffix:
+        prompt = f"{prompt}, {suffix}"
+
+    avoid = data.get("avoid") or []
+    if avoid:
+        prompt += ", NOT " + ", NOT ".join(avoid)
+
+    return prompt
+
+
+def _enrich_prompt(raw_prompt: str, negative_prompt: str, style: str) -> str:
+    """
+    Enrich prompt via Gemini if available.
+    Fallback: original _build_prompt logic.
+    """
+    if not raw_prompt.strip():
+        return ""
+
+    if os.getenv("FLUX_SKIP_GEMINI", "").strip().lower() in ("1", "true", "yes"):
+        return _build_prompt(raw_prompt, style)
+
+    data = _gemini_analyze_prompt(raw_prompt, negative_prompt)
+    if data is None:
+        return _build_prompt(raw_prompt, style)
+
+    enriched = _structured_to_flux_prompt(data, style)
+    print(f"[flux] Gemini enriched prompt ({len(enriched)} chars)", file=sys.stderr)
+    return enriched
 
 
 def _resolve_dtype(dtype_str: str):
@@ -423,15 +592,18 @@ def main() -> None:
     import torch
 
     pipe = _get_pipe(model_id, device_map, dtype_str)
-    generator = torch.Generator("cpu").manual_seed(seed)
 
     results: list[dict[str, Any]] = []
     for item in scenes:
         if not isinstance(item, dict):
             continue
         scene_number = int(item.get("sceneNumber") or item.get("scene_number") or 0)
-        prompt = _build_prompt(str(item.get("prompt") or ""), style)
+        raw_prompt = str(item.get("prompt") or "").strip()
         out_path_raw = str(item.get("out_path") or item.get("outPath") or "").strip()
+        negative_prompt = str(item.get("negative_prompt") or "").strip()
+
+        prompt = _enrich_prompt(raw_prompt, negative_prompt, style)
+
         if not prompt or not out_path_raw:
             results.append(
                 {
@@ -444,6 +616,8 @@ def main() -> None:
 
         out_path = Path(out_path_raw)
         out_path.parent.mkdir(parents=True, exist_ok=True)
+        scene_seed = seed + scene_number
+        generator = torch.Generator("cpu").manual_seed(scene_seed)
         try:
             if torch.cuda.is_available():
                 torch.cuda.reset_peak_memory_stats()
