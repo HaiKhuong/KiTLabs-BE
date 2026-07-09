@@ -1299,7 +1299,28 @@ def parse_subtitle_extra_blurs(raw):
         if width_ratio <= 0:
             continue
 
-        # Ratio-based (FE mới) — scale theo ih, hỗ trợ 2K/4K
+        # XY ratio (FE mới) — vị trí tự do theo % khung hình
+        if "xRatio" in item or "yRatio" in item:
+            try:
+                height_ratio = float(item.get("heightRatio", item.get("height_ratio", 0)))
+                x_ratio = float(item.get("xRatio", item.get("x_ratio", 0)))
+                y_ratio = float(item.get("yRatio", item.get("y_ratio", 0)))
+            except (TypeError, ValueError):
+                continue
+            if height_ratio <= 0 or x_ratio < 0 or y_ratio < 0:
+                continue
+            regions.append(
+                {
+                    "width_ratio": max(0.05, min(1.0, width_ratio)),
+                    "height_ratio": max(0.01, min(1.0, height_ratio)),
+                    "x_ratio": max(0.0, min(1.0, x_ratio)),
+                    "y_ratio": max(0.0, min(1.0, y_ratio)),
+                    "use_xy": True,
+                }
+            )
+            continue
+
+        # Legacy bottom-offset ratio
         if "heightRatio" in item or "bottomOffsetRatio" in item:
             try:
                 height_ratio = float(item.get("heightRatio", item.get("height_ratio", 0)))
@@ -1354,6 +1375,14 @@ def _blur_strip_filter(width_ratio, height_px, bottom_offset_px):
     )
 
 
+def _blur_strip_filter_xy(width_ratio, height_ratio, x_ratio, y_ratio):
+    return (
+        f"crop=iw*{width_ratio}:ih*{height_ratio}:"
+        f"iw*{x_ratio}:ih*{y_ratio},"
+        f"{_blur_boxblur_suffix()}"
+    )
+
+
 def _blur_strip_filter_ratio(width_ratio, height_ratio, bottom_offset_ratio):
     return (
         f"crop=iw*{width_ratio}:ih*{height_ratio}:"
@@ -1376,20 +1405,26 @@ def build_subtitle_filter_tail(ass_path):
 
     for idx, region in enumerate(extra_regions, start=1):
         wr = region["width_ratio"]
-        if region.get("use_ratio"):
+        if region.get("use_xy"):
+            hr = region["height_ratio"]
+            xr = region["x_ratio"]
+            yr = region["y_ratio"]
+            blur_filter = _blur_strip_filter_xy(wr, hr, xr, yr)
+            overlay_pos = f"W*{xr}:H*{yr}"
+        elif region.get("use_ratio"):
             hr = region["height_ratio"]
             bo = region["bottom_offset_ratio"]
             blur_filter = _blur_strip_filter_ratio(wr, hr, bo)
-            overlay_y = f"H-H*{bo}"
+            overlay_pos = f"(W-w)/2:H-H*{bo}"
         else:
             h = region["height"]
             bo = region["bottom_offset"]
             blur_filter = _blur_strip_filter(wr, h, bo)
-            overlay_y = f"H-{bo}"
+            overlay_pos = f"(W-w)/2:H-{bo}"
         parts.append(
             f";[{prev}]split[main{idx}][blur{idx}];"
             f"[blur{idx}]{blur_filter}[blurred{idx}];"
-            f"[main{idx}][blurred{idx}]overlay=(W-w)/2:{overlay_y}[vblur{idx}]"
+            f"[main{idx}][blurred{idx}]overlay={overlay_pos}[vblur{idx}]"
         )
         prev = f"vblur{idx}"
 
