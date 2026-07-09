@@ -227,6 +227,13 @@ export class AudioController {
     return res.sendFile(info.absolutePath);
   }
 
+  @ApiOperation({ summary: "Delete a pipeline clone voice (file + DB row)" })
+  @Public()
+  @Delete("pipeline-voices/:fileName")
+  async deletePipelineVoice(@Param("fileName") fileName: string) {
+    return this.audioService.deletePipelineVoice(fileName);
+  }
+
   @ApiOperation({ summary: "Enqueue OmniVoice TTS job" })
   @Public()
   @Post("generate")

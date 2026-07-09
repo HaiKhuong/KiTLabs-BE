@@ -538,6 +538,57 @@ export class AudioService {
     };
   }
 
+  async deletePipelineVoice(fileName: string): Promise<{ deleted: true; fileName: string }> {
+    const safeName = basename(String(fileName || "").trim());
+    if (!safeName) {
+      throw new BadRequestException("fileName is required");
+    }
+
+    const row = await this.cloneVoiceRepository.findOne({ where: { fileName: safeName } });
+    if (!row) {
+      throw new NotFoundException(`Clone voice not found: ${safeName}`);
+    }
+
+    const abs = row.filePath
+      ? isAbsolute(row.filePath)
+        ? row.filePath
+        : resolve(process.cwd(), row.filePath)
+      : join(this.resolvePipelineVoiceDir(), safeName);
+
+    if (existsSync(abs)) {
+      try {
+        await unlink(abs);
+      } catch (err) {
+        this.logger.warn(
+          `Could not delete pipeline voice file ${safeName}`,
+          err instanceof Error ? err.message : String(err),
+        );
+      }
+    }
+
+    const sidecar = this.pipelineVoiceRefSidecarPath(safeName);
+    if (existsSync(sidecar)) {
+      try {
+        await unlink(sidecar);
+      } catch (err) {
+        this.logger.warn(
+          `Could not delete ref sidecar for pipeline voice ${safeName}`,
+          err instanceof Error ? err.message : String(err),
+        );
+      }
+    }
+
+    await this.cloneVoiceRepository.delete({ fileName: safeName });
+
+    await this.logsService.createLog({
+      userId: row.userId,
+      action: "audio.clone_voice.deleted",
+      payload: { fileName: safeName, displayName: row.displayName },
+    });
+
+    return { deleted: true, fileName: safeName };
+  }
+
   private async resolveCloneReference(
     dto: CreateAudioJobDto,
   ): Promise<{ refAudioPath: string; refText: string }> {
