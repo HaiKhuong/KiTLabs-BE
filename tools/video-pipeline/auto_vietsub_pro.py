@@ -1293,28 +1293,71 @@ def parse_subtitle_extra_blurs(raw):
             continue
         try:
             width_ratio = float(item.get("widthRatio", item.get("width_ratio", 0)))
+        except (TypeError, ValueError):
+            continue
+        if width_ratio <= 0:
+            continue
+
+        # Ratio-based (FE mới) — scale theo ih, hỗ trợ 2K/4K
+        if "heightRatio" in item or "bottomOffsetRatio" in item:
+            try:
+                height_ratio = float(item.get("heightRatio", item.get("height_ratio", 0)))
+                bottom_offset_ratio = float(
+                    item.get("bottomOffsetRatio", item.get("bottom_offset_ratio", 0))
+                )
+            except (TypeError, ValueError):
+                continue
+            if height_ratio <= 0 or bottom_offset_ratio < 0:
+                continue
+            regions.append(
+                {
+                    "width_ratio": max(0.05, min(1.0, width_ratio)),
+                    "height_ratio": max(0.01, min(1.0, height_ratio)),
+                    "bottom_offset_ratio": max(0.0, min(1.0, bottom_offset_ratio)),
+                    "use_ratio": True,
+                }
+            )
+            continue
+
+        # Legacy pixel format (height/bottomOffset từ FE cũ)
+        try:
             height = int(item.get("height", 0))
             bottom_offset = int(item.get("bottomOffset", item.get("bottom_offset", 0)))
         except (TypeError, ValueError):
             continue
-        if width_ratio <= 0 or height <= 0 or bottom_offset < 0:
+        if height <= 0 or bottom_offset < 0:
             continue
         regions.append(
             {
                 "width_ratio": max(0.05, min(1.0, width_ratio)),
                 "height": max(8, height),
                 "bottom_offset": bottom_offset,
+                "use_ratio": False,
             }
         )
     return regions
+
+
+def _blur_boxblur_suffix():
+    return (
+        f"boxblur={SUBTITLE_BG_BLUR_LUMA_RADIUS}:{SUBTITLE_BG_BLUR_LUMA_POWER}:"
+        f"{SUBTITLE_BG_BLUR_CHROMA_RADIUS}:{SUBTITLE_BG_BLUR_CHROMA_POWER}"
+    )
 
 
 def _blur_strip_filter(width_ratio, height_px, bottom_offset_px):
     return (
         f"crop=iw*{width_ratio}:{height_px}:"
         f"(iw-iw*{width_ratio})/2:ih-{bottom_offset_px},"
-        f"boxblur={SUBTITLE_BG_BLUR_LUMA_RADIUS}:{SUBTITLE_BG_BLUR_LUMA_POWER}:"
-        f"{SUBTITLE_BG_BLUR_CHROMA_RADIUS}:{SUBTITLE_BG_BLUR_CHROMA_POWER}"
+        f"{_blur_boxblur_suffix()}"
+    )
+
+
+def _blur_strip_filter_ratio(width_ratio, height_ratio, bottom_offset_ratio):
+    return (
+        f"crop=iw*{width_ratio}:ih*{height_ratio}:"
+        f"(iw-iw*{width_ratio})/2:ih-ih*{bottom_offset_ratio},"
+        f"{_blur_boxblur_suffix()}"
     )
 
 
@@ -1332,12 +1375,20 @@ def build_subtitle_filter_tail(ass_path):
 
     for idx, region in enumerate(extra_regions, start=1):
         wr = region["width_ratio"]
-        h = region["height"]
-        bo = region["bottom_offset"]
+        if region.get("use_ratio"):
+            hr = region["height_ratio"]
+            bo = region["bottom_offset_ratio"]
+            blur_filter = _blur_strip_filter_ratio(wr, hr, bo)
+            overlay_y = f"H-ih*{bo}"
+        else:
+            h = region["height"]
+            bo = region["bottom_offset"]
+            blur_filter = _blur_strip_filter(wr, h, bo)
+            overlay_y = f"H-{bo}"
         parts.append(
             f";[{prev}]split[main{idx}][blur{idx}];"
-            f"[blur{idx}]{_blur_strip_filter(wr, h, bo)}[blurred{idx}];"
-            f"[main{idx}][blurred{idx}]overlay=(W-w)/2:H-{bo}[vblur{idx}]"
+            f"[blur{idx}]{blur_filter}[blurred{idx}];"
+            f"[main{idx}][blurred{idx}]overlay=(W-w)/2:{overlay_y}[vblur{idx}]"
         )
         prev = f"vblur{idx}"
 
