@@ -92,6 +92,7 @@ const OPTION_MAPPINGS: Array<{
     allowedTypes: ["number", "string"],
   },
   { cliFlag: "--logo-file", keys: ["logoFile", "logo_file"], allowedTypes: ["string"] },
+  { cliFlag: "--logo-width-ratio", keys: ["logoWidthRatio", "logo_width_ratio"], allowedTypes: ["number", "string"] },
   { cliFlag: "--logo-width", keys: ["logoWidth", "logo_width"], allowedTypes: ["number", "string"] },
   { cliFlag: "--logo-margin-x", keys: ["logoMarginX", "logo_margin_x"], allowedTypes: ["number", "string"] },
   { cliFlag: "--logo-margin-y", keys: ["logoMarginY", "logo_margin_y"], allowedTypes: ["number", "string"] },

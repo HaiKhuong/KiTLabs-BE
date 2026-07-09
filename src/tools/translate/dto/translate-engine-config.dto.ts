@@ -186,6 +186,16 @@ export class TranslateEngineConfigDto {
   @IsOptional()
   @Type(() => Number)
   @IsNumber()
+  logoWidthRatio?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  logo_width_ratio?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
   logoWidth?: number;
 
   @IsOptional()

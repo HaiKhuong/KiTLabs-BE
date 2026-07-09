@@ -166,6 +166,7 @@ SUBTITLE_BG_BLUR_CHROMA_POWER = 2
 SUBTITLE_BG_EXTRA_BLURS_JSON = "[]"
 LOGO_FILE = "logo/van_gioi_vietsub_logo.png"
 LOGO_WIDTH = 250
+LOGO_WIDTH_RATIO = 0.0  # >0: % chiều rộng khung hình; 0 = dùng LOGO_WIDTH (px, legacy)
 LOGO_MARGIN_X = 30
 LOGO_MARGIN_Y = 30
 LOGO_OPACITY = 0.5
@@ -1512,7 +1513,7 @@ def ffmpeg_output_metadata_args(out_path=None):
 
 
 def build_step6_render_command(
-    video_path, out_path, subtitle_filter, use_gpu, logo_path=None
+    video_path, out_path, subtitle_filter, use_gpu, logo_path=None, video_width=None
 ):
     input_args = ["-i", str(video_path)]
     use_complex = logo_path is not None or STEP6_VISUAL_TRANSFORM_ENABLED
@@ -1523,8 +1524,16 @@ def build_step6_render_command(
         map_args = ["-map", "[vsub]", "-map", "0:a?"]
 
     if logo_path:
+        if LOGO_WIDTH_RATIO > 0:
+            ref_w = video_width
+            if not ref_w:
+                wh = get_ffprobe_video_dimensions(video_path)
+                ref_w = wh[0] if wh else 1920
+            logo_w = max(16, int(ref_w * LOGO_WIDTH_RATIO))
+        else:
+            logo_w = int(LOGO_WIDTH)
         logo_filter = (
-            f"[1:v]format=rgba,scale={int(LOGO_WIDTH)}:-1,colorchannelmixer=aa={float(LOGO_OPACITY)}[logo];"
+            f"[1:v]format=rgba,scale={logo_w}:-1,colorchannelmixer=aa={float(LOGO_OPACITY)}[logo];"
             f"[vsub][logo]overlay={int(LOGO_MARGIN_X)}:{int(LOGO_MARGIN_Y)}[vout]"
         )
         filter_arg_key = "-filter_complex"
@@ -2712,9 +2721,13 @@ def step6_render(video_path, ass_path):
     log("Step6: render + subs…")
     out = VIDEO_DIR / f"{WORK_NAME}_vs_tm.mp4"
     probe_wh = None
-    if STEP6_VISUAL_TRANSFORM_ENABLED and float(STEP6_ZOOM_PERCENT) > 0.01:
+    need_probe_wh = (
+        STEP6_VISUAL_TRANSFORM_ENABLED and float(STEP6_ZOOM_PERCENT) > 0.01
+    ) or LOGO_WIDTH_RATIO > 0
+    if need_probe_wh:
         probe_wh = get_ffprobe_video_dimensions(video_path)
     subtitle_filter = build_subtitle_filter(ass_path, probe_wh)
+    video_width = probe_wh[0] if probe_wh else None
     logo_path = None
     if LOGO_ENABLED:
         configured_logo = Path(LOGO_FILE)
@@ -2729,14 +2742,14 @@ def step6_render(video_path, ass_path):
             logo_path = None
 
     gpu_cmd = build_step6_render_command(
-        video_path, out, subtitle_filter, use_gpu=True, logo_path=logo_path
+        video_path, out, subtitle_filter, use_gpu=True, logo_path=logo_path, video_width=video_width
     )
     try:
         run_command(gpu_cmd, "Render ASS subtitles (GPU)")
     except Exception as e:
         log(f"Step6: GPU render failed → CPU: {e}")
         cpu_cmd = build_step6_render_command(
-            video_path, out, subtitle_filter, use_gpu=False, logo_path=logo_path
+            video_path, out, subtitle_filter, use_gpu=False, logo_path=logo_path, video_width=video_width
         )
         run_command(cpu_cmd, "Render ASS subtitles (CPU fallback)")
     return out
@@ -2813,6 +2826,12 @@ def parse_cli_args():
     # Logo options
     parser.add_argument("--logo-file", default=LOGO_FILE)
     parser.add_argument("--logo-width", type=int, default=LOGO_WIDTH)
+    parser.add_argument(
+        "--logo-width-ratio",
+        type=float,
+        default=LOGO_WIDTH_RATIO,
+        help="Logo width as fraction of frame width (0.13 = 13%%). When >0, overrides --logo-width.",
+    )
     parser.add_argument("--logo-margin-x", type=int, default=LOGO_MARGIN_X)
     parser.add_argument("--logo-margin-y", type=int, default=LOGO_MARGIN_Y)
     parser.add_argument("--logo-opacity", type=float, default=LOGO_OPACITY)
@@ -3307,6 +3326,7 @@ def apply_cli_config(args):
     global MERGE_OUTRO_ENABLED
     global OUTRO_FILE
     global LOGO_WIDTH
+    global LOGO_WIDTH_RATIO
     global LOGO_MARGIN_X
     global LOGO_MARGIN_Y
     global LOGO_OPACITY
@@ -3417,6 +3437,7 @@ def apply_cli_config(args):
 
     LOGO_FILE = args.logo_file
     LOGO_WIDTH = args.logo_width
+    LOGO_WIDTH_RATIO = max(0.0, min(1.0, float(args.logo_width_ratio)))
     LOGO_MARGIN_X = args.logo_margin_x
     LOGO_MARGIN_Y = args.logo_margin_y
     LOGO_OPACITY = args.logo_opacity
