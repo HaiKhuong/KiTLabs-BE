@@ -1380,7 +1380,7 @@ def build_subtitle_filter_tail(ass_path):
             hr = region["height_ratio"]
             bo = region["bottom_offset_ratio"]
             blur_filter = _blur_strip_filter_ratio(wr, hr, bo)
-            overlay_y = f"H-ih*{bo}"
+            overlay_y = f"H-H*{bo}"
         else:
             h = region["height"]
             bo = region["bottom_offset"]
