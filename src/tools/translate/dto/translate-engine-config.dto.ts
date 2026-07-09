@@ -128,6 +128,14 @@ export class TranslateEngineConfigDto {
   subtitle_bg_blur_bottom_offset?: number;
 
   @IsOptional()
+  @IsString()
+  subtitleBgExtraBlursJson?: string;
+
+  @IsOptional()
+  @IsString()
+  subtitle_bg_extra_blurs_json?: string;
+
+  @IsOptional()
   @Type(() => Number)
   @IsNumber()
   subtitleBgBlurLumaRadius?: number;

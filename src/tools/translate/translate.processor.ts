@@ -67,6 +67,11 @@ const OPTION_MAPPINGS: Array<{
     allowedTypes: ["number", "string"],
   },
   {
+    cliFlag: "--subtitle-bg-extra-blurs-json",
+    keys: ["subtitleBgExtraBlursJson", "subtitle_bg_extra_blurs_json"],
+    allowedTypes: ["string"],
+  },
+  {
     cliFlag: "--subtitle-bg-blur-luma-radius",
     keys: ["subtitleBgBlurLumaRadius", "subtitle_bg_blur_luma_radius"],
     allowedTypes: ["number", "string"],

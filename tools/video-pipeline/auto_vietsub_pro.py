@@ -162,6 +162,8 @@ SUBTITLE_BG_BLUR_LUMA_RADIUS = 8
 SUBTITLE_BG_BLUR_LUMA_POWER = 2
 SUBTITLE_BG_BLUR_CHROMA_RADIUS = 4
 SUBTITLE_BG_BLUR_CHROMA_POWER = 2
+# JSON array: [{widthRatio, height, bottomOffset}, ...] — vùng blur phụ (watermark/UI).
+SUBTITLE_BG_EXTRA_BLURS_JSON = "[]"
 LOGO_FILE = "logo/van_gioi_vietsub_logo.png"
 LOGO_WIDTH = 250
 LOGO_MARGIN_X = 30
@@ -1272,20 +1274,75 @@ def cleanup_step6_intermediate_files():
             log(f"Cleanup warning: failed to remove {target}: {e}")
 
 
-def build_subtitle_filter_tail(ass_path):
-    """split → blur strip → overlay → ass, output [vsub]. Dùng sau [0:v] hoặc sau chuỗi biến đổi."""
-    filter_path = to_ffmpeg_ass_filter_path(ass_path)
+def parse_subtitle_extra_blurs(raw):
+    """Parse JSON extra blur regions from FE/BE."""
+    text = str(raw or "").strip()
+    if not text or text == "[]":
+        return []
+    try:
+        data = json.loads(text)
+    except Exception:
+        log(f"WARN: subtitle extra blurs JSON invalid — bỏ qua: {text[:200]}")
+        return []
+    if not isinstance(data, list):
+        return []
+
+    regions = []
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        try:
+            width_ratio = float(item.get("widthRatio", item.get("width_ratio", 0)))
+            height = int(item.get("height", 0))
+            bottom_offset = int(item.get("bottomOffset", item.get("bottom_offset", 0)))
+        except (TypeError, ValueError):
+            continue
+        if width_ratio <= 0 or height <= 0 or bottom_offset < 0:
+            continue
+        regions.append(
+            {
+                "width_ratio": max(0.05, min(1.0, width_ratio)),
+                "height": max(8, height),
+                "bottom_offset": bottom_offset,
+            }
+        )
+    return regions
+
+
+def _blur_strip_filter(width_ratio, height_px, bottom_offset_px):
     return (
-        "split[main][blur];"
-        f"[blur]crop=iw*{SUBTITLE_BG_BLUR_WIDTH_RATIO}:{SUBTITLE_BG_BLUR_HEIGHT}:"
-        f"(iw-iw*{SUBTITLE_BG_BLUR_WIDTH_RATIO})/2:ih-{SUBTITLE_BG_BLUR_BOTTOM_OFFSET},"
-        "boxblur="
-        f"{SUBTITLE_BG_BLUR_LUMA_RADIUS}:{SUBTITLE_BG_BLUR_LUMA_POWER}:"
+        f"crop=iw*{width_ratio}:{height_px}:"
+        f"(iw-iw*{width_ratio})/2:ih-{bottom_offset_px},"
+        f"boxblur={SUBTITLE_BG_BLUR_LUMA_RADIUS}:{SUBTITLE_BG_BLUR_LUMA_POWER}:"
         f"{SUBTITLE_BG_BLUR_CHROMA_RADIUS}:{SUBTITLE_BG_BLUR_CHROMA_POWER}"
-        "[blurred];"
-        f"[main][blurred]overlay=(W-w)/2:H-{SUBTITLE_BG_BLUR_BOTTOM_OFFSET},"
-        f"ass='{filter_path}'[vsub]"
     )
+
+
+def build_subtitle_filter_tail(ass_path):
+    """split → blur strip(s) → overlay → ass, output [vsub]. Dùng sau [0:v] hoặc sau chuỗi biến đổi."""
+    filter_path = to_ffmpeg_ass_filter_path(ass_path)
+    extra_regions = parse_subtitle_extra_blurs(SUBTITLE_BG_EXTRA_BLURS_JSON)
+
+    parts = [
+        "split[main0][blur0];",
+        f"[blur0]{_blur_strip_filter(SUBTITLE_BG_BLUR_WIDTH_RATIO, SUBTITLE_BG_BLUR_HEIGHT, SUBTITLE_BG_BLUR_BOTTOM_OFFSET)}[blurred0];",
+        f"[main0][blurred0]overlay=(W-w)/2:H-{SUBTITLE_BG_BLUR_BOTTOM_OFFSET}[vblur0]",
+    ]
+    prev = "vblur0"
+
+    for idx, region in enumerate(extra_regions, start=1):
+        wr = region["width_ratio"]
+        h = region["height"]
+        bo = region["bottom_offset"]
+        parts.append(
+            f";[{prev}]split[main{idx}][blur{idx}];"
+            f"[blur{idx}]{_blur_strip_filter(wr, h, bo)}[blurred{idx}];"
+            f"[main{idx}][blurred{idx}]overlay=(W-w)/2:H-{bo}[vblur{idx}]"
+        )
+        prev = f"vblur{idx}"
+
+    parts.append(f";[{prev}]ass='{filter_path}'[vsub]")
+    return "".join(parts)
 
 
 def build_visual_transform_filters(src_wh=None):
@@ -2680,6 +2737,12 @@ def parse_cli_args():
         default=SUBTITLE_BG_BLUR_BOTTOM_OFFSET,
     )
     parser.add_argument(
+        "--subtitle-bg-extra-blurs-json",
+        type=str,
+        default=SUBTITLE_BG_EXTRA_BLURS_JSON,
+        help='JSON array of extra blur strips: [{"widthRatio":0.6,"height":80,"bottomOffset":50}]',
+    )
+    parser.add_argument(
         "--subtitle-bg-blur-luma-radius", type=int, default=SUBTITLE_BG_BLUR_LUMA_RADIUS
     )
     parser.add_argument(
@@ -3188,6 +3251,7 @@ def apply_cli_config(args):
     global SUBTITLE_BG_BLUR_LUMA_POWER
     global SUBTITLE_BG_BLUR_CHROMA_RADIUS
     global SUBTITLE_BG_BLUR_CHROMA_POWER
+    global SUBTITLE_BG_EXTRA_BLURS_JSON
     global LOGO_FILE
     global MERGE_OUTRO_ENABLED
     global OUTRO_FILE
@@ -3298,6 +3362,7 @@ def apply_cli_config(args):
     SUBTITLE_BG_BLUR_LUMA_POWER = args.subtitle_bg_blur_luma_power
     SUBTITLE_BG_BLUR_CHROMA_RADIUS = args.subtitle_bg_blur_chroma_radius
     SUBTITLE_BG_BLUR_CHROMA_POWER = args.subtitle_bg_blur_chroma_power
+    SUBTITLE_BG_EXTRA_BLURS_JSON = str(args.subtitle_bg_extra_blurs_json or "[]").strip() or "[]"
 
     LOGO_FILE = args.logo_file
     LOGO_WIDTH = args.logo_width
