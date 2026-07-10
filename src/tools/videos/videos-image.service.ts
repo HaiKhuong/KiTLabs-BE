@@ -573,10 +573,34 @@ export class VideosImageService {
     const images: ImageSegmentResult[] = [];
     let completedCount = 0;
     let failedCount = 0;
-    let consecutiveFails = 0;
-    const MAX_CONSECUTIVE_FAILS = 3;
-
+    let skippedCount = 0;
     for (const item of sceneJobs) {
+      const sceneIdx = images.length + 1;
+      const sceneTag = `scene ${item.scene.sceneNumber} (${sceneIdx}/${sceneJobs.length})`;
+
+      if (existsSync(item.outPath)) {
+        skippedCount += 1;
+        completedCount += 1;
+        const imageUrl = buildSceneImageRelativeUrl(
+          dto.userId.trim(),
+          dto.nodeId.trim(),
+          item.scene.sceneNumber,
+        );
+        const segmentResult: ImageSegmentResult = {
+          sceneNumber: item.scene.sceneNumber,
+          status: "completed",
+          imageUrl,
+          downloadUrl: imageUrl,
+        };
+        images.push(segmentResult);
+        this.logger.log(`[Image] ⏭ ${sceneTag} SKIP — ảnh đã tồn tại`);
+        onSceneProgress?.({ ...segmentResult, completedSoFar: completedCount + failedCount, totalScenes: sceneJobs.length });
+        continue;
+      }
+
+      this.logger.log(`[Image] ▶ Đang xử lý ${sceneTag} — nodeId=${dto.nodeId.trim()}`);
+      const sceneStartedAt = Date.now();
+
       try {
         const result = await this.runExclusive(() =>
           this.generateSingleImage({
@@ -590,9 +614,10 @@ export class VideosImageService {
           }),
         );
 
+        const elapsed = ((Date.now() - sceneStartedAt) / 1000).toFixed(1);
+
         if (result.ok && existsSync(item.outPath)) {
           completedCount += 1;
-          consecutiveFails = 0;
           const imageUrl = buildSceneImageRelativeUrl(
             dto.userId.trim(),
             dto.nodeId.trim(),
@@ -605,37 +630,48 @@ export class VideosImageService {
             downloadUrl: imageUrl,
           };
           images.push(segmentResult);
+          this.logger.log(`[Image] ✓ ${sceneTag} OK (${elapsed}s) — ${completedCount}/${sceneJobs.length} done`);
           onSceneProgress?.({ ...segmentResult, completedSoFar: completedCount + failedCount, totalScenes: sceneJobs.length });
         } else {
           failedCount += 1;
-          consecutiveFails += 1;
-          const segmentResult = failedImage(item.scene, result.error ?? "Image generation failed");
+          const failReason = result.error ?? "Image generation failed";
+          const segmentResult = failedImage(item.scene, failReason);
           images.push(segmentResult);
+          this.logger.error(`[Image] ✗ ${sceneTag} FAILED (${elapsed}s) — ${failReason}`);
           onSceneProgress?.({ ...segmentResult, completedSoFar: completedCount + failedCount, totalScenes: sceneJobs.length });
+
+          const dropReason = `Dừng: ${sceneTag} thất bại — ${failReason}`;
+          this.logger.error(`[Image] ${dropReason} — drop ${sceneJobs.length - sceneIdx} scene còn lại`);
+          for (const remaining of sceneJobs.slice(images.length)) {
+            failedCount += 1;
+            const rs = failedImage(remaining.scene, dropReason);
+            images.push(rs);
+            onSceneProgress?.({ ...rs, completedSoFar: completedCount + failedCount, totalScenes: sceneJobs.length });
+          }
+          break;
         }
       } catch (err) {
+        const elapsed = ((Date.now() - sceneStartedAt) / 1000).toFixed(1);
         failedCount += 1;
-        consecutiveFails += 1;
         const segmentResult = failedImage(item.scene, errorMessage(err));
         images.push(segmentResult);
+        this.logger.error(`[Image] ✗ ${sceneTag} ERROR (${elapsed}s) — ${errorMessage(err)}`);
         onSceneProgress?.({ ...segmentResult, completedSoFar: completedCount + failedCount, totalScenes: sceneJobs.length });
-      }
 
-      if (consecutiveFails >= MAX_CONSECUTIVE_FAILS) {
-        const reason = `Dừng sớm: ${consecutiveFails} scene liên tiếp thất bại — ComfyUI có thể không khả dụng`;
-        this.logger.error(`[Image] ${reason} — nodeId=${dto.nodeId.trim()}`);
+        const dropReason = `Dừng: ${sceneTag} lỗi — ${errorMessage(err)}`;
+        this.logger.error(`[Image] ${dropReason} — drop ${sceneJobs.length - sceneIdx} scene còn lại`);
         for (const remaining of sceneJobs.slice(images.length)) {
           failedCount += 1;
-          const segmentResult = failedImage(remaining.scene, reason);
-          images.push(segmentResult);
-          onSceneProgress?.({ ...segmentResult, completedSoFar: completedCount + failedCount, totalScenes: sceneJobs.length });
+          const rs = failedImage(remaining.scene, dropReason);
+          images.push(rs);
+          onSceneProgress?.({ ...rs, completedSoFar: completedCount + failedCount, totalScenes: sceneJobs.length });
         }
         break;
       }
     }
 
     this.logger.log(
-      `[Image] DONE (${((Date.now() - runStartedAt) / 1000).toFixed(1)}s) — OK ${completedCount}/${scenes.length}, lỗi ${failedCount}, nodeId=${dto.nodeId.trim()}`,
+      `[Image] DONE (${((Date.now() - runStartedAt) / 1000).toFixed(1)}s) — OK ${completedCount}/${scenes.length}${skippedCount > 0 ? ` (${skippedCount} skip)` : ""}, lỗi ${failedCount}, nodeId=${dto.nodeId.trim()}`,
     );
 
     return {
