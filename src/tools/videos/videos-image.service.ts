@@ -225,9 +225,14 @@ export class VideosImageService {
     return JSON.parse(JSON.stringify(workflow));
   }
 
-  private aspectToSize(aspectRatio: string): { width: number; height: number } {
+  private aspectToSize(
+    aspectRatio: string,
+    quality?: string,
+  ): { width: number; height: number } {
     const key = (aspectRatio || "9:16").trim();
-    const mapping: Record<string, { width: number; height: number }> = {
+    const is1080 = (quality ?? "720p").toLowerCase() === "1080p";
+
+    const map720: Record<string, { width: number; height: number }> = {
       "9:16": { width: 768, height: 1344 },
       "16:9": { width: 1344, height: 768 },
       "1:1": { width: 1024, height: 1024 },
@@ -235,6 +240,17 @@ export class VideosImageService {
       "4:3": { width: 1152, height: 896 },
       "3:4": { width: 896, height: 1152 },
     };
+
+    const map1080: Record<string, { width: number; height: number }> = {
+      "9:16": { width: 1088, height: 1920 },
+      "16:9": { width: 1920, height: 1088 },
+      "1:1": { width: 1472, height: 1472 },
+      "4:5": { width: 1280, height: 1600 },
+      "4:3": { width: 1664, height: 1248 },
+      "3:4": { width: 1248, height: 1664 },
+    };
+
+    const mapping = is1080 ? map1080 : map720;
     return mapping[key] ?? mapping["9:16"];
   }
 
@@ -431,6 +447,7 @@ export class VideosImageService {
     prompt: string;
     negativePrompt?: string;
     aspectRatio: string;
+    quality?: string;
     style?: string;
     seed?: number;
     steps?: number;
@@ -439,7 +456,7 @@ export class VideosImageService {
   }): Promise<{ ok: boolean; error?: string }> {
     const model = resolveImageModel(options.model);
     const seed = resolveImageSeed(options.seed);
-    const { width, height } = this.aspectToSize(options.aspectRatio);
+    const { width, height } = this.aspectToSize(options.aspectRatio, options.quality);
     const fullPrompt = options.style
       ? `${options.prompt}, ${options.style} style`
       : options.prompt;
@@ -649,6 +666,7 @@ export class VideosImageService {
           prompt,
           negativePrompt: negativePrompt || undefined,
           aspectRatio,
+          quality: (dto.quality ?? "720p").trim(),
           style,
           seed: dto.seed,
           steps: dto.numInferenceSteps,

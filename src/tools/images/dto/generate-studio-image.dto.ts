@@ -31,6 +31,11 @@ export class GenerateStudioImageDto {
   @IsString()
   model?: string;
 
+  @ApiPropertyOptional({ description: "Resolution quality: 720p or 1080p", default: "720p" })
+  @IsOptional()
+  @IsString()
+  quality?: string;
+
   @ApiPropertyOptional({ description: "Inference steps (ComfyUI sampler)", default: 20 })
   @IsOptional()
   @IsInt()
