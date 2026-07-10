@@ -43,6 +43,16 @@ export function resolveComfyuiUrl(): string {
   return (process.env.COMFYUI_URL ?? COMFYUI_DEFAULT_URL).trim();
 }
 
+export function resolveComfyuiWebSocketUrl(clientId: string): string {
+  const httpUrl = resolveComfyuiUrl().replace(/\/+$/, "");
+  const wsBase = httpUrl.startsWith("https://")
+    ? `wss://${httpUrl.slice("https://".length)}`
+    : httpUrl.startsWith("http://")
+      ? `ws://${httpUrl.slice("http://".length)}`
+      : `ws://${httpUrl}`;
+  return `${wsBase}/ws?clientId=${encodeURIComponent(clientId)}`;
+}
+
 export function resolveImageModel(model?: string): string {
   const defaultModel = (process.env.IMAGE_DEFAULT_MODEL ?? DEFAULT_IMAGE_MODEL).trim().toLowerCase();
   const raw = (model ?? defaultModel).trim().toLowerCase();

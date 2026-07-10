@@ -12,11 +12,13 @@ import {
   buildSceneImageRelativeUrl,
   buildStudioImageRelativeUrl,
   resolveComfyuiUrl,
+  resolveComfyuiWebSocketUrl,
   resolveImageModel,
   resolveModelWorkflowConfig,
   resolveModelWorkflowPath,
   resolveVideoImagesOutputDir,
 } from "./video-image.constants";
+import { ComfyPromptWaiter } from "./comfyui-prompt-waiter";
 
 type SceneRow = {
   sceneNumber: number;
@@ -249,10 +251,6 @@ export class VideosImageService {
     return Number(process.env.COMFYUI_TIMEOUT_MS ?? process.env.VIDEOS_IMAGE_CMD_TIMEOUT_MS ?? 300_000);
   }
 
-  private getPollIntervalMs(): number {
-    return Number(process.env.COMFYUI_POLL_INTERVAL_MS ?? 2_000);
-  }
-
   private loadWorkflowTemplate(model: string): Record<string, unknown> {
     const modelId = resolveImageModel(model);
     const cached = this.workflowCache.get(modelId);
@@ -344,9 +342,11 @@ export class VideosImageService {
     return workflow;
   }
 
-  private async submitPrompt(workflow: Record<string, unknown>): Promise<string> {
+  private async submitPrompt(
+    workflow: Record<string, unknown>,
+    clientId: string,
+  ): Promise<string> {
     const client = this.getHttpClient();
-    const clientId = randomUUID();
     const { data } = await client.post<ComfyPromptResponse>("/prompt", {
       prompt: workflow,
       client_id: clientId,
@@ -362,60 +362,66 @@ export class VideosImageService {
     return data.prompt_id;
   }
 
-  private async waitForCompletion(promptId: string): Promise<ComfyHistoryEntry> {
+  private async fetchHistoryWithRetry(promptId: string): Promise<ComfyHistoryEntry> {
     const client = this.getHttpClient(this.getPollRequestTimeoutMs());
-    const timeoutMs = this.getTimeoutMs();
-    const pollMs = this.getPollIntervalMs();
-    const deadline = Date.now() + timeoutMs;
-    let pollCount = 0;
-    let consecutiveErrors = 0;
-    const MAX_CONSECUTIVE_ERRORS = 30;
+    const maxAttempts = Number(process.env.COMFYUI_HISTORY_RETRIES ?? 15);
+    const retryMs = Number(process.env.COMFYUI_HISTORY_RETRY_MS ?? 2_000);
+    let lastError: unknown;
 
-    while (Date.now() < deadline) {
-      const backoffMs = consecutiveErrors > 0
-        ? Math.min(pollMs * Math.pow(1.5, Math.min(consecutiveErrors, 8)), 30_000)
-        : pollMs;
-      await sleep(backoffMs);
-      pollCount += 1;
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       try {
         const { data } = await client.get<Record<string, ComfyHistoryEntry>>(
           `/history/${promptId}`,
         );
-        consecutiveErrors = 0;
         const entry = resolveHistoryEntry(data, promptId);
         if (isHistoryComplete(entry)) {
-          this.logger.log(
-            `[ComfyUI] prompt_id=${promptId} completed after ${pollCount} poll(s)`,
-          );
+          this.logger.log(`[ComfyUI] prompt_id=${promptId} history ready (attempt ${attempt})`);
           return entry!;
         }
         if (entry?.status?.status_str === "error") {
           throw new Error("ComfyUI execution failed — check ComfyUI server logs");
         }
+        await sleep(retryMs);
       } catch (err) {
         if (axios.isAxiosError(err) && err.response?.status === 404) {
-          consecutiveErrors = 0;
+          await sleep(retryMs);
           continue;
         }
         if (isRetryableComfyError(err)) {
-          consecutiveErrors += 1;
-          if (consecutiveErrors <= 3 || consecutiveErrors % 5 === 0) {
+          lastError = err;
+          if (attempt <= 3 || attempt % 5 === 0) {
             this.logger.warn(
-              `[ComfyUI] poll transient error #${consecutiveErrors} (${errorMessage(err)}) prompt_id=${promptId} — retry in ${Math.round(backoffMs)}ms`,
+              `[ComfyUI] history fetch retry #${attempt} (${errorMessage(err)}) prompt_id=${promptId}`,
             );
           }
-          if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
-            throw new Error(
-              `ComfyUI unreachable after ${consecutiveErrors} consecutive errors — prompt_id=${promptId}`,
-            );
-          }
+          await sleep(retryMs * Math.min(attempt, 5));
           continue;
         }
         throw err;
       }
     }
 
-    throw new Error(`ComfyUI timed out after ${timeoutMs}ms — prompt_id=${promptId}`);
+    const detail = lastError ? errorMessage(lastError) : "history not ready";
+    throw new Error(`ComfyUI history unavailable for prompt_id=${promptId} — ${detail}`);
+  }
+
+  private async runComfyPrompt(workflow: Record<string, unknown>): Promise<ComfyHistoryEntry> {
+    const clientId = randomUUID();
+    const waiter = new ComfyPromptWaiter(
+      resolveComfyuiWebSocketUrl(clientId),
+      this.getTimeoutMs(),
+      this.logger,
+    );
+
+    try {
+      await waiter.connect();
+      const promptId = await this.submitPrompt(workflow, clientId);
+      this.logger.log(`[ComfyUI] Start Comfy — prompt_id=${promptId} submitted`);
+      await waiter.waitFor(promptId);
+      return await this.fetchHistoryWithRetry(promptId);
+    } finally {
+      waiter.close();
+    }
   }
 
   private async downloadImage(
@@ -536,10 +542,8 @@ export class VideosImageService {
       filenamePrefix: options.filenamePrefix,
     });
 
-    const promptId = await this.submitPrompt(workflow);
-    this.logger.log(`[ComfyUI] model=${model} seed=${seed} prompt_id=${promptId}`);
-
-    const entry = await this.waitForCompletion(promptId);
+    this.logger.log(`[ComfyUI] model=${model} seed=${seed}`);
+    const entry = await this.runComfyPrompt(workflow);
     const outputImages = this.findOutputImages(entry, model);
 
     if (outputImages.length === 0) {
