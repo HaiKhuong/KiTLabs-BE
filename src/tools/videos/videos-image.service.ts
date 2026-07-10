@@ -172,17 +172,22 @@ function resolveImageSeed(seed?: number): number {
 }
 
 function isRetryableComfyError(err: unknown): boolean {
-  if (!axios.isAxiosError(err)) return false;
-  const code = (err.code ?? "").toUpperCase();
-  const msg = err.message.toLowerCase();
-  return (
-    code === "ECONNRESET" ||
-    code === "ETIMEDOUT" ||
-    code === "ECONNABORTED" ||
-    code === "EPIPE" ||
-    msg.includes("socket hang up") ||
-    msg.includes("network error")
-  );
+  const RETRYABLE_CODES = new Set(["ECONNRESET", "ETIMEDOUT", "ECONNABORTED", "EPIPE", "ENOTFOUND", "EAI_AGAIN"]);
+  const RETRYABLE_MSGS = ["socket hang up", "network error", "client network socket disconnected"];
+
+  if (axios.isAxiosError(err)) {
+    const code = (err.code ?? "").toUpperCase();
+    const msg = err.message.toLowerCase();
+    return RETRYABLE_CODES.has(code) || RETRYABLE_MSGS.some((m) => msg.includes(m));
+  }
+
+  if (err instanceof Error) {
+    const code = ((err as NodeJS.ErrnoException).code ?? "").toUpperCase();
+    const msg = err.message.toLowerCase();
+    return RETRYABLE_CODES.has(code) || RETRYABLE_MSGS.some((m) => msg.includes(m));
+  }
+
+  return false;
 }
 
 function historyHasOutputImages(entry: ComfyHistoryEntry | undefined): boolean {
@@ -350,14 +355,20 @@ export class VideosImageService {
     const pollMs = this.getPollIntervalMs();
     const deadline = Date.now() + timeoutMs;
     let pollCount = 0;
+    let consecutiveErrors = 0;
+    const MAX_CONSECUTIVE_ERRORS = 30;
 
     while (Date.now() < deadline) {
-      await sleep(pollMs);
+      const backoffMs = consecutiveErrors > 0
+        ? Math.min(pollMs * Math.pow(1.5, Math.min(consecutiveErrors, 8)), 30_000)
+        : pollMs;
+      await sleep(backoffMs);
       pollCount += 1;
       try {
         const { data } = await client.get<Record<string, ComfyHistoryEntry>>(
           `/history/${promptId}`,
         );
+        consecutiveErrors = 0;
         const entry = resolveHistoryEntry(data, promptId);
         if (isHistoryComplete(entry)) {
           this.logger.log(
@@ -370,12 +381,21 @@ export class VideosImageService {
         }
       } catch (err) {
         if (axios.isAxiosError(err) && err.response?.status === 404) {
+          consecutiveErrors = 0;
           continue;
         }
         if (isRetryableComfyError(err)) {
-          this.logger.warn(
-            `[ComfyUI] poll transient error (${errorMessage(err)}) prompt_id=${promptId} — retry`,
-          );
+          consecutiveErrors += 1;
+          if (consecutiveErrors <= 3 || consecutiveErrors % 10 === 0) {
+            this.logger.warn(
+              `[ComfyUI] poll transient error #${consecutiveErrors} (${errorMessage(err)}) prompt_id=${promptId} — retry in ${Math.round(backoffMs)}ms`,
+            );
+          }
+          if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+            throw new Error(
+              `ComfyUI unreachable after ${consecutiveErrors} consecutive errors — prompt_id=${promptId}`,
+            );
+          }
           continue;
         }
         throw err;
