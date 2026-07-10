@@ -170,17 +170,60 @@ function resolveImageSeed(seed?: number): number {
   return randomImageSeed();
 }
 
+function isRetryableComfyError(err: unknown): boolean {
+  if (!axios.isAxiosError(err)) return false;
+  const code = (err.code ?? "").toUpperCase();
+  const msg = err.message.toLowerCase();
+  return (
+    code === "ECONNRESET" ||
+    code === "ETIMEDOUT" ||
+    code === "ECONNABORTED" ||
+    code === "EPIPE" ||
+    msg.includes("socket hang up") ||
+    msg.includes("network error")
+  );
+}
+
+function historyHasOutputImages(entry: ComfyHistoryEntry | undefined): boolean {
+  if (!entry?.outputs) return false;
+  for (const nodeOutput of Object.values(entry.outputs)) {
+    if (nodeOutput?.images?.length) return true;
+  }
+  return false;
+}
+
+function isHistoryComplete(entry: ComfyHistoryEntry | undefined): boolean {
+  if (!entry) return false;
+  if (entry.status?.completed || entry.status?.status_str === "success") return true;
+  return historyHasOutputImages(entry);
+}
+
+function resolveHistoryEntry(
+  data: Record<string, ComfyHistoryEntry>,
+  promptId: string,
+): ComfyHistoryEntry | undefined {
+  if (data[promptId]) return data[promptId];
+  const keys = Object.keys(data);
+  if (keys.length === 1) return data[keys[0]];
+  return undefined;
+}
+
 @Injectable()
 export class VideosImageService {
   private readonly logger = new Logger(VideosImageService.name);
   private comfyChain: Promise<unknown> = Promise.resolve();
   private workflowCache = new Map<string, Record<string, unknown>>();
 
-  private getHttpClient(): AxiosInstance {
+  private getHttpClient(timeoutMs?: number): AxiosInstance {
     return axios.create({
       baseURL: resolveComfyuiUrl(),
-      timeout: 30_000,
+      timeout: timeoutMs ?? Number(process.env.COMFYUI_REQUEST_TIMEOUT_MS ?? 30_000),
+      headers: { Connection: "close" },
     });
+  }
+
+  private getPollRequestTimeoutMs(): number {
+    return Number(process.env.COMFYUI_POLL_REQUEST_TIMEOUT_MS ?? 120_000);
   }
 
   private getTimeoutMs(): number {
@@ -301,26 +344,37 @@ export class VideosImageService {
   }
 
   private async waitForCompletion(promptId: string): Promise<ComfyHistoryEntry> {
-    const client = this.getHttpClient();
+    const client = this.getHttpClient(this.getPollRequestTimeoutMs());
     const timeoutMs = this.getTimeoutMs();
     const pollMs = this.getPollIntervalMs();
     const deadline = Date.now() + timeoutMs;
+    let pollCount = 0;
 
     while (Date.now() < deadline) {
       await sleep(pollMs);
+      pollCount += 1;
       try {
         const { data } = await client.get<Record<string, ComfyHistoryEntry>>(
           `/history/${promptId}`,
         );
-        const entry = data[promptId];
-        if (entry?.status?.completed || entry?.status?.status_str === "success") {
-          return entry;
+        const entry = resolveHistoryEntry(data, promptId);
+        if (isHistoryComplete(entry)) {
+          this.logger.log(
+            `[ComfyUI] prompt_id=${promptId} completed after ${pollCount} poll(s)`,
+          );
+          return entry!;
         }
         if (entry?.status?.status_str === "error") {
           throw new Error("ComfyUI execution failed — check ComfyUI server logs");
         }
       } catch (err) {
         if (axios.isAxiosError(err) && err.response?.status === 404) {
+          continue;
+        }
+        if (isRetryableComfyError(err)) {
+          this.logger.warn(
+            `[ComfyUI] poll transient error (${errorMessage(err)}) prompt_id=${promptId} — retry`,
+          );
           continue;
         }
         throw err;
@@ -336,15 +390,42 @@ export class VideosImageService {
     type: string,
     outPath: string,
   ): Promise<void> {
-    const client = this.getHttpClient();
+    const client = this.getHttpClient(Number(process.env.COMFYUI_DOWNLOAD_TIMEOUT_MS ?? 120_000));
     const { data } = await client.get("/view", {
       params: { filename, subfolder, type },
       responseType: "arraybuffer",
-      timeout: 60_000,
     });
     const dir = dirname(outPath);
     mkdirSync(dir, { recursive: true });
     writeFileSync(outPath, Buffer.from(data));
+  }
+
+  private async downloadImageWithRetry(
+    filename: string,
+    subfolder: string,
+    type: string,
+    outPath: string,
+  ): Promise<void> {
+    const maxAttempts = Number(process.env.COMFYUI_DOWNLOAD_RETRIES ?? 3);
+    let lastError: unknown;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      try {
+        await this.downloadImage(filename, subfolder, type, outPath);
+        return;
+      } catch (err) {
+        lastError = err;
+        if (!isRetryableComfyError(err) || attempt >= maxAttempts) {
+          throw err;
+        }
+        this.logger.warn(
+          `[ComfyUI] download retry ${attempt}/${maxAttempts} (${errorMessage(err)}) file=${filename}`,
+        );
+        await sleep(1_000 * attempt);
+      }
+    }
+
+    throw lastError;
   }
 
   private findOutputImages(
@@ -432,7 +513,7 @@ export class VideosImageService {
     }
 
     const img = outputImages[0];
-    await this.downloadImage(img.filename, img.subfolder, img.type, options.outPath);
+    await this.downloadImageWithRetry(img.filename, img.subfolder, img.type, options.outPath);
 
     if (!existsSync(options.outPath)) {
       return { ok: false, error: "Downloaded image file is missing" };
