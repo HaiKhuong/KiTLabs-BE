@@ -1,18 +1,19 @@
 import { BadRequestException, Injectable, Logger } from "@nestjs/common";
-import { ChildProcess, spawn } from "child_process";
-import { randomUUID } from "crypto";
-import { existsSync, mkdirSync, rmSync } from "fs";
-import { dirname, join, resolve } from "path";
+import axios, { type AxiosInstance } from "axios";
+import { randomInt, randomUUID } from "crypto";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { dirname, join } from "path";
 
-import { VIDEO_PIPELINE_DIR } from "../audio/audio.constants";
 import { GenerateStudioImageDto } from "../images/dto/generate-studio-image.dto";
 import { ExecuteImageDto } from "./dto/execute-image.dto";
 import {
-  FLUX_SCHNELL_MODEL_ID,
   STUDIO_IMAGE_FILENAME,
-  Z_IMAGE_TURBO_MODEL_ID,
   buildSceneImageRelativeUrl,
   buildStudioImageRelativeUrl,
+  resolveComfyuiUrl,
+  resolveImageModel,
+  resolveModelWorkflowConfig,
+  resolveModelWorkflowPath,
   resolveVideoImagesOutputDir,
 } from "./video-image.constants";
 
@@ -52,13 +53,20 @@ export type StudioImageResult = {
   geminiAnalysis?: Record<string, unknown> | null;
 };
 
-type PythonImageResult = {
-  sceneNumber: number;
-  ok: boolean;
-  path?: string;
+type ComfyPromptResponse = {
+  prompt_id: string;
+  number: number;
+  node_errors?: Record<string, unknown>;
   error?: string;
-  enrichedPrompt?: string;
-  geminiAnalysis?: Record<string, unknown> | null;
+};
+
+type ComfyHistoryOutput = {
+  images?: Array<{ filename: string; subfolder: string; type: string }>;
+};
+
+type ComfyHistoryEntry = {
+  status?: { status_str?: string; completed?: boolean };
+  outputs?: Record<string, ComfyHistoryOutput>;
 };
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -146,104 +154,227 @@ function failedImage(scene: SceneRow, message: string): ImageSegmentResult {
   };
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Random 9-digit seed when user không truyền (vd. 845192736). */
+function randomImageSeed(): number {
+  return randomInt(100_000_000, 1_000_000_000);
+}
+
+function resolveImageSeed(seed?: number): number {
+  if (seed != null && Number.isFinite(seed)) {
+    return Math.trunc(seed);
+  }
+  return randomImageSeed();
+}
+
 @Injectable()
 export class VideosImageService {
   private readonly logger = new Logger(VideosImageService.name);
-  /** Chỉ 1 process Python FLUX tại một thời điểm — tránh OOM khi nhiều job chồng nhau. */
-  private fluxChain: Promise<unknown> = Promise.resolve();
+  private comfyChain: Promise<unknown> = Promise.resolve();
+  private workflowCache = new Map<string, Record<string, unknown>>();
 
-  private resolvePythonBin(): string {
-    return (
-      process.env.IMAGE_PYTHON_BIN ??
-      process.env.AUDIO_PYTHON_BIN ??
-      process.env.TRANSLATE_PYTHON_BIN ??
-      (process.platform === "win32" ? "py" : "python3")
-    );
+  private getHttpClient(): AxiosInstance {
+    return axios.create({
+      baseURL: resolveComfyuiUrl(),
+      timeout: 30_000,
+    });
   }
 
-  private resolveCmdTimeoutMs(): number {
-    return Number(process.env.VIDEOS_IMAGE_CMD_TIMEOUT_MS ?? process.env.IMAGE_CMD_TIMEOUT_MS ?? 900_000);
+  private getTimeoutMs(): number {
+    return Number(process.env.COMFYUI_TIMEOUT_MS ?? process.env.VIDEOS_IMAGE_CMD_TIMEOUT_MS ?? 300_000);
   }
 
-  private resolveFluxScript(): string {
-    const raw = (process.env.IMAGE_PYTHON_SCRIPT ?? process.env.FLUX_PYTHON_SCRIPT ?? "").trim();
-    if (raw) {
-      return resolve(process.cwd(), raw);
+  private getPollIntervalMs(): number {
+    return Number(process.env.COMFYUI_POLL_INTERVAL_MS ?? 2_000);
+  }
+
+  private loadWorkflowTemplate(model: string): Record<string, unknown> {
+    const modelId = resolveImageModel(model);
+    const cached = this.workflowCache.get(modelId);
+    if (cached) return JSON.parse(JSON.stringify(cached));
+
+    const path = resolveModelWorkflowPath(modelId);
+    if (!existsSync(path)) {
+      throw new BadRequestException(`ComfyUI workflow not found for model "${modelId}": ${path}`);
     }
-    return resolve(process.cwd(), "tools/video-pipeline/video_image_flux.py");
+    const raw = readFileSync(path, "utf-8");
+    const workflow = JSON.parse(raw) as Record<string, unknown>;
+    this.workflowCache.set(modelId, workflow);
+    this.logger.log(`[ComfyUI] Loaded workflow for model=${modelId}: ${path}`);
+    return JSON.parse(JSON.stringify(workflow));
   }
 
-  private resolveZImageScript(): string {
-    const raw = (process.env.Z_IMAGE_PYTHON_SCRIPT ?? "").trim();
-    if (raw) {
-      return resolve(process.cwd(), raw);
-    }
-    return resolve(process.cwd(), "tools/video-pipeline/video_image_zimage.py");
-  }
-
-  private isZImageModel(model: string): boolean {
-    const key = model.trim().toLowerCase();
-    return (
-      key === "z-image-turbo" ||
-      key === "zimage" ||
-      key === "z-image" ||
-      key === Z_IMAGE_TURBO_MODEL_ID.toLowerCase()
-    );
-  }
-
-  private resolveImageScript(model: string): string {
-    if (this.isZImageModel(model)) {
-      return this.resolveZImageScript();
-    }
-    return this.resolveFluxScript();
-  }
-
-  private resolveModelId(model?: string): string {
-    const defaultModel = (
-      process.env.IMAGE_DEFAULT_MODEL ??
-      process.env.Z_IMAGE_MODEL_ID ??
-      process.env.FLUX_MODEL_ID ??
-      Z_IMAGE_TURBO_MODEL_ID
-    ).trim();
-    const raw = (model ?? defaultModel).trim();
-    if (raw === "flux" || raw === "flux-schnell" || raw === "FLUX.1-schnell") {
-      return FLUX_SCHNELL_MODEL_ID;
-    }
-    if (this.isZImageModel(raw)) {
-      return Z_IMAGE_TURBO_MODEL_ID;
-    }
-    return raw || Z_IMAGE_TURBO_MODEL_ID;
-  }
-
-  private buildImagePayload(
-    model: string,
-    overrides: Record<string, unknown>,
-  ): Record<string, unknown> {
-    const isZImage = this.isZImageModel(model);
-    const base: Record<string, unknown> = {
-      model_id: model,
-      device_map:
-        (
-          (isZImage ? process.env.Z_IMAGE_DEVICE_MAP : undefined) ??
-          process.env.FLUX_DEVICE_MAP ??
-          ""
-        ).trim() || undefined,
-      dtype_str: (
-        (isZImage ? process.env.Z_IMAGE_DTYPE : undefined) ??
-        process.env.FLUX_DTYPE ??
-        (isZImage ? "bfloat16" : "float16")
-      ).trim(),
-      guidance_scale: isZImage ? 0 : Number(process.env.FLUX_GUIDANCE_SCALE ?? 0),
-      num_inference_steps:
-        overrides.num_inference_steps ??
-        Number(
-          (isZImage ? process.env.Z_IMAGE_NUM_INFERENCE_STEPS : undefined) ??
-          process.env.FLUX_NUM_INFERENCE_STEPS ??
-          (isZImage ? 9 : 4),
-        ),
-      ...(isZImage ? {} : { max_sequence_length: Number(process.env.FLUX_MAX_SEQUENCE_LENGTH ?? 256) }),
+  private aspectToSize(aspectRatio: string): { width: number; height: number } {
+    const key = (aspectRatio || "9:16").trim();
+    const mapping: Record<string, { width: number; height: number }> = {
+      "9:16": { width: 768, height: 1344 },
+      "16:9": { width: 1344, height: 768 },
+      "1:1": { width: 1024, height: 1024 },
+      "4:5": { width: 896, height: 1088 },
+      "4:3": { width: 1152, height: 896 },
+      "3:4": { width: 896, height: 1152 },
     };
-    return { ...base, ...overrides };
+    return mapping[key] ?? mapping["9:16"];
+  }
+
+  private buildWorkflow(
+    model: string,
+    options: {
+      prompt: string;
+      negativePrompt?: string;
+      width: number;
+      height: number;
+      seed: number;
+      steps?: number;
+      filenamePrefix?: string;
+    },
+  ): Record<string, unknown> {
+    const workflow = this.loadWorkflowTemplate(model);
+    const { nodes } = resolveModelWorkflowConfig(model);
+    const positiveNodeId = process.env.COMFYUI_POSITIVE_PROMPT_NODE_ID ?? nodes.positivePrompt;
+    const negativeNodeId = process.env.COMFYUI_NEGATIVE_PROMPT_NODE_ID ?? nodes.negativePrompt;
+    const latentNodeId = process.env.COMFYUI_LATENT_IMAGE_NODE_ID ?? nodes.latentImage;
+    const samplerNodeId = process.env.COMFYUI_SAMPLER_NODE_ID ?? nodes.sampler;
+    const saveNodeId = process.env.COMFYUI_SAVE_IMAGE_NODE_ID ?? nodes.saveImage;
+
+    const positiveNode = asRecord(workflow[positiveNodeId]);
+    if (positiveNode) {
+      const inputs = asRecord(positiveNode.inputs) ?? {};
+      inputs.text = options.prompt;
+      positiveNode.inputs = inputs;
+    }
+
+    const negativeNode = asRecord(workflow[negativeNodeId]);
+    if (negativeNode) {
+      const inputs = asRecord(negativeNode.inputs) ?? {};
+      inputs.text = options.negativePrompt ?? "";
+      negativeNode.inputs = inputs;
+    }
+
+    const latentNode = asRecord(workflow[latentNodeId]);
+    if (latentNode) {
+      const inputs = asRecord(latentNode.inputs) ?? {};
+      inputs.width = options.width;
+      inputs.height = options.height;
+      latentNode.inputs = inputs;
+    }
+
+    const samplerNode = asRecord(workflow[samplerNodeId]);
+    if (samplerNode) {
+      const inputs = asRecord(samplerNode.inputs) ?? {};
+      inputs.seed = options.seed;
+      if (options.steps != null) inputs.steps = options.steps;
+      samplerNode.inputs = inputs;
+    }
+
+    if (options.filenamePrefix) {
+      const saveNode = asRecord(workflow[saveNodeId]);
+      if (saveNode) {
+        const inputs = asRecord(saveNode.inputs) ?? {};
+        inputs.filename_prefix = options.filenamePrefix;
+        saveNode.inputs = inputs;
+      }
+    }
+
+    return workflow;
+  }
+
+  private async submitPrompt(workflow: Record<string, unknown>): Promise<string> {
+    const client = this.getHttpClient();
+    const clientId = randomUUID();
+    const { data } = await client.post<ComfyPromptResponse>("/prompt", {
+      prompt: workflow,
+      client_id: clientId,
+    });
+
+    if (data.error) {
+      const nodeErrors = data.node_errors
+        ? ` | node_errors: ${JSON.stringify(data.node_errors)}`
+        : "";
+      throw new Error(`ComfyUI rejected prompt: ${data.error}${nodeErrors}`);
+    }
+
+    return data.prompt_id;
+  }
+
+  private async waitForCompletion(promptId: string): Promise<ComfyHistoryEntry> {
+    const client = this.getHttpClient();
+    const timeoutMs = this.getTimeoutMs();
+    const pollMs = this.getPollIntervalMs();
+    const deadline = Date.now() + timeoutMs;
+
+    while (Date.now() < deadline) {
+      await sleep(pollMs);
+      try {
+        const { data } = await client.get<Record<string, ComfyHistoryEntry>>(
+          `/history/${promptId}`,
+        );
+        const entry = data[promptId];
+        if (entry?.status?.completed || entry?.status?.status_str === "success") {
+          return entry;
+        }
+        if (entry?.status?.status_str === "error") {
+          throw new Error("ComfyUI execution failed — check ComfyUI server logs");
+        }
+      } catch (err) {
+        if (axios.isAxiosError(err) && err.response?.status === 404) {
+          continue;
+        }
+        throw err;
+      }
+    }
+
+    throw new Error(`ComfyUI timed out after ${timeoutMs}ms — prompt_id=${promptId}`);
+  }
+
+  private async downloadImage(
+    filename: string,
+    subfolder: string,
+    type: string,
+    outPath: string,
+  ): Promise<void> {
+    const client = this.getHttpClient();
+    const { data } = await client.get("/view", {
+      params: { filename, subfolder, type },
+      responseType: "arraybuffer",
+      timeout: 60_000,
+    });
+    const dir = dirname(outPath);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(outPath, Buffer.from(data));
+  }
+
+  private findOutputImages(
+    entry: ComfyHistoryEntry,
+    model: string,
+  ): Array<{ filename: string; subfolder: string; type: string }> {
+    const outputs = entry.outputs ?? {};
+    const images: Array<{ filename: string; subfolder: string; type: string }> = [];
+    const { nodes } = resolveModelWorkflowConfig(model);
+    const saveNodeId = process.env.COMFYUI_SAVE_IMAGE_NODE_ID ?? nodes.saveImage;
+    const targetOutput = outputs[saveNodeId];
+    if (targetOutput?.images) {
+      images.push(...targetOutput.images);
+    }
+
+    if (images.length === 0) {
+      for (const nodeOutput of Object.values(outputs)) {
+        if (nodeOutput?.images) {
+          images.push(...nodeOutput.images);
+        }
+      }
+    }
+
+    return images;
+  }
+
+  private runExclusive<T>(task: () => Promise<T>): Promise<T> {
+    const run = this.comfyChain.then(task);
+    this.comfyChain = run.catch(() => undefined);
+    return run;
   }
 
   private buildOutputDir(userId: string, nodeId: string): string {
@@ -252,121 +383,73 @@ export class VideosImageService {
     return dir;
   }
 
-  private buildPythonEnv(): NodeJS.ProcessEnv {
-    const token = (
-      process.env.HF_TOKEN ??
-      process.env.HUGGINGFACE_HUB_TOKEN ??
-      ""
-    ).trim();
-    return {
-      ...process.env,
-      PYTHONUNBUFFERED: "1",
-      PYTHONIOENCODING: "utf-8",
-      ...(token ? { HF_TOKEN: token, HUGGINGFACE_HUB_TOKEN: token } : {}),
-    };
-  }
-
-  private runExclusiveFlux<T>(task: () => Promise<T>): Promise<T> {
-    const run = this.fluxChain.then(task);
-    this.fluxChain = run.catch(() => undefined);
-    return run;
-  }
-
   private removeStudioOutputIfEmpty(outPath: string): void {
     try {
       if (existsSync(outPath)) return;
       const dir = dirname(outPath);
       rmSync(dir, { recursive: true, force: true });
     } catch {
-      // best-effort — thư mục output rỗng sau job fail
+      // best-effort
     }
   }
 
-  private async spawnFluxImageGen(payload: Record<string, unknown>): Promise<PythonImageResult[]> {
-    return this.runExclusiveFlux(() => this.spawnFluxImageGenInner(payload));
-  }
+  private async generateSingleImage(options: {
+    model: string;
+    prompt: string;
+    negativePrompt?: string;
+    aspectRatio: string;
+    style?: string;
+    seed?: number;
+    steps?: number;
+    outPath: string;
+    filenamePrefix?: string;
+  }): Promise<{ ok: boolean; error?: string }> {
+    const model = resolveImageModel(options.model);
+    const seed = resolveImageSeed(options.seed);
+    const { width, height } = this.aspectToSize(options.aspectRatio);
+    const fullPrompt = options.style
+      ? `${options.prompt}, ${options.style} style`
+      : options.prompt;
 
-  private async spawnFluxImageGenInner(payload: Record<string, unknown>): Promise<PythonImageResult[]> {
-    const pythonBin = this.resolvePythonBin();
-    const modelId = this.resolveModelId(
-      typeof payload.model_id === "string" ? payload.model_id : undefined,
-    );
-    const scriptPath = this.resolveImageScript(modelId);
-    const scriptDir = resolve(process.cwd(), VIDEO_PIPELINE_DIR);
-    const timeoutMs = this.resolveCmdTimeoutMs();
-    const env = this.buildPythonEnv();
-
-    if (!env.HF_TOKEN) {
-      this.logger.warn(
-        "HF_TOKEN trống trong process Nest — image generation (FLUX / Z-Image) sẽ lỗi. Kiểm tra .env và restart service.",
-      );
-    }
-
-    return new Promise((resolvePromise, rejectPromise) => {
-      const child: ChildProcess = spawn(pythonBin, [scriptPath], {
-        cwd: scriptDir,
-        windowsHide: true,
-        stdio: ["pipe", "pipe", "pipe"],
-        env,
-      });
-
-      let stdout = "";
-      let stderr = "";
-      const timeoutHandle = setTimeout(() => {
-        child.kill("SIGTERM");
-        rejectPromise(new Error(`Image generation timed out after ${timeoutMs}ms`));
-      }, timeoutMs);
-
-      child.stdout?.on("data", (buf: Buffer) => {
-        stdout += buf.toString("utf8");
-      });
-      child.stderr?.on("data", (buf: Buffer) => {
-        stderr += buf.toString("utf8");
-      });
-      child.on("error", (err) => {
-        clearTimeout(timeoutHandle);
-        rejectPromise(err);
-      });
-      child.on("close", (code, signal) => {
-        clearTimeout(timeoutHandle);
-        const stderrTail = stderr.trim().slice(-4000);
-        if (code !== 0) {
-          const killed = signal ? ` (signal ${signal})` : "";
-          const scriptName = scriptPath.split(/[/\\]/).pop() ?? "image script";
-          const detail = stderrTail || `${scriptName} exited with code ${code}${killed}`;
-          if (signal === "SIGKILL" || /oom|out of memory/i.test(stderr)) {
-            rejectPromise(
-              new Error(
-                `${detail} — process bị kill (thường do thiếu RAM/VRAM với FLUX local). Thử Z-Image-Turbo hoặc không chạy song song nhiều job.`,
-              ),
-            );
-          } else {
-            rejectPromise(new Error(detail));
-          }
-          return;
-        }
-        try {
-          const parsed = JSON.parse(stdout.trim()) as { images?: PythonImageResult[] };
-          resolvePromise(Array.isArray(parsed.images) ? parsed.images : []);
-        } catch {
-          rejectPromise(new Error(stderrTail || "Invalid JSON from image generation script"));
-        }
-      });
-
-      child.stdin?.write(JSON.stringify(payload));
-      child.stdin?.end();
+    const workflow = this.buildWorkflow(model, {
+      prompt: fullPrompt,
+      negativePrompt: options.negativePrompt,
+      width,
+      height,
+      seed,
+      steps: options.steps,
+      filenamePrefix: options.filenamePrefix,
     });
+
+    const promptId = await this.submitPrompt(workflow);
+    this.logger.log(`[ComfyUI] model=${model} seed=${seed} prompt_id=${promptId}`);
+
+    const entry = await this.waitForCompletion(promptId);
+    const outputImages = this.findOutputImages(entry, model);
+
+    if (outputImages.length === 0) {
+      return { ok: false, error: "ComfyUI returned no output images" };
+    }
+
+    const img = outputImages[0];
+    await this.downloadImage(img.filename, img.subfolder, img.type, options.outPath);
+
+    if (!existsSync(options.outPath)) {
+      return { ok: false, error: "Downloaded image file is missing" };
+    }
+
+    return { ok: true };
   }
 
   async executeImage(dto: ExecuteImageDto): Promise<ExecuteImageResult> {
     const mode = (dto.mode ?? "generate").trim().toLowerCase();
     if (mode !== "generate") {
       throw new BadRequestException(
-        `Image mode "${mode}" chưa hỗ trợ — chỉ "generate" với Z-Image-Turbo / FLUX Schnell`,
+        `Image mode "${mode}" chưa hỗ trợ — chỉ "generate" với ComfyUI`,
       );
     }
 
-    const model = this.resolveModelId(dto.model);
+    const model = resolveImageModel(dto.model);
     const style = (dto.style ?? "cinematic").trim() || "cinematic";
     const aspectRatio = (dto.aspectRatio ?? "9:16").trim() || "9:16";
     const scenes = parseScenesJson(dto.scenes);
@@ -382,55 +465,44 @@ export class VideosImageService {
       `[Image] Nhận yêu cầu userId=${dto.userId.trim()} nodeId=${dto.nodeId.trim()} — ${scenes.length} scene, aspect=${aspectRatio}, style=${style}, model=${model}`,
     );
 
-    let pythonResults: PythonImageResult[] = [];
-    try {
-      pythonResults = await this.spawnFluxImageGen(
-        this.buildImagePayload(model, {
-          style,
-          aspect_ratio: aspectRatio,
-          scenes: sceneJobs.map((item) => ({
-            sceneNumber: item.scene.sceneNumber,
-            prompt: item.scene.imagePrompt,
-            negative_prompt: item.scene.imageNegativePrompt || undefined,
-            out_path: item.outPath,
-          })),
-        }),
-      );
-    } catch (err) {
-      const message = errorMessage(err);
-      this.logger.error(
-        `[Image] DONE FAILED (${((Date.now() - runStartedAt) / 1000).toFixed(1)}s) nodeId=${dto.nodeId.trim()} — ${message}`,
-      );
-      return {
-        style,
-        aspectRatio,
-        model,
-        mode,
-        images: scenes.map((scene) => failedImage(scene, message)),
-        completedCount: 0,
-        failedCount: scenes.length,
-      };
-    }
-
-    const resultByScene = new Map(pythonResults.map((row) => [row.sceneNumber, row]));
     const images: ImageSegmentResult[] = [];
     let completedCount = 0;
     let failedCount = 0;
 
     for (const item of sceneJobs) {
-      const outcome = resultByScene.get(item.scene.sceneNumber);
-      if (outcome?.ok && existsSync(item.outPath)) {
-        completedCount += 1;
-        const imageUrl = buildSceneImageRelativeUrl(dto.userId.trim(), dto.nodeId.trim(), item.scene.sceneNumber);
-        images.push({
-          sceneNumber: item.scene.sceneNumber,
-          status: "completed",
-          imageUrl,
-          downloadUrl: imageUrl,
-        });
-      } else {
+      try {
+        const result = await this.runExclusive(() =>
+          this.generateSingleImage({
+            model,
+            prompt: item.scene.imagePrompt,
+            negativePrompt: item.scene.imageNegativePrompt || undefined,
+            aspectRatio,
+            style,
+            outPath: item.outPath,
+            filenamePrefix: `scene-${item.scene.sceneNumber}`,
+          }),
+        );
+
+        if (result.ok && existsSync(item.outPath)) {
+          completedCount += 1;
+          const imageUrl = buildSceneImageRelativeUrl(
+            dto.userId.trim(),
+            dto.nodeId.trim(),
+            item.scene.sceneNumber,
+          );
+          images.push({
+            sceneNumber: item.scene.sceneNumber,
+            status: "completed",
+            imageUrl,
+            downloadUrl: imageUrl,
+          });
+        } else {
+          failedCount += 1;
+          images.push(failedImage(item.scene, result.error ?? "Image generation failed"));
+        }
+      } catch (err) {
         failedCount += 1;
-        images.push(failedImage(item.scene, outcome?.error?.trim() || "Image generation failed"));
+        images.push(failedImage(item.scene, errorMessage(err)));
       }
     }
 
@@ -467,7 +539,7 @@ export class VideosImageService {
 
     const userId = dto.userId.trim();
     const resolvedJobId = (jobId ?? randomUUID()).trim();
-    const model = this.resolveModelId(dto.model ?? "z-image-turbo");
+    const model = resolveImageModel(dto.model);
     const style = (dto.style ?? "anime").trim() || "anime";
     const aspectRatio = (dto.aspectRatio ?? "9:16").trim() || "9:16";
     const negativePrompt = (dto.negativePrompt ?? "").trim();
@@ -479,36 +551,32 @@ export class VideosImageService {
       `[Image Studio] Xử lý jobId=${resolvedJobId} userId=${userId} — aspect=${aspectRatio}, style=${style}, model=${model}, prompt="${previewLogText(prompt)}"`,
     );
 
-    let pythonResults: PythonImageResult[] = [];
     try {
-      pythonResults = await this.spawnFluxImageGen(
-        this.buildImagePayload(model, {
-          num_inference_steps: dto.numInferenceSteps,
-          seed: dto.seed,
+      const result = await this.runExclusive(() =>
+        this.generateSingleImage({
+          model,
+          prompt,
+          negativePrompt: negativePrompt || undefined,
+          aspectRatio,
           style,
-          aspect_ratio: aspectRatio,
-          scenes: [
-            {
-              sceneNumber: 1,
-              prompt,
-              negative_prompt: negativePrompt || undefined,
-              out_path: outPath,
-            },
-          ],
+          seed: dto.seed,
+          steps: dto.numInferenceSteps,
+          outPath,
+          filenamePrefix: `studio-${resolvedJobId.slice(0, 8)}`,
         }),
       );
-    } catch (err) {
-      const message = errorMessage(err);
-      this.removeStudioOutputIfEmpty(outPath);
-      this.logger.error(
-        `[Image Studio] DONE FAILED (${((Date.now() - runStartedAt) / 1000).toFixed(1)}s) jobId=${resolvedJobId} — ${message}`,
-      );
-      throw new BadRequestException(message);
-    }
 
-    const outcome = pythonResults.find((row) => row.sceneNumber === 1);
-    if (!outcome?.ok || !existsSync(outPath)) {
-      const message = outcome?.error?.trim() || "Image generation failed";
+      if (!result.ok || !existsSync(outPath)) {
+        this.removeStudioOutputIfEmpty(outPath);
+        const message = result.error ?? "Image generation failed";
+        this.logger.error(
+          `[Image Studio] DONE FAILED (${((Date.now() - runStartedAt) / 1000).toFixed(1)}s) jobId=${resolvedJobId} — ${message}`,
+        );
+        throw new BadRequestException(message);
+      }
+    } catch (err) {
+      if (err instanceof BadRequestException) throw err;
+      const message = errorMessage(err);
       this.removeStudioOutputIfEmpty(outPath);
       this.logger.error(
         `[Image Studio] DONE FAILED (${((Date.now() - runStartedAt) / 1000).toFixed(1)}s) jobId=${resolvedJobId} — ${message}`,
@@ -529,8 +597,6 @@ export class VideosImageService {
       style,
       aspectRatio,
       prompt,
-      enrichedPrompt: outcome.enrichedPrompt,
-      geminiAnalysis: outcome.geminiAnalysis,
     };
   }
 }

@@ -65,7 +65,7 @@ export class VideosController {
     return this.videosJobsService.submitImage(dto);
   }
 
-  @ApiOperation({ summary: "Serve generated scene image (FLUX output PNG)" })
+  @ApiOperation({ summary: "Serve generated scene image (ComfyUI output PNG)" })
   @Public()
   @Get("images/:userId/:nodeId/:filename")
   async serveSceneImage(

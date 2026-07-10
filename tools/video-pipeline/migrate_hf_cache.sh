@@ -59,22 +59,20 @@ echo
 
 mkdir -p "$HUB"
 
-echo "[1/3] From ~/.cache/huggingface/hub"
+echo "[1/2] From ~/.cache/huggingface/hub"
 for m in \
   models--Systran--faster-whisper-large-v3 \
   models--openai--whisper-large-v3-turbo \
   models--eustlb--higgs-audio-v2-tokenizer \
   models--PaddlePaddle--PP-LCNet_x1_0_doc_ori \
   models--splendor1811--omnivoice-vietnamese \
-  models--k2-fsa--OmniVoice \
-  models--black-forest-labs--FLUX.1-schnell \
-  models--Tongyi-MAI--Z-Image-Turbo
+  models--k2-fsa--OmniVoice
 do
   move_model "$HOME_HUB/$m"
 done
 
 echo
-echo "[2/3] From legacy cache/omnivoice layouts"
+echo "[2/2] From legacy cache/omnivoice layouts"
 move_model "$ROOT/omnivoice/huggingface/hub/models--k2-fsa--OmniVoice"
 move_model "$ROOT/omnivoice/hub/models--k2-fsa--OmniVoice"
 # nếu Omni còn nằm dưới subfolder cũ khác tên
@@ -92,27 +90,17 @@ if [ -d "$ROOT/omnivoice/hub" ]; then
 fi
 
 echo
-echo "[3/3] From legacy cache/flux (nếu còn)"
-if [ -d "$ROOT/flux/huggingface/hub" ]; then
-  for src in "$ROOT/flux/huggingface/hub"/models--*; do
-    [ -e "$src" ] || continue
-    move_model "$src"
-  done
-fi
-
-echo
 echo "=== After migrate ==="
 du -sh "$HUB" 2>/dev/null || true
 ls -la "$HUB" 2>/dev/null || true
 echo
 echo "Legacy leftovers (có thể xóa sau khi xác nhận app chạy OK):"
 [ -d "$ROOT/omnivoice" ] && du -sh "$ROOT/omnivoice" || echo "  (no cache/omnivoice)"
-[ -d "$ROOT/flux" ] && du -sh "$ROOT/flux" || echo "  (no cache/flux)"
 [ -d "$HOME_HUB" ] && du -sh "$HOME_HUB" || echo "  (no ~/.cache/huggingface/hub)"
 
 if [ "$DRY_RUN" != "1" ]; then
   echo
   echo "Gợi ý dọn sau khi test TTS/Translate OK:"
-  echo "  rm -rf \"$ROOT/omnivoice\" \"$ROOT/flux\""
+  echo "  rm -rf \"$ROOT/omnivoice\""
   echo "  # chỉ xóa model đã move; các file khác trong ~/.cache giữ nguyên nếu cần"
 fi

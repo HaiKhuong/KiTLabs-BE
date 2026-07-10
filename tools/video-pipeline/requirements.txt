@@ -42,8 +42,3 @@ pysrt
 shapely
 pyclipper
 scikit-image
-
-# ─── Image: Z-Image-Turbo + FLUX.1 Schnell (local GPU, diffusers) ───
-diffusers>=0.32.0
-accelerate>=1.0.0
-safetensors

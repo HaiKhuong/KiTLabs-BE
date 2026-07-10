@@ -31,7 +31,7 @@ export class GenerateStudioImageDto {
   @IsString()
   model?: string;
 
-  @ApiPropertyOptional({ description: "Inference steps (Z-Image: 1–8, FLUX: 1–12)", default: 8 })
+  @ApiPropertyOptional({ description: "Inference steps (ComfyUI sampler)", default: 20 })
   @IsOptional()
   @IsInt()
   @Min(1)
