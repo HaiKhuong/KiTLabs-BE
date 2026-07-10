@@ -99,9 +99,16 @@ export class ComfyPromptWaiter {
           return;
         }
 
-        if (msg.type === "execution_cached") {
-          this.logger.log(`[ComfyUI] Comfy Process — prompt_id=${promptId} cached`);
+        if (msg.type === "execution_success") {
+          this.logger.log(`[ComfyUI] Comfy Process — prompt_id=${promptId} success`);
           finish();
+          return;
+        }
+
+        if (msg.type === "execution_cached") {
+          this.logger.log(
+            `[ComfyUI] Comfy Process — prompt_id=${promptId} partial cache (chờ node còn lại)`,
+          );
           return;
         }
 
