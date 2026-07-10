@@ -172,8 +172,21 @@ function resolveImageSeed(seed?: number): number {
 }
 
 function isRetryableComfyError(err: unknown): boolean {
-  const RETRYABLE_CODES = new Set(["ECONNRESET", "ETIMEDOUT", "ECONNABORTED", "EPIPE", "ENOTFOUND", "EAI_AGAIN"]);
-  const RETRYABLE_MSGS = ["socket hang up", "network error", "client network socket disconnected"];
+  const RETRYABLE_CODES = new Set([
+    "ECONNRESET",
+    "ECONNREFUSED",
+    "ETIMEDOUT",
+    "ECONNABORTED",
+    "EPIPE",
+    "ENOTFOUND",
+    "EAI_AGAIN",
+  ]);
+  const RETRYABLE_MSGS = [
+    "socket hang up",
+    "network error",
+    "client network socket disconnected",
+    "connect econnrefused",
+  ];
 
   if (axios.isAxiosError(err)) {
     const code = (err.code ?? "").toUpperCase();
