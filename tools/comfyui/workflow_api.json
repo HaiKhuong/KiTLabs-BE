@@ -41,7 +41,7 @@
     "class_type": "KSampler",
     "inputs": {
       "seed": 42,
-      "steps": 8,
+      "steps": 4,
       "cfg": 1,
       "sampler_name": "res_multistep",
       "scheduler": "simple",

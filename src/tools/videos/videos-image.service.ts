@@ -18,7 +18,7 @@ import {
   resolveModelWorkflowPath,
   resolveVideoImagesOutputDir,
 } from "./video-image.constants";
-import { ComfyPromptWaiter, isRecoverableComfyWaitError } from "./comfyui-prompt-waiter";
+import { ComfyPromptWaiter } from "./comfyui-prompt-waiter";
 
 type SceneRow = {
   sceneNumber: number;
@@ -161,7 +161,6 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/** Random 9-digit seed when user không truyền (vd. 845192736). */
 function randomImageSeed(): number {
   return randomInt(100_000_000, 1_000_000_000);
 }
@@ -173,50 +172,14 @@ function resolveImageSeed(seed?: number): number {
   return randomImageSeed();
 }
 
-function isRetryableComfyError(err: unknown): boolean {
-  const RETRYABLE_CODES = new Set([
-    "ECONNRESET",
-    "ECONNREFUSED",
-    "ETIMEDOUT",
-    "ECONNABORTED",
-    "EPIPE",
-    "ENOTFOUND",
-    "EAI_AGAIN",
-  ]);
-  const RETRYABLE_MSGS = [
-    "socket hang up",
-    "network error",
-    "client network socket disconnected",
-    "connect econnrefused",
-  ];
-
-  if (axios.isAxiosError(err)) {
-    const code = (err.code ?? "").toUpperCase();
-    const msg = err.message.toLowerCase();
-    return RETRYABLE_CODES.has(code) || RETRYABLE_MSGS.some((m) => msg.includes(m));
-  }
-
-  if (err instanceof Error) {
-    const code = ((err as NodeJS.ErrnoException).code ?? "").toUpperCase();
-    const msg = err.message.toLowerCase();
-    return RETRYABLE_CODES.has(code) || RETRYABLE_MSGS.some((m) => msg.includes(m));
-  }
-
-  return false;
-}
-
-function historyHasOutputImages(entry: ComfyHistoryEntry | undefined): boolean {
-  if (!entry?.outputs) return false;
+function isHistoryComplete(entry: ComfyHistoryEntry | undefined): boolean {
+  if (!entry) return false;
+  if (entry.status?.completed || entry.status?.status_str === "success") return true;
+  if (!entry.outputs) return false;
   for (const nodeOutput of Object.values(entry.outputs)) {
     if (nodeOutput?.images?.length) return true;
   }
   return false;
-}
-
-function isHistoryComplete(entry: ComfyHistoryEntry | undefined): boolean {
-  if (!entry) return false;
-  if (entry.status?.completed || entry.status?.status_str === "success") return true;
-  return historyHasOutputImages(entry);
 }
 
 function resolveHistoryEntry(
@@ -238,17 +201,12 @@ export class VideosImageService {
   private getHttpClient(timeoutMs?: number): AxiosInstance {
     return axios.create({
       baseURL: resolveComfyuiUrl(),
-      timeout: timeoutMs ?? Number(process.env.COMFYUI_REQUEST_TIMEOUT_MS ?? 30_000),
-      headers: { Connection: "close" },
+      timeout: timeoutMs ?? Number(process.env.COMFYUI_TIMEOUT_MS ?? 300_000),
     });
   }
 
-  private getPollRequestTimeoutMs(): number {
-    return Number(process.env.COMFYUI_POLL_REQUEST_TIMEOUT_MS ?? 120_000);
-  }
-
   private getTimeoutMs(): number {
-    return Number(process.env.COMFYUI_TIMEOUT_MS ?? process.env.VIDEOS_IMAGE_CMD_TIMEOUT_MS ?? 300_000);
+    return Number(process.env.COMFYUI_TIMEOUT_MS ?? 300_000);
   }
 
   private loadWorkflowTemplate(model: string): Record<string, unknown> {
@@ -294,27 +252,22 @@ export class VideosImageService {
   ): Record<string, unknown> {
     const workflow = this.loadWorkflowTemplate(model);
     const { nodes } = resolveModelWorkflowConfig(model);
-    const positiveNodeId = process.env.COMFYUI_POSITIVE_PROMPT_NODE_ID ?? nodes.positivePrompt;
-    const negativeNodeId = process.env.COMFYUI_NEGATIVE_PROMPT_NODE_ID ?? nodes.negativePrompt;
-    const latentNodeId = process.env.COMFYUI_LATENT_IMAGE_NODE_ID ?? nodes.latentImage;
-    const samplerNodeId = process.env.COMFYUI_SAMPLER_NODE_ID ?? nodes.sampler;
-    const saveNodeId = process.env.COMFYUI_SAVE_IMAGE_NODE_ID ?? nodes.saveImage;
 
-    const positiveNode = asRecord(workflow[positiveNodeId]);
+    const positiveNode = asRecord(workflow[nodes.positivePrompt]);
     if (positiveNode) {
       const inputs = asRecord(positiveNode.inputs) ?? {};
       inputs.text = options.prompt;
       positiveNode.inputs = inputs;
     }
 
-    const negativeNode = asRecord(workflow[negativeNodeId]);
+    const negativeNode = asRecord(workflow[nodes.negativePrompt]);
     if (negativeNode) {
       const inputs = asRecord(negativeNode.inputs) ?? {};
       inputs.text = options.negativePrompt ?? "";
       negativeNode.inputs = inputs;
     }
 
-    const latentNode = asRecord(workflow[latentNodeId]);
+    const latentNode = asRecord(workflow[nodes.latentImage]);
     if (latentNode) {
       const inputs = asRecord(latentNode.inputs) ?? {};
       inputs.width = options.width;
@@ -322,7 +275,7 @@ export class VideosImageService {
       latentNode.inputs = inputs;
     }
 
-    const samplerNode = asRecord(workflow[samplerNodeId]);
+    const samplerNode = asRecord(workflow[nodes.sampler]);
     if (samplerNode) {
       const inputs = asRecord(samplerNode.inputs) ?? {};
       inputs.seed = options.seed;
@@ -331,7 +284,7 @@ export class VideosImageService {
     }
 
     if (options.filenamePrefix) {
-      const saveNode = asRecord(workflow[saveNodeId]);
+      const saveNode = asRecord(workflow[nodes.saveImage]);
       if (saveNode) {
         const inputs = asRecord(saveNode.inputs) ?? {};
         inputs.filename_prefix = options.filenamePrefix;
@@ -362,60 +315,39 @@ export class VideosImageService {
     return data.prompt_id;
   }
 
-  private async fetchHistoryWithRetry(
-    promptId: string,
-    deadlineMs?: number,
-  ): Promise<ComfyHistoryEntry> {
-    const client = this.getHttpClient(this.getPollRequestTimeoutMs());
-    const retryMs = Number(process.env.COMFYUI_HISTORY_RETRY_MS ?? 2_000);
-    const deadline =
-      deadlineMs ??
-      Date.now() +
-        Number(process.env.COMFYUI_HISTORY_RETRIES ?? 15) * retryMs;
-    let lastError: unknown;
-    let attempt = 0;
+  /** WS xong → debounce 500ms → fetch history 1 lần. Nếu chưa ready, retry tối đa 3 lần. */
+  private async fetchHistory(promptId: string): Promise<ComfyHistoryEntry> {
+    const client = this.getHttpClient();
+    const maxAttempts = 3;
+    const retryMs = 2_000;
 
-    while (Date.now() < deadline) {
-      attempt += 1;
-      try {
-        const { data } = await client.get<Record<string, ComfyHistoryEntry>>(
-          `/history/${promptId}`,
-        );
-        const entry = resolveHistoryEntry(data, promptId);
-        if (isHistoryComplete(entry)) {
-          this.logger.log(`[ComfyUI] prompt_id=${promptId} history ready (attempt ${attempt})`);
-          return entry!;
-        }
-        if (entry?.status?.status_str === "error") {
-          throw new Error("ComfyUI execution failed — check ComfyUI server logs");
-        }
+    await sleep(500);
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      const { data } = await client.get<Record<string, ComfyHistoryEntry>>(
+        `/history/${promptId}`,
+      );
+      const entry = resolveHistoryEntry(data, promptId);
+      if (isHistoryComplete(entry)) {
+        return entry!;
+      }
+      if (entry?.status?.status_str === "error") {
+        throw new Error("ComfyUI execution failed — check ComfyUI server logs");
+      }
+      if (attempt < maxAttempts) {
+        this.logger.warn(`[ComfyUI] history chưa ready, retry ${attempt}/${maxAttempts} prompt_id=${promptId}`);
         await sleep(retryMs);
-      } catch (err) {
-        if (axios.isAxiosError(err) && err.response?.status === 404) {
-          await sleep(retryMs);
-          continue;
-        }
-        if (isRetryableComfyError(err)) {
-          lastError = err;
-          if (attempt <= 3 || attempt % 5 === 0) {
-            this.logger.warn(
-              `[ComfyUI] history fetch retry #${attempt} (${errorMessage(err)}) prompt_id=${promptId}`,
-            );
-          }
-          await sleep(retryMs * Math.min(attempt, 5));
-          continue;
-        }
-        throw err;
       }
     }
 
-    const detail = lastError ? errorMessage(lastError) : "history not ready";
-    throw new Error(`ComfyUI history unavailable for prompt_id=${promptId} — ${detail}`);
+    throw new Error(`ComfyUI history unavailable — prompt_id=${promptId}`);
   }
 
+  /**
+   * Flow: WS connect → POST /prompt → WS chờ `executing node=null` → fetch /history → trả kết quả.
+   */
   private async runComfyPrompt(workflow: Record<string, unknown>): Promise<ComfyHistoryEntry> {
     const clientId = randomUUID();
-    const deadline = Date.now() + this.getTimeoutMs();
     const waiter = new ComfyPromptWaiter(
       resolveComfyuiWebSocketUrl(clientId),
       this.getTimeoutMs(),
@@ -425,18 +357,9 @@ export class VideosImageService {
     try {
       await waiter.connect();
       const promptId = await this.submitPrompt(workflow, clientId);
-      this.logger.log(`[ComfyUI] Start Comfy — prompt_id=${promptId} submitted`);
-      try {
-        await waiter.waitFor(promptId);
-      } catch (err) {
-        if (!isRecoverableComfyWaitError(err)) {
-          throw err;
-        }
-        this.logger.warn(
-          `[ComfyUI] WS wait ended (${errorMessage(err)}) — polling /history prompt_id=${promptId}`,
-        );
-      }
-      return await this.fetchHistoryWithRetry(promptId, deadline);
+      this.logger.log(`[ComfyUI] prompt_id=${promptId} submitted`);
+      await waiter.waitFor(promptId);
+      return await this.fetchHistory(promptId);
     } finally {
       waiter.close();
     }
@@ -448,7 +371,7 @@ export class VideosImageService {
     type: string,
     outPath: string,
   ): Promise<void> {
-    const client = this.getHttpClient(Number(process.env.COMFYUI_DOWNLOAD_TIMEOUT_MS ?? 120_000));
+    const client = this.getHttpClient();
     const { data } = await client.get("/view", {
       params: { filename, subfolder, type },
       responseType: "arraybuffer",
@@ -458,34 +381,6 @@ export class VideosImageService {
     writeFileSync(outPath, Buffer.from(data));
   }
 
-  private async downloadImageWithRetry(
-    filename: string,
-    subfolder: string,
-    type: string,
-    outPath: string,
-  ): Promise<void> {
-    const maxAttempts = Number(process.env.COMFYUI_DOWNLOAD_RETRIES ?? 3);
-    let lastError: unknown;
-
-    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-      try {
-        await this.downloadImage(filename, subfolder, type, outPath);
-        return;
-      } catch (err) {
-        lastError = err;
-        if (!isRetryableComfyError(err) || attempt >= maxAttempts) {
-          throw err;
-        }
-        this.logger.warn(
-          `[ComfyUI] download retry ${attempt}/${maxAttempts} (${errorMessage(err)}) file=${filename}`,
-        );
-        await sleep(1_000 * attempt);
-      }
-    }
-
-    throw lastError;
-  }
-
   private findOutputImages(
     entry: ComfyHistoryEntry,
     model: string,
@@ -493,8 +388,7 @@ export class VideosImageService {
     const outputs = entry.outputs ?? {};
     const images: Array<{ filename: string; subfolder: string; type: string }> = [];
     const { nodes } = resolveModelWorkflowConfig(model);
-    const saveNodeId = process.env.COMFYUI_SAVE_IMAGE_NODE_ID ?? nodes.saveImage;
-    const targetOutput = outputs[saveNodeId];
+    const targetOutput = outputs[nodes.saveImage];
     if (targetOutput?.images) {
       images.push(...targetOutput.images);
     }
@@ -560,7 +454,7 @@ export class VideosImageService {
       filenamePrefix: options.filenamePrefix,
     });
 
-    this.logger.log(`[ComfyUI] model=${model} seed=${seed}`);
+    this.logger.log(`[ComfyUI] model=${model} seed=${seed} ${width}x${height}`);
     const entry = await this.runComfyPrompt(workflow);
     const outputImages = this.findOutputImages(entry, model);
 
@@ -569,7 +463,7 @@ export class VideosImageService {
     }
 
     const img = outputImages[0];
-    await this.downloadImageWithRetry(img.filename, img.subfolder, img.type, options.outPath);
+    await this.downloadImage(img.filename, img.subfolder, img.type, options.outPath);
 
     if (!existsSync(options.outPath)) {
       return { ok: false, error: "Downloaded image file is missing" };
@@ -602,7 +496,7 @@ export class VideosImageService {
     }));
 
     this.logger.log(
-      `[Image] Nhận yêu cầu nodeId=${dto.nodeId.trim()} — ${scenes.length} scene, aspect=${aspectRatio}, style=${style}, model=${model}`,
+      `[Image] ${scenes.length} scene — aspect=${aspectRatio} style=${style} model=${model}`,
     );
 
     const images: ImageSegmentResult[] = [];
@@ -628,12 +522,12 @@ export class VideosImageService {
           downloadUrl: imageUrl,
         };
         images.push(segmentResult);
-        this.logger.log(`[Image] ⏭ ${sceneTag} SKIP — ảnh đã tồn tại`);
+        this.logger.log(`[Image] ⏭ ${sceneTag} skip`);
         onSceneProgress?.({ ...segmentResult, completedSoFar: completedCount + failedCount, totalScenes: sceneJobs.length });
         continue;
       }
 
-      this.logger.log(`[Image] ▶ Đang xử lý ${sceneTag} — nodeId=${dto.nodeId.trim()}`);
+      this.logger.log(`[Image] ▶ ${sceneTag}`);
       const sceneStartedAt = Date.now();
 
       try {
@@ -665,21 +559,20 @@ export class VideosImageService {
             downloadUrl: imageUrl,
           };
           images.push(segmentResult);
-          this.logger.log(`[Image] ✓ ${sceneTag} OK (${elapsed}s) — ${completedCount}/${sceneJobs.length} done`);
+          this.logger.log(`[Image] ✓ ${sceneTag} (${elapsed}s)`);
           onSceneProgress?.({ ...segmentResult, completedSoFar: completedCount + failedCount, totalScenes: sceneJobs.length });
         } else {
           failedCount += 1;
           const failReason = result.error ?? "Image generation failed";
           const segmentResult = failedImage(item.scene, failReason);
           images.push(segmentResult);
-          this.logger.error(`[Image] ✗ ${sceneTag} FAILED (${elapsed}s) — ${failReason}`);
+          this.logger.error(`[Image] ✗ ${sceneTag} (${elapsed}s) — ${failReason}`);
           onSceneProgress?.({ ...segmentResult, completedSoFar: completedCount + failedCount, totalScenes: sceneJobs.length });
 
-          const dropReason = `Dừng: ${sceneTag} thất bại — ${failReason}`;
-          this.logger.error(`[Image] ${dropReason} — drop ${sceneJobs.length - sceneIdx} scene còn lại`);
+          this.logger.error(`[Image] drop ${sceneJobs.length - sceneIdx} scene còn lại`);
           for (const remaining of sceneJobs.slice(images.length)) {
             failedCount += 1;
-            const rs = failedImage(remaining.scene, dropReason);
+            const rs = failedImage(remaining.scene, failReason);
             images.push(rs);
             onSceneProgress?.({ ...rs, completedSoFar: completedCount + failedCount, totalScenes: sceneJobs.length });
           }
@@ -690,14 +583,13 @@ export class VideosImageService {
         failedCount += 1;
         const segmentResult = failedImage(item.scene, errorMessage(err));
         images.push(segmentResult);
-        this.logger.error(`[Image] ✗ ${sceneTag} ERROR (${elapsed}s) — ${errorMessage(err)}`);
+        this.logger.error(`[Image] ✗ ${sceneTag} (${elapsed}s) — ${errorMessage(err)}`);
         onSceneProgress?.({ ...segmentResult, completedSoFar: completedCount + failedCount, totalScenes: sceneJobs.length });
 
-        const dropReason = `Dừng: ${sceneTag} lỗi — ${errorMessage(err)}`;
-        this.logger.error(`[Image] ${dropReason} — drop ${sceneJobs.length - sceneIdx} scene còn lại`);
+        this.logger.error(`[Image] drop ${sceneJobs.length - sceneIdx} scene còn lại`);
         for (const remaining of sceneJobs.slice(images.length)) {
           failedCount += 1;
-          const rs = failedImage(remaining.scene, dropReason);
+          const rs = failedImage(remaining.scene, errorMessage(err));
           images.push(rs);
           onSceneProgress?.({ ...rs, completedSoFar: completedCount + failedCount, totalScenes: sceneJobs.length });
         }
@@ -706,7 +598,7 @@ export class VideosImageService {
     }
 
     this.logger.log(
-      `[Image] DONE (${((Date.now() - runStartedAt) / 1000).toFixed(1)}s) — OK ${completedCount}/${scenes.length}${skippedCount > 0 ? ` (${skippedCount} skip)` : ""}, lỗi ${failedCount}, nodeId=${dto.nodeId.trim()}`,
+      `[Image] DONE (${((Date.now() - runStartedAt) / 1000).toFixed(1)}s) — OK ${completedCount}/${scenes.length}${skippedCount > 0 ? ` (${skippedCount} skip)` : ""} lỗi ${failedCount}`,
     );
 
     return {
@@ -747,7 +639,7 @@ export class VideosImageService {
     const runStartedAt = Date.now();
 
     this.logger.log(
-      `[Image Studio] Xử lý jobId=${resolvedJobId} — aspect=${aspectRatio}, style=${style}, model=${model}, prompt="${previewLogText(prompt)}"`,
+      `[Image Studio] jobId=${resolvedJobId} — ${aspectRatio} ${style} ${model} — "${previewLogText(prompt)}"`,
     );
 
     try {
@@ -768,24 +660,20 @@ export class VideosImageService {
       if (!result.ok || !existsSync(outPath)) {
         this.removeStudioOutputIfEmpty(outPath);
         const message = result.error ?? "Image generation failed";
-        this.logger.error(
-          `[Image Studio] DONE FAILED (${((Date.now() - runStartedAt) / 1000).toFixed(1)}s) jobId=${resolvedJobId} — ${message}`,
-        );
+        this.logger.error(`[Image Studio] FAILED (${((Date.now() - runStartedAt) / 1000).toFixed(1)}s) — ${message}`);
         throw new BadRequestException(message);
       }
     } catch (err) {
       if (err instanceof BadRequestException) throw err;
       const message = errorMessage(err);
       this.removeStudioOutputIfEmpty(outPath);
-      this.logger.error(
-        `[Image Studio] DONE FAILED (${((Date.now() - runStartedAt) / 1000).toFixed(1)}s) jobId=${resolvedJobId} — ${message}`,
-      );
+      this.logger.error(`[Image Studio] FAILED (${((Date.now() - runStartedAt) / 1000).toFixed(1)}s) — ${message}`);
       throw new BadRequestException(message);
     }
 
     const imageUrl = buildStudioImageRelativeUrl(userId, resolvedJobId);
     this.logger.log(
-      `[Image Studio] DONE (${((Date.now() - runStartedAt) / 1000).toFixed(1)}s) jobId=${resolvedJobId} — ${imageUrl}`,
+      `[Image Studio] OK (${((Date.now() - runStartedAt) / 1000).toFixed(1)}s) — ${imageUrl}`,
     );
 
     return {
@@ -809,9 +697,7 @@ export class VideosImageService {
     const outPath = join(outputDir, `scene-${dto.sceneNumber}.png`);
     const sceneTag = `scene ${dto.sceneNumber}`;
 
-    this.logger.log(
-      `[Image Retry] ▶ Đang xử lý ${sceneTag} — nodeId=${nodeId} model=${model}`,
-    );
+    this.logger.log(`[Image Retry] ▶ ${sceneTag} — nodeId=${nodeId}`);
     const sceneStartedAt = Date.now();
 
     try {
@@ -831,7 +717,7 @@ export class VideosImageService {
 
       if (result.ok && existsSync(outPath)) {
         const imageUrl = buildSceneImageRelativeUrl(userId, nodeId, dto.sceneNumber);
-        this.logger.log(`[Image Retry] ✓ ${sceneTag} OK (${elapsed}s) — ${imageUrl}`);
+        this.logger.log(`[Image Retry] ✓ ${sceneTag} (${elapsed}s)`);
         return {
           sceneNumber: dto.sceneNumber,
           status: "completed",
@@ -841,7 +727,7 @@ export class VideosImageService {
       }
 
       const failReason = result.error ?? "Image generation failed";
-      this.logger.error(`[Image Retry] ✗ ${sceneTag} FAILED (${elapsed}s) — ${failReason}`);
+      this.logger.error(`[Image Retry] ✗ ${sceneTag} (${elapsed}s) — ${failReason}`);
       return {
         sceneNumber: dto.sceneNumber,
         status: "failed",
@@ -852,7 +738,7 @@ export class VideosImageService {
     } catch (err) {
       const elapsed = ((Date.now() - sceneStartedAt) / 1000).toFixed(1);
       const message = errorMessage(err);
-      this.logger.error(`[Image Retry] ✗ ${sceneTag} ERROR (${elapsed}s) — ${message}`);
+      this.logger.error(`[Image Retry] ✗ ${sceneTag} (${elapsed}s) — ${message}`);
       return {
         sceneNumber: dto.sceneNumber,
         status: "failed",
