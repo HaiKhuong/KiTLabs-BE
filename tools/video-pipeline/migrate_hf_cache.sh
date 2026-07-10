@@ -11,7 +11,19 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="${KITLABS_PYTHON_CACHE_DIR:-$SCRIPT_DIR/cache}"
 ROOT="$(cd "$ROOT" 2>/dev/null && pwd || echo "$ROOT")"
 HUB="$ROOT/huggingface/hub"
-HOME_HUB="${HOME}/.cache/huggingface/hub"
+# Khi chạy sudo/root, HOME=/root → miss cache user. Ghi đè:
+#   HOME_HUB=/home/haikhuong/.cache/huggingface/hub
+#   hoặc SOURCE_HOME=/home/haikhuong
+SOURCE_HOME="${SOURCE_HOME:-}"
+if [ -n "${HOME_HUB:-}" ]; then
+  :
+elif [ -n "$SOURCE_HOME" ]; then
+  HOME_HUB="${SOURCE_HOME%/}/.cache/huggingface/hub"
+elif [ "$(id -u)" -eq 0 ] && [ -d /home/haikhuong/.cache/huggingface/hub ]; then
+  HOME_HUB="/home/haikhuong/.cache/huggingface/hub"
+else
+  HOME_HUB="${HOME}/.cache/huggingface/hub"
+fi
 DRY_RUN="${DRY_RUN:-0}"
 
 move_model() {
