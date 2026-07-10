@@ -18,7 +18,7 @@ import {
   resolveModelWorkflowPath,
   resolveVideoImagesOutputDir,
 } from "./video-image.constants";
-import { ComfyPromptWaiter } from "./comfyui-prompt-waiter";
+import { ComfyPromptWaiter, isRecoverableComfyWaitError } from "./comfyui-prompt-waiter";
 
 type SceneRow = {
   sceneNumber: number;
@@ -362,13 +362,21 @@ export class VideosImageService {
     return data.prompt_id;
   }
 
-  private async fetchHistoryWithRetry(promptId: string): Promise<ComfyHistoryEntry> {
+  private async fetchHistoryWithRetry(
+    promptId: string,
+    deadlineMs?: number,
+  ): Promise<ComfyHistoryEntry> {
     const client = this.getHttpClient(this.getPollRequestTimeoutMs());
-    const maxAttempts = Number(process.env.COMFYUI_HISTORY_RETRIES ?? 15);
     const retryMs = Number(process.env.COMFYUI_HISTORY_RETRY_MS ?? 2_000);
+    const deadline =
+      deadlineMs ??
+      Date.now() +
+        Number(process.env.COMFYUI_HISTORY_RETRIES ?? 15) * retryMs;
     let lastError: unknown;
+    let attempt = 0;
 
-    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    while (Date.now() < deadline) {
+      attempt += 1;
       try {
         const { data } = await client.get<Record<string, ComfyHistoryEntry>>(
           `/history/${promptId}`,
@@ -407,6 +415,7 @@ export class VideosImageService {
 
   private async runComfyPrompt(workflow: Record<string, unknown>): Promise<ComfyHistoryEntry> {
     const clientId = randomUUID();
+    const deadline = Date.now() + this.getTimeoutMs();
     const waiter = new ComfyPromptWaiter(
       resolveComfyuiWebSocketUrl(clientId),
       this.getTimeoutMs(),
@@ -417,8 +426,17 @@ export class VideosImageService {
       await waiter.connect();
       const promptId = await this.submitPrompt(workflow, clientId);
       this.logger.log(`[ComfyUI] Start Comfy — prompt_id=${promptId} submitted`);
-      await waiter.waitFor(promptId);
-      return await this.fetchHistoryWithRetry(promptId);
+      try {
+        await waiter.waitFor(promptId);
+      } catch (err) {
+        if (!isRecoverableComfyWaitError(err)) {
+          throw err;
+        }
+        this.logger.warn(
+          `[ComfyUI] WS wait ended (${errorMessage(err)}) — polling /history prompt_id=${promptId}`,
+        );
+      }
+      return await this.fetchHistoryWithRetry(promptId, deadline);
     } finally {
       waiter.close();
     }
