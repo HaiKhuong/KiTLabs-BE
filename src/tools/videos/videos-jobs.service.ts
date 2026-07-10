@@ -45,7 +45,7 @@ export class VideosJobsService {
     const nodeId = dto.nodeId.trim();
     const userId = dto.userId.trim();
     this.logger.log(
-      `[Image Job] Nhận yêu cầu jobId=${jobId} userId=${userId} nodeId=${nodeId}`,
+      `[Image Job] Nhận yêu cầu jobId=${jobId} nodeId=${nodeId}`,
     );
     void this.runImage(jobId, userId, nodeId, dto);
     return { jobId, nodeId, type: "image", status: "queued" };
@@ -152,7 +152,7 @@ export class VideosJobsService {
     const nodeId = dto.nodeId.trim();
     const userId = dto.userId.trim();
     this.logger.log(
-      `[Image Retry] Nhận yêu cầu jobId=${jobId} userId=${userId} nodeId=${nodeId} scene=${dto.sceneNumber}`,
+      `[Image Retry] Nhận yêu cầu jobId=${jobId} nodeId=${nodeId} scene=${dto.sceneNumber}`,
     );
     void this.runRetryScene(jobId, userId, nodeId, dto);
     return { jobId, nodeId, type: "image", status: "queued" };
@@ -166,6 +166,9 @@ export class VideosJobsService {
   ): Promise<void> {
     try {
       const result = await this.videosImageService.retrySingleScene(dto);
+      this.logger.log(
+        `[Image Retry] DONE jobId=${jobId} ${result.status} scene=${dto.sceneNumber} nodeId=${nodeId}`,
+      );
       this.realtimeGateway.notifyUser(userId, "videos.image.scene.progress", {
         jobId,
         nodeId,

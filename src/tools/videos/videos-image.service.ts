@@ -399,7 +399,7 @@ export class VideosImageService {
         }
         if (isRetryableComfyError(err)) {
           consecutiveErrors += 1;
-          if (consecutiveErrors <= 3 || consecutiveErrors % 10 === 0) {
+          if (consecutiveErrors <= 3 || consecutiveErrors % 5 === 0) {
             this.logger.warn(
               `[ComfyUI] poll transient error #${consecutiveErrors} (${errorMessage(err)}) prompt_id=${promptId} — retry in ${Math.round(backoffMs)}ms`,
             );
@@ -580,7 +580,7 @@ export class VideosImageService {
     }));
 
     this.logger.log(
-      `[Image] Nhận yêu cầu userId=${dto.userId.trim()} nodeId=${dto.nodeId.trim()} — ${scenes.length} scene, aspect=${aspectRatio}, style=${style}, model=${model}`,
+      `[Image] Nhận yêu cầu nodeId=${dto.nodeId.trim()} — ${scenes.length} scene, aspect=${aspectRatio}, style=${style}, model=${model}`,
     );
 
     const images: ImageSegmentResult[] = [];
@@ -725,7 +725,7 @@ export class VideosImageService {
     const runStartedAt = Date.now();
 
     this.logger.log(
-      `[Image Studio] Xử lý jobId=${resolvedJobId} userId=${userId} — aspect=${aspectRatio}, style=${style}, model=${model}, prompt="${previewLogText(prompt)}"`,
+      `[Image Studio] Xử lý jobId=${resolvedJobId} — aspect=${aspectRatio}, style=${style}, model=${model}, prompt="${previewLogText(prompt)}"`,
     );
 
     try {
@@ -785,10 +785,12 @@ export class VideosImageService {
     const aspectRatio = (dto.aspectRatio ?? "9:16").trim() || "9:16";
     const outputDir = this.buildOutputDir(userId, nodeId);
     const outPath = join(outputDir, `scene-${dto.sceneNumber}.png`);
+    const sceneTag = `scene ${dto.sceneNumber}`;
 
     this.logger.log(
-      `[Image Retry] scene=${dto.sceneNumber} userId=${userId} nodeId=${nodeId} model=${model}`,
+      `[Image Retry] ▶ Đang xử lý ${sceneTag} — nodeId=${nodeId} model=${model}`,
     );
+    const sceneStartedAt = Date.now();
 
     try {
       const result = await this.runExclusive(() =>
@@ -803,8 +805,11 @@ export class VideosImageService {
         }),
       );
 
+      const elapsed = ((Date.now() - sceneStartedAt) / 1000).toFixed(1);
+
       if (result.ok && existsSync(outPath)) {
         const imageUrl = buildSceneImageRelativeUrl(userId, nodeId, dto.sceneNumber);
+        this.logger.log(`[Image Retry] ✓ ${sceneTag} OK (${elapsed}s) — ${imageUrl}`);
         return {
           sceneNumber: dto.sceneNumber,
           status: "completed",
@@ -813,20 +818,25 @@ export class VideosImageService {
         };
       }
 
+      const failReason = result.error ?? "Image generation failed";
+      this.logger.error(`[Image Retry] ✗ ${sceneTag} FAILED (${elapsed}s) — ${failReason}`);
       return {
         sceneNumber: dto.sceneNumber,
         status: "failed",
         imageUrl: null,
         downloadUrl: null,
-        errorMessage: result.error ?? "Image generation failed",
+        errorMessage: failReason,
       };
     } catch (err) {
+      const elapsed = ((Date.now() - sceneStartedAt) / 1000).toFixed(1);
+      const message = errorMessage(err);
+      this.logger.error(`[Image Retry] ✗ ${sceneTag} ERROR (${elapsed}s) — ${message}`);
       return {
         sceneNumber: dto.sceneNumber,
         status: "failed",
         imageUrl: null,
         downloadUrl: null,
-        errorMessage: errorMessage(err),
+        errorMessage: message,
       };
     }
   }
