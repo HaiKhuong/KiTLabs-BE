@@ -573,6 +573,8 @@ export class VideosImageService {
     const images: ImageSegmentResult[] = [];
     let completedCount = 0;
     let failedCount = 0;
+    let consecutiveFails = 0;
+    const MAX_CONSECUTIVE_FAILS = 3;
 
     for (const item of sceneJobs) {
       try {
@@ -590,6 +592,7 @@ export class VideosImageService {
 
         if (result.ok && existsSync(item.outPath)) {
           completedCount += 1;
+          consecutiveFails = 0;
           const imageUrl = buildSceneImageRelativeUrl(
             dto.userId.trim(),
             dto.nodeId.trim(),
@@ -605,15 +608,29 @@ export class VideosImageService {
           onSceneProgress?.({ ...segmentResult, completedSoFar: completedCount + failedCount, totalScenes: sceneJobs.length });
         } else {
           failedCount += 1;
+          consecutiveFails += 1;
           const segmentResult = failedImage(item.scene, result.error ?? "Image generation failed");
           images.push(segmentResult);
           onSceneProgress?.({ ...segmentResult, completedSoFar: completedCount + failedCount, totalScenes: sceneJobs.length });
         }
       } catch (err) {
         failedCount += 1;
+        consecutiveFails += 1;
         const segmentResult = failedImage(item.scene, errorMessage(err));
         images.push(segmentResult);
         onSceneProgress?.({ ...segmentResult, completedSoFar: completedCount + failedCount, totalScenes: sceneJobs.length });
+      }
+
+      if (consecutiveFails >= MAX_CONSECUTIVE_FAILS) {
+        const reason = `Dừng sớm: ${consecutiveFails} scene liên tiếp thất bại — ComfyUI có thể không khả dụng`;
+        this.logger.error(`[Image] ${reason} — nodeId=${dto.nodeId.trim()}`);
+        for (const remaining of sceneJobs.slice(images.length)) {
+          failedCount += 1;
+          const segmentResult = failedImage(remaining.scene, reason);
+          images.push(segmentResult);
+          onSceneProgress?.({ ...segmentResult, completedSoFar: completedCount + failedCount, totalScenes: sceneJobs.length });
+        }
+        break;
       }
     }
 
