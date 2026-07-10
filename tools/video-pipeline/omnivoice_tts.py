@@ -29,6 +29,8 @@ import re
 from pathlib import Path
 from typing import Any, Optional, Tuple
 
+import pipeline_cache  # noqa: F401 — HF cache → tools/video-pipeline/cache
+
 # Cache theo (model_id, device_map, dtype_str)
 _session_model: Optional[Any] = None
 _session_model_key: Optional[Tuple[str, str, str]] = None

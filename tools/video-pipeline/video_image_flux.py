@@ -1,7 +1,7 @@
 """
 Video workflow — text-to-image per scene using FLUX.1 Schnell (diffusers).
 
-Cache cố định: tools/video-pipeline/cache/flux — flux_cache.py
+Cache cố định: tools/video-pipeline/cache (chung với Whisper/OmniVoice) — flux_cache.py + pipeline_cache.py
 
 Stdin JSON:
   model_id?, device_map?, dtype_str?, guidance_scale?, num_inference_steps?, max_sequence_length?, seed?,
@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from audio_tts_worker import resolve_device_map
-import flux_cache  # noqa: F401 — cache/flux
+import flux_cache  # noqa: F401 — cache → tools/video-pipeline/cache
 from flux_cache import resolve_hf_token
 
 _pipe = None

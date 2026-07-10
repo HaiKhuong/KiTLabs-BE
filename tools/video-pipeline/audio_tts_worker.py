@@ -7,6 +7,8 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
+import pipeline_cache  # noqa: F401 — HF cache → tools/video-pipeline/cache
+
 
 def resolve_device_map(raw: str) -> str:
     s = str(raw or "").strip()

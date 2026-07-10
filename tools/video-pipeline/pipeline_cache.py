@@ -1,14 +1,14 @@
 """
-Cache HF / torch cho OmniVoice, translate, voice TTS.
+Cache HF / torch chung cho pipeline (Whisper, OmniVoice, Translate, Image…).
 
-Mặc định: <repo>/tools/video-pipeline/cache/omnivoice
-Ghi đè: OMNIVOICE_CACHE_ROOT hoặc KITLABS_PYTHON_CACHE_DIR
+Một root duy nhất:
+  tools/video-pipeline/cache/
+  ├── huggingface/hub/   ← HF models (whisper, omnivoice, flux, z-image…)
+  └── torch/
 
-FLUX text-to-image: flux_cache.py → cache/flux (tách riêng).
+Ghi đè: KITLABS_PYTHON_CACHE_DIR hoặc OMNIVOICE_CACHE_ROOT (legacy alias).
 
-  cache/
-  ├── omnivoice/   ← pipeline_cache.py
-  └── flux/        ← flux_cache.py
+Import sớm ở mọi entrypoint Python để tránh tải về ~/.cache/huggingface.
 """
 
 from __future__ import annotations
@@ -34,19 +34,24 @@ if not logging.getLogger().handlers:
 log = logging.getLogger("pipeline-cache")
 
 _PIPELINE_DIR = Path(__file__).resolve().parent
-_DEFAULT_CACHE_ROOT = _PIPELINE_DIR / "cache" / "omnivoice"
+_DEFAULT_CACHE_ROOT = _PIPELINE_DIR / "cache"
 _configured = False
 
 
-def resolve_omnivoice_cache_root() -> Path:
+def resolve_pipeline_cache_root() -> Path:
     raw = (
-        os.getenv("OMNIVOICE_CACHE_ROOT")
-        or os.getenv("KITLABS_PYTHON_CACHE_DIR")
+        os.getenv("KITLABS_PYTHON_CACHE_DIR")
+        or os.getenv("OMNIVOICE_CACHE_ROOT")  # legacy alias
         or ""
     ).strip()
     if raw and raw not in ("/path", "path"):
         return Path(raw).expanduser().resolve()
     return _DEFAULT_CACHE_ROOT.resolve()
+
+
+# Alias cũ — một số script vẫn gọi tên này.
+def resolve_omnivoice_cache_root() -> Path:
+    return resolve_pipeline_cache_root()
 
 
 def _repair_cache_path(path: Path) -> None:
@@ -56,15 +61,15 @@ def _repair_cache_path(path: Path) -> None:
         path.unlink()
 
 
-def configure_omnivoice_cache_env() -> Path:
+def configure_pipeline_cache_env() -> Path:
     """
-    Đặt HF/torch cache → cache/omnivoice.
+    Đặt HF/torch cache → tools/video-pipeline/cache (một chỗ).
 
     Không mkdir `huggingface/` trước — HuggingFace tự tạo; tạo sẵn gây FileExistsError
     khi lib gọi os.mkdir(.../huggingface) không có exist_ok (đặc biệt với XDG_CACHE_HOME).
     """
     global _configured
-    base = resolve_omnivoice_cache_root()
+    base = resolve_pipeline_cache_root()
     hf_home = base / "huggingface"
     hub = hf_home / "hub"
     torch_home = base / "torch"
@@ -74,12 +79,12 @@ def configure_omnivoice_cache_env() -> Path:
     _repair_cache_path(hf_home)
     _repair_cache_path(hub)
 
-    # Ghi đè env Nest/FLUX — subprocess Voice không dùng cache FLUX.
     os.environ["HF_HOME"] = str(hf_home)
     os.environ["HUGGINGFACE_HUB_CACHE"] = str(hub)
     os.environ["TRANSFORMERS_CACHE"] = str(hub)
     os.environ["TORCH_HOME"] = str(torch_home)
-    # Không set XDG_CACHE_HOME=base — lib sẽ mkdir base/huggingface và đụng thư mục đã tạo sẵn.
+    # Không ép XDG_CACHE_HOME về $HOME — trùng cache ngoài repo.
+    # Không set XDG_CACHE_HOME=base — lib mkdir base/huggingface dễ Errno 17.
     os.environ.pop("XDG_CACHE_HOME", None)
 
     if sys.platform == "win32":
@@ -90,7 +95,7 @@ def configure_omnivoice_cache_env() -> Path:
     if not _configured:
         _configured = True
         log.debug(
-            "omnivoice cache root=%s HF_HOME=%s HUB=%s",
+            "pipeline cache root=%s HF_HOME=%s HUB=%s",
             base,
             os.environ.get("HF_HOME", ""),
             os.environ.get("HUGGINGFACE_HUB_CACHE", ""),
@@ -98,4 +103,9 @@ def configure_omnivoice_cache_env() -> Path:
     return base
 
 
-configure_omnivoice_cache_env()
+# Alias cũ.
+def configure_omnivoice_cache_env() -> Path:
+    return configure_pipeline_cache_env()
+
+
+configure_pipeline_cache_env()

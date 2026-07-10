@@ -14,7 +14,7 @@ from __future__ import annotations
 import os
 import sys
 
-import flux_cache  # noqa: F401 — HF cache → cache/flux
+import flux_cache  # noqa: F401 — HF cache → tools/video-pipeline/cache
 from flux_cache import FLUX_CACHE_ROOT, resolve_hf_token
 
 MODEL_ID = "Tongyi-MAI/Z-Image-Turbo"

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Tải FLUX.1-schnell vào tools/video-pipeline/cache/flux (một lần).
+Tải FLUX.1-schnell vào tools/video-pipeline/cache (một lần).
 
 Repo Hub có ~57GB nếu tải FULL (flux1-schnell.safetensors 23.8GB + transformer/ ~23GB trùng + T5…).
 Script này chỉ tải layout diffusers (FluxPipeline) — ~32–36GB trên disk.
@@ -15,7 +15,7 @@ from __future__ import annotations
 import os
 import sys
 
-import flux_cache  # noqa: F401 — HF cache → cache/flux
+import flux_cache  # noqa: F401 — HF cache → tools/video-pipeline/cache
 from flux_cache import FLUX_CACHE_ROOT, resolve_hf_token
 
 MODEL_ID = "black-forest-labs/FLUX.1-schnell"

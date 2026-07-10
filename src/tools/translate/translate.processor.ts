@@ -348,7 +348,8 @@ export class TranslateProcessor extends WorkerHost {
           env: {
             ...process.env,
             HOME: "/home/haikhuong",
-            XDG_CACHE_HOME: "/home/haikhuong/.cache",
+            // Không ép XDG_CACHE_HOME → ~/.cache (tách Whisper khỏi pipeline cache).
+            // pipeline_cache.py đặt HF_HOME → tools/video-pipeline/cache/huggingface.
             // Force Python to flush stdout on every write (line-buffered).
             // Without this, print() inside Python is block-buffered when piped,
             // so logs only appear after the buffer fills or the process exits.

@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from audio_tts_worker import resolve_device_map
-import pipeline_cache  # noqa: F401 — HF cache → cache/omnivoice
+import pipeline_cache  # noqa: F401 — HF cache → tools/video-pipeline/cache
 from omnivoice_tts import resolve_omnivoice_language, synthesize_to_wav
 
 

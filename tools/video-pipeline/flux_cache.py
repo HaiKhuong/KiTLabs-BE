@@ -1,21 +1,20 @@
 """
-Cache HF / torch cho FLUX text-to-image (riêng, không đụng pipeline_cache.py).
+Cache HF / torch cho FLUX / Z-Image — dùng chung pipeline_cache (một root).
 
-Mặc định: tools/video-pipeline/cache/flux (ngang hàng cache/omnivoice)
+Mặc định: tools/video-pipeline/cache/huggingface/hub
 Token: HF_TOKEN
-
-Kích thước kỳ vọng (Linux + symlink): ~23–34 GiB cho FLUX.1-schnell (một revision).
-Tránh HF_HUB_DISABLE_SYMLINKS trên Linux — mỗi lần tải/revision sẽ COPY full file → 2×–3× disk.
 """
 
 from __future__ import annotations
 
 import os
-import sys
 from pathlib import Path
 
-_PIPELINE_DIR = Path(__file__).resolve().parent
-FLUX_CACHE_ROOT = (_PIPELINE_DIR / "cache" / "flux").resolve()
+import pipeline_cache  # noqa: F401 — set HF_* trước khi import diffusers
+
+from pipeline_cache import resolve_pipeline_cache_root
+
+FLUX_CACHE_ROOT = resolve_pipeline_cache_root()
 
 
 def resolve_hf_token() -> str | None:
@@ -33,27 +32,9 @@ def resolve_hf_token() -> str | None:
 
 
 def configure_flux_cache_env() -> Path:
-    """HF/torch cache → cache/flux (cố định)."""
-    base = FLUX_CACHE_ROOT
-    hf_home = base / "huggingface"
-    hub = hf_home / "hub"
-    torch_home = base / "torch"
-    for path in (hf_home, hub, torch_home):
-        path.mkdir(parents=True, exist_ok=True)
-    os.environ["HF_HOME"] = str(hf_home)
-    os.environ["HUGGINGFACE_HUB_CACHE"] = str(hub)
-    # Cùng cây với hub — tránh tải model 2 lần (hub + thư mục transformers legacy dưới HF_HOME).
-    os.environ["TRANSFORMERS_CACHE"] = str(hub)
-    os.environ["TORCH_HOME"] = str(torch_home)
-
-    # Chỉ Windows cần tắt symlink. Linux/WSL: BẮT BUỘC symlink để blobs dedup (~23GB, không phải 54GB+).
-    if sys.platform == "win32":
-        os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS", "1")
-    else:
-        os.environ.pop("HF_HUB_DISABLE_SYMLINKS", None)
-
+    """Alias — cache đã cấu hình bởi pipeline_cache."""
     resolve_hf_token()
-    return base
+    return FLUX_CACHE_ROOT
 
 
 configure_flux_cache_env()

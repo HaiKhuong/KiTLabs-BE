@@ -29,6 +29,8 @@ try:
 except ImportError:
     load_dotenv = None
 
+import pipeline_cache  # noqa: F401 — HF cache → tools/video-pipeline/cache (một chỗ)
+
 from google import genai
 from tqdm import tqdm
 
