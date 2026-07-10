@@ -6,6 +6,7 @@ import { Public } from "../../common/decorators/public.decorator";
 import { ExecuteAiTaskDto } from "./dto/execute-ai-task.dto";
 import { ExecuteImageDto } from "./dto/execute-image.dto";
 import { ExecuteVoiceDto } from "./dto/execute-voice.dto";
+import { RetrySceneImageDto } from "./dto/retry-scene-image.dto";
 import { UpsertVideoWorkflowDto } from "./dto/upsert-video-workflow.dto";
 import { VideosImageService } from "./videos-image.service";
 import { VideosJobsService } from "./videos-jobs.service";
@@ -63,6 +64,14 @@ export class VideosController {
   @Post("image/generate")
   async executeImage(@Body() dto: ExecuteImageDto) {
     return this.videosJobsService.submitImage(dto);
+  }
+
+  @ApiOperation({ summary: "Retry single scene image — kết quả qua socket videos.image.scene.progress" })
+  @ApiBody({ type: RetrySceneImageDto })
+  @Public()
+  @Post("image/retry-scene")
+  async retrySceneImage(@Body() dto: RetrySceneImageDto) {
+    return this.videosJobsService.submitRetryScene(dto);
   }
 
   @ApiOperation({ summary: "Serve generated scene image (ComfyUI output PNG)" })

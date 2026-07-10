@@ -5,6 +5,7 @@ import { ToolsRealtimeGateway } from "../realtime/tools-realtime.gateway";
 import { ExecuteAiTaskDto } from "./dto/execute-ai-task.dto";
 import { ExecuteImageDto } from "./dto/execute-image.dto";
 import { ExecuteVoiceDto } from "./dto/execute-voice.dto";
+import { RetrySceneImageDto } from "./dto/retry-scene-image.dto";
 import type { WorkflowJobQueuedResponse } from "./dto/workflow-job-response.dto";
 import { VideosAiService } from "./videos-ai.service";
 import { VideosImageService } from "./videos-image.service";
@@ -111,7 +112,19 @@ export class VideosJobsService {
     dto: ExecuteImageDto,
   ): Promise<void> {
     try {
-      const result = await this.videosImageService.executeImage(dto);
+      const result = await this.videosImageService.executeImage(dto, (scene) => {
+        this.realtimeGateway.notifyUser(userId, "videos.image.scene.progress", {
+          jobId,
+          nodeId,
+          sceneNumber: scene.sceneNumber,
+          status: scene.status,
+          imageUrl: scene.imageUrl,
+          downloadUrl: scene.downloadUrl,
+          errorMessage: scene.errorMessage,
+          completedSoFar: scene.completedSoFar,
+          totalScenes: scene.totalScenes,
+        });
+      });
       this.logger.log(
         `[Image Job] DONE jobId=${jobId} nodeId=${nodeId} — OK ${result.completedCount}/${result.images.length}, lỗi ${result.failedCount}`,
       );
@@ -130,6 +143,53 @@ export class VideosJobsService {
         type: "image",
         errorMessage,
         terminal: true,
+      });
+    }
+  }
+
+  submitRetryScene(dto: RetrySceneImageDto): WorkflowJobQueuedResponse {
+    const jobId = randomUUID();
+    const nodeId = dto.nodeId.trim();
+    const userId = dto.userId.trim();
+    this.logger.log(
+      `[Image Retry] Nhận yêu cầu jobId=${jobId} userId=${userId} nodeId=${nodeId} scene=${dto.sceneNumber}`,
+    );
+    void this.runRetryScene(jobId, userId, nodeId, dto);
+    return { jobId, nodeId, type: "image", status: "queued" };
+  }
+
+  private async runRetryScene(
+    jobId: string,
+    userId: string,
+    nodeId: string,
+    dto: RetrySceneImageDto,
+  ): Promise<void> {
+    try {
+      const result = await this.videosImageService.retrySingleScene(dto);
+      this.realtimeGateway.notifyUser(userId, "videos.image.scene.progress", {
+        jobId,
+        nodeId,
+        sceneNumber: result.sceneNumber,
+        status: result.status,
+        imageUrl: result.imageUrl,
+        downloadUrl: result.downloadUrl,
+        errorMessage: result.errorMessage,
+        completedSoFar: 1,
+        totalScenes: 1,
+      });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      this.logger.warn(`[Image Retry] FAILED jobId=${jobId} nodeId=${nodeId} scene=${dto.sceneNumber} — ${errorMessage}`);
+      this.realtimeGateway.notifyUser(userId, "videos.image.scene.progress", {
+        jobId,
+        nodeId,
+        sceneNumber: dto.sceneNumber,
+        status: "failed",
+        imageUrl: null,
+        downloadUrl: null,
+        errorMessage,
+        completedSoFar: 1,
+        totalScenes: 1,
       });
     }
   }

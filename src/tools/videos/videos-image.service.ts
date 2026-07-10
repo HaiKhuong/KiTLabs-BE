@@ -6,6 +6,7 @@ import { dirname, join } from "path";
 
 import { GenerateStudioImageDto } from "../images/dto/generate-studio-image.dto";
 import { ExecuteImageDto } from "./dto/execute-image.dto";
+import { RetrySceneImageDto } from "./dto/retry-scene-image.dto";
 import {
   STUDIO_IMAGE_FILENAME,
   buildSceneImageRelativeUrl,
@@ -522,7 +523,10 @@ export class VideosImageService {
     return { ok: true };
   }
 
-  async executeImage(dto: ExecuteImageDto): Promise<ExecuteImageResult> {
+  async executeImage(
+    dto: ExecuteImageDto,
+    onSceneProgress?: (scene: ImageSegmentResult & { completedSoFar: number; totalScenes: number }) => void,
+  ): Promise<ExecuteImageResult> {
     const mode = (dto.mode ?? "generate").trim().toLowerCase();
     if (mode !== "generate") {
       throw new BadRequestException(
@@ -571,19 +575,25 @@ export class VideosImageService {
             dto.nodeId.trim(),
             item.scene.sceneNumber,
           );
-          images.push({
+          const segmentResult: ImageSegmentResult = {
             sceneNumber: item.scene.sceneNumber,
             status: "completed",
             imageUrl,
             downloadUrl: imageUrl,
-          });
+          };
+          images.push(segmentResult);
+          onSceneProgress?.({ ...segmentResult, completedSoFar: completedCount + failedCount, totalScenes: sceneJobs.length });
         } else {
           failedCount += 1;
-          images.push(failedImage(item.scene, result.error ?? "Image generation failed"));
+          const segmentResult = failedImage(item.scene, result.error ?? "Image generation failed");
+          images.push(segmentResult);
+          onSceneProgress?.({ ...segmentResult, completedSoFar: completedCount + failedCount, totalScenes: sceneJobs.length });
         }
       } catch (err) {
         failedCount += 1;
-        images.push(failedImage(item.scene, errorMessage(err)));
+        const segmentResult = failedImage(item.scene, errorMessage(err));
+        images.push(segmentResult);
+        onSceneProgress?.({ ...segmentResult, completedSoFar: completedCount + failedCount, totalScenes: sceneJobs.length });
       }
     }
 
@@ -679,5 +689,59 @@ export class VideosImageService {
       aspectRatio,
       prompt,
     };
+  }
+
+  async retrySingleScene(dto: RetrySceneImageDto): Promise<ImageSegmentResult> {
+    const userId = dto.userId.trim();
+    const nodeId = dto.nodeId.trim();
+    const model = resolveImageModel(dto.model);
+    const style = (dto.style ?? "cinematic").trim() || "cinematic";
+    const aspectRatio = (dto.aspectRatio ?? "9:16").trim() || "9:16";
+    const outputDir = this.buildOutputDir(userId, nodeId);
+    const outPath = join(outputDir, `scene-${dto.sceneNumber}.png`);
+
+    this.logger.log(
+      `[Image Retry] scene=${dto.sceneNumber} userId=${userId} nodeId=${nodeId} model=${model}`,
+    );
+
+    try {
+      const result = await this.runExclusive(() =>
+        this.generateSingleImage({
+          model,
+          prompt: dto.prompt,
+          negativePrompt: dto.negativePrompt,
+          aspectRatio,
+          style,
+          outPath,
+          filenamePrefix: `scene-${dto.sceneNumber}`,
+        }),
+      );
+
+      if (result.ok && existsSync(outPath)) {
+        const imageUrl = buildSceneImageRelativeUrl(userId, nodeId, dto.sceneNumber);
+        return {
+          sceneNumber: dto.sceneNumber,
+          status: "completed",
+          imageUrl,
+          downloadUrl: imageUrl,
+        };
+      }
+
+      return {
+        sceneNumber: dto.sceneNumber,
+        status: "failed",
+        imageUrl: null,
+        downloadUrl: null,
+        errorMessage: result.error ?? "Image generation failed",
+      };
+    } catch (err) {
+      return {
+        sceneNumber: dto.sceneNumber,
+        status: "failed",
+        imageUrl: null,
+        downloadUrl: null,
+        errorMessage: errorMessage(err),
+      };
+    }
   }
 }
