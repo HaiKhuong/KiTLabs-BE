@@ -1,6 +1,8 @@
+import json
 import logging
 import os
 import glob
+import subprocess
 import traceback
 import uuid
 from contextlib import asynccontextmanager
@@ -21,11 +23,6 @@ logger = logging.getLogger("ytdlp-service")
 async def lifespan(app: FastAPI):
     os.makedirs(TEMP_DIR, exist_ok=True)
     logger.info("yt-dlp version: %s", yt_dlp.version.__version__)
-    try:
-        import curl_cffi
-        logger.info("curl_cffi available: %s", curl_cffi.__version__)
-    except ImportError:
-        logger.warning("curl_cffi NOT available - impersonate will not work")
     yield
 
 
@@ -68,37 +65,29 @@ def _cleanup(path: Optional[str]):
             pass
 
 
-def _base_opts(cookie_path: Optional[str] = None) -> dict:
-    opts: dict = {
-        "quiet": False,
-        "verbose": True,
-        "no_check_certificates": True,
-        "http_headers": {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                          "AppleWebKit/537.36 (KHTML, like Gecko) "
-                          "Chrome/131.0.0.0 Safari/537.36",
-            "Referer": "https://www.douyin.com/",
-            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-        },
-    }
-
+def _extract_via_cli(url: str, cookie_path: Optional[str]) -> dict:
+    """Fallback: call yt-dlp CLI with --dump-json."""
+    cmd = ["yt-dlp", "--dump-json", "--no-check-certificates", "--no-warnings"]
     if cookie_path:
-        opts["cookiefile"] = cookie_path
-    return opts
+        cmd += ["--cookies", cookie_path]
+    cmd.append(url)
+
+    logger.info("CLI fallback: %s", " ".join(cmd))
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+
+    if result.returncode != 0:
+        err = result.stderr.strip()
+        logger.error("CLI stderr: %s", err)
+        raise Exception(err or f"yt-dlp exited with code {result.returncode}")
+
+    return json.loads(result.stdout)
 
 
 @app.get("/health")
 def health():
-    has_curl_cffi = False
-    try:
-        import curl_cffi  # noqa: F401
-        has_curl_cffi = True
-    except ImportError:
-        pass
     return {
         "status": "ok",
         "ytdlp_version": yt_dlp.version.__version__,
-        "curl_cffi": has_curl_cffi,
     }
 
 
@@ -107,9 +96,7 @@ def extract_video(req: ExtractRequest):
     logger.info("Extract request: url=%s, has_cookies=%s", req.url, bool(req.cookie_content))
     cookie_path = _write_cookies_temp(req.cookie_content)
     try:
-        opts = _base_opts(cookie_path)
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(req.url, download=False)
+        info = _extract_via_cli(req.url, cookie_path)
 
         if not info:
             raise HTTPException(status_code=400, detail="Could not extract video info")
@@ -141,7 +128,7 @@ def extract_video(req: ExtractRequest):
         thumbnails = info.get("thumbnails", [])
         thumbnail = thumbnails[-1]["url"] if thumbnails else info.get("thumbnail")
 
-        logger.info("Extract success: id=%s, title=%s, formats=%d", info.get("id"), info.get("title"), len(formats))
+        logger.info("Extract success: id=%s, formats=%d", info.get("id"), len(formats))
         return {
             "id": info.get("id"),
             "title": info.get("title"),
@@ -152,14 +139,15 @@ def extract_video(req: ExtractRequest):
             "webpage_url": info.get("webpage_url"),
             "formats": formats,
         }
-    except yt_dlp.utils.DownloadError as e:
-        logger.error("yt-dlp DownloadError: %s", str(e))
-        raise HTTPException(status_code=400, detail=str(e))
     except HTTPException:
         raise
     except Exception as e:
-        logger.error("Unexpected error: %s\n%s", str(e), traceback.format_exc())
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error("Extract error: %s\n%s", str(e), traceback.format_exc())
+        detail = str(e)
+        status = 500
+        if "Fresh cookies" in detail or "DownloadError" in detail:
+            status = 400
+        raise HTTPException(status_code=status, detail=detail)
     finally:
         _cleanup(cookie_path)
 
@@ -169,27 +157,28 @@ def extract_profile(req: ExtractProfileRequest):
     logger.info("Extract profile: url=%s, max_videos=%d", req.url, req.max_videos)
     cookie_path = _write_cookies_temp(req.cookie_content)
     try:
-        opts = _base_opts(cookie_path)
-        opts["playlistend"] = req.max_videos
-        opts["extract_flat"] = False
+        cmd = [
+            "yt-dlp", "--dump-json",
+            "--no-check-certificates", "--no-warnings",
+            "--playlist-end", str(req.max_videos),
+        ]
+        if cookie_path:
+            cmd += ["--cookies", cookie_path]
+        cmd.append(req.url)
 
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(req.url, download=False)
+        logger.info("CLI: %s", " ".join(cmd))
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
 
-        if not info:
-            raise HTTPException(status_code=400, detail="Could not extract profile info")
-
-        entries = info.get("entries", [])
-        if not entries:
-            raise HTTPException(
-                status_code=400,
-                detail="URL is a single video. Use /extract instead.",
-            )
+        if result.returncode != 0:
+            err = result.stderr.strip()
+            logger.error("CLI stderr: %s", err)
+            raise Exception(err or f"yt-dlp exited with code {result.returncode}")
 
         videos = []
-        for entry in entries:
-            if not entry:
+        for line in result.stdout.strip().split("\n"):
+            if not line.strip():
                 continue
+            entry = json.loads(line)
 
             entry_formats = entry.get("formats", [])
             video_formats = [
@@ -197,9 +186,7 @@ def extract_profile(req: ExtractProfileRequest):
             ]
             best_height = 0
             if video_formats:
-                best_height = max(
-                    (f.get("height") or 0) for f in video_formats
-                )
+                best_height = max((f.get("height") or 0) for f in video_formats)
 
             thumbnails = entry.get("thumbnails", [])
             thumb = thumbnails[-1]["url"] if thumbnails else entry.get("thumbnail")
@@ -213,20 +200,24 @@ def extract_profile(req: ExtractProfileRequest):
                 "webpage_url": entry.get("webpage_url"),
             })
 
-        logger.info("Profile extract success: uploader=%s, videos=%d", info.get("uploader"), len(videos))
+        if not videos:
+            raise HTTPException(status_code=400, detail="No videos found in profile")
+
+        logger.info("Profile extract success: videos=%d", len(videos))
         return {
-            "uploader": info.get("uploader") or info.get("title"),
-            "uploader_id": info.get("uploader_id") or info.get("id"),
+            "uploader": videos[0].get("uploader") if videos else None,
+            "uploader_id": None,
             "videos": videos,
         }
-    except yt_dlp.utils.DownloadError as e:
-        logger.error("yt-dlp DownloadError: %s", str(e))
-        raise HTTPException(status_code=400, detail=str(e))
     except HTTPException:
         raise
     except Exception as e:
-        logger.error("Unexpected error: %s\n%s", str(e), traceback.format_exc())
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error("Profile error: %s\n%s", str(e), traceback.format_exc())
+        detail = str(e)
+        status = 500
+        if "Fresh cookies" in detail:
+            status = 400
+        raise HTTPException(status_code=status, detail=detail)
     finally:
         _cleanup(cookie_path)
 
@@ -240,17 +231,27 @@ def download_video(req: DownloadRequest):
     os.makedirs(out_dir, exist_ok=True)
 
     try:
-        opts = _base_opts(cookie_path)
-        opts["outtmpl"] = os.path.join(out_dir, "%(title).80s.%(ext)s")
-        opts["merge_output_format"] = "mp4"
-
+        cmd = [
+            "yt-dlp",
+            "--no-check-certificates", "--no-warnings",
+            "-o", os.path.join(out_dir, "%(title).80s.%(ext)s"),
+            "--merge-output-format", "mp4",
+        ]
         if req.format_id:
-            opts["format"] = req.format_id
+            cmd += ["-f", req.format_id]
         else:
-            opts["format"] = "bestvideo*+bestaudio/best"
+            cmd += ["-f", "bestvideo*+bestaudio/best"]
+        if cookie_path:
+            cmd += ["--cookies", cookie_path]
+        cmd.append(req.url)
 
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            ydl.download([req.url])
+        logger.info("CLI download: %s", " ".join(cmd))
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+
+        if result.returncode != 0:
+            err = result.stderr.strip()
+            logger.error("Download stderr: %s", err)
+            raise Exception(err or f"yt-dlp exited with code {result.returncode}")
 
         files = glob.glob(os.path.join(out_dir, "*"))
         if not files:
@@ -279,16 +280,16 @@ def download_video(req: DownloadRequest):
                 "Content-Disposition": f'attachment; filename="{filename}"',
             },
         )
-    except yt_dlp.utils.DownloadError as e:
-        logger.error("yt-dlp DownloadError: %s", str(e))
-        _cleanup_dir(out_dir)
-        raise HTTPException(status_code=400, detail=str(e))
     except HTTPException:
         raise
     except Exception as e:
-        logger.error("Unexpected error: %s\n%s", str(e), traceback.format_exc())
+        logger.error("Download error: %s\n%s", str(e), traceback.format_exc())
         _cleanup_dir(out_dir)
-        raise HTTPException(status_code=500, detail=str(e))
+        detail = str(e)
+        status = 500
+        if "Fresh cookies" in detail:
+            status = 400
+        raise HTTPException(status_code=status, detail=detail)
     finally:
         _cleanup(cookie_path)
 
