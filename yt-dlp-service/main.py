@@ -1,21 +1,31 @@
+import logging
 import os
 import glob
-import tempfile
+import traceback
 import uuid
 from contextlib import asynccontextmanager
 from typing import Optional
 
 import yt_dlp
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 TEMP_DIR = "/tmp/ytdlp"
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("ytdlp-service")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     os.makedirs(TEMP_DIR, exist_ok=True)
+    logger.info("yt-dlp version: %s", yt_dlp.version.__version__)
+    try:
+        import curl_cffi
+        logger.info("curl_cffi available: %s", curl_cffi.__version__)
+    except ImportError:
+        logger.warning("curl_cffi NOT available - impersonate will not work")
     yield
 
 
@@ -46,6 +56,7 @@ def _write_cookies_temp(cookie_content: Optional[str]) -> Optional[str]:
     path = os.path.join(TEMP_DIR, f"cookies_{uuid.uuid4().hex}.txt")
     with open(path, "w", encoding="utf-8", newline="\n") as f:
         f.write(normalized)
+    logger.info("Wrote cookies to %s (%d bytes)", path, len(normalized))
     return path
 
 
@@ -59,10 +70,9 @@ def _cleanup(path: Optional[str]):
 
 def _base_opts(cookie_path: Optional[str] = None) -> dict:
     opts: dict = {
-        "quiet": True,
-        "no_warnings": True,
+        "quiet": False,
+        "verbose": True,
         "no_check_certificates": True,
-        "impersonate": "chrome",
         "http_headers": {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                           "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -71,6 +81,14 @@ def _base_opts(cookie_path: Optional[str] = None) -> dict:
             "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
         },
     }
+
+    try:
+        import curl_cffi  # noqa: F401
+        opts["impersonate"] = "chrome"
+        logger.info("Using curl_cffi impersonation")
+    except ImportError:
+        logger.info("curl_cffi not available, skipping impersonation")
+
     if cookie_path:
         opts["cookiefile"] = cookie_path
     return opts
@@ -78,11 +96,22 @@ def _base_opts(cookie_path: Optional[str] = None) -> dict:
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    has_curl_cffi = False
+    try:
+        import curl_cffi  # noqa: F401
+        has_curl_cffi = True
+    except ImportError:
+        pass
+    return {
+        "status": "ok",
+        "ytdlp_version": yt_dlp.version.__version__,
+        "curl_cffi": has_curl_cffi,
+    }
 
 
 @app.post("/extract")
 def extract_video(req: ExtractRequest):
+    logger.info("Extract request: url=%s, has_cookies=%s", req.url, bool(req.cookie_content))
     cookie_path = _write_cookies_temp(req.cookie_content)
     try:
         opts = _base_opts(cookie_path)
@@ -119,6 +148,7 @@ def extract_video(req: ExtractRequest):
         thumbnails = info.get("thumbnails", [])
         thumbnail = thumbnails[-1]["url"] if thumbnails else info.get("thumbnail")
 
+        logger.info("Extract success: id=%s, title=%s, formats=%d", info.get("id"), info.get("title"), len(formats))
         return {
             "id": info.get("id"),
             "title": info.get("title"),
@@ -130,10 +160,12 @@ def extract_video(req: ExtractRequest):
             "formats": formats,
         }
     except yt_dlp.utils.DownloadError as e:
+        logger.error("yt-dlp DownloadError: %s", str(e))
         raise HTTPException(status_code=400, detail=str(e))
     except HTTPException:
         raise
     except Exception as e:
+        logger.error("Unexpected error: %s\n%s", str(e), traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         _cleanup(cookie_path)
@@ -141,6 +173,7 @@ def extract_video(req: ExtractRequest):
 
 @app.post("/extract-profile")
 def extract_profile(req: ExtractProfileRequest):
+    logger.info("Extract profile: url=%s, max_videos=%d", req.url, req.max_videos)
     cookie_path = _write_cookies_temp(req.cookie_content)
     try:
         opts = _base_opts(cookie_path)
@@ -187,16 +220,19 @@ def extract_profile(req: ExtractProfileRequest):
                 "webpage_url": entry.get("webpage_url"),
             })
 
+        logger.info("Profile extract success: uploader=%s, videos=%d", info.get("uploader"), len(videos))
         return {
             "uploader": info.get("uploader") or info.get("title"),
             "uploader_id": info.get("uploader_id") or info.get("id"),
             "videos": videos,
         }
     except yt_dlp.utils.DownloadError as e:
+        logger.error("yt-dlp DownloadError: %s", str(e))
         raise HTTPException(status_code=400, detail=str(e))
     except HTTPException:
         raise
     except Exception as e:
+        logger.error("Unexpected error: %s\n%s", str(e), traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         _cleanup(cookie_path)
@@ -204,6 +240,7 @@ def extract_profile(req: ExtractProfileRequest):
 
 @app.post("/download")
 def download_video(req: DownloadRequest):
+    logger.info("Download request: url=%s, format_id=%s", req.url, req.format_id)
     cookie_path = _write_cookies_temp(req.cookie_content)
     download_id = uuid.uuid4().hex
     out_dir = os.path.join(TEMP_DIR, download_id)
@@ -228,6 +265,7 @@ def download_video(req: DownloadRequest):
 
         filepath = files[0]
         filename = os.path.basename(filepath)
+        logger.info("Download success: %s", filename)
 
         def iter_file():
             try:
@@ -249,11 +287,13 @@ def download_video(req: DownloadRequest):
             },
         )
     except yt_dlp.utils.DownloadError as e:
+        logger.error("yt-dlp DownloadError: %s", str(e))
         _cleanup_dir(out_dir)
         raise HTTPException(status_code=400, detail=str(e))
     except HTTPException:
         raise
     except Exception as e:
+        logger.error("Unexpected error: %s\n%s", str(e), traceback.format_exc())
         _cleanup_dir(out_dir)
         raise HTTPException(status_code=500, detail=str(e))
     finally:
