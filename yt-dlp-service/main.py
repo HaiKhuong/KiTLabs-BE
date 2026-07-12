@@ -84,10 +84,11 @@ def _base_opts(cookie_path: Optional[str] = None) -> dict:
 
     try:
         import curl_cffi  # noqa: F401
-        opts["impersonate"] = "chrome"
+        from yt_dlp.networking.impersonate import ImpersonateTarget
+        opts["impersonate"] = ImpersonateTarget(client="chrome")
         logger.info("Using curl_cffi impersonation")
-    except ImportError:
-        logger.info("curl_cffi not available, skipping impersonation")
+    except (ImportError, Exception) as exc:
+        logger.info("Impersonation not available (%s), skipping", exc)
 
     if cookie_path:
         opts["cookiefile"] = cookie_path
