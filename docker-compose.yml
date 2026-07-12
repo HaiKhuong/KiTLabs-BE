@@ -35,7 +35,19 @@ services:
     volumes:
       - redis_data:/data
 
+  ytdlp:
+    build: ./yt-dlp-service
+    container_name: kitools-ytdlp
+    restart: unless-stopped
+    ports:
+      - "8100:8000"
+    volumes:
+      - ytdlp_temp:/tmp/ytdlp
+    environment:
+      - MAX_CONCURRENT_DOWNLOADS=3
+
 volumes:
   pg_data:
   pg_audit_data:
   redis_data:
+  ytdlp_temp:

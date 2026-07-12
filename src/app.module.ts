@@ -18,7 +18,7 @@ import { TOOL_DB_ENTITIES } from "./database/entities/tool.entities";
 import { AuthModule } from "./tools/auth/auth.module";
 import { AppJwtAuthGuard } from "./tools/auth/guards/app-jwt-auth.guard";
 import { CreditsModule } from "./tools/credits/credits.module";
-import { DownloadsModule } from "./tools/downloads/downloads.module";
+import { DouyinModule } from "./tools/douyin/douyin.module";
 import { FilesModule } from "./tools/files/files.module";
 import { LogsModule } from "./tools/logs/logs.module";
 import { NotificationsModule } from "./tools/notifications/notifications.module";
@@ -92,7 +92,7 @@ import { YouTubeModule } from "./tools/youtube/youtube.module";
     UsersModule,
     CreditsModule,
     LogsModule,
-    DownloadsModule,
+    DouyinModule,
     ToolsRealtimeModule,
     TranslateModule,
     AudioModule,
