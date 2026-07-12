@@ -42,9 +42,10 @@ class DownloadRequest(BaseModel):
 def _write_cookies_temp(cookie_content: Optional[str]) -> Optional[str]:
     if not cookie_content:
         return None
+    normalized = cookie_content.replace("\r\n", "\n").replace("\r", "\n")
     path = os.path.join(TEMP_DIR, f"cookies_{uuid.uuid4().hex}.txt")
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(cookie_content)
+    with open(path, "w", encoding="utf-8", newline="\n") as f:
+        f.write(normalized)
     return path
 
 
@@ -61,6 +62,14 @@ def _base_opts(cookie_path: Optional[str] = None) -> dict:
         "quiet": True,
         "no_warnings": True,
         "no_check_certificates": True,
+        "impersonate": "chrome",
+        "http_headers": {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                          "AppleWebKit/537.36 (KHTML, like Gecko) "
+                          "Chrome/131.0.0.0 Safari/537.36",
+            "Referer": "https://www.douyin.com/",
+            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+        },
     }
     if cookie_path:
         opts["cookiefile"] = cookie_path
