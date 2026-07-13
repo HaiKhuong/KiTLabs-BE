@@ -302,7 +302,7 @@ export class DouyinService {
         max_videos: maxVideos,
         cursor,
       },
-      { timeout: 180_000 },
+      { timeout: 300_000 },
     );
 
     const data = response.data;

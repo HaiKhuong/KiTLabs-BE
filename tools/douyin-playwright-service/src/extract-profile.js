@@ -47,8 +47,9 @@ async function fetchPostsPage(page, secUserId, cursor, count = 20) {
       const data = await response.json();
       return {
         aweme_list: data?.aweme_list || [],
-        has_more: data?.has_more ?? 0,
-        max_cursor: data?.max_cursor ?? 0,
+        has_more: data?.has_more,
+        max_cursor: data?.max_cursor,
+        status_code: data?.status_code,
       };
     },
     { secUserId, cursor, count },
@@ -71,23 +72,39 @@ async function extractProfile({ url, cookieContent }) {
 
     const allAweme = [];
     let currentCursor = 0;
-    let hasMore = true;
 
-    for (let pageNum = 0; pageNum < MAX_PAGES && hasMore; pageNum++) {
+    for (let pageNum = 0; pageNum < MAX_PAGES; pageNum++) {
       const pageData = await fetchPostsPage(page, secUserId, currentCursor, 20);
       const list = pageData.aweme_list || [];
 
-      if (list.length === 0) break;
+      console.log(
+        `[profile] page ${pageNum + 1}: cursor=${currentCursor}, ` +
+        `aweme_list=${list.length}, has_more=${pageData.has_more} (type=${typeof pageData.has_more}), ` +
+        `max_cursor=${pageData.max_cursor}, status_code=${pageData.status_code}`,
+      );
+
+      if (list.length === 0) {
+        console.log(`[profile] empty page, stopping`);
+        break;
+      }
 
       allAweme.push(...list);
-      hasMore = !!pageData.has_more;
-      currentCursor = pageData.max_cursor ?? 0;
 
-      console.log(`[profile] page ${pageNum + 1}: +${list.length} videos, total=${allAweme.length}, hasMore=${hasMore}`);
+      const nextCursor = pageData.max_cursor;
+      const hasMore = pageData.has_more == 1 || pageData.has_more === true;
 
-      if (hasMore) {
-        await page.waitForTimeout(500);
+      if (!hasMore) {
+        console.log(`[profile] has_more is falsy, stopping. total=${allAweme.length}`);
+        break;
       }
+
+      if (!nextCursor || nextCursor === currentCursor) {
+        console.log(`[profile] cursor stuck (${nextCursor}), stopping. total=${allAweme.length}`);
+        break;
+      }
+
+      currentCursor = nextCursor;
+      await page.waitForTimeout(800);
     }
 
     if (!allAweme.length) {
