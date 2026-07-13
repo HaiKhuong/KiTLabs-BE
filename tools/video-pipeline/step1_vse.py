@@ -17,6 +17,7 @@ import multiprocessing
 import os
 import platform
 import re
+import shlex
 import shutil
 import subprocess
 import time
@@ -253,6 +254,22 @@ def _collect_vsf_images(out_dir: Path) -> list[tuple[float, Path]]:
     return []
 
 
+def _wrap_docker_cmd(cmd: list[str]) -> list[str]:
+    """
+    Nest/systemd often lacks docker group in the process session even after usermod.
+    `sg docker -c '...'` applies the group without re-login when user is in /etc/group.
+    Override with env VSE_DOCKER_SG=0 to disable.
+    """
+    if platform.system() != "Linux":
+        return cmd
+    if str(os.environ.get("VSE_DOCKER_SG", "1")).strip().lower() in ("0", "off", "false", "no"):
+        return cmd
+    if not Path("/usr/bin/sg").is_file() and not shutil.which("sg"):
+        return cmd
+    quoted = " ".join(shlex.quote(x) for x in cmd)
+    return ["sg", "docker", "-c", quoted]
+
+
 def _run_videosubfinder(video_path: Path, out_dir: Path, empty_srt: Path) -> None:
     log = _cfg["log"]
     top_end, bottom_end, left_end, right_end = _band_to_vsf_roi()
@@ -298,9 +315,10 @@ def _run_videosubfinder(video_path: Path, out_dir: Path, empty_srt: Path) -> Non
             "-o", "/vsf_out",
             "-ces", f"/vsf_out/{empty_srt.name}",
         ]
+        cmd = _wrap_docker_cmd(cmd)
         cwd = str(out_dir)
         env = os.environ.copy()
-        log(f"Step1 VSE: docker run {image} …")
+        log(f"Step1 VSE: docker run {image} … ({' '.join(cmd[:3])}…)")
     else:
         binary = _resolve_vsf_binary()
         native_args = [
@@ -335,6 +353,14 @@ def _run_videosubfinder(video_path: Path, out_dir: Path, empty_srt: Path) -> Non
                 "\nBuild image first:\n"
                 "  docker build -t kitools-videosubfinder "
                 "tools/video-pipeline/subfinder\n"
+            )
+        elif use_docker and "permission denied" in tail.lower() and "docker" in tail.lower():
+            hint = (
+                "\nDocker socket permission denied. Fix on server (pick one):\n"
+                "  1) usermod -aG docker <nest-user> && systemctl restart <nest-service>\n"
+                "     (or add SupplementaryGroups=docker in the systemd unit)\n"
+                "  2) temporary: chmod 666 /var/run/docker.sock\n"
+                "  3) verify: sg docker -c 'docker run --rm kitools-videosubfinder -h'\n"
             )
         raise RuntimeError(
             f"Step1 VSE: VideoSubFinder failed (code={proc.returncode}, {elapsed:.1f}s).{hint}\n{tail}"
