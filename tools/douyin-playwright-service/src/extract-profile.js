@@ -20,118 +20,77 @@ function extractSecUserId(profileUrl) {
   return decodeURIComponent(match[1]);
 }
 
-async function fetchPostsPage(page, secUserId, cursor) {
-  return page.evaluate(
-    async ({ secUserId: userId, cursor: startCursor }) => {
-      const apiUrl =
-        `https://www.douyin.com/aweme/v1/web/aweme/post/` +
-        `?device_platform=webapp&aid=6383&channel=channel_pc_web` +
-        `&sec_user_id=${encodeURIComponent(userId)}` +
-        `&max_cursor=${startCursor}`;
-
-      const response = await fetch(apiUrl, {
-        headers: {
-          accept: "application/json, text/plain, */*",
-          "accept-language": "vi",
-          "sec-ch-ua":
-            '"Not?A_Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
-          "sec-ch-ua-mobile": "?0",
-          "sec-ch-ua-platform": '"Windows"',
-          "sec-fetch-dest": "empty",
-          "sec-fetch-mode": "cors",
-          "sec-fetch-site": "same-origin",
-        },
-        referrer: `https://www.douyin.com/user/${userId}`,
-        referrerPolicy: "strict-origin-when-cross-origin",
-        credentials: "include",
-        method: "GET",
-        mode: "cors",
-      });
-
-      if (!response.ok) {
-        throw new Error(`Douyin API returned HTTP ${response.status}`);
-      }
-
-      const text = await response.text();
-      let data;
-      try {
-        data = JSON.parse(text);
-      } catch {
-        return {
-          aweme_list: [],
-          has_more: undefined,
-          max_cursor: undefined,
-          status_code: -1,
-          raw_keys: [],
-          raw_preview: text.slice(0, 500),
-        };
-      }
-      return {
-        aweme_list: data?.aweme_list || [],
-        has_more: data?.has_more,
-        max_cursor: data?.max_cursor,
-        status_code: data?.status_code,
-        raw_keys: Object.keys(data || {}),
-        raw_preview: text.slice(0, 300),
-      };
-    },
-    { secUserId, cursor },
-  );
-}
-
 async function extractProfile({ url, cookieContent }) {
   const secUserId = extractSecUserId(url);
-  const MAX_PAGES = 50;
+  const MAX_SCROLL_ROUNDS = 60;
+  const SCROLL_PAUSE = 1500;
+  const STALE_LIMIT = 5;
 
   const { context, page } = await createDouyinPage(cookieContent);
 
   try {
+    const allAweme = [];
+    const seenIds = new Set();
+
+    page.on("response", async (response) => {
+      if (!response.url().includes("/aweme/v1/web/aweme/post")) return;
+      try {
+        const json = await response.json();
+        const list = json?.aweme_list;
+        if (!Array.isArray(list)) return;
+
+        for (const item of list) {
+          const id = item.aweme_id || item.awemeId;
+          if (id && !seenIds.has(id)) {
+            seenIds.add(id);
+            allAweme.push(item);
+          }
+        }
+        console.log(
+          `[profile] intercepted: +${list.length} items, unique total=${allAweme.length}, ` +
+          `has_more=${json.has_more}, max_cursor=${json.max_cursor}`,
+        );
+      } catch {
+        // ignore non-JSON or parse errors
+      }
+    });
+
+    console.log(`[profile] navigating to profile: ${secUserId}`);
     await page.goto(`${DOUYIN_ORIGIN}/user/${secUserId}`, {
       waitUntil: "domcontentloaded",
       timeout: 60_000,
     });
 
-    await page.waitForTimeout(2_000);
+    await page.waitForTimeout(3_000);
+    console.log(`[profile] initial load done, collected=${allAweme.length}`);
 
-    const allAweme = [];
-    let currentCursor = 0;
+    let staleCount = 0;
+    let prevCount = allAweme.length;
 
-    for (let pageNum = 0; pageNum < MAX_PAGES; pageNum++) {
-      const pageData = await fetchPostsPage(page, secUserId, currentCursor);
-      const list = pageData.aweme_list || [];
+    for (let round = 0; round < MAX_SCROLL_ROUNDS; round++) {
+      await page.evaluate(() => {
+        window.scrollBy(0, window.innerHeight * 3);
+      });
 
-      console.log(
-        `[profile] page ${pageNum + 1}: cursor=${currentCursor}, ` +
-        `aweme_list=${list.length}, has_more=${pageData.has_more} (type=${typeof pageData.has_more}), ` +
-        `max_cursor=${pageData.max_cursor}, status_code=${pageData.status_code}, ` +
-        `keys=[${(pageData.raw_keys || []).join(",")}]`,
-      );
-      if (list.length === 0) {
-        console.log(`[profile] raw_preview: ${pageData.raw_preview || "N/A"}`);
+      await page.waitForTimeout(SCROLL_PAUSE);
+
+      const currentCount = allAweme.length;
+      if (currentCount === prevCount) {
+        staleCount++;
+        console.log(
+          `[profile] scroll ${round + 1}: no new videos (stale=${staleCount}/${STALE_LIMIT}), total=${currentCount}`,
+        );
+        if (staleCount >= STALE_LIMIT) {
+          console.log(`[profile] no more videos after ${STALE_LIMIT} stale scrolls, stopping`);
+          break;
+        }
+      } else {
+        staleCount = 0;
+        console.log(
+          `[profile] scroll ${round + 1}: +${currentCount - prevCount} new, total=${currentCount}`,
+        );
+        prevCount = currentCount;
       }
-
-      if (list.length === 0) {
-        console.log(`[profile] empty page, stopping`);
-        break;
-      }
-
-      allAweme.push(...list);
-
-      const nextCursor = pageData.max_cursor;
-      const hasMore = pageData.has_more == 1 || pageData.has_more === true;
-
-      if (!hasMore) {
-        console.log(`[profile] has_more is falsy, stopping. total=${allAweme.length}`);
-        break;
-      }
-
-      if (!nextCursor || nextCursor === currentCursor) {
-        console.log(`[profile] cursor stuck (${nextCursor}), stopping. total=${allAweme.length}`);
-        break;
-      }
-
-      currentCursor = nextCursor;
-      await page.waitForTimeout(800);
     }
 
     if (!allAweme.length) {
