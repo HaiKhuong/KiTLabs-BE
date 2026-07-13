@@ -1,15 +1,23 @@
 #!/usr/bin/env bash
-# Download VideoSubFinder binaries from YaoFANGUK/video-subtitle-extractor (main).
+# Download VideoSubFinder CLI for Step1 VSE mode.
+#
+# Linux default: static build from eritpchy/videosubfinder-cli
+#   (YaoFANGUK bundled binary often segfaults / missing libavcodec on modern Ubuntu)
+#
 # Usage:
 #   bash tools/video-pipeline/scripts/download_videosubfinder.sh
 #   bash tools/video-pipeline/scripts/download_videosubfinder.sh linux
 #   bash tools/video-pipeline/scripts/download_videosubfinder.sh windows
+#   bash tools/video-pipeline/scripts/download_videosubfinder.sh macos
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PIPELINE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 SUBFINDER_DIR="${PIPELINE_DIR}/subfinder"
-REPO_RAW="https://raw.githubusercontent.com/YaoFANGUK/video-subtitle-extractor/main/backend/subfinder"
+
+# Static CPU Linux build — no shared ffmpeg/opencv deps required.
+ERITPCHY_TAG="6.10.2-ci"
+ERITPCHY_STATIC_URL="https://github.com/eritpchy/videosubfinder-cli/releases/download/${ERITPCHY_TAG}/videosubfinder-cli-cpu-static-linux-x64.tar.gz"
 
 TARGET="${1:-}"
 if [[ -z "${TARGET}" ]]; then
@@ -42,31 +50,51 @@ download() {
 
 case "${TARGET}" in
   linux)
-    download "${REPO_RAW}/linux/VideoSubFinderCli" "VideoSubFinderCli"
-    download "${REPO_RAW}/linux/VideoSubFinderCli.run" "VideoSubFinderCli.run"
-    chmod +x VideoSubFinderCli VideoSubFinderCli.run
-    # settings (optional but recommended)
-    mkdir -p settings
-    if command -v curl >/dev/null 2>&1; then
-      curl -fsSL "https://api.github.com/repos/YaoFANGUK/video-subtitle-extractor/contents/backend/subfinder/linux/settings?ref=main" \
-        | python3 -c '
-import json,sys,urllib.request,os
-items=json.load(sys.stdin)
-for it in items:
-  if it.get("type")!="file": continue
-  name=it["name"]
-  url=it.get("download_url")
-  if not url: continue
-  print("  GET", url)
-  urllib.request.urlretrieve(url, os.path.join("settings", name))
-' || echo "WARN: could not fetch settings/ (optional)"
+    TMP="videosubfinder-cli-cpu-static-linux-x64.tar.gz"
+    download "${ERITPCHY_STATIC_URL}" "${TMP}"
+    # Clear previous broken YaoFANGUK binary if present
+    rm -f VideoSubFinderCli VideoSubFinderCli.run 2>/dev/null || true
+    tar -xzf "${TMP}"
+    rm -f "${TMP}"
+
+    # Normalize name: find extracted VideoSubFinderCli*
+    FOUND=""
+    if [[ -f VideoSubFinderCli ]]; then
+      FOUND="VideoSubFinderCli"
+    elif [[ -f VideoSubFinderCli.run ]]; then
+      FOUND="VideoSubFinderCli.run"
+    else
+      FOUND="$(find . -maxdepth 2 -type f \( -name 'VideoSubFinderCli' -o -name 'VideoSubFinderCli.run' \) | head -n1 || true)"
+      if [[ -n "${FOUND}" && "${FOUND}" != "./VideoSubFinderCli" ]]; then
+        cp -f "${FOUND}" ./VideoSubFinderCli
+        FOUND="./VideoSubFinderCli"
+      fi
+    fi
+
+    if [[ -z "${FOUND}" || ! -f VideoSubFinderCli && ! -f VideoSubFinderCli.run ]]; then
+      echo "ERROR: archive extracted but VideoSubFinderCli not found. Contents:"
+      find . -maxdepth 2 -type f | head -40
+      exit 1
+    fi
+
+    chmod +x VideoSubFinderCli VideoSubFinderCli.run 2>/dev/null || true
+    echo "Smoke test:"
+    if ./VideoSubFinderCli -h >/tmp/vsf_help.txt 2>&1 || ./VideoSubFinderCli --help >/tmp/vsf_help.txt 2>&1; then
+      head -n 5 /tmp/vsf_help.txt || true
+      echo "OK: VideoSubFinderCli runs"
+    else
+      echo "WARN: --help failed (exit $?). First lines:"
+      head -n 20 /tmp/vsf_help.txt || true
+      echo "Try: ldd ./VideoSubFinderCli | grep 'not found'"
     fi
     ;;
   macos)
+    REPO_RAW="https://raw.githubusercontent.com/YaoFANGUK/video-subtitle-extractor/main/backend/subfinder"
     download "${REPO_RAW}/macos/VideoSubFinderCli" "VideoSubFinderCli"
-    chmod +x VideoSubFinderCli
+    chmod +x VideoSubFinderCli || true
     ;;
   windows)
+    REPO_RAW="https://raw.githubusercontent.com/YaoFANGUK/video-subtitle-extractor/main/backend/subfinder"
     download "${REPO_RAW}/windows/VideoSubFinderWXW.exe" "VideoSubFinderWXW.exe"
     ;;
   *)

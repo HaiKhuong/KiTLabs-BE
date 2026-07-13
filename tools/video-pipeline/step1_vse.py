@@ -144,9 +144,10 @@ def _resolve_vsf_binary() -> Path:
             script_dir / "subfinder" / "macos" / "VideoSubFinderCli",
         ]
     else:
+        # Prefer the ELF binary — avoid chmod on .run (often EPERM on some mounts).
         candidates = [
-            script_dir / "subfinder" / "linux" / "VideoSubFinderCli.run",
             script_dir / "subfinder" / "linux" / "VideoSubFinderCli",
+            script_dir / "subfinder" / "linux" / "VideoSubFinderCli.run",
         ]
 
     for c in candidates:
@@ -158,6 +159,36 @@ def _resolve_vsf_binary() -> Path:
         "  Run: bash tools/video-pipeline/scripts/download_videosubfinder.sh\n"
         f"  Expected under: {script_dir / 'subfinder'}"
     )
+
+
+def _try_chmod_exec(path: Path) -> None:
+    """Best-effort +x; ignore EPERM (common on noexec/ACL mounts)."""
+    try:
+        mode = path.stat().st_mode
+        os.chmod(path, mode | 0o111)
+    except OSError:
+        pass
+
+
+def _build_vsf_cmd(binary: Path, args: list[str]) -> list[str]:
+    """
+    Invoke VideoSubFinder without requiring chmod when possible.
+    - ELF binary: run directly (or via /lib64/ld-linux if not executable)
+    - .run shell wrapper: always via /bin/sh
+    """
+    if binary.suffix == ".run" or binary.name.endswith(".run"):
+        return ["/bin/sh", str(binary), *args]
+
+    _try_chmod_exec(binary)
+    if os.access(binary, os.X_OK):
+        return [str(binary), *args]
+
+    # Not executable and chmod failed — still try direct path; if that fails caller sees stderr.
+    # On Linux, running via sh does not work for ELF; try common dynamic linker.
+    for ld in ("/lib64/ld-linux-x86-64.so.2", "/lib/ld-linux-x86-64.so.2"):
+        if Path(ld).is_file():
+            return [ld, str(binary), *args]
+    return [str(binary), *args]
 
 
 def _band_to_vsf_roi() -> tuple[float, float, float, float]:
@@ -226,10 +257,10 @@ def _run_videosubfinder(video_path: Path, out_dir: Path, empty_srt: Path) -> Non
     cpu_count = _cfg["vsf_cpu_cores"] or max(multiprocessing.cpu_count() - 2, 1)
     use_cuda = bool(_cfg.get("vsf_use_cuda"))
 
-    cmd: list[str] = [str(binary), "-c", "-r", "-i", str(video_path), "-o", str(out_dir), "-ces", str(empty_srt)]
+    vsf_args: list[str] = ["-c", "-r", "-i", str(video_path), "-o", str(out_dir), "-ces", str(empty_srt)]
     if use_cuda:
-        cmd.append("--use_cuda")
-    cmd += [
+        vsf_args.append("--use_cuda")
+    vsf_args += [
         "-te", f"{top_end:.6f}",
         "-be", f"{bottom_end:.6f}",
         "-le", f"{left_end:.6f}",
@@ -238,19 +269,15 @@ def _run_videosubfinder(video_path: Path, out_dir: Path, empty_srt: Path) -> Non
         "--open_video_opencv",
     ]
     if platform.system() != "Windows":
-        cmd.append("-dsi")
+        vsf_args.append("-dsi")
+
+    cmd = _build_vsf_cmd(binary, vsf_args)
 
     log(
         f"Step1 VSE: VideoSubFinder ROI te={top_end:.3f} be={bottom_end:.3f} "
         f"le={left_end:.3f} re={right_end:.3f} cuda={use_cuda} nthr={cpu_count}"
     )
     log(f"Step1 VSE: run {binary.name} …")
-
-    if platform.system() != "Windows" and binary.suffix == ".run":
-        os.chmod(binary, 0o775)
-        cli = binary.parent / "VideoSubFinderCli"
-        if cli.is_file():
-            os.chmod(cli, 0o775)
 
     t0 = time.time()
     env = os.environ.copy()
