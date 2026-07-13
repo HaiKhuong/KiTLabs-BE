@@ -3232,6 +3232,39 @@ def parse_cli_args():
             "Nếu >= N frame lân cận có text >=fuzzy-threshold%% giống → rescue."
         ),
     )
+    # ── PaddleOCR ──
+    parser.add_argument("--paddleocr-crop-band-hi", type=float, default=PADDLEOCR_SUBTITLE_CROP_BAND_HI,
+        help="PaddleOCR: outer edge from bottom as fraction (default 0.20).")
+    parser.add_argument("--paddleocr-crop-probe-h-trim-left-frac", type=float, default=PADDLEOCR_CROP_PROBE_H_TRIM_LEFT_FRAC,
+        help="PaddleOCR: horizontal trim left fraction (0–0.49, default 0.15).")
+    parser.add_argument("--paddleocr-crop-probe-h-trim-right-frac", type=float, default=PADDLEOCR_CROP_PROBE_H_TRIM_RIGHT_FRAC,
+        help="PaddleOCR: horizontal trim right fraction (0–0.49, default 0.15).")
+    parser.add_argument("--paddleocr-max-strip-height-ratio", type=float, default=PADDLEOCR_MAX_STRIP_HEIGHT_RATIO,
+        help="PaddleOCR: max strip height as fraction (default 0.05).")
+    parser.add_argument("--paddleocr-scan-fps", type=float, default=PADDLEOCR_SCAN_FPS,
+        help="PaddleOCR: frame scan FPS (default 10).")
+    parser.add_argument("--paddleocr-framediff-threshold", type=float, default=PADDLEOCR_FRAMEDIFF_THRESHOLD,
+        help="PaddleOCR: MAD threshold for frame change detection (default 8.0).")
+    parser.add_argument("--paddleocr-batch-size", type=int, default=PADDLEOCR_BATCH_SIZE,
+        help="PaddleOCR: batch inference size (default 8).")
+    parser.add_argument("--paddleocr-min-confidence", type=float, default=PADDLEOCR_MIN_CONFIDENCE,
+        help="PaddleOCR: min OCR confidence (default 0.5).")
+    parser.add_argument("--paddleocr-min-duration-ms", type=int, default=PADDLEOCR_MIN_DURATION_MS,
+        help="PaddleOCR: min SRT cue duration ms (default 500).")
+    parser.add_argument("--paddleocr-fuzzy-threshold", type=float, default=PADDLEOCR_FUZZY_THRESHOLD,
+        help="PaddleOCR: fuzzy dedup similarity %% (default 55).")
+    parser.add_argument("--paddleocr-use-gpu", choices=["on", "off"], default="on" if PADDLEOCR_USE_GPU else "off",
+        help="PaddleOCR: use GPU (default off).")
+    parser.add_argument("--paddleocr-lang", default=None,
+        help="PaddleOCR: language (default ch).")
+    parser.add_argument("--paddleocr-cleanup-debug-after-step7", choices=["on", "off"],
+        default="on" if PADDLEOCR_CLEANUP_DEBUG_AFTER_STEP7 else "off",
+        help="PaddleOCR: delete debug files after Step7 (default on).")
+    parser.add_argument("--paddleocr-watermark-blacklist", default=None,
+        help="PaddleOCR: comma-separated watermark blacklist.")
+    parser.add_argument("--paddleocr-watermark-min-frames", type=int, default=None,
+        help="PaddleOCR: min frames for watermark detection (0=auto).")
+
     parser.add_argument(
         "--mode",
         choices=["basic", "advance"],

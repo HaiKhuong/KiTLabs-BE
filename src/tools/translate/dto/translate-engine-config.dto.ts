@@ -720,6 +720,158 @@ export class TranslateEngineConfigDto {
   @IsString()
   easy_ocr_unsharp?: string;
 
+  // ── PaddleOCR ──
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  paddleOcrCropBandHi?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  paddleocr_crop_band_hi?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  @Max(0.49)
+  paddleOcrCropProbeHTrimLeftFrac?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  @Max(0.49)
+  paddleocr_crop_probe_h_trim_left_frac?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  @Max(0.49)
+  paddleOcrCropProbeHTrimRightFrac?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  @Max(0.49)
+  paddleocr_crop_probe_h_trim_right_frac?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  paddleOcrMaxStripHeightRatio?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  paddleocr_max_strip_height_ratio?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  paddleOcrScanFps?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  paddleocr_scan_fps?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  paddleOcrFramediffThreshold?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  paddleocr_framediff_threshold?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  paddleOcrBatchSize?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  paddleocr_batch_size?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  paddleOcrMinConfidence?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  paddleocr_min_confidence?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  paddleOcrMinDurationMs?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  paddleocr_min_duration_ms?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  paddleOcrFuzzyThreshold?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  paddleocr_fuzzy_threshold?: number;
+
+  @IsOptional()
+  @IsString()
+  paddleOcrUseGpu?: string;
+
+  @IsOptional()
+  @IsString()
+  paddleocr_use_gpu?: string;
+
+  @IsOptional()
+  @IsString()
+  paddleOcrLang?: string;
+
+  @IsOptional()
+  @IsString()
+  paddleocr_lang?: string;
+
+  @IsOptional()
+  @IsString()
+  paddleOcrCleanupDebugAfterStep7?: string;
+
+  @IsOptional()
+  @IsString()
+  paddleocr_cleanup_debug_after_step7?: string;
+
+  @IsOptional()
+  @IsString()
+  paddleOcrWatermarkBlacklist?: string;
+
+  @IsOptional()
+  @IsString()
+  paddleocr_watermark_blacklist?: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  paddleOcrWatermarkMinFrames?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  paddleocr_watermark_min_frames?: number;
+
   /** Step6 horizontal flip (ffmpeg hflip); CLI: on | off */
   @IsOptional()
   @IsString()

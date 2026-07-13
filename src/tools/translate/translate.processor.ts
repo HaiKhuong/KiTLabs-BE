@@ -222,6 +222,82 @@ const OPTION_MAPPINGS: Array<{
     keys: ["easyOcrBridgeMinMatch", "easy_ocr_bridge_min_match"],
     allowedTypes: ["number", "string"],
   },
+  // ── PaddleOCR ──
+  {
+    cliFlag: "--paddleocr-crop-band-hi",
+    keys: ["paddleOcrCropBandHi", "paddleocr_crop_band_hi"],
+    allowedTypes: ["number", "string"],
+  },
+  {
+    cliFlag: "--paddleocr-crop-probe-h-trim-left-frac",
+    keys: ["paddleOcrCropProbeHTrimLeftFrac", "paddleocr_crop_probe_h_trim_left_frac"],
+    allowedTypes: ["number", "string"],
+  },
+  {
+    cliFlag: "--paddleocr-crop-probe-h-trim-right-frac",
+    keys: ["paddleOcrCropProbeHTrimRightFrac", "paddleocr_crop_probe_h_trim_right_frac"],
+    allowedTypes: ["number", "string"],
+  },
+  {
+    cliFlag: "--paddleocr-max-strip-height-ratio",
+    keys: ["paddleOcrMaxStripHeightRatio", "paddleocr_max_strip_height_ratio"],
+    allowedTypes: ["number", "string"],
+  },
+  {
+    cliFlag: "--paddleocr-scan-fps",
+    keys: ["paddleOcrScanFps", "paddleocr_scan_fps"],
+    allowedTypes: ["number", "string"],
+  },
+  {
+    cliFlag: "--paddleocr-framediff-threshold",
+    keys: ["paddleOcrFramediffThreshold", "paddleocr_framediff_threshold"],
+    allowedTypes: ["number", "string"],
+  },
+  {
+    cliFlag: "--paddleocr-batch-size",
+    keys: ["paddleOcrBatchSize", "paddleocr_batch_size"],
+    allowedTypes: ["number", "string"],
+  },
+  {
+    cliFlag: "--paddleocr-min-confidence",
+    keys: ["paddleOcrMinConfidence", "paddleocr_min_confidence"],
+    allowedTypes: ["number", "string"],
+  },
+  {
+    cliFlag: "--paddleocr-min-duration-ms",
+    keys: ["paddleOcrMinDurationMs", "paddleocr_min_duration_ms"],
+    allowedTypes: ["number", "string"],
+  },
+  {
+    cliFlag: "--paddleocr-fuzzy-threshold",
+    keys: ["paddleOcrFuzzyThreshold", "paddleocr_fuzzy_threshold"],
+    allowedTypes: ["number", "string"],
+  },
+  {
+    cliFlag: "--paddleocr-use-gpu",
+    keys: ["paddleOcrUseGpu", "paddleocr_use_gpu"],
+    allowedTypes: ["string"],
+  },
+  {
+    cliFlag: "--paddleocr-lang",
+    keys: ["paddleOcrLang", "paddleocr_lang"],
+    allowedTypes: ["string"],
+  },
+  {
+    cliFlag: "--paddleocr-cleanup-debug-after-step7",
+    keys: ["paddleOcrCleanupDebugAfterStep7", "paddleocr_cleanup_debug_after_step7"],
+    allowedTypes: ["string"],
+  },
+  {
+    cliFlag: "--paddleocr-watermark-blacklist",
+    keys: ["paddleOcrWatermarkBlacklist", "paddleocr_watermark_blacklist"],
+    allowedTypes: ["string"],
+  },
+  {
+    cliFlag: "--paddleocr-watermark-min-frames",
+    keys: ["paddleOcrWatermarkMinFrames", "paddleocr_watermark_min_frames"],
+    allowedTypes: ["number", "string"],
+  },
   {
     cliFlag: "--step6-hflip",
     keys: ["step6Hflip", "step6_hflip", "enableFlip", "enable_flip"],
