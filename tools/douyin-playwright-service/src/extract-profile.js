@@ -52,12 +52,27 @@ async function fetchPostsPage(page, secUserId, cursor) {
         throw new Error(`Douyin API returned HTTP ${response.status}`);
       }
 
-      const data = await response.json();
+      const text = await response.text();
+      let data;
+      try {
+        data = JSON.parse(text);
+      } catch {
+        return {
+          aweme_list: [],
+          has_more: undefined,
+          max_cursor: undefined,
+          status_code: -1,
+          raw_keys: [],
+          raw_preview: text.slice(0, 500),
+        };
+      }
       return {
         aweme_list: data?.aweme_list || [],
         has_more: data?.has_more,
         max_cursor: data?.max_cursor,
         status_code: data?.status_code,
+        raw_keys: Object.keys(data || {}),
+        raw_preview: text.slice(0, 300),
       };
     },
     { secUserId, cursor },
@@ -88,8 +103,12 @@ async function extractProfile({ url, cookieContent }) {
       console.log(
         `[profile] page ${pageNum + 1}: cursor=${currentCursor}, ` +
         `aweme_list=${list.length}, has_more=${pageData.has_more} (type=${typeof pageData.has_more}), ` +
-        `max_cursor=${pageData.max_cursor}, status_code=${pageData.status_code}`,
+        `max_cursor=${pageData.max_cursor}, status_code=${pageData.status_code}, ` +
+        `keys=[${(pageData.raw_keys || []).join(",")}]`,
       );
+      if (list.length === 0) {
+        console.log(`[profile] raw_preview: ${pageData.raw_preview || "N/A"}`);
+      }
 
       if (list.length === 0) {
         console.log(`[profile] empty page, stopping`);
