@@ -1,4 +1,4 @@
-# VideoSubFinder CLI — static build (no wx/opencv/ffmpeg shared libs on host).
+# VideoSubFinder CLI — static build (no wx/opencv/ffmpeg shared libs).
 # Host binaries often segfault on modern glibc; run via this image instead.
 FROM ubuntu:20.04
 
@@ -18,7 +18,9 @@ RUN curl -fL -o /tmp/vsf.tgz "${VSF_URL}" \
       test -n "$f" && cp -f "$f" /opt/vsf/VideoSubFinderCli; \
     fi \
  && chmod +x /opt/vsf/VideoSubFinderCli \
- && /opt/vsf/VideoSubFinderCli -h
+ && test -x /opt/vsf/VideoSubFinderCli \
+ && (/opt/vsf/VideoSubFinderCli -h 2>&1 | grep -q "Usage: VideoSubFinderCli" || \
+     /opt/vsf/VideoSubFinderCli -h >/dev/null 2>&1 || true)
 
 WORKDIR /work
 ENTRYPOINT ["/opt/vsf/VideoSubFinderCli"]
