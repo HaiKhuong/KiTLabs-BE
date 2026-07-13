@@ -485,6 +485,40 @@ export class TranslateEngineConfigDto {
   @IsIn(["whisper", "vse", "easyocr", "paddleocr", "embedded"])
   step1_subtitle_source?: string;
 
+  @IsOptional()
+  @IsString()
+  vseUseCuda?: string;
+
+  @IsOptional()
+  @IsString()
+  vse_use_cuda?: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  vseCpuCores?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  vse_cpu_cores?: number;
+
+  @IsOptional()
+  @IsString()
+  vseBinaryPath?: string;
+
+  @IsOptional()
+  @IsString()
+  vse_binary_path?: string;
+
+  @IsOptional()
+  @IsString()
+  vseCleanupDebugAfterStep7?: string;
+
+  @IsOptional()
+  @IsString()
+  vse_cleanup_debug_after_step7?: string;
+
   /** EasyOCR crop band inner edge from bottom (0–1) */
   @IsOptional()
   @Type(() => Number)

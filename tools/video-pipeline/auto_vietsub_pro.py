@@ -38,6 +38,8 @@ from step1_easyocr import configure_step1_easyocr
 from step1_easyocr import run as _step1_easyocr_run
 from step1_paddleocr import configure_step1_paddleocr
 from step1_paddleocr import run as _step1_paddleocr_run
+from step1_vse import configure_step1_vse
+from step1_vse import run as _step1_vse_run
 from step2_gemini import (
     configure_step2_gemini,
     resolve_gemini_api_keys_for_tier,
@@ -328,6 +330,13 @@ PADDLEOCR_CLEANUP_DEBUG_AFTER_STEP7 = True  # xóa LOG_DIR/step1_paddleocr sau S
 # Watermark filter (PaddleOCR)
 PADDLEOCR_WATERMARK_BLACKLIST = "腾讯视频,优酷,爱奇艺,芒果TV,bilibili,VIP,独播,搜狐视频,乐视,PP视频,咪咕视频"
 PADDLEOCR_WATERMARK_MIN_FRAMES = 0  # 0=auto (80% of total scanned frames); >0=fixed threshold
+
+# VSE = VideoSubFinder (frame detect) + PaddleOCR (STEP1_SUBTITLE_SOURCE = "vse")
+# ROI reuse PaddleOCR crop band / h-trim. Binary: tools/video-pipeline/subfinder/
+VSE_USE_CUDA = False
+VSE_CPU_CORES = 0  # 0 = auto (cpu_count - 2)
+VSE_BINARY_PATH = ""  # optional override; empty = auto-resolve under subfinder/
+VSE_CLEANUP_DEBUG_AFTER_STEP7 = True
 
 STEP1_MAX_SUBTITLE_CHARS = 22  # số ký tự tối đa mỗi câu sau tách.
 STEP1_MIN_SUBTITLE_DURATION_MS = 280  # thời gian hiển thị tối thiểu mỗi câu.
@@ -1907,6 +1916,35 @@ def _step1_ocr_with_paddleocr(video_path):
     return _step1_paddleocr_run(video_path)
 
 
+def _step1_ocr_with_vse(video_path):
+    """Wrapper: VideoSubFinder frame detect + PaddleOCR (VSE mode)."""
+    configure_step1_vse(
+        log=log,
+        ffmpeg_bin=FFMPEG_BIN,
+        fmt_time=fmt_time,
+        get_zh_srt_path=get_zh_srt_path,
+        log_dir=LOG_DIR,
+        script_dir=SCRIPT_DIR,
+        lang=PADDLEOCR_LANG,
+        use_gpu=PADDLEOCR_USE_GPU,
+        use_angle_cls=PADDLEOCR_USE_ANGLE_CLS,
+        min_confidence=PADDLEOCR_MIN_CONFIDENCE,
+        subtitle_crop_band_hi=PADDLEOCR_SUBTITLE_CROP_BAND_HI,
+        max_strip_height_ratio=PADDLEOCR_MAX_STRIP_HEIGHT_RATIO,
+        crop_probe_h_trim_left_frac=PADDLEOCR_CROP_PROBE_H_TRIM_LEFT_FRAC,
+        crop_probe_h_trim_right_frac=PADDLEOCR_CROP_PROBE_H_TRIM_RIGHT_FRAC,
+        fuzzy_threshold=PADDLEOCR_FUZZY_THRESHOLD,
+        merge_gap_ms=PADDLEOCR_MERGE_GAP_MS,
+        min_duration_ms=PADDLEOCR_MIN_DURATION_MS,
+        watermark_blacklist=PADDLEOCR_WATERMARK_BLACKLIST,
+        watermark_min_frames=PADDLEOCR_WATERMARK_MIN_FRAMES,
+        vsf_cpu_cores=VSE_CPU_CORES,
+        vsf_use_cuda=VSE_USE_CUDA,
+        vsf_binary_path=VSE_BINARY_PATH,
+    )
+    return _step1_vse_run(video_path)
+
+
 def step1_transcribe(video_path):
     source_mode = str(STEP1_SUBTITLE_SOURCE or "whisper").strip().lower()
     if source_mode == "embedded":
@@ -1917,9 +1955,11 @@ def step1_transcribe(video_path):
         return _step1_ocr_with_easyocr(video_path)
     if source_mode == "paddleocr":
         return _step1_ocr_with_paddleocr(video_path)
+    if source_mode == "vse":
+        return _step1_ocr_with_vse(video_path)
     raise RuntimeError(
         f"Unsupported Step1 source: {STEP1_SUBTITLE_SOURCE}. "
-        "Use --step1-subtitle-source whisper|embedded|easyocr|paddleocr."
+        "Use --step1-subtitle-source whisper|embedded|easyocr|paddleocr|vse."
     )
 
 
@@ -2992,14 +3032,38 @@ def parse_cli_args():
     )
     parser.add_argument(
         "--step1-subtitle-source",
-        choices=["whisper", "embedded", "easyocr", "paddleocr"],
+        choices=["whisper", "embedded", "easyocr", "paddleocr", "vse"],
         default=STEP1_SUBTITLE_SOURCE,
         help=(
             "Step1 subtitle source: whisper=ASR from audio, "
             "embedded=extract subtitle stream with ffmpeg, "
             "easyocr=visual OCR on subtitle region (fixed FPS), "
-            "paddleocr=visual OCR with Frame Difference frame selection (PP-OCRv6)."
+            "paddleocr=visual OCR with Frame Difference frame selection (PP-OCRv6), "
+            "vse=VideoSubFinder frame detect + PaddleOCR."
         ),
+    )
+    parser.add_argument(
+        "--vse-use-cuda",
+        choices=["on", "off"],
+        default="on" if VSE_USE_CUDA else "off",
+        help="VideoSubFinder: pass --use_cuda (default off).",
+    )
+    parser.add_argument(
+        "--vse-cpu-cores",
+        type=int,
+        default=VSE_CPU_CORES,
+        help="VideoSubFinder -nthr (0=auto cpu_count-2).",
+    )
+    parser.add_argument(
+        "--vse-binary-path",
+        default="",
+        help="Override path to VideoSubFinder binary (empty=auto under subfinder/).",
+    )
+    parser.add_argument(
+        "--vse-cleanup-debug-after-step7",
+        choices=["on", "off"],
+        default="on" if VSE_CLEANUP_DEBUG_AFTER_STEP7 else "off",
+        help="on (default): delete LOG_DIR/step1_vse after Step7.",
     )
     parser.add_argument(
         "--paddleocr-lang",
@@ -3452,6 +3516,10 @@ def apply_cli_config(args):
     global PADDLEOCR_CLEANUP_DEBUG_AFTER_STEP7
     global PADDLEOCR_WATERMARK_BLACKLIST
     global PADDLEOCR_WATERMARK_MIN_FRAMES
+    global VSE_USE_CUDA
+    global VSE_CPU_CORES
+    global VSE_BINARY_PATH
+    global VSE_CLEANUP_DEBUG_AFTER_STEP7
 
     SUBTITLE_FONT = args.subtitle_font
     SUBTITLE_FONTSIZE = args.subtitle_fontsize
@@ -3629,6 +3697,14 @@ def apply_cli_config(args):
     if _wm_mf is not None:
         PADDLEOCR_WATERMARK_MIN_FRAMES = int(_wm_mf)
 
+    # VSE / VideoSubFinder CLI config
+    VSE_USE_CUDA = getattr(args, "vse_use_cuda", "off") == "on"
+    VSE_CPU_CORES = max(0, int(getattr(args, "vse_cpu_cores", VSE_CPU_CORES) or 0))
+    _vbin = getattr(args, "vse_binary_path", None)
+    if _vbin is not None and str(_vbin).strip():
+        VSE_BINARY_PATH = str(_vbin).strip()
+    VSE_CLEANUP_DEBUG_AFTER_STEP7 = getattr(args, "vse_cleanup_debug_after_step7", "on") == "on"
+
 
 def parse_step_range(step_arg, min_step=1, max_step=6):
     if step_arg is None:
@@ -3696,6 +3772,20 @@ def _cleanup_paddleocr_artifacts_after_step7():
             log(f"Step7 cleanup: đã xóa {name} ({path}).")
 
 
+def _cleanup_vse_artifacts_after_step7():
+    """Sau Step7 xong: xóa thư mục tạm VSE (step1_vse)."""
+    if not VSE_CLEANUP_DEBUG_AFTER_STEP7:
+        return
+    path = LOG_DIR / "step1_vse"
+    if not path.exists():
+        return
+    shutil.rmtree(path, ignore_errors=True)
+    if path.exists():
+        log(f"Step7 cleanup: không xóa hết được {path} (quyền/ghi volume).")
+    else:
+        log(f"Step7 cleanup: đã xóa step1_vse ({path}).")
+
+
 def _run_step6_and_finalize(ass, tm_video, video_path, skip_voice_step):
     require_ready(ass, "Step6 input sub.ass")
     if skip_voice_step:
@@ -3712,6 +3802,7 @@ def _run_step6_and_finalize(ass, tm_video, video_path, skip_voice_step):
         final = step7_merge_outro(final)
     _cleanup_easyocr_artifacts_after_step7()
     _cleanup_paddleocr_artifacts_after_step7()
+    _cleanup_vse_artifacts_after_step7()
     if not skip_voice_step and tm_video.is_file():
         tm_video.unlink()
     if ass.is_file():

@@ -1,0 +1,16 @@
+# VideoSubFinder binaries (download via scripts/download_videosubfinder.sh)
+#
+# Layout:
+#   linux/VideoSubFinderCli + VideoSubFinderCli.run
+#   windows/VideoSubFinderWXW.exe
+#   macos/VideoSubFinderCli
+#
+# Source: https://github.com/YaoFANGUK/video-subtitle-extractor (backend/subfinder)
+#
+# Usage in pipeline:
+#   --step1-subtitle-source vse
+#   ROI uses the same paddleocr_crop_band_hi / max_strip / h-trim settings.
+
+*
+!.gitignore
+!README.md

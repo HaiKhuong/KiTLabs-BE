@@ -299,6 +299,26 @@ const OPTION_MAPPINGS: Array<{
     allowedTypes: ["number", "string"],
   },
   {
+    cliFlag: "--vse-use-cuda",
+    keys: ["vseUseCuda", "vse_use_cuda"],
+    allowedTypes: ["string"],
+  },
+  {
+    cliFlag: "--vse-cpu-cores",
+    keys: ["vseCpuCores", "vse_cpu_cores"],
+    allowedTypes: ["number", "string"],
+  },
+  {
+    cliFlag: "--vse-binary-path",
+    keys: ["vseBinaryPath", "vse_binary_path"],
+    allowedTypes: ["string"],
+  },
+  {
+    cliFlag: "--vse-cleanup-debug-after-step7",
+    keys: ["vseCleanupDebugAfterStep7", "vse_cleanup_debug_after_step7"],
+    allowedTypes: ["string"],
+  },
+  {
     cliFlag: "--step6-hflip",
     keys: ["step6Hflip", "step6_hflip", "enableFlip", "enable_flip"],
     allowedTypes: ["string"],
