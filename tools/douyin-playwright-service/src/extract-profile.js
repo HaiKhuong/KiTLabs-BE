@@ -20,21 +20,29 @@ function extractSecUserId(profileUrl) {
   return decodeURIComponent(match[1]);
 }
 
-async function fetchPostsPage(page, secUserId, cursor, count = 20) {
+async function fetchPostsPage(page, secUserId, cursor) {
   return page.evaluate(
-    async ({ secUserId: userId, cursor: startCursor, count: perPage }) => {
+    async ({ secUserId: userId, cursor: startCursor }) => {
       const apiUrl =
         `https://www.douyin.com/aweme/v1/web/aweme/post/` +
         `?device_platform=webapp&aid=6383&channel=channel_pc_web` +
         `&sec_user_id=${encodeURIComponent(userId)}` +
-        `&max_cursor=${startCursor}` +
-        `&count=${perPage}`;
+        `&max_cursor=${startCursor}`;
 
       const response = await fetch(apiUrl, {
         headers: {
           accept: "application/json, text/plain, */*",
           "accept-language": "vi",
+          "sec-ch-ua":
+            '"Not?A_Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+          "sec-ch-ua-mobile": "?0",
+          "sec-ch-ua-platform": '"Windows"',
+          "sec-fetch-dest": "empty",
+          "sec-fetch-mode": "cors",
+          "sec-fetch-site": "same-origin",
         },
+        referrer: `https://www.douyin.com/user/${userId}`,
+        referrerPolicy: "strict-origin-when-cross-origin",
         credentials: "include",
         method: "GET",
         mode: "cors",
@@ -52,7 +60,7 @@ async function fetchPostsPage(page, secUserId, cursor, count = 20) {
         status_code: data?.status_code,
       };
     },
-    { secUserId, cursor, count },
+    { secUserId, cursor },
   );
 }
 
@@ -74,7 +82,7 @@ async function extractProfile({ url, cookieContent }) {
     let currentCursor = 0;
 
     for (let pageNum = 0; pageNum < MAX_PAGES; pageNum++) {
-      const pageData = await fetchPostsPage(page, secUserId, currentCursor, 20);
+      const pageData = await fetchPostsPage(page, secUserId, currentCursor);
       const list = pageData.aweme_list || [];
 
       console.log(
