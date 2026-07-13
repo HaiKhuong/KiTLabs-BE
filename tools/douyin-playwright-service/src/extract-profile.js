@@ -21,174 +21,147 @@ function extractSecUserId(profileUrl) {
 }
 
 /**
- * Parse embedded SSR data from the profile page HTML.
- * Douyin embeds video data in RENDER_DATA or hydration globals.
+ * Fetch one page of videos using a FRESH browser context.
+ * Each context gets fresh anti-bot tokens from Douyin.
  */
-async function parseSSRVideos(page) {
-  return page.evaluate(() => {
-    function findAwemeList(obj, depth = 0) {
-      if (!obj || typeof obj !== "object" || depth > 12) return [];
-      if (Array.isArray(obj.aweme_list) && obj.aweme_list.length > 0) {
-        return obj.aweme_list;
-      }
-      if (Array.isArray(obj)) {
-        for (const item of obj) {
-          const found = findAwemeList(item, depth + 1);
-          if (found.length > 0) return found;
-        }
-        return [];
-      }
-      for (const value of Object.values(obj)) {
-        if (value && typeof value === "object") {
-          const found = findAwemeList(value, depth + 1);
-          if (found.length > 0) return found;
-        }
-      }
-      return [];
-    }
-
-    const sources = [];
-
-    // RENDER_DATA script tag
-    const renderScript = document.querySelector("script#RENDER_DATA");
-    if (renderScript?.textContent) {
-      try {
-        sources.push(JSON.parse(decodeURIComponent(renderScript.textContent)));
-      } catch { /* ignore */ }
-    }
-
-    // Global hydration data
-    if (window.__UNIVERSAL_DATA_FOR_REHYDRATION__) {
-      sources.push(window.__UNIVERSAL_DATA_FOR_REHYDRATION__);
-    }
-    if (window._SSR_HYDRATED_DATA) {
-      sources.push(window._SSR_HYDRATED_DATA);
-    }
-
-    for (const source of sources) {
-      const list = findAwemeList(source);
-      if (list.length > 0) return list;
-    }
-
-    return [];
-  });
-}
-
-async function extractProfile({ url, cookieContent }) {
-  const secUserId = extractSecUserId(url);
-  const MAX_SCROLL_ROUNDS = 80;
-  const SCROLL_PAUSE = 2000;
-  const STALE_LIMIT = 6;
-
+async function fetchOnePage(cookieContent, secUserId, cursor) {
   const { context, page } = await createDouyinPage(cookieContent);
 
   try {
-    const allAweme = [];
-    const seenIds = new Set();
-
-    function addAweme(item) {
-      const id = item.aweme_id || item.awemeId;
-      if (id && !seenIds.has(id)) {
-        seenIds.add(id);
-        allAweme.push(item);
-        return true;
-      }
-      return false;
-    }
-
-    // Intercept API responses during page load AND scroll
-    page.on("response", async (response) => {
-      if (!response.url().includes("/aweme/v1/web/aweme/post")) return;
-      try {
-        const json = await response.json();
-        const list = json?.aweme_list;
-        if (!Array.isArray(list)) return;
-        let added = 0;
-        for (const item of list) {
-          if (addAweme(item)) added++;
-        }
-        console.log(
-          `[profile] intercepted API: +${added} new (${list.length} total in response), ` +
-          `unique=${allAweme.length}, has_more=${json.has_more}`,
-        );
-      } catch { /* ignore */ }
-    });
-
-    console.log(`[profile] navigating to profile: ${secUserId}`);
+    // Navigate to profile page to warm up session + get anti-bot tokens
     await page.goto(`${DOUYIN_ORIGIN}/user/${secUserId}`, {
-      waitUntil: "load",
+      waitUntil: "domcontentloaded",
       timeout: 60_000,
     });
-    await page.waitForTimeout(3_000);
+    await page.waitForTimeout(2_000);
 
-    // Parse SSR embedded data
-    const ssrList = await parseSSRVideos(page);
-    if (ssrList.length > 0) {
-      let added = 0;
-      for (const item of ssrList) {
-        if (addAweme(item)) added++;
-      }
-      console.log(`[profile] SSR data: +${added} videos (${ssrList.length} in SSR)`);
-    }
+    // Make the API call from within the page context
+    const result = await page.evaluate(
+      async ({ userId, startCursor }) => {
+        const apiUrl =
+          `https://www.douyin.com/aweme/v1/web/aweme/post/` +
+          `?device_platform=webapp&aid=6383&channel=channel_pc_web` +
+          `&sec_user_id=${encodeURIComponent(userId)}` +
+          `&max_cursor=${startCursor}`;
 
-    console.log(`[profile] after initial load: ${allAweme.length} videos`);
+        const response = await fetch(apiUrl, {
+          headers: {
+            accept: "application/json, text/plain, */*",
+            "accept-language": "vi",
+          },
+          credentials: "include",
+          method: "GET",
+          mode: "cors",
+        });
 
-    // Scroll to load more
-    let staleCount = 0;
-    let prevCount = allAweme.length;
-
-    for (let round = 0; round < MAX_SCROLL_ROUNDS; round++) {
-      // Scroll using mouse wheel (more realistic than scrollBy)
-      await page.mouse.wheel(0, 3000);
-      await page.waitForTimeout(SCROLL_PAUSE);
-
-      const currentCount = allAweme.length;
-      if (currentCount === prevCount) {
-        staleCount++;
-        if (staleCount % 2 === 0) {
-          console.log(
-            `[profile] scroll ${round + 1}: stale=${staleCount}/${STALE_LIMIT}, total=${currentCount}`,
-          );
+        if (!response.ok) {
+          return { error: `HTTP ${response.status}`, aweme_list: [] };
         }
-        if (staleCount >= STALE_LIMIT) {
-          console.log(`[profile] stopping after ${STALE_LIMIT} stale scrolls`);
-          break;
-        }
-      } else {
-        console.log(
-          `[profile] scroll ${round + 1}: +${currentCount - prevCount} new, total=${currentCount}`,
-        );
-        staleCount = 0;
-        prevCount = currentCount;
-      }
-    }
 
-    if (!allAweme.length) {
-      // Last resort: check page title/content for debugging
-      const title = await page.title();
-      console.log(`[profile] page title: ${title}`);
-      throw new Error("No videos found in profile. Cookies may be required.");
-    }
+        const data = await response.json();
+        return {
+          aweme_list: data?.aweme_list || [],
+          has_more: data?.has_more,
+          max_cursor: data?.max_cursor,
+          status_code: data?.status_code,
+        };
+      },
+      { userId: secUserId, startCursor: cursor },
+    );
 
-    const videos = allAweme
-      .map(mapAwemeToVideo)
-      .sort((a, b) => (b.create_time || 0) - (a.create_time || 0));
-
-    const first = allAweme[0] || {};
-    console.log(`[profile] done: ${videos.length} videos loaded`);
-
-    return {
-      uploader: first.author?.nickname || first.nickname || null,
-      uploader_id: first.author?.sec_uid || secUserId,
-      videos,
-      has_more: false,
-      next_cursor: 0,
-      cursor: 0,
-    };
+    return result;
   } finally {
     await page.close().catch(() => {});
     await context.close().catch(() => {});
   }
+}
+
+async function extractProfile({ url, cookieContent }) {
+  const secUserId = extractSecUserId(url);
+  const MAX_PAGES = 20;
+  const EMPTY_RETRY = 2;
+
+  const allAweme = [];
+  const seenIds = new Set();
+  let currentCursor = 0;
+
+  for (let pageNum = 0; pageNum < MAX_PAGES; pageNum++) {
+    console.log(`[profile] page ${pageNum + 1}: fetching with cursor=${currentCursor} (fresh context)`);
+
+    let result;
+    let emptyRetries = 0;
+
+    // Retry with fresh context if we get empty response
+    while (emptyRetries <= EMPTY_RETRY) {
+      result = await fetchOnePage(cookieContent, secUserId, currentCursor);
+
+      const list = result.aweme_list || [];
+      console.log(
+        `[profile] page ${pageNum + 1} attempt ${emptyRetries + 1}: ` +
+        `aweme_list=${list.length}, has_more=${result.has_more}, ` +
+        `max_cursor=${result.max_cursor}, status_code=${result.status_code}`,
+      );
+
+      if (list.length > 0 || !result.has_more) break;
+
+      emptyRetries++;
+      if (emptyRetries <= EMPTY_RETRY) {
+        console.log(`[profile] empty response, retrying with fresh context...`);
+        await new Promise((r) => setTimeout(r, 1000));
+      }
+    }
+
+    const list = result.aweme_list || [];
+    if (list.length === 0) {
+      console.log(`[profile] no videos returned, stopping. total=${allAweme.length}`);
+      break;
+    }
+
+    for (const item of list) {
+      const id = item.aweme_id || item.awemeId;
+      if (id && !seenIds.has(id)) {
+        seenIds.add(id);
+        allAweme.push(item);
+      }
+    }
+
+    const hasMore = result.has_more == 1 || result.has_more === true;
+    const nextCursor = result.max_cursor;
+
+    if (!hasMore) {
+      console.log(`[profile] has_more is falsy, stopping. total=${allAweme.length}`);
+      break;
+    }
+
+    if (!nextCursor || nextCursor === currentCursor) {
+      console.log(`[profile] cursor stuck, stopping. total=${allAweme.length}`);
+      break;
+    }
+
+    currentCursor = nextCursor;
+    // Small delay between pages
+    await new Promise((r) => setTimeout(r, 500));
+  }
+
+  if (!allAweme.length) {
+    throw new Error("No videos found in profile. Cookies may be required.");
+  }
+
+  const videos = allAweme
+    .map(mapAwemeToVideo)
+    .sort((a, b) => (b.create_time || 0) - (a.create_time || 0));
+
+  const first = allAweme[0] || {};
+  console.log(`[profile] done: ${videos.length} videos loaded`);
+
+  return {
+    uploader: first.author?.nickname || first.nickname || null,
+    uploader_id: first.author?.sec_uid || secUserId,
+    videos,
+    has_more: false,
+    next_cursor: 0,
+    cursor: 0,
+  };
 }
 
 module.exports = { extractProfile, extractSecUserId };
