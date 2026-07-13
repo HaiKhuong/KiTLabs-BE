@@ -8,7 +8,7 @@ export class ExtractProfileDto {
   @IsUrl()
   url!: string;
 
-  @ApiPropertyOptional({ description: "Videos per page", default: 20 })
+  @ApiPropertyOptional({ description: "Videos per page", default: 10 })
   @IsOptional()
   @Type(() => Number)
   @IsInt()

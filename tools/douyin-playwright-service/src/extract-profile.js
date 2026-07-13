@@ -54,9 +54,9 @@ async function fetchPostsPage(page, secUserId, cursor) {
   );
 }
 
-async function extractProfile({ url, cookieContent, maxVideos = 20, cursor = 0 }) {
+async function extractProfile({ url, cookieContent, maxVideos = 10, cursor = 0 }) {
   const secUserId = extractSecUserId(url);
-  const pageSize = Math.min(Math.max(Number(maxVideos) || 20, 1), 50);
+  const pageSize = Math.min(Math.max(Number(maxVideos) || 10, 1), 50);
   const startCursor = Number(cursor) || 0;
 
   const { context, page } = await createDouyinPage(cookieContent);
@@ -76,7 +76,9 @@ async function extractProfile({ url, cookieContent, maxVideos = 20, cursor = 0 }
       throw new Error("No videos found in profile. Cookies may be required.");
     }
 
-    const videos = awemeList.map(mapAwemeToVideo);
+    const videos = awemeList
+      .map(mapAwemeToVideo)
+      .sort((a, b) => (b.create_time || 0) - (a.create_time || 0));
     const first = awemeList[0] || {};
 
     return {

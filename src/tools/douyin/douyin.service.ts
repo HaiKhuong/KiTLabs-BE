@@ -76,6 +76,7 @@ interface PlaywrightProfileVideo {
   duration: number | null;
   best_height: number;
   webpage_url: string | null;
+  create_time: number | null;
   formats: PlaywrightVideoFormat[];
 }
 
@@ -252,7 +253,7 @@ export class DouyinService {
 
   private async extractProfileViaYtDlp(
     url: string,
-    maxVideos = 20,
+    maxVideos = 10,
   ): Promise<ExtractedProfileInfo> {
     const cookieContent = this.resolveCookieContent();
     const response = await axios.post<YtDlpProfileResponse>(
@@ -289,7 +290,7 @@ export class DouyinService {
 
   private async extractProfileViaPlaywright(
     url: string,
-    maxVideos = 20,
+    maxVideos = 10,
     cursor = 0,
   ): Promise<ExtractedProfileInfo> {
     const cookieContent = this.resolveCookieContent();
@@ -328,7 +329,7 @@ export class DouyinService {
 
   async extractByUrl(
     url: string,
-    maxVideos = 20,
+    maxVideos = 10,
     cursor = 0,
   ): Promise<ExtractedUrlInfo> {
     const type = detectDouyinUrlType(url);
@@ -360,7 +361,7 @@ export class DouyinService {
 
   async extractProfile(
     url: string,
-    maxVideos = 20,
+    maxVideos = 10,
     cursor = 0,
   ): Promise<ExtractedProfileInfo> {
     const provider = DOUYIN_PROFILE_EXTRACT_PROVIDER;
