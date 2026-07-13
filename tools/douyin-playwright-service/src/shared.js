@@ -132,10 +132,12 @@ function parseAwemeIdFromUrl(url) {
   return null;
 }
 
-async function createDouyinPage(cookieContent) {
+async function createDouyinPage(cookieContent, opts = {}) {
   const browser = await getBrowser();
+  const viewport = opts.viewport || { width: 1920, height: 1080 };
   const context = await browser.newContext({
     locale: "vi-VN",
+    viewport,
     userAgent:
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
       "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -143,6 +145,11 @@ async function createDouyinPage(cookieContent) {
 
   const cookies = parseNetscapeCookies(cookieContent);
   const page = await context.newPage();
+
+  // Hide webdriver flag
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, "webdriver", { get: () => false });
+  });
 
   if (cookies.length > 0) {
     await context.addCookies(cookies);
