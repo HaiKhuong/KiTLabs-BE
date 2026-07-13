@@ -80,7 +80,7 @@ async function extractProfile({ url, cookieContent }) {
       if (list.length === 0) break;
 
       allAweme.push(...list);
-      hasMore = pageData.has_more === 1;
+      hasMore = !!pageData.has_more;
       currentCursor = pageData.max_cursor ?? 0;
 
       console.log(`[profile] page ${pageNum + 1}: +${list.length} videos, total=${allAweme.length}, hasMore=${hasMore}`);
