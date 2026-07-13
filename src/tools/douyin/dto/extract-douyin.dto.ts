@@ -1,14 +1,12 @@
-import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
-import { IsOptional, IsString, IsUrl } from "class-validator";
+import { ApiProperty } from "@nestjs/swagger";
+import { IsString, IsUrl } from "class-validator";
 
 export class ExtractDouyinDto {
-  @ApiProperty({ description: "Douyin video URL", example: "https://www.douyin.com/video/123456" })
+  @ApiProperty({
+    description: "Douyin video URL (short or full)",
+    example: "https://v.douyin.com/fPIVGeckUOg/",
+  })
   @IsString()
   @IsUrl()
   url!: string;
-
-  @ApiPropertyOptional({ description: "Cookies content in Netscape format" })
-  @IsOptional()
-  @IsString()
-  cookieContent?: string;
 }

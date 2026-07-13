@@ -12,8 +12,8 @@ export class DownloadDouyinDto {
   @IsString()
   formatId?: string;
 
-  @ApiPropertyOptional({ description: "Cookies content in Netscape format" })
+  @ApiPropertyOptional({ description: "Direct CDN video URL (Playwright profile formats)" })
   @IsOptional()
   @IsString()
-  cookieContent?: string;
+  directUrl?: string;
 }

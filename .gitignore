@@ -23,6 +23,10 @@ Thumbs.db
 uploads/
 tmp/
 temp/
+secrets/douyin-cookies.txt
+tools/douyin-playwright-service/cookies.txt
+tools/douyin-playwright-service/video.json
+tools/douyin-playwright-service/profile.json
 
 # Python pipeline artifacts
 __pycache__/

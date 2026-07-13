@@ -36,7 +36,7 @@ services:
       - redis_data:/data
 
   ytdlp:
-    build: ./yt-dlp-service
+    build: ./tools/yt-dlp-service
     container_name: kitools-ytdlp
     restart: unless-stopped
     ports:
@@ -45,6 +45,19 @@ services:
       - ytdlp_temp:/tmp/ytdlp
     environment:
       - MAX_CONCURRENT_DOWNLOADS=3
+
+  douyin-playwright:
+    build: ./tools/douyin-playwright-service
+    container_name: kitools-douyin-playwright
+    restart: unless-stopped
+    ports:
+      - "8101:8000"
+    environment:
+      - PORT=8000
+    shm_size: "1gb"
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
 
 volumes:
   pg_data:
