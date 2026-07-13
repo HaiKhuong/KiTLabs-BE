@@ -263,17 +263,16 @@ def _run_videosubfinder(video_path: Path, out_dir: Path, empty_srt: Path) -> Non
 
     vsf_args: list[str] = ["-c", "-r"]
     if use_cuda:
-        vsf_args.append("--use_cuda")
+        vsf_args.append("-uc")
     vsf_args += [
         "-te", f"{top_end:.6f}",
         "-be", f"{bottom_end:.6f}",
         "-le", f"{left_end:.6f}",
         "-re", f"{right_end:.6f}",
         "-nthr", str(cpu_count),
-        "--open_video_opencv",
+        "-ovocv",
     ]
-    if platform.system() != "Windows":
-        vsf_args.append("-dsi")
+    # Do NOT pass -dsi: PaddleOCR needs ClearedTXTImages/RGBImages on disk.
 
     log(
         f"Step1 VSE: VideoSubFinder ROI te={top_end:.3f} be={bottom_end:.3f} "
