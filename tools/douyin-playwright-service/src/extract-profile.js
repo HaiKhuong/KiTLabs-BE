@@ -20,96 +20,74 @@ function extractSecUserId(profileUrl) {
   return decodeURIComponent(match[1]);
 }
 
-/**
- * Extract all cookies from a Playwright browser context
- * (including dynamically set ones by Douyin's JS).
- */
-async function extractAllCookies(context) {
-  const cookies = await context.cookies("https://www.douyin.com");
-  return cookies
-    .map((c) => `${c.name}=${c.value}`)
-    .join("; ");
-}
-
-/**
- * Fetch a page of posts using Node.js native fetch with browser cookies.
- * Bypasses Douyin's in-browser anti-bot since request comes from server.
- */
-async function fetchPostsViaNode(cookieString, secUserId, cursor) {
-  const apiUrl =
-    `https://www.douyin.com/aweme/v1/web/aweme/post/` +
+function buildPostsApiUrl(secUserId, cursor) {
+  return (
+    `${DOUYIN_ORIGIN}/aweme/v1/web/aweme/post/` +
     `?device_platform=webapp&aid=6383&channel=channel_pc_web` +
     `&sec_user_id=${encodeURIComponent(secUserId)}` +
-    `&max_cursor=${cursor}`;
-
-  const response = await fetch(apiUrl, {
-    headers: {
-      accept: "application/json, text/plain, */*",
-      "accept-language": "vi",
-      cookie: cookieString,
-      referer: `https://www.douyin.com/user/${secUserId}`,
-      "user-agent":
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
-        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    },
-  });
-
-  if (!response.ok) {
-    console.log(`[profile] node fetch HTTP ${response.status}`);
-    return { aweme_list: [], has_more: 0, max_cursor: 0 };
-  }
-
-  const data = await response.json();
-  return {
-    aweme_list: data?.aweme_list || [],
-    has_more: data?.has_more,
-    max_cursor: data?.max_cursor,
-    status_code: data?.status_code,
-  };
+    `&max_cursor=${cursor}`
+  );
 }
 
 async function extractProfile({ url, cookieContent }) {
   const secUserId = extractSecUserId(url);
   const MAX_PAGES = 30;
 
-  // Create browser context to get full cookie set (including dynamic ones)
   const { context, page } = await createDouyinPage(cookieContent);
 
   try {
-    // Navigate to profile to warm up session and let Douyin JS set cookies
-    console.log(`[profile] warming up session for: ${secUserId}`);
+    // Navigate to profile to warm up session
+    console.log(`[profile] warming up: ${secUserId}`);
     await page.goto(`${DOUYIN_ORIGIN}/user/${secUserId}`, {
       waitUntil: "domcontentloaded",
       timeout: 60_000,
     });
-    await page.waitForTimeout(3_000);
+    await page.waitForTimeout(2_000);
 
-    // Extract all cookies (including ones set by Douyin's JS)
-    const cookieString = await extractAllCookies(context);
-    console.log(`[profile] extracted ${cookieString.split(";").length} cookies from browser`);
-
-    // Close browser - we only needed it for cookies
-    await page.close().catch(() => {});
-    await context.close().catch(() => {});
-
-    // Now fetch ALL pages using Node.js native fetch
+    // Use Playwright's built-in HTTP client (context.request)
+    // It sends cookies from context, handles compression, bypasses browser anti-bot
     const allAweme = [];
     const seenIds = new Set();
     let currentCursor = 0;
 
     for (let pageNum = 0; pageNum < MAX_PAGES; pageNum++) {
+      const apiUrl = buildPostsApiUrl(secUserId, currentCursor);
       console.log(`[profile] page ${pageNum + 1}: cursor=${currentCursor}`);
 
-      const result = await fetchPostsViaNode(cookieString, secUserId, currentCursor);
-      const list = result.aweme_list || [];
+      const response = await context.request.get(apiUrl, {
+        headers: {
+          accept: "application/json, text/plain, */*",
+          "accept-language": "vi",
+          referer: `${DOUYIN_ORIGIN}/user/${secUserId}`,
+        },
+        timeout: 30_000,
+      });
 
+      const text = await response.text();
+
+      if (!text.trim()) {
+        console.log(`[profile] page ${pageNum + 1}: empty response (HTTP ${response.status()})`);
+        break;
+      }
+
+      let data;
+      try {
+        data = JSON.parse(text);
+      } catch {
+        console.log(`[profile] page ${pageNum + 1}: invalid JSON, len=${text.length}`);
+        console.log(`[profile] preview: ${text.slice(0, 200)}`);
+        break;
+      }
+
+      const list = data.aweme_list || [];
       console.log(
         `[profile] page ${pageNum + 1}: aweme_list=${list.length}, ` +
-        `has_more=${result.has_more}, max_cursor=${result.max_cursor}`,
+        `has_more=${data.has_more}, max_cursor=${data.max_cursor}, ` +
+        `status=${data.status_code}, keys=[${Object.keys(data).join(",")}]`,
       );
 
       if (list.length === 0) {
-        console.log(`[profile] empty page, stopping. total=${allAweme.length}`);
+        console.log(`[profile] empty list, stopping. total=${allAweme.length}`);
         break;
       }
 
@@ -121,8 +99,8 @@ async function extractProfile({ url, cookieContent }) {
         }
       }
 
-      const hasMore = result.has_more == 1 || result.has_more === true;
-      const nextCursor = result.max_cursor;
+      const hasMore = data.has_more == 1 || data.has_more === true;
+      const nextCursor = data.max_cursor;
 
       if (!hasMore) {
         console.log(`[profile] no more pages. total=${allAweme.length}`);
@@ -157,11 +135,9 @@ async function extractProfile({ url, cookieContent }) {
       next_cursor: 0,
       cursor: 0,
     };
-  } catch (err) {
-    // Make sure browser is cleaned up even if we closed early
+  } finally {
     await page.close().catch(() => {});
     await context.close().catch(() => {});
-    throw err;
   }
 }
 
