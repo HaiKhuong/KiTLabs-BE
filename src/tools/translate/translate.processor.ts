@@ -304,6 +304,16 @@ const OPTION_MAPPINGS: Array<{
     allowedTypes: ["string"],
   },
   {
+    cliFlag: "--vse-use-docker",
+    keys: ["vseUseDocker", "vse_use_docker"],
+    allowedTypes: ["string"],
+  },
+  {
+    cliFlag: "--vse-docker-image",
+    keys: ["vseDockerImage", "vse_docker_image"],
+    allowedTypes: ["string"],
+  },
+  {
     cliFlag: "--vse-cpu-cores",
     keys: ["vseCpuCores", "vse_cpu_cores"],
     allowedTypes: ["number", "string"],

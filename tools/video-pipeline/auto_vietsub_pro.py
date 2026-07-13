@@ -332,10 +332,12 @@ PADDLEOCR_WATERMARK_BLACKLIST = "腾讯视频,优酷,爱奇艺,芒果TV,bilibili
 PADDLEOCR_WATERMARK_MIN_FRAMES = 0  # 0=auto (80% of total scanned frames); >0=fixed threshold
 
 # VSE = VideoSubFinder (frame detect) + PaddleOCR (STEP1_SUBTITLE_SOURCE = "vse")
-# ROI reuse PaddleOCR crop band / h-trim. Binary: tools/video-pipeline/subfinder/
+# ROI reuse PaddleOCR crop band / h-trim. Native host binary often segfaults → default Docker.
 VSE_USE_CUDA = False
 VSE_CPU_CORES = 0  # 0 = auto (cpu_count - 2)
 VSE_BINARY_PATH = ""  # optional override; empty = auto-resolve under subfinder/
+VSE_USE_DOCKER = True  # recommended: docker build -t kitools-videosubfinder tools/video-pipeline/subfinder
+VSE_DOCKER_IMAGE = "kitools-videosubfinder"
 VSE_CLEANUP_DEBUG_AFTER_STEP7 = True
 
 STEP1_MAX_SUBTITLE_CHARS = 22  # số ký tự tối đa mỗi câu sau tách.
@@ -1941,6 +1943,8 @@ def _step1_ocr_with_vse(video_path):
         vsf_cpu_cores=VSE_CPU_CORES,
         vsf_use_cuda=VSE_USE_CUDA,
         vsf_binary_path=VSE_BINARY_PATH,
+        vsf_use_docker=VSE_USE_DOCKER,
+        vsf_docker_image=VSE_DOCKER_IMAGE,
     )
     return _step1_vse_run(video_path)
 
@@ -3049,6 +3053,17 @@ def parse_cli_args():
         help="VideoSubFinder: pass --use_cuda (default off).",
     )
     parser.add_argument(
+        "--vse-use-docker",
+        choices=["on", "off"],
+        default="on" if VSE_USE_DOCKER else "off",
+        help="Run VideoSubFinder inside Docker image (default on; host binaries often segfault).",
+    )
+    parser.add_argument(
+        "--vse-docker-image",
+        default=VSE_DOCKER_IMAGE,
+        help="Docker image tag for VideoSubFinder (default kitools-videosubfinder).",
+    )
+    parser.add_argument(
         "--vse-cpu-cores",
         type=int,
         default=VSE_CPU_CORES,
@@ -3519,6 +3534,8 @@ def apply_cli_config(args):
     global VSE_USE_CUDA
     global VSE_CPU_CORES
     global VSE_BINARY_PATH
+    global VSE_USE_DOCKER
+    global VSE_DOCKER_IMAGE
     global VSE_CLEANUP_DEBUG_AFTER_STEP7
 
     SUBTITLE_FONT = args.subtitle_font
@@ -3699,6 +3716,10 @@ def apply_cli_config(args):
 
     # VSE / VideoSubFinder CLI config
     VSE_USE_CUDA = getattr(args, "vse_use_cuda", "off") == "on"
+    VSE_USE_DOCKER = getattr(args, "vse_use_docker", "on") == "on"
+    _vimg = getattr(args, "vse_docker_image", None)
+    if _vimg is not None and str(_vimg).strip():
+        VSE_DOCKER_IMAGE = str(_vimg).strip()
     VSE_CPU_CORES = max(0, int(getattr(args, "vse_cpu_cores", VSE_CPU_CORES) or 0))
     _vbin = getattr(args, "vse_binary_path", None)
     if _vbin is not None and str(_vbin).strip():

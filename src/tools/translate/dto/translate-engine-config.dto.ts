@@ -494,6 +494,22 @@ export class TranslateEngineConfigDto {
   vse_use_cuda?: string;
 
   @IsOptional()
+  @IsString()
+  vseUseDocker?: string;
+
+  @IsOptional()
+  @IsString()
+  vse_use_docker?: string;
+
+  @IsOptional()
+  @IsString()
+  vseDockerImage?: string;
+
+  @IsOptional()
+  @IsString()
+  vse_docker_image?: string;
+
+  @IsOptional()
   @Type(() => Number)
   @IsNumber()
   vseCpuCores?: number;

@@ -1,26 +1,25 @@
 # VideoSubFinder (VSE Step1)
 
-Binaries are **not** committed. On Linux we use the **static** CLI from
-[eritpchy/videosubfinder-cli](https://github.com/eritpchy/videosubfinder-cli)
-(the YaoFANGUK bundled `VideoSubFinderCli` often segfaults on modern Ubuntu).
+Host `VideoSubFinderCli` often **segfaults** on modern Ubuntu. Use **Docker** (default).
+
+### 1. Build image (one-time)
 
 ```bash
-cd /path/to/KiTLabs-BE
-bash tools/video-pipeline/scripts/download_videosubfinder.sh linux
+cd /home/haikhuong/sources/KiTLabs-BE
+docker build -t kitools-videosubfinder tools/video-pipeline/subfinder
+docker run --rm kitools-videosubfinder -h
 ```
 
-Smoke test:
+### 2. Run VSE from FE
+
+Select **VSE** as Step1 source. Pipeline uses `--vse-use-docker on` by default.
+
+### 3. Diagnose host binary (optional)
 
 ```bash
-cd tools/video-pipeline/subfinder/linux
-./VideoSubFinderCli -h
-# if segfault with old binary: re-run download script above
+uname -m
+file tools/video-pipeline/subfinder/linux/VideoSubFinderCli
+ldd tools/video-pipeline/subfinder/linux/VideoSubFinderCli | head
 ```
 
-Then choose **VSE** on FE (`step1SubtitleSource: "vse"`), or:
-
-```bash
-python auto_vietsub_pro.py --step1-subtitle-source vse ...
-```
-
-ROI uses the same PaddleOCR crop knobs (`paddleocr-crop-band-hi`, `max-strip-height-ratio`, h-trim).
+If host binary segfaults, keep Docker mode (`vse_use_docker=on`).

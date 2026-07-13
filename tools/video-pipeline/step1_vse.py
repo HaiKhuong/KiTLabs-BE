@@ -68,6 +68,8 @@ def configure_step1_vse(
     vsf_cpu_cores: int = 0,
     vsf_use_cuda: bool = False,
     vsf_binary_path: str = "",
+    vsf_use_docker: bool = True,
+    vsf_docker_image: str = "kitools-videosubfinder",
 ) -> None:
     _cfg.clear()
     _cfg.update(
@@ -93,6 +95,8 @@ def configure_step1_vse(
         vsf_cpu_cores=max(0, int(vsf_cpu_cores or 0)),
         vsf_use_cuda=bool(vsf_use_cuda),
         vsf_binary_path=str(vsf_binary_path or "").strip(),
+        vsf_use_docker=bool(vsf_use_docker),
+        vsf_docker_image=str(vsf_docker_image or "kitools-videosubfinder").strip() or "kitools-videosubfinder",
     )
     _rebuild_skip_regexes()
 
@@ -251,13 +255,13 @@ def _collect_vsf_images(out_dir: Path) -> list[tuple[float, Path]]:
 
 def _run_videosubfinder(video_path: Path, out_dir: Path, empty_srt: Path) -> None:
     log = _cfg["log"]
-    binary = _resolve_vsf_binary()
     top_end, bottom_end, left_end, right_end = _band_to_vsf_roi()
 
     cpu_count = _cfg["vsf_cpu_cores"] or max(multiprocessing.cpu_count() - 2, 1)
     use_cuda = bool(_cfg.get("vsf_use_cuda"))
+    use_docker = bool(_cfg.get("vsf_use_docker"))
 
-    vsf_args: list[str] = ["-c", "-r", "-i", str(video_path), "-o", str(out_dir), "-ces", str(empty_srt)]
+    vsf_args: list[str] = ["-c", "-r"]
     if use_cuda:
         vsf_args.append("--use_cuda")
     vsf_args += [
@@ -271,23 +275,52 @@ def _run_videosubfinder(video_path: Path, out_dir: Path, empty_srt: Path) -> Non
     if platform.system() != "Windows":
         vsf_args.append("-dsi")
 
-    cmd = _build_vsf_cmd(binary, vsf_args)
-
     log(
         f"Step1 VSE: VideoSubFinder ROI te={top_end:.3f} be={bottom_end:.3f} "
-        f"le={left_end:.3f} re={right_end:.3f} cuda={use_cuda} nthr={cpu_count}"
+        f"le={left_end:.3f} re={right_end:.3f} cuda={use_cuda} nthr={cpu_count} docker={use_docker}"
     )
-    log(f"Step1 VSE: run {binary.name} …")
+
+    video_path = video_path.resolve()
+    out_dir = out_dir.resolve()
+    empty_srt = empty_srt.resolve()
+
+    if use_docker:
+        image = str(_cfg.get("vsf_docker_image") or "kitools-videosubfinder")
+        # Mount parents so video + output work even on different disks (/mnt/e vs /home).
+        in_dir = video_path.parent
+        cmd = [
+            "docker", "run", "--rm",
+            "--network", "none",
+            "-v", f"{in_dir}:/vsf_in:ro",
+            "-v", f"{out_dir}:/vsf_out",
+            image,
+            *vsf_args,
+            "-i", f"/vsf_in/{video_path.name}",
+            "-o", "/vsf_out",
+            "-ces", f"/vsf_out/{empty_srt.name}",
+        ]
+        cwd = str(out_dir)
+        env = os.environ.copy()
+        log(f"Step1 VSE: docker run {image} …")
+    else:
+        binary = _resolve_vsf_binary()
+        native_args = [
+            *vsf_args,
+            "-i", str(video_path),
+            "-o", str(out_dir),
+            "-ces", str(empty_srt),
+        ]
+        cmd = _build_vsf_cmd(binary, native_args)
+        cwd = str(binary.parent)
+        env = os.environ.copy()
+        lib_dir = str(binary.parent)
+        env["LD_LIBRARY_PATH"] = f"{lib_dir}:{env.get('LD_LIBRARY_PATH', '')}"
+        log(f"Step1 VSE: run {binary.name} …")
 
     t0 = time.time()
-    env = os.environ.copy()
-    # Ensure bundled libs next to binary are found (Linux .run wrapper also sets this).
-    lib_dir = str(binary.parent)
-    env["LD_LIBRARY_PATH"] = f"{lib_dir}:{env.get('LD_LIBRARY_PATH', '')}"
-
     proc = subprocess.run(
         cmd,
-        cwd=str(binary.parent),
+        cwd=cwd,
         env=env,
         capture_output=True,
         text=True,
@@ -297,8 +330,15 @@ def _run_videosubfinder(video_path: Path, out_dir: Path, empty_srt: Path) -> Non
     elapsed = time.time() - t0
     if proc.returncode != 0:
         tail = (proc.stderr or proc.stdout or "").strip()[-2000:]
+        hint = ""
+        if use_docker and ("Unable to find image" in tail or "No such image" in tail):
+            hint = (
+                "\nBuild image first:\n"
+                "  docker build -t kitools-videosubfinder "
+                "tools/video-pipeline/subfinder\n"
+            )
         raise RuntimeError(
-            f"Step1 VSE: VideoSubFinder failed (code={proc.returncode}, {elapsed:.1f}s).\n{tail}"
+            f"Step1 VSE: VideoSubFinder failed (code={proc.returncode}, {elapsed:.1f}s).{hint}\n{tail}"
         )
     log(f"Step1 VSE: VideoSubFinder done in {elapsed:.1f}s")
 
