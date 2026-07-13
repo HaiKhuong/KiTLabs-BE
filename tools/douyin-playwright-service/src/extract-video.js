@@ -249,10 +249,19 @@ async function loadVideoDetail(page, context, awemeId) {
       waitUntil: "domcontentloaded",
       timeout: 60_000,
     });
-    await page.waitForTimeout(2_000);
+    await page.waitForTimeout(3_000);
 
+    const currentUrl = page.url();
     const title = await page.title();
-    console.log(`[video] page title: "${title}"`);
+    const bodyLen = await page.evaluate(() => document.body?.innerHTML?.length || 0);
+    console.log(
+      `[video] page loaded: title="${title}", url=${currentUrl}, bodyLen=${bodyLen}`,
+    );
+
+    // Check if redirected to login/captcha
+    if (currentUrl.includes("/login") || currentUrl.includes("/verify")) {
+      console.log(`[video] WARNING: redirected to login/verify page`);
+    }
 
     // Strategy 1: intercepted from network
     if (interceptedDetail) {
@@ -268,7 +277,21 @@ async function loadVideoDetail(page, context, awemeId) {
       console.log(`[video] SUCCESS via strategy 2 (SSR: ${ssrResult.source})`);
       return ssrResult.detail;
     }
-    console.log(`[video] strategy 2: no SSR data found`);
+    // Debug what data sources exist
+    const ssrDebug = await page.evaluate(() => {
+      return {
+        hasRenderData: !!document.querySelector("script#RENDER_DATA"),
+        renderDataLen: document.querySelector("script#RENDER_DATA")?.textContent?.length || 0,
+        hasUniversal: !!window.__UNIVERSAL_DATA_FOR_REHYDRATION__,
+        hasSsrHydrated: !!window._SSR_HYDRATED_DATA,
+        scriptCount: document.querySelectorAll("script").length,
+      };
+    });
+    console.log(
+      `[video] strategy 2: no detail. RENDER_DATA=${ssrDebug.hasRenderData} (${ssrDebug.renderDataLen}b), ` +
+      `UNIVERSAL=${ssrDebug.hasUniversal}, SSR_HYDRATED=${ssrDebug.hasSsrHydrated}, ` +
+      `scripts=${ssrDebug.scriptCount}`,
+    );
 
     // Strategy 3: context.request API call
     console.log(`[video] trying strategy 3 (context.request)...`);
