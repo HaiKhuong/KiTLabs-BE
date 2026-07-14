@@ -195,13 +195,21 @@ STEP4_MERGE_SPEED = 1.0
 PREPROCESS_SPEED = 1.0
 # Step7: sau render phụ đề (_vs_tm), áp dụng setpts + atempo lên file cuối (vd 0.97 = chậm ~3%).
 SPEED_VIDEO = 0.97
-# Step7: độ phân giải xuất 16:9 — 1080p | 2k | 4k | source (giữ WxH sau Step6).
+# Step7: độ phân giải xuất — 1080p | 2k | 4k | source.
+# Landscape (16:9) và portrait (9:16) chọn theo hướng WxH nguồn.
 EXPORT_RESOLUTION = "source"
-EXPORT_RESOLUTION_PRESETS = {
+EXPORT_RESOLUTION_PRESETS_LANDSCAPE = {
     "1080p": (1920, 1080),
     "2k": (2560, 1440),
     "4k": (3840, 2160),
 }
+EXPORT_RESOLUTION_PRESETS_PORTRAIT = {
+    "1080p": (1080, 1920),
+    "2k": (1440, 2560),
+    "4k": (2160, 3840),
+}
+# Alias cũ (landscape) — tương thích chỗ gọi trực tiếp.
+EXPORT_RESOLUTION_PRESETS = EXPORT_RESOLUTION_PRESETS_LANDSCAPE
 # Video encode: h264 (mặc định) | hevc — GPU: h264_nvenc / hevc_nvenc, CPU: libx264 / libx265.
 VIDEO_CODEC = "h264"
 
@@ -2430,15 +2438,34 @@ def step4_merge_audio(video_path, voice_path):
     return out
 
 
+def _is_portrait_wh(wh):
+    if not wh or len(wh) < 2:
+        return False
+    try:
+        return int(wh[1]) > int(wh[0])
+    except (TypeError, ValueError):
+        return False
+
+
 def _resolve_export_target_wh(source_wh):
-    """Map --export-resolution → (W,H); source/auto giữ WxH Step6."""
+    """Map --export-resolution → (W,H); source/auto giữ WxH Step6.
+
+    1080p/2k/4k: landscape 16:9 hoặc portrait 9:16 theo hướng video nguồn.
+    """
     key = str(EXPORT_RESOLUTION or "source").strip().lower()
     if key in ("", "source", "auto"):
         return source_wh
-    preset = EXPORT_RESOLUTION_PRESETS.get(key)
+    presets = (
+        EXPORT_RESOLUTION_PRESETS_PORTRAIT
+        if _is_portrait_wh(source_wh)
+        else EXPORT_RESOLUTION_PRESETS_LANDSCAPE
+    )
+    preset = presets.get(key)
     if not preset:
         log(f"Step7: unknown export-resolution '{key}', keeping source size.")
         return source_wh
+    orientation = "9:16" if _is_portrait_wh(source_wh) else "16:9"
+    log(f"Step7: export {key} → {preset[0]}x{preset[1]} ({orientation})")
     return preset
 
 
@@ -3019,7 +3046,13 @@ def parse_cli_args():
         "--export-resolution",
         choices=["source", "1080p", "2k", "4k"],
         default=EXPORT_RESOLUTION,
-        help="Step7 output size (16:9): 1080p=1920x1080, 2k=2560x1440, 4k=3840x2160, source=keep Step6 size.",
+        help=(
+            "Step7 output size by long-side tier: "
+            "1080p=1920x1080 (16:9) or 1080x1920 (9:16), "
+            "2k=2560x1440 or 1440x2560, "
+            "4k=3840x2160 or 2160x3840, "
+            "source=keep Step6 size. Orientation follows source video."
+        ),
     )
     parser.add_argument(
         "--video-codec",

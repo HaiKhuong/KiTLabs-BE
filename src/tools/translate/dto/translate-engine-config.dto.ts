@@ -972,7 +972,7 @@ export class TranslateEngineConfigDto {
   @IsNumber()
   step6_eq_contrast?: number;
 
-  /** Step7: 1080p | 2k | 4k (downscale theo nguồn) */
+  /** Step7: 1080p | 2k | 4k — landscape 16:9 hoặc portrait 9:16 theo nguồn */
   @IsOptional()
   @IsString()
   exportResolution?: string;
