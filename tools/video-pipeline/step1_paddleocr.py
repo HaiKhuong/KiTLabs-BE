@@ -301,14 +301,31 @@ def _preprocess_strip(bgr_strip, for_probe: bool = False):
 # PaddleOCR helpers (engine-only difference)
 # ──────────────────────────────────────────────
 
-def _create_paddle_ocr():
-    """Init PaddleOCR for 2.x and 3.x; disable doc preprocess (breaks subtitle strips)."""
+def _disable_paddle_onednn() -> None:
+    """PaddlePaddle 3.3.x + oneDNN/MKLDNN crashes on CPU OCR (ConvertPirAttribute2RuntimeAttribute)."""
+    import os
+
+    # Must be set before predictor create; PaddleX still needs enable_mkldnn=False too.
+    os.environ.setdefault("FLAGS_use_mkldnn", "0")
+    os.environ.setdefault("FLAGS_onednn", "0")
+    os.environ.setdefault("PADDLE_PDX_ENABLE_MKLDNN_BYDEFAULT", "0")
+
+
+def _create_paddle_ocr(
+    *,
+    lang: str | None = None,
+    use_gpu: bool | None = None,
+    use_angle_cls: bool | None = None,
+    log: Callable[[str], None] | None = None,
+):
+    """Init PaddleOCR for 2.x and 3.x; disable doc preprocess + oneDNN (CPU crash workaround)."""
+    _disable_paddle_onednn()
     from paddleocr import PaddleOCR
 
-    lang = _cfg["lang"]
-    use_gpu = bool(_cfg["use_gpu"])
-    use_angle = bool(_cfg["use_angle_cls"])
-    log = _cfg["log"]
+    lang = str(lang if lang is not None else _cfg["lang"])
+    use_gpu = bool(_cfg["use_gpu"] if use_gpu is None else use_gpu)
+    use_angle = bool(_cfg["use_angle_cls"] if use_angle_cls is None else use_angle_cls)
+    log_fn = log or _cfg.get("log") or (lambda _m: None)
 
     try:
         ocr = PaddleOCR(
@@ -318,16 +335,26 @@ def _create_paddle_ocr():
             use_doc_unwarping=False,
             use_textline_orientation=use_angle,
             text_rec_score_thresh=0.0,
+            enable_mkldnn=False,  # bypass Paddle 3.3.x oneDNN/PIR bug
         )
-        log(f"Step1 PaddleOCR: engine=3.x lang={lang} gpu={use_gpu} textline_orient={use_angle}")
+        log_fn(f"Step1 PaddleOCR: engine=3.x lang={lang} gpu={use_gpu} mkldnn=False textline_orient={use_angle}")
         return ocr
     except TypeError as exc:
-        log(f"Step1 PaddleOCR: 3.x init failed ({exc}); fallback 2.x API")
+        log_fn(f"Step1 PaddleOCR: 3.x init failed ({exc}); fallback 2.x API")
 
     try:
-        return PaddleOCR(lang=lang, use_angle_cls=use_angle, use_gpu=use_gpu, show_log=False)
+        return PaddleOCR(
+            lang=lang,
+            use_angle_cls=use_angle,
+            use_gpu=use_gpu,
+            show_log=False,
+            enable_mkldnn=False,
+        )
     except TypeError:
-        return PaddleOCR(lang=lang, use_angle_cls=use_angle)
+        try:
+            return PaddleOCR(lang=lang, use_angle_cls=use_angle, enable_mkldnn=False)
+        except TypeError:
+            return PaddleOCR(lang=lang, use_angle_cls=use_angle)
 
 
 def _ensure_bgr3(img):

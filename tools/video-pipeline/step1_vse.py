@@ -517,11 +517,31 @@ def _ocr_with_vsf(video_path: Path) -> Path:
         )
     log(f"Step1 VSE: {len(frames)} subtitle frames from VideoSubFinder")
 
-    ocr = PaddleOCR(
-        lang=_cfg["lang"],
-        use_angle_cls=_cfg["use_angle_cls"],
-        device="gpu" if _cfg["use_gpu"] else "cpu",
-    )
+    try:
+        from step1_paddleocr import _create_paddle_ocr
+        ocr = _create_paddle_ocr(
+            lang=_cfg["lang"],
+            use_gpu=_cfg["use_gpu"],
+            use_angle_cls=_cfg["use_angle_cls"],
+            log=log,
+        )
+    except Exception:
+        from paddleocr import PaddleOCR
+        import os
+        os.environ.setdefault("PADDLE_PDX_ENABLE_MKLDNN_BYDEFAULT", "0")
+        try:
+            ocr = PaddleOCR(
+                lang=_cfg["lang"],
+                use_angle_cls=_cfg["use_angle_cls"],
+                device="gpu" if _cfg["use_gpu"] else "cpu",
+                enable_mkldnn=False,
+            )
+        except TypeError:
+            ocr = PaddleOCR(
+                lang=_cfg["lang"],
+                use_angle_cls=_cfg["use_angle_cls"],
+                enable_mkldnn=False,
+            )
     log(f"Step1 VSE: PaddleOCR init lang={_cfg['lang']} gpu={_cfg['use_gpu']}")
 
     use_cls = bool(_cfg["use_angle_cls"])
