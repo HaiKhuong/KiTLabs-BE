@@ -8,7 +8,7 @@ import { unlink } from "fs/promises";
 import { basename, extname, isAbsolute, join, resolve } from "path";
 import { Repository, SelectQueryBuilder } from "typeorm";
 
-import { NotificationType, QueueJobStatus } from "../../common/enums/domain.enums";
+import { QueueJobStatus } from "../../common/enums/domain.enums";
 import { CreditHistory } from "../credits/credit-history.entity";
 import { LogsService } from "../logs/logs.service";
 import { NotificationsService } from "../notifications/notifications.service";
@@ -1320,17 +1320,42 @@ export class AudioService {
       }),
     );
 
-    await this.notificationsService.push({
-      userId: user.id,
-      title: "Tạo audio hoàn tất",
-      message: `Audio "${history.displayName}" đã sẵn sàng.`,
-      type: NotificationType.SUCCESS,
-    });
+    const config =
+      history.engineConfig && typeof history.engineConfig === "object"
+        ? (history.engineConfig as Record<string, unknown>)
+        : {};
+    const isSrt = String(config.jobKind ?? "") === AUDIO_JOB_KIND_SRT_TIMELINE;
+    await this.notificationsService.pushSuccess(
+      user.id,
+      isSrt ? "Audio từ SRT hoàn tất" : "Tạo audio hoàn tất",
+      isSrt
+        ? `Audio timeline SRT "${history.displayName}" đã sẵn sàng.`
+        : `Audio "${history.displayName}" đã sẵn sàng.`,
+    );
   }
 
   async processFailed(audioHistoryId: string, errorMessage: string): Promise<void> {
     this.logger.error(`Audio failed: historyId=${audioHistoryId} error=${errorMessage}`);
-    await this.audioRepository.update({ id: audioHistoryId }, { status: QueueJobStatus.FAILED, errorMessage });
+    const history = await this.audioRepository.findOne({ where: { id: audioHistoryId } });
+    await this.audioRepository.update(
+      { id: audioHistoryId },
+      { status: QueueJobStatus.FAILED, errorMessage },
+    );
+    if (history?.userId) {
+      const config =
+        history.engineConfig && typeof history.engineConfig === "object"
+          ? (history.engineConfig as Record<string, unknown>)
+          : {};
+      const isSrt = String(config.jobKind ?? "") === AUDIO_JOB_KIND_SRT_TIMELINE;
+      await this.notificationsService.pushError(
+        history.userId,
+        isSrt ? "Audio từ SRT lỗi" : "Tạo audio lỗi",
+        errorMessage,
+        isSrt
+          ? "Không tạo được audio từ SRT. Kiểm tra nội dung SRT / giọng và thử lại."
+          : "Không tạo được audio. Kiểm tra văn bản / giọng và thử lại.",
+      );
+    }
   }
 
   resolveResultPath(history: AudioHistory): string {

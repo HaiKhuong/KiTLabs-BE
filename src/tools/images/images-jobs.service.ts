@@ -2,6 +2,7 @@ import { Injectable, Logger } from "@nestjs/common";
 import { randomUUID } from "crypto";
 import { join } from "path";
 
+import { NotificationsService } from "../notifications/notifications.service";
 import { ToolsRealtimeGateway } from "../realtime/tools-realtime.gateway";
 import { STUDIO_IMAGE_FILENAME, resolveWorkflowImagesOutputDir } from "../workflow/workflow-image.constants";
 import { WorkflowImageService } from "../workflow/workflow-image.service";
@@ -17,6 +18,7 @@ export class ImagesJobsService {
     private readonly workflowImageService: WorkflowImageService,
     private readonly imagesHistoryService: ImagesHistoryService,
     private readonly realtimeGateway: ToolsRealtimeGateway,
+    private readonly notificationsService: NotificationsService,
   ) {}
 
   async submitStudioImage(dto: GenerateStudioImageDto): Promise<StudioImageJobQueuedResponse> {
@@ -44,6 +46,14 @@ export class ImagesJobsService {
         jobId,
         result,
       });
+      const promptPreview = dto.prompt.trim().slice(0, 80);
+      await this.notificationsService.pushSuccess(
+        userId,
+        "Tạo ảnh hoàn tất",
+        promptPreview
+          ? `Ảnh đã sẵn sàng: “${promptPreview}${dto.prompt.trim().length > 80 ? "…" : ""}”.`
+          : "Ảnh đã được tạo thành công.",
+      );
       this.logger.log(`[Image Studio] Socket gửi images.studio.completed jobId=${jobId}`);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
@@ -53,6 +63,12 @@ export class ImagesJobsService {
         errorMessage,
         terminal: true,
       });
+      await this.notificationsService.pushError(
+        userId,
+        "Tạo ảnh lỗi",
+        errorMessage,
+        "Không tạo được ảnh. Kiểm tra prompt / cấu hình và thử lại.",
+      );
       this.logger.warn(`[Image Studio] Socket gửi images.studio.failed jobId=${jobId} — ${errorMessage}`);
     }
   }

@@ -11,7 +11,7 @@ import { AudioService } from "../audio/audio.service";
 import { LogsService } from "../logs/logs.service";
 import { NotificationsService } from "../notifications/notifications.service";
 import { User } from "../users/user.entity";
-import { NotificationType, QueueJobStatus } from "../../common/enums/domain.enums";
+import { QueueJobStatus } from "../../common/enums/domain.enums";
 import { CreateTranslateJobDto } from "./dto/create-translate-job.dto";
 import { TranslateEngineConfigDto } from "./dto/translate-engine-config.dto";
 import { TranslateHistory } from "./translate-history.entity";
@@ -138,16 +138,16 @@ export class TranslateService {
         }),
       );
 
-      await this.notificationsService.push({
-        userId: user.id,
-        title: "Video translation completed",
-        message: `Job ${history.id} is completed.`,
-        type: NotificationType.SUCCESS,
-      });
+      await this.notificationsService.pushSuccess(
+        user.id,
+        "Video hoàn tất",
+        `Video đã xử lý xong${history.resultFileName ? `: ${history.resultFileName}` : ""}.`,
+      );
     }
   }
 
   async processFailed(translateHistoryId: string, errorMessage: string): Promise<void> {
+    const history = await this.translateRepository.findOne({ where: { id: translateHistoryId } });
     await this.translateRepository.update(
       { id: translateHistoryId },
       {
@@ -155,6 +155,14 @@ export class TranslateService {
         errorMessage,
       },
     );
+    if (history?.userId) {
+      await this.notificationsService.pushError(
+        history.userId,
+        "Video xử lý lỗi",
+        errorMessage,
+        "Video không xử lý được. Kiểm tra lại file nguồn / cấu hình và thử lại.",
+      );
+    }
   }
 
   async processRuntimeStatus(
