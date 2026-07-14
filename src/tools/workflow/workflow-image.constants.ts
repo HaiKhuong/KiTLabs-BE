@@ -2,7 +2,8 @@ import { join, resolve } from "path";
 
 import { AUDIO_DATA_ROOT } from "../audio/audio.constants";
 
-export const VIDEO_IMAGES_OUTPUT_DIR = join(AUDIO_DATA_ROOT, "video-images");
+/** On-disk folder name kept for existing data compatibility. */
+export const WORKFLOW_IMAGES_OUTPUT_DIR = join(AUDIO_DATA_ROOT, "video-images");
 
 export const COMFYUI_DEFAULT_URL = "http://127.0.0.1:8188";
 
@@ -93,12 +94,17 @@ export function resolveModelWorkflowPath(model?: string): string {
   return resolve(process.cwd(), config.workflowPath);
 }
 
-export function resolveVideoImagesOutputDir(): string {
-  const raw = (process.env.VIDEO_IMAGES_DATA_ROOT ?? process.env.IMAGE_DATA_ROOT ?? "").trim();
+export function resolveWorkflowImagesOutputDir(): string {
+  const raw = (
+    process.env.WORKFLOW_IMAGES_DATA_ROOT ??
+    process.env.VIDEO_IMAGES_DATA_ROOT ??
+    process.env.IMAGE_DATA_ROOT ??
+    ""
+  ).trim();
   if (raw) {
     return resolve(raw);
   }
-  return resolve(VIDEO_IMAGES_OUTPUT_DIR);
+  return resolve(WORKFLOW_IMAGES_OUTPUT_DIR);
 }
 
 export function buildSceneImageFilename(sceneNumber: number): string {
@@ -111,7 +117,7 @@ export function buildSceneImageRelativeUrl(
   sceneNumber: number,
 ): string {
   const filename = buildSceneImageFilename(sceneNumber);
-  return `/api/tools/videos/images/${encodeURIComponent(userId)}/${encodeURIComponent(nodeId)}/${filename}`;
+  return `/api/tools/workflow/images/${encodeURIComponent(userId)}/${encodeURIComponent(nodeId)}/${filename}`;
 }
 
 export const STUDIO_IMAGE_FILENAME = "output.png";

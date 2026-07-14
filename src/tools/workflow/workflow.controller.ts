@@ -7,22 +7,22 @@ import { ExecuteAiTaskDto } from "./dto/execute-ai-task.dto";
 import { ExecuteImageDto } from "./dto/execute-image.dto";
 import { ExecuteVoiceDto } from "./dto/execute-voice.dto";
 import { RetrySceneImageDto } from "./dto/retry-scene-image.dto";
-import { UpsertVideoWorkflowDto } from "./dto/upsert-video-workflow.dto";
-import { VideosImageService } from "./videos-image.service";
-import { VideosJobsService } from "./videos-jobs.service";
-import { VideosService } from "./videos.service";
+import { UpsertWorkflowDto } from "./dto/upsert-workflow.dto";
+import { WorkflowImageService } from "./workflow-image.service";
+import { WorkflowJobsService } from "./workflow-jobs.service";
+import { WorkflowService } from "./workflow.service";
 
-@ApiTags("Videos")
+@ApiTags("Workflow")
 @ApiBearerAuth("bearer")
-@Controller("tools/videos")
-export class VideosController {
+@Controller("tools/workflow")
+export class WorkflowController {
   constructor(
-    private readonly videosService: VideosService,
-    private readonly videosJobsService: VideosJobsService,
-    private readonly videosImageService: VideosImageService,
+    private readonly workflowService: WorkflowService,
+    private readonly workflowJobsService: WorkflowJobsService,
+    private readonly workflowImageService: WorkflowImageService,
   ) {}
 
-  @ApiOperation({ summary: "Get video workflow by userId" })
+  @ApiOperation({ summary: "Get workflow by userId" })
   @ApiQuery({ name: "userId", required: true })
   @ApiQuery({ name: "name", required: false })
   @Public()
@@ -31,47 +31,47 @@ export class VideosController {
     if (!userId) {
       throw new BadRequestException("userId is required");
     }
-    return this.videosService.getByUser(userId, name || "default");
+    return this.workflowService.getByUser(userId, name || "default");
   }
 
-  @ApiOperation({ summary: "Create or update video workflow" })
-  @ApiBody({ type: UpsertVideoWorkflowDto })
+  @ApiOperation({ summary: "Create or update workflow" })
+  @ApiBody({ type: UpsertWorkflowDto })
   @Public()
   @Put("workflows")
-  async upsertWorkflow(@Body() dto: UpsertVideoWorkflowDto) {
-    return this.videosService.upsert(dto);
+  async upsertWorkflow(@Body() dto: UpsertWorkflowDto) {
+    return this.workflowService.upsert(dto);
   }
 
-  @ApiOperation({ summary: "Queue AI Task — kết quả qua socket videos.job.completed / failed" })
+  @ApiOperation({ summary: "Queue AI Task — kết quả qua socket workflow.job.completed / failed" })
   @ApiBody({ type: ExecuteAiTaskDto })
   @Public()
   @Post("ai-task/execute")
   async executeAiTask(@Body() dto: ExecuteAiTaskDto) {
-    return this.videosJobsService.submitAiTask(dto);
+    return this.workflowJobsService.submitAiTask(dto);
   }
 
-  @ApiOperation({ summary: "Queue Voice TTS — kết quả qua socket videos.job.completed / failed" })
+  @ApiOperation({ summary: "Queue Voice TTS — kết quả qua socket workflow.job.completed / failed" })
   @ApiBody({ type: ExecuteVoiceDto })
   @Public()
   @Post("voice/generate")
   async executeVoice(@Body() dto: ExecuteVoiceDto) {
-    return this.videosJobsService.submitVoice(dto);
+    return this.workflowJobsService.submitVoice(dto);
   }
 
-  @ApiOperation({ summary: "Queue Image gen — kết quả qua socket videos.job.completed / failed" })
+  @ApiOperation({ summary: "Queue Image gen — kết quả qua socket workflow.job.completed / failed" })
   @ApiBody({ type: ExecuteImageDto })
   @Public()
   @Post("image/generate")
   async executeImage(@Body() dto: ExecuteImageDto) {
-    return this.videosJobsService.submitImage(dto);
+    return this.workflowJobsService.submitImage(dto);
   }
 
-  @ApiOperation({ summary: "Retry single scene image — kết quả qua socket videos.image.scene.progress" })
+  @ApiOperation({ summary: "Retry single scene image — kết quả qua socket workflow.image.scene.progress" })
   @ApiBody({ type: RetrySceneImageDto })
   @Public()
   @Post("image/retry-scene")
   async retrySceneImage(@Body() dto: RetrySceneImageDto) {
-    return this.videosJobsService.submitRetryScene(dto);
+    return this.workflowJobsService.submitRetryScene(dto);
   }
 
   @ApiOperation({ summary: "Serve generated scene image (ComfyUI output PNG)" })
@@ -83,7 +83,7 @@ export class VideosController {
     @Param("filename") filename: string,
     @Res() res: Response,
   ) {
-    const abs = this.videosImageService.resolveImageFilePath(userId, nodeId, filename);
+    const abs = this.workflowImageService.resolveImageFilePath(userId, nodeId, filename);
     if (!abs) {
       throw new NotFoundException("Image not found");
     }

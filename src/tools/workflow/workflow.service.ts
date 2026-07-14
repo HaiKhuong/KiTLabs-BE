@@ -3,21 +3,21 @@ import { InjectRepository } from "@nestjs/typeorm";
 import { createHash } from "crypto";
 import { Repository } from "typeorm";
 
-import { UpsertVideoWorkflowDto } from "./dto/upsert-video-workflow.dto";
-import { VideoWorkflow } from "./video-workflow.entity";
+import { UpsertWorkflowDto } from "./dto/upsert-workflow.dto";
+import { WorkflowEntity } from "./workflow.entity";
 
 @Injectable()
-export class VideosService {
+export class WorkflowService {
   constructor(
-    @InjectRepository(VideoWorkflow, "tool")
-    private readonly workflowRepo: Repository<VideoWorkflow>,
+    @InjectRepository(WorkflowEntity, "tool")
+    private readonly workflowRepo: Repository<WorkflowEntity>,
   ) {}
 
-  async getByUser(userId: string, name = "default"): Promise<VideoWorkflow | null> {
+  async getByUser(userId: string, name = "default"): Promise<WorkflowEntity | null> {
     return this.workflowRepo.findOne({ where: { userId, name } });
   }
 
-  async upsert(dto: UpsertVideoWorkflowDto): Promise<VideoWorkflow> {
+  async upsert(dto: UpsertWorkflowDto): Promise<WorkflowEntity> {
     const name = dto.name?.trim() || "default";
     const contentHash =
       dto.contentHash?.trim() ||

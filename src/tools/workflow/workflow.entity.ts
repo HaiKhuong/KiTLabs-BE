@@ -5,7 +5,7 @@ import { User } from "../users/user.entity";
 
 @Entity("video_workflows")
 @Index("IDX_video_workflows_user_id_name", ["userId", "name"], { unique: true })
-export class VideoWorkflow extends BaseEntity {
+export class WorkflowEntity extends BaseEntity {
   @Column({ name: "user_id", type: "uuid" })
   userId!: string;
 

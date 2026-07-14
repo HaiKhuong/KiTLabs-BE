@@ -16,8 +16,8 @@ import {
   resolveImageModel,
   resolveModelWorkflowConfig,
   resolveModelWorkflowPath,
-  resolveVideoImagesOutputDir,
-} from "./video-image.constants";
+  resolveWorkflowImagesOutputDir,
+} from "./workflow-image.constants";
 import { ComfyPromptWaiter } from "./comfyui-prompt-waiter";
 
 type SceneRow = {
@@ -193,8 +193,8 @@ function resolveHistoryEntry(
 }
 
 @Injectable()
-export class VideosImageService {
-  private readonly logger = new Logger(VideosImageService.name);
+export class WorkflowImageService {
+  private readonly logger = new Logger(WorkflowImageService.name);
   private comfyChain: Promise<unknown> = Promise.resolve();
   private workflowCache = new Map<string, Record<string, unknown>>();
 
@@ -427,7 +427,7 @@ export class VideosImageService {
   }
 
   private buildOutputDir(userId: string, nodeId: string): string {
-    const dir = join(resolveVideoImagesOutputDir(), userId, nodeId);
+    const dir = join(resolveWorkflowImagesOutputDir(), userId, nodeId);
     mkdirSync(dir, { recursive: true });
     return dir;
   }
@@ -635,7 +635,7 @@ export class VideosImageService {
       return null;
     }
 
-    const candidate = join(resolveVideoImagesOutputDir(), userId, nodeId, safeName);
+    const candidate = join(resolveWorkflowImagesOutputDir(), userId, nodeId, safeName);
     return existsSync(candidate) ? candidate : null;
   }
 

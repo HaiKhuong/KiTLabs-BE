@@ -8,7 +8,7 @@ import { Repository } from "typeorm";
 import { QueueJobStatus } from "../../common/enums/domain.enums";
 import { GenerateStudioImageDto } from "./dto/generate-studio-image.dto";
 import { ImageHistory } from "./image-history.entity";
-import { STUDIO_IMAGE_FILENAME } from "../videos/video-image.constants";
+import { STUDIO_IMAGE_FILENAME } from "../workflow/workflow-image.constants";
 
 @Injectable()
 export class ImagesHistoryService {

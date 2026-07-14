@@ -29,7 +29,7 @@ import {
 import { AudioCloneVoice } from "./audio-clone-voice.entity";
 import { AudioHistory } from "./audio-history.entity";
 import { CreateAudioJobDto } from "./dto/create-audio-job.dto";
-import { ExecuteVoiceDto } from "../videos/dto/execute-voice.dto";
+import { ExecuteVoiceDto } from "../workflow/dto/execute-voice.dto";
 
 export const AUDIO_QUEUE_NAME = "audio-tts";
 

@@ -7,20 +7,20 @@ import { ExecuteImageDto } from "./dto/execute-image.dto";
 import { ExecuteVoiceDto } from "./dto/execute-voice.dto";
 import { RetrySceneImageDto } from "./dto/retry-scene-image.dto";
 import type { WorkflowJobQueuedResponse } from "./dto/workflow-job-response.dto";
-import { VideosAiService } from "./videos-ai.service";
-import { VideosImageService } from "./videos-image.service";
-import { VideosVoiceService } from "./videos-voice.service";
+import { WorkflowAiService } from "./workflow-ai.service";
+import { WorkflowImageService } from "./workflow-image.service";
+import { WorkflowVoiceService } from "./workflow-voice.service";
 
 export type WorkflowJobType = "ai_task" | "voice" | "image";
 
 @Injectable()
-export class VideosJobsService {
-  private readonly logger = new Logger(VideosJobsService.name);
+export class WorkflowJobsService {
+  private readonly logger = new Logger(WorkflowJobsService.name);
 
   constructor(
-    private readonly videosAiService: VideosAiService,
-    private readonly videosVoiceService: VideosVoiceService,
-    private readonly videosImageService: VideosImageService,
+    private readonly workflowAiService: WorkflowAiService,
+    private readonly workflowVoiceService: WorkflowVoiceService,
+    private readonly workflowImageService: WorkflowImageService,
     private readonly realtimeGateway: ToolsRealtimeGateway,
   ) {}
 
@@ -58,8 +58,8 @@ export class VideosJobsService {
     dto: ExecuteAiTaskDto,
   ): Promise<void> {
     try {
-      const result = await this.videosAiService.executeAiTask(dto);
-      this.realtimeGateway.notifyUser(userId, "videos.job.completed", {
+      const result = await this.workflowAiService.executeAiTask(dto);
+      this.realtimeGateway.notifyUser(userId, "workflow.job.completed", {
         jobId,
         nodeId,
         type: "ai_task",
@@ -68,7 +68,7 @@ export class VideosJobsService {
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       this.logger.warn(`AI Task job ${jobId} failed: ${errorMessage}`);
-      this.realtimeGateway.notifyUser(userId, "videos.job.failed", {
+      this.realtimeGateway.notifyUser(userId, "workflow.job.failed", {
         jobId,
         nodeId,
         type: "ai_task",
@@ -85,8 +85,8 @@ export class VideosJobsService {
     dto: ExecuteVoiceDto,
   ): Promise<void> {
     try {
-      const result = await this.videosVoiceService.executeVoice(dto);
-      this.realtimeGateway.notifyUser(userId, "videos.job.completed", {
+      const result = await this.workflowVoiceService.executeVoice(dto);
+      this.realtimeGateway.notifyUser(userId, "workflow.job.completed", {
         jobId,
         nodeId,
         type: "voice",
@@ -95,7 +95,7 @@ export class VideosJobsService {
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       this.logger.warn(`Voice job ${jobId} failed: ${errorMessage}`);
-      this.realtimeGateway.notifyUser(userId, "videos.job.failed", {
+      this.realtimeGateway.notifyUser(userId, "workflow.job.failed", {
         jobId,
         nodeId,
         type: "voice",
@@ -112,8 +112,8 @@ export class VideosJobsService {
     dto: ExecuteImageDto,
   ): Promise<void> {
     try {
-      const result = await this.videosImageService.executeImage(dto, (scene) => {
-        this.realtimeGateway.notifyUser(userId, "videos.image.scene.progress", {
+      const result = await this.workflowImageService.executeImage(dto, (scene) => {
+        this.realtimeGateway.notifyUser(userId, "workflow.image.scene.progress", {
           jobId,
           nodeId,
           sceneNumber: scene.sceneNumber,
@@ -128,7 +128,7 @@ export class VideosJobsService {
       this.logger.log(
         `[Image Job] DONE jobId=${jobId} nodeId=${nodeId} — OK ${result.completedCount}/${result.images.length}, lỗi ${result.failedCount}`,
       );
-      this.realtimeGateway.notifyUser(userId, "videos.job.completed", {
+      this.realtimeGateway.notifyUser(userId, "workflow.job.completed", {
         jobId,
         nodeId,
         type: "image",
@@ -137,7 +137,7 @@ export class VideosJobsService {
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       this.logger.warn(`[Image Job] DONE FAILED jobId=${jobId} nodeId=${nodeId} — ${errorMessage}`);
-      this.realtimeGateway.notifyUser(userId, "videos.job.failed", {
+      this.realtimeGateway.notifyUser(userId, "workflow.job.failed", {
         jobId,
         nodeId,
         type: "image",
@@ -165,11 +165,11 @@ export class VideosJobsService {
     dto: RetrySceneImageDto,
   ): Promise<void> {
     try {
-      const result = await this.videosImageService.retrySingleScene(dto);
+      const result = await this.workflowImageService.retrySingleScene(dto);
       this.logger.log(
         `[Image Retry] DONE jobId=${jobId} ${result.status} scene=${dto.sceneNumber} nodeId=${nodeId}`,
       );
-      this.realtimeGateway.notifyUser(userId, "videos.image.scene.progress", {
+      this.realtimeGateway.notifyUser(userId, "workflow.image.scene.progress", {
         jobId,
         nodeId,
         sceneNumber: result.sceneNumber,
@@ -183,7 +183,7 @@ export class VideosJobsService {
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       this.logger.warn(`[Image Retry] FAILED jobId=${jobId} nodeId=${nodeId} scene=${dto.sceneNumber} — ${errorMessage}`);
-      this.realtimeGateway.notifyUser(userId, "videos.image.scene.progress", {
+      this.realtimeGateway.notifyUser(userId, "workflow.image.scene.progress", {
         jobId,
         nodeId,
         sceneNumber: dto.sceneNumber,

@@ -17,7 +17,7 @@ import { Public } from "../../common/decorators/public.decorator";
 import { GenerateStudioImageDto } from "./dto/generate-studio-image.dto";
 import { ImagesHistoryService } from "./images-history.service";
 import { ImagesJobsService } from "./images-jobs.service";
-import { VideosImageService } from "../videos/videos-image.service";
+import { WorkflowImageService } from "../workflow/workflow-image.service";
 
 @ApiTags("Images")
 @ApiBearerAuth("bearer")
@@ -26,7 +26,7 @@ export class ImagesController {
   constructor(
     private readonly imagesJobsService: ImagesJobsService,
     private readonly imagesHistoryService: ImagesHistoryService,
-    private readonly videosImageService: VideosImageService,
+    private readonly workflowImageService: WorkflowImageService,
   ) {}
 
   @ApiOperation({
@@ -109,7 +109,7 @@ export class ImagesController {
     @Param("filename") filename: string,
     @Res() res: Response,
   ) {
-    const abs = this.videosImageService.resolveImageFilePath(userId, jobId, filename);
+    const abs = this.workflowImageService.resolveImageFilePath(userId, jobId, filename);
     if (!abs) {
       throw new NotFoundException("Image not found");
     }

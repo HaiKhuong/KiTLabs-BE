@@ -11,8 +11,8 @@ import {
 import { ExecuteAiTaskDto } from "./dto/execute-ai-task.dto";
 
 @Injectable()
-export class VideosAiService {
-  private readonly logger = new Logger(VideosAiService.name);
+export class WorkflowAiService {
+  private readonly logger = new Logger(WorkflowAiService.name);
   private readonly normalKeys: string[];
   private readonly vipKeys: string[];
   private readonly keyIndices: Record<GeminiKeyTier, number> = { normal: 0, vip: 0 };
@@ -22,7 +22,7 @@ export class VideosAiService {
     this.normalKeys = pools.normal;
     this.vipKeys = pools.vip;
     this.logger.log(
-      `Videos AI: ${this.normalKeys.length} key Normal (GEMINI_API_KEY), ${this.vipKeys.length} key VIP (GEMINI_API_KEY_VIP)`,
+      `Workflow AI: ${this.normalKeys.length} key Normal (GEMINI_API_KEY), ${this.vipKeys.length} key VIP (GEMINI_API_KEY_VIP)`,
     );
   }
 
@@ -154,7 +154,7 @@ export class VideosAiService {
         const status = error?.status ?? error?.httpStatusCode ?? 0;
         const isRetryable = status === 429 || status === 503 || status === 500;
         if (isRetryable && attempt < maxAttempts - 1) {
-          this.logger.warn(`Videos AI ${apiKeyTier} key failed (${status}), rotating...`);
+          this.logger.warn(`Workflow AI ${apiKeyTier} key failed (${status}), rotating...`);
           continue;
         }
         break;

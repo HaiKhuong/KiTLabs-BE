@@ -1,7 +1,7 @@
 import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
 import { IsNotEmpty, IsObject, IsOptional, IsString, IsUUID } from "class-validator";
 
-export class UpsertVideoWorkflowDto {
+export class UpsertWorkflowDto {
   @ApiProperty({ description: "User UUID" })
   @IsUUID()
   userId!: string;

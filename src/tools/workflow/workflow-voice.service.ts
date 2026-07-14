@@ -152,8 +152,8 @@ function failedSegment(scene: SceneRow, message: string, jobId: string | null = 
 }
 
 @Injectable()
-export class VideosVoiceService {
-  private readonly logger = new Logger(VideosVoiceService.name);
+export class WorkflowVoiceService {
+  private readonly logger = new Logger(WorkflowVoiceService.name);
 
   constructor(private readonly audioService: AudioService) {}
 

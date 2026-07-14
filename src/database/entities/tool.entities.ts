@@ -12,7 +12,7 @@ import { ImageHistory } from "../../tools/images/image-history.entity";
 import { TranslateHistory } from "../../tools/translate/translate-history.entity";
 import { User } from "../../tools/users/user.entity";
 import { ChunkUpload } from "../../tools/files/entities/chunk-upload.entity";
-import { VideoWorkflow } from "../../tools/videos/video-workflow.entity";
+import { WorkflowEntity } from "../../tools/workflow/workflow.entity";
 import {
   YouTubeChannel,
   YouTubeVideo,
@@ -45,5 +45,5 @@ export const TOOL_DB_ENTITIES = [
   Recommendation,
   AiChatHistory,
   ChunkUpload,
-  VideoWorkflow,
+  WorkflowEntity,
 ];

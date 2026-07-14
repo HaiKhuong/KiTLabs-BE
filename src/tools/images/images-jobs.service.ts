@@ -3,8 +3,8 @@ import { randomUUID } from "crypto";
 import { join } from "path";
 
 import { ToolsRealtimeGateway } from "../realtime/tools-realtime.gateway";
-import { STUDIO_IMAGE_FILENAME, resolveVideoImagesOutputDir } from "../videos/video-image.constants";
-import { VideosImageService } from "../videos/videos-image.service";
+import { STUDIO_IMAGE_FILENAME, resolveWorkflowImagesOutputDir } from "../workflow/workflow-image.constants";
+import { WorkflowImageService } from "../workflow/workflow-image.service";
 import { GenerateStudioImageDto } from "./dto/generate-studio-image.dto";
 import type { StudioImageJobQueuedResponse } from "./dto/studio-image-job-response.dto";
 import { ImagesHistoryService } from "./images-history.service";
@@ -14,7 +14,7 @@ export class ImagesJobsService {
   private readonly logger = new Logger(ImagesJobsService.name);
 
   constructor(
-    private readonly videosImageService: VideosImageService,
+    private readonly workflowImageService: WorkflowImageService,
     private readonly imagesHistoryService: ImagesHistoryService,
     private readonly realtimeGateway: ToolsRealtimeGateway,
   ) {}
@@ -33,9 +33,9 @@ export class ImagesJobsService {
     userId: string,
     dto: GenerateStudioImageDto,
   ): Promise<void> {
-    const resultPath = join(resolveVideoImagesOutputDir(), userId, jobId, STUDIO_IMAGE_FILENAME);
+    const resultPath = join(resolveWorkflowImagesOutputDir(), userId, jobId, STUDIO_IMAGE_FILENAME);
     try {
-      const result = await this.videosImageService.generateStudioImage(dto, jobId);
+      const result = await this.workflowImageService.generateStudioImage(dto, jobId);
       await this.imagesHistoryService.markCompleted(jobId, resultPath, {
         enrichedPrompt: result.enrichedPrompt,
         geminiAnalysis: result.geminiAnalysis,

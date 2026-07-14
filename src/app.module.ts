@@ -27,7 +27,7 @@ import { AudioModule } from "./tools/audio/audio.module";
 import { ToolsRealtimeModule } from "./tools/realtime/tools-realtime.module";
 import { TranslateModule } from "./tools/translate/translate.module";
 import { UsersModule } from "./tools/users/users.module";
-import { VideosModule } from "./tools/videos/videos.module";
+import { WorkflowModule } from "./tools/workflow/workflow.module";
 import { ImagesModule } from "./tools/images/images.module";
 import { YouTubeModule } from "./tools/youtube/youtube.module";
 
@@ -103,7 +103,7 @@ import { YouTubeModule } from "./tools/youtube/youtube.module";
     DatabaseModule,
     AntiSpamModule,
     YouTubeModule,
-    VideosModule,
+    WorkflowModule,
     ImagesModule,
   ],
   controllers: [AppController],
