@@ -254,13 +254,23 @@ def _collect_vsf_images(out_dir: Path) -> list[tuple[float, Path]]:
     return []
 
 
+def _docker_sock_writable() -> bool:
+    sock = Path("/var/run/docker.sock")
+    try:
+        return sock.exists() and os.access(sock, os.R_OK | os.W_OK)
+    except OSError:
+        return False
+
+
 def _wrap_docker_cmd(cmd: list[str]) -> list[str]:
     """
-    Nest/systemd often lacks docker group in the process session even after usermod.
-    `sg docker -c '...'` applies the group without re-login when user is in /etc/group.
-    Override with env VSE_DOCKER_SG=0 to disable.
+    Prefer plain `docker` when the process can already write docker.sock.
+    Otherwise wrap with `sg docker` so Nest gets the group without re-login.
+    `sg` can hang on some PAM setups — disable with VSE_DOCKER_SG=0.
     """
     if platform.system() != "Linux":
+        return cmd
+    if _docker_sock_writable():
         return cmd
     if str(os.environ.get("VSE_DOCKER_SG", "1")).strip().lower() in ("0", "off", "false", "no"):
         return cmd
@@ -268,6 +278,89 @@ def _wrap_docker_cmd(cmd: list[str]) -> list[str]:
         return cmd
     quoted = " ".join(shlex.quote(x) for x in cmd)
     return ["sg", "docker", "-c", quoted]
+
+
+def _count_vsf_images(out_dir: Path) -> int:
+    n = 0
+    for folder in ("ClearedTXTImages", "TXTImages", "RGBImages"):
+        d = out_dir / folder
+        if not d.is_dir():
+            continue
+        try:
+            n += sum(1 for p in d.iterdir() if p.is_file())
+        except OSError:
+            continue
+    return n
+
+
+def _run_subprocess_streaming(cmd: list[str], *, cwd: str, env: dict, out_dir: Path, log) -> int:
+    """Run VSF with live logs + heartbeat (image count) so Nest does not look hung."""
+    log(f"Step1 VSE: exec: {' '.join(cmd[:8])}{' …' if len(cmd) > 8 else ''}")
+    log("Step1 VSE: VideoSubFinder đang quét video — có thể mất nhiều phút, chờ heartbeat…")
+
+    proc = subprocess.Popen(
+        cmd,
+        cwd=cwd,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        bufsize=1,
+    )
+
+    t0 = time.time()
+    last_beat = t0
+    last_line_at = t0
+    line_buf: list[str] = []
+
+    assert proc.stdout is not None
+    while True:
+        line = proc.stdout.readline()
+        now = time.time()
+        if line:
+            last_line_at = now
+            text = line.rstrip()
+            if text:
+                line_buf.append(text)
+                if len(line_buf) > 80:
+                    line_buf = line_buf[-80:]
+                # VSF Frame: / progress lines — always echo
+                low = text.lower()
+                if (
+                    text.startswith("Frame:")
+                    or "percent" in low
+                    or "error" in low
+                    or "fail" in low
+                    or "search" in low
+                ):
+                    log(f"Step1 VSE: [vsf] {text[:300]}")
+        elif proc.poll() is not None:
+            break
+
+        if now - last_beat >= 15:
+            imgs = _count_vsf_images(out_dir)
+            quiet = now - last_line_at
+            log(
+                f"Step1 VSE: heartbeat elapsed={now - t0:.0f}s "
+                f"images={imgs} quiet={quiet:.0f}s pid={proc.pid}"
+            )
+            last_beat = now
+
+        if line == "" and proc.poll() is None:
+            time.sleep(0.2)
+
+    code = proc.wait()
+    elapsed = time.time() - t0
+    imgs = _count_vsf_images(out_dir)
+    log(f"Step1 VSE: process exit={code} elapsed={elapsed:.1f}s images={imgs}")
+    if code != 0:
+        tail = "\n".join(line_buf[-30:])
+        raise RuntimeError(
+            f"Step1 VSE: VideoSubFinder failed (code={code}, {elapsed:.1f}s).\n{tail}"
+        )
+    return code
 
 
 def _run_videosubfinder(video_path: Path, out_dir: Path, empty_srt: Path) -> None:
@@ -278,7 +371,7 @@ def _run_videosubfinder(video_path: Path, out_dir: Path, empty_srt: Path) -> Non
     use_cuda = bool(_cfg.get("vsf_use_cuda"))
     use_docker = bool(_cfg.get("vsf_use_docker"))
 
-    vsf_args: list[str] = ["-c", "-r"]
+    vsf_args: list[str] = ["--verbose", "-c", "-r"]
     if use_cuda:
         vsf_args.append("-uc")
     vsf_args += [
@@ -299,14 +392,15 @@ def _run_videosubfinder(video_path: Path, out_dir: Path, empty_srt: Path) -> Non
     video_path = video_path.resolve()
     out_dir = out_dir.resolve()
     empty_srt = empty_srt.resolve()
+    if not video_path.is_file():
+        raise RuntimeError(f"Step1 VSE: video not found: {video_path}")
 
+    env = os.environ.copy()
     if use_docker:
         image = str(_cfg.get("vsf_docker_image") or "kitools-videosubfinder")
-        # Mount parents so video + output work even on different disks (/mnt/e vs /home).
         in_dir = video_path.parent
         cmd = [
             "docker", "run", "--rm",
-            "--network", "none",
             "-v", f"{in_dir}:/vsf_in:ro",
             "-v", f"{out_dir}:/vsf_out",
             image,
@@ -315,10 +409,13 @@ def _run_videosubfinder(video_path: Path, out_dir: Path, empty_srt: Path) -> Non
             "-o", "/vsf_out",
             "-ces", f"/vsf_out/{empty_srt.name}",
         ]
+        used_sg = not _docker_sock_writable()
         cmd = _wrap_docker_cmd(cmd)
         cwd = str(out_dir)
-        env = os.environ.copy()
-        log(f"Step1 VSE: docker run {image} … ({' '.join(cmd[:3])}…)")
+        log(
+            f"Step1 VSE: docker image={image} video={video_path.name} "
+            f"in={in_dir} out={out_dir} sg={used_sg}"
+        )
     else:
         binary = _resolve_vsf_binary()
         native_args = [
@@ -329,43 +426,28 @@ def _run_videosubfinder(video_path: Path, out_dir: Path, empty_srt: Path) -> Non
         ]
         cmd = _build_vsf_cmd(binary, native_args)
         cwd = str(binary.parent)
-        env = os.environ.copy()
         lib_dir = str(binary.parent)
         env["LD_LIBRARY_PATH"] = f"{lib_dir}:{env.get('LD_LIBRARY_PATH', '')}"
         log(f"Step1 VSE: run {binary.name} …")
 
-    t0 = time.time()
-    proc = subprocess.run(
-        cmd,
-        cwd=cwd,
-        env=env,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-    )
-    elapsed = time.time() - t0
-    if proc.returncode != 0:
-        tail = (proc.stderr or proc.stdout or "").strip()[-2000:]
-        hint = ""
-        if use_docker and ("Unable to find image" in tail or "No such image" in tail):
-            hint = (
-                "\nBuild image first:\n"
-                "  docker build -t kitools-videosubfinder "
-                "tools/video-pipeline/subfinder\n"
-            )
-        elif use_docker and "permission denied" in tail.lower() and "docker" in tail.lower():
-            hint = (
-                "\nDocker socket permission denied. Fix on server (pick one):\n"
-                "  1) usermod -aG docker <nest-user> && systemctl restart <nest-service>\n"
-                "     (or add SupplementaryGroups=docker in the systemd unit)\n"
-                "  2) temporary: chmod 666 /var/run/docker.sock\n"
-                "  3) verify: sg docker -c 'docker run --rm kitools-videosubfinder -h'\n"
-            )
-        raise RuntimeError(
-            f"Step1 VSE: VideoSubFinder failed (code={proc.returncode}, {elapsed:.1f}s).{hint}\n{tail}"
-        )
-    log(f"Step1 VSE: VideoSubFinder done in {elapsed:.1f}s")
+    try:
+        _run_subprocess_streaming(cmd, cwd=cwd, env=env, out_dir=out_dir, log=log)
+    except RuntimeError as exc:
+        msg = str(exc)
+        if use_docker and ("Unable to find image" in msg or "No such image" in msg):
+            raise RuntimeError(
+                f"{msg}\nBuild image first:\n"
+                "  docker build -t kitools-videosubfinder tools/video-pipeline/subfinder"
+            ) from exc
+        if use_docker and "permission denied" in msg.lower() and "docker" in msg.lower():
+            raise RuntimeError(
+                f"{msg}\nDocker socket permission denied. Fix:\n"
+                "  usermod -aG docker <nest-user> && restart Nest\n"
+                "  or: chmod 666 /var/run/docker.sock\n"
+                "  verify: docker run --rm kitools-videosubfinder -h"
+            ) from exc
+        raise
+    log("Step1 VSE: VideoSubFinder done")
 
 
 def _ocr_image(ocr, image_path: Path, use_angle_cls: bool) -> str:
