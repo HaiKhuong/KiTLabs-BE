@@ -149,14 +149,15 @@ export class AudioController {
     };
   }
 
-  @ApiOperation({ summary: "List voice samples under tools/video-pipeline/voice (translate Step3)" })
+  @ApiOperation({ summary: "List clone voice samples owned by user" })
+  @ApiQuery({ name: "userId", required: true, description: "Owner user UUID" })
   @Public()
   @Get("pipeline-voices")
-  async listPipelineVoices() {
-    return this.audioService.listPipelineVoices();
+  async listPipelineVoices(@Query("userId") userId: string) {
+    return this.audioService.listPipelineVoices(userId);
   }
 
-  @ApiOperation({ summary: "Upload voice sample + ref text (file on disk + row in DB)" })
+  @ApiOperation({ summary: "Upload voice sample + ref text (owned by user)" })
   @ApiConsumes("multipart/form-data")
   @ApiQuery({ name: "refText", required: true, description: "Transcript of the reference clip" })
   @ApiQuery({
@@ -165,7 +166,7 @@ export class AudioController {
     description: "OmniVoice language: vietnamese | english | korean | japanese",
   })
   @ApiQuery({ name: "voiceName", required: false, description: "Optional display name / filename stem" })
-  @ApiQuery({ name: "userId", required: false, description: "Owner user id (optional)" })
+  @ApiQuery({ name: "userId", required: true, description: "Owner user id" })
   @ApiBody({
     schema: { type: "object", properties: { file: { type: "string", format: "binary" } }, required: ["file"] },
   })
@@ -198,28 +199,40 @@ export class AudioController {
     if (!omnivoiceLanguage?.trim()) {
       throw new BadRequestException("omnivoiceLanguage is required");
     }
+    if (!userId?.trim()) {
+      throw new BadRequestException("userId is required");
+    }
     return this.audioService.savePipelineVoiceUpload({
       originalName: file.originalname,
       voiceName,
       refText: refText ?? "",
       omnivoiceLanguage: omnivoiceLanguage.trim(),
       buffer: file.buffer,
-      userId,
+      userId: userId.trim(),
     });
   }
 
-  @ApiOperation({ summary: "Verify pipeline voice file exists under tools/video-pipeline/voice" })
+  @ApiOperation({ summary: "Verify pipeline voice file exists and is owned by user (or shared preset)" })
+  @ApiQuery({ name: "userId", required: true, description: "Owner user UUID" })
   @Public()
   @Get("pipeline-voices/:fileName/verify")
-  async verifyPipelineVoice(@Param("fileName") fileName: string) {
-    return this.audioService.assertPipelineVoiceReady(fileName);
+  async verifyPipelineVoice(
+    @Param("fileName") fileName: string,
+    @Query("userId") userId: string,
+  ) {
+    return this.audioService.assertPipelineVoiceReady(fileName, undefined, userId);
   }
 
-  @ApiOperation({ summary: "Stream reference audio file for a pipeline voice" })
+  @ApiOperation({ summary: "Stream reference audio file for a pipeline voice owned by user" })
+  @ApiQuery({ name: "userId", required: true, description: "Owner user UUID" })
   @Public()
   @Get("pipeline-voices/:fileName/stream")
-  async streamPipelineVoice(@Param("fileName") fileName: string, @Res() res: Response) {
-    const info = await this.audioService.assertPipelineVoiceReady(fileName);
+  async streamPipelineVoice(
+    @Param("fileName") fileName: string,
+    @Query("userId") userId: string,
+    @Res() res: Response,
+  ) {
+    const info = await this.audioService.assertPipelineVoiceReady(fileName, undefined, userId);
     const ext = extname(fileName).toLowerCase();
     let contentType = "audio/wav";
     if (ext === ".mp3") contentType = "audio/mpeg";
@@ -228,11 +241,15 @@ export class AudioController {
     return res.sendFile(info.absolutePath);
   }
 
-  @ApiOperation({ summary: "Delete a pipeline clone voice (file + DB row)" })
+  @ApiOperation({ summary: "Delete a pipeline clone voice owned by user (file + DB row)" })
+  @ApiQuery({ name: "userId", required: true, description: "Owner user UUID" })
   @Public()
   @Delete("pipeline-voices/:fileName")
-  async deletePipelineVoice(@Param("fileName") fileName: string) {
-    return this.audioService.deletePipelineVoice(fileName);
+  async deletePipelineVoice(
+    @Param("fileName") fileName: string,
+    @Query("userId") userId: string,
+  ) {
+    return this.audioService.deletePipelineVoice(fileName, userId);
   }
 
   @ApiOperation({ summary: "Enqueue OmniVoice TTS job" })

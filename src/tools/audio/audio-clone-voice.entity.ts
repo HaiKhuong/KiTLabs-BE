@@ -4,7 +4,7 @@ import { BaseEntity } from "../../common/entities/base.entity";
 import { User } from "../users/user.entity";
 
 @Entity("audio_clone_voices")
-@Index("IDX_audio_clone_voices_file_name", ["fileName"], { unique: true })
+@Index("UQ_audio_clone_voices_user_id_file_name", ["userId", "fileName"], { unique: true })
 @Index("IDX_audio_clone_voices_user_id_created_at", ["userId", "createdAt"])
 export class AudioCloneVoice extends BaseEntity {
   @Column({ name: "user_id", type: "uuid", nullable: true })
@@ -18,7 +18,7 @@ export class AudioCloneVoice extends BaseEntity {
   @Column({ name: "display_name", type: "varchar", length: 255 })
   displayName!: string;
 
-  /** Tên file trên disk (unique), dùng cho pipelineRefWav. */
+  /** Tên file trong thư mục voice của user; unique theo (userId, fileName). */
   @Column({ name: "file_name", type: "varchar", length: 255 })
   fileName!: string;
 

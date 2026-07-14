@@ -431,18 +431,56 @@ export class AudioService {
     return resolvePipelineVoiceDir();
   }
 
-  private ensurePipelineVoiceDir(): string {
-    const dir = this.resolvePipelineVoiceDir();
+  private ensurePipelineVoiceDir(userId?: string): string {
+    const root = this.resolvePipelineVoiceDir();
+    const dir = userId?.trim() ? join(root, userId.trim()) : root;
     if (!existsSync(dir)) {
       mkdirSync(dir, { recursive: true, mode: 0o775 });
     }
     return dir;
   }
 
-  /** Kiểm tra file giọng mẫu nằm đúng tools/video-pipeline/voice (dùng cho translate Step3). */
+  private async requireCloneVoiceOwner(userId: string): Promise<string> {
+    const id = String(userId || "").trim();
+    if (!id) {
+      throw new BadRequestException("userId is required");
+    }
+    const user = await this.userRepository.findOne({ where: { id } });
+    if (!user) {
+      throw new BadRequestException("User not found");
+    }
+    return user.id;
+  }
+
+  private resolvePipelineVoiceAbsolutePath(
+    row: AudioCloneVoice | null,
+    fileName: string,
+    ownerUserId?: string,
+  ): { voiceDir: string; absolutePath: string } {
+    const rootDir = this.resolvePipelineVoiceDir();
+    if (row?.filePath) {
+      const absolutePath = isAbsolute(row.filePath)
+        ? row.filePath
+        : resolve(process.cwd(), row.filePath);
+      const voiceDir = row.userId ? join(rootDir, row.userId) : rootDir;
+      return { voiceDir, absolutePath };
+    }
+    if (ownerUserId?.trim()) {
+      const voiceDir = join(rootDir, ownerUserId.trim());
+      return { voiceDir, absolutePath: join(voiceDir, fileName) };
+    }
+    return { voiceDir: rootDir, absolutePath: join(rootDir, fileName) };
+  }
+
+  /**
+   * Kiểm tra file giọng mẫu.
+   * - Có ownerUserId: chỉ chấp nhận clone thuộc user đó, hoặc file preset dùng chung ở thư mục root.
+   * - Không có ownerUserId: chỉ chấp nhận file ở root (preset / legacy).
+   */
   async assertPipelineVoiceReady(
     refWav: string,
     refTextOverride?: string,
+    ownerUserId?: string,
   ): Promise<{
     fileName: string;
     voiceDir: string;
@@ -461,13 +499,37 @@ export class AudioService {
       );
     }
 
-    const row = await this.cloneVoiceRepository.findOne({ where: { fileName } });
-    const voiceDir = this.resolvePipelineVoiceDir();
-    const absolutePath = row?.filePath
-      ? isAbsolute(row.filePath)
-        ? row.filePath
-        : resolve(process.cwd(), row.filePath)
-      : join(voiceDir, fileName);
+    const owner = ownerUserId?.trim() || "";
+    let row: AudioCloneVoice | null = null;
+    if (owner) {
+      row = await this.cloneVoiceRepository.findOne({
+        where: { fileName, userId: owner },
+      });
+    }
+
+    const rootDir = this.resolvePipelineVoiceDir();
+    let voiceDir = rootDir;
+    let absolutePath = join(rootDir, fileName);
+
+    if (row) {
+      const resolved = this.resolvePipelineVoiceAbsolutePath(row, fileName, owner);
+      voiceDir = resolved.voiceDir;
+      absolutePath = resolved.absolutePath;
+    } else if (owner) {
+      const ownedPath = join(rootDir, owner, fileName);
+      if (existsSync(ownedPath)) {
+        voiceDir = join(rootDir, owner);
+        absolutePath = ownedPath;
+      } else if (!existsSync(absolutePath)) {
+        throw new BadRequestException(
+          `Voice sample not found or not owned by this user: ${fileName}. Upload via Clone Voice menu.`,
+        );
+      }
+    } else if (!existsSync(absolutePath)) {
+      throw new BadRequestException(
+        `Voice sample not found: ${fileName}. Expected under ${rootDir.replace(/\\/g, "/")}.`,
+      );
+    }
 
     if (!existsSync(absolutePath)) {
       throw new BadRequestException(
@@ -483,7 +545,7 @@ export class AudioService {
     const refText =
       String(refTextOverride || "").trim() ||
       row?.refText?.trim() ||
-      this.readPipelineVoiceRefText(fileName);
+      this.readPipelineVoiceRefText(fileName, row?.userId ?? (owner || null));
     if (!refText) {
       throw new BadRequestException(
         `Missing ref text for voice "${fileName}". Upload with refText or add ${basename(fileName, ext)}.ref.txt in voice folder.`,
@@ -499,9 +561,12 @@ export class AudioService {
     };
   }
 
-  async resolvePipelineVoiceLanguage(fileName: string): Promise<string> {
+  async resolvePipelineVoiceLanguage(fileName: string, ownerUserId?: string): Promise<string> {
     const safeName = basename(String(fileName || "").trim());
-    const row = await this.cloneVoiceRepository.findOne({ where: { fileName: safeName } });
+    const owner = ownerUserId?.trim();
+    const row = owner
+      ? await this.cloneVoiceRepository.findOne({ where: { fileName: safeName, userId: owner } })
+      : await this.cloneVoiceRepository.findOne({ where: { fileName: safeName } });
     if (!row?.omnivoiceLanguage?.trim()) {
       throw new BadRequestException(
         `Giọng clone "${safeName}" chưa có ngôn ngữ. Tạo lại giọng và chọn Việt/Anh/Hàn/Nhật.`,
@@ -519,31 +584,37 @@ export class AudioService {
     return path;
   }
 
-  private pipelineVoiceRefSidecarPath(fileName: string): string {
+  private pipelineVoiceRefSidecarPath(fileName: string, userId?: string | null): string {
     const safeName = basename(fileName);
     const stem = basename(safeName, extname(safeName));
-    return join(this.resolvePipelineVoiceDir(), `${stem}.ref.txt`);
+    const dir = userId?.trim()
+      ? join(this.resolvePipelineVoiceDir(), userId.trim())
+      : this.resolvePipelineVoiceDir();
+    return join(dir, `${stem}.ref.txt`);
   }
 
-  readPipelineVoiceRefText(fileName: string): string {
-    const sidecar = this.pipelineVoiceRefSidecarPath(fileName);
+  readPipelineVoiceRefText(fileName: string, userId?: string | null): string {
+    const sidecar = this.pipelineVoiceRefSidecarPath(fileName, userId);
     if (!existsSync(sidecar)) {
       return "";
     }
     return readFileSync(sidecar, "utf8").trim();
   }
 
-  writePipelineVoiceRefText(fileName: string, refText: string): void {
+  writePipelineVoiceRefText(fileName: string, refText: string, userId?: string | null): void {
     const trimmed = String(refText || "").trim();
     if (!trimmed) {
       throw new BadRequestException("refText is required");
     }
-    writeFileSync(this.pipelineVoiceRefSidecarPath(fileName), trimmed, "utf8");
+    writeFileSync(this.pipelineVoiceRefSidecarPath(fileName, userId), trimmed, "utf8");
   }
 
   private mapCloneVoiceRow(row: AudioCloneVoice): PipelineVoiceDto {
     const abs = isAbsolute(row.filePath) ? row.filePath : resolve(process.cwd(), row.filePath);
     const sizeOnDisk = existsSync(abs) ? statSync(abs).size : row.fileSize;
+    const voiceDir = row.userId
+      ? join(this.resolvePipelineVoiceDir(), row.userId).replace(/\\/g, "/")
+      : this.resolvePipelineVoiceDir().replace(/\\/g, "/");
     return {
       id: row.id,
       displayName: row.displayName,
@@ -552,14 +623,16 @@ export class AudioService {
       omnivoiceLanguage: row.omnivoiceLanguage,
       size: sizeOnDisk,
       updatedAt: row.updatedAt.toISOString(),
-      voiceDir: this.resolvePipelineVoiceDir().replace(/\\/g, "/"),
+      voiceDir,
       absolutePath: abs.replace(/\\/g, "/"),
       verified: existsSync(abs) && sizeOnDisk > 0,
     };
   }
 
-  async listPipelineVoices(): Promise<PipelineVoiceDto[]> {
+  async listPipelineVoices(userId: string): Promise<PipelineVoiceDto[]> {
+    const ownerId = await this.requireCloneVoiceOwner(userId);
     const rows = await this.cloneVoiceRepository.find({
+      where: { userId: ownerId },
       order: { updatedAt: "DESC" },
     });
     return rows.map((row) => this.mapCloneVoiceRow(row));
@@ -571,8 +644,9 @@ export class AudioService {
     refText: string;
     omnivoiceLanguage: string;
     buffer: Buffer;
-    userId?: string;
+    userId: string;
   }): Promise<PipelineVoiceDto> {
+    const ownerId = await this.requireCloneVoiceOwner(input.userId);
     const refText = String(input.refText || "").trim();
     if (!refText) {
       throw new BadRequestException("refText is required");
@@ -600,11 +674,11 @@ export class AudioService {
     const safeBase = this.sanitizeVoiceFileStem(displayName);
     const fileName = `${safeBase}${ext}`;
 
-    const dir = this.ensurePipelineVoiceDir();
+    const dir = this.ensurePipelineVoiceDir(ownerId);
     const abs = join(dir, fileName);
     try {
       writeFileSync(abs, input.buffer);
-      this.writePipelineVoiceRefText(fileName, refText);
+      this.writePipelineVoiceRefText(fileName, refText, ownerId);
     } catch (err) {
       const code = err && typeof err === "object" && "code" in err ? String((err as NodeJS.ErrnoException).code) : "";
       if (code === "EACCES" || code === "EPERM") {
@@ -615,19 +689,18 @@ export class AudioService {
       throw err;
     }
 
-    const verified = await this.assertPipelineVoiceReady(fileName, refText);
+    const verified = await this.assertPipelineVoiceReady(fileName, refText, ownerId);
     const stats = statSync(abs);
-    const relativePath = join("tools", "video-pipeline", "voice", fileName).replace(/\\/g, "/");
+    const relativePath = join("tools", "video-pipeline", "voice", ownerId, fileName).replace(
+      /\\/g,
+      "/",
+    );
     const mimeType =
       ext === ".mp3" ? "audio/mpeg" : ext === ".m4a" ? "audio/mp4" : ext === ".wav" ? "audio/wav" : null;
 
-    let userId: string | null = null;
-    if (input.userId?.trim()) {
-      const user = await this.userRepository.findOne({ where: { id: input.userId.trim() } });
-      userId = user?.id ?? null;
-    }
-
-    const existing = await this.cloneVoiceRepository.findOne({ where: { fileName } });
+    const existing = await this.cloneVoiceRepository.findOne({
+      where: { fileName, userId: ownerId },
+    });
     const row = existing
       ? Object.assign(existing, {
           displayName,
@@ -636,7 +709,7 @@ export class AudioService {
           filePath: relativePath,
           fileSize: stats.size,
           mimeType,
-          userId: userId ?? existing.userId,
+          userId: ownerId,
         })
       : this.cloneVoiceRepository.create({
           displayName,
@@ -646,7 +719,7 @@ export class AudioService {
           filePath: relativePath,
           fileSize: stats.size,
           mimeType,
-          userId,
+          userId: ownerId,
         });
 
     const saved = await this.cloneVoiceRepository.save(row);
@@ -658,13 +731,19 @@ export class AudioService {
     };
   }
 
-  async deletePipelineVoice(fileName: string): Promise<{ deleted: true; fileName: string }> {
+  async deletePipelineVoice(
+    fileName: string,
+    userId: string,
+  ): Promise<{ deleted: true; fileName: string }> {
+    const ownerId = await this.requireCloneVoiceOwner(userId);
     const safeName = basename(String(fileName || "").trim());
     if (!safeName) {
       throw new BadRequestException("fileName is required");
     }
 
-    const row = await this.cloneVoiceRepository.findOne({ where: { fileName: safeName } });
+    const row = await this.cloneVoiceRepository.findOne({
+      where: { fileName: safeName, userId: ownerId },
+    });
     if (!row) {
       throw new NotFoundException(`Clone voice not found: ${safeName}`);
     }
@@ -673,7 +752,7 @@ export class AudioService {
       ? isAbsolute(row.filePath)
         ? row.filePath
         : resolve(process.cwd(), row.filePath)
-      : join(this.resolvePipelineVoiceDir(), safeName);
+      : join(this.resolvePipelineVoiceDir(), ownerId, safeName);
 
     if (existsSync(abs)) {
       try {
@@ -686,7 +765,7 @@ export class AudioService {
       }
     }
 
-    const sidecar = this.pipelineVoiceRefSidecarPath(safeName);
+    const sidecar = this.pipelineVoiceRefSidecarPath(safeName, ownerId);
     if (existsSync(sidecar)) {
       try {
         await unlink(sidecar);
@@ -698,7 +777,7 @@ export class AudioService {
       }
     }
 
-    await this.cloneVoiceRepository.delete({ fileName: safeName });
+    await this.cloneVoiceRepository.delete({ id: row.id });
 
     await this.logsService.createLog({
       userId: row.userId,
@@ -716,6 +795,7 @@ export class AudioService {
       const verified = await this.assertPipelineVoiceReady(
         dto.pipelineRefWav.trim(),
         dto.cloneRefText?.trim(),
+        dto.userId,
       );
       return { refAudioPath: verified.absolutePath, refText: verified.refText };
     }
@@ -813,7 +893,10 @@ export class AudioService {
       refAudioPath = resolved.refAudioPath;
       refText = resolved.refText;
       if (dto.pipelineRefWav?.trim()) {
-        omnivoiceLanguage = await this.resolvePipelineVoiceLanguage(dto.pipelineRefWav.trim());
+        omnivoiceLanguage = await this.resolvePipelineVoiceLanguage(
+          dto.pipelineRefWav.trim(),
+          dto.userId,
+        );
       }
     }
 
@@ -918,7 +1001,10 @@ export class AudioService {
       refAudioPath = resolved.refAudioPath;
       refText = resolved.refText;
       if (dto.pipelineRefWav?.trim()) {
-        omnivoiceLanguage = await this.resolvePipelineVoiceLanguage(dto.pipelineRefWav.trim());
+        omnivoiceLanguage = await this.resolvePipelineVoiceLanguage(
+          dto.pipelineRefWav.trim(),
+          dto.userId,
+        );
       }
     }
 
@@ -989,11 +1075,12 @@ export class AudioService {
     const verified = await this.assertPipelineVoiceReady(
       dto.pipelineRefWav!.trim(),
       dto.cloneRefText?.trim(),
+      dto.userId,
     );
     return {
       refAudioPath: verified.absolutePath,
       refText: verified.refText,
-      language: await this.resolvePipelineVoiceLanguage(dto.pipelineRefWav!.trim()),
+      language: await this.resolvePipelineVoiceLanguage(dto.pipelineRefWav!.trim(), dto.userId),
     };
   }
 
@@ -1285,7 +1372,7 @@ export class AudioService {
         if (!refWav) {
           throw new Error("engine_config missing clone voice reference for language");
         }
-        language = await this.resolvePipelineVoiceLanguage(refWav);
+        language = await this.resolvePipelineVoiceLanguage(refWav, history.userId);
       }
     }
 
