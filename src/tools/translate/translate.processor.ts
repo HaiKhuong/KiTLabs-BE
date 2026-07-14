@@ -98,6 +98,11 @@ const OPTION_MAPPINGS: Array<{
   { cliFlag: "--logo-margin-y", keys: ["logoMarginY", "logo_margin_y"], allowedTypes: ["number", "string"] },
   { cliFlag: "--logo-opacity", keys: ["logoOpacity", "logo_opacity"], allowedTypes: ["number", "string"] },
   { cliFlag: "--logo-enabled", keys: ["logoEnabled", "logo_enabled"], allowedTypes: ["string"] },
+  {
+    cliFlag: "--skip-voice-step",
+    keys: ["skipVoiceStep", "skip_voice_step"],
+    allowedTypes: ["string"],
+  },
   { cliFlag: "--original-volume", keys: ["originalVolume", "original_volume"], allowedTypes: ["number", "string"] },
   {
     cliFlag: "--narration-volume",

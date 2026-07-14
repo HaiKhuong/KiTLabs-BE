@@ -1414,16 +1414,27 @@ def _blur_strip_filter_ratio(width_ratio, height_ratio, bottom_offset_ratio):
 
 
 def build_subtitle_filter_tail(ass_path):
-    """split → blur strip(s) → overlay → ass, output [vsub]. Dùng sau [0:v] hoặc sau chuỗi biến đổi."""
+    """split → blur strip(s) → overlay → ass, output [vsub]. Dùng sau [0:v] hoặc sau chuỗi biến đổi.
+
+    Khi SUBTITLE_BG_BLUR_HEIGHT <= 0: bỏ blur chính (chỉ burn ASS; extras vẫn áp nếu có).
+    """
     filter_path = to_ffmpeg_ass_filter_path(ass_path)
     extra_regions = parse_subtitle_extra_blurs(SUBTITLE_BG_EXTRA_BLURS_JSON)
+    has_main = int(SUBTITLE_BG_BLUR_HEIGHT) > 0
 
-    parts = [
-        "split[main0][blur0];",
-        f"[blur0]{_blur_strip_filter(SUBTITLE_BG_BLUR_WIDTH_RATIO, SUBTITLE_BG_BLUR_HEIGHT, SUBTITLE_BG_BLUR_BOTTOM_OFFSET)}[blurred0];",
-        f"[main0][blurred0]overlay=(W-w)/2:H-{SUBTITLE_BG_BLUR_BOTTOM_OFFSET}[vblur0]",
-    ]
-    prev = "vblur0"
+    if not has_main and not extra_regions:
+        # -vf: ass='…' ; -filter_complex (+logo/visual): gắn [vsub] ở build_subtitle_filter / render.
+        return f"ass='{filter_path}'"
+
+    parts = []
+    prev = None
+    if has_main:
+        parts = [
+            "split[main0][blur0];",
+            f"[blur0]{_blur_strip_filter(SUBTITLE_BG_BLUR_WIDTH_RATIO, SUBTITLE_BG_BLUR_HEIGHT, SUBTITLE_BG_BLUR_BOTTOM_OFFSET)}[blurred0];",
+            f"[main0][blurred0]overlay=(W-w)/2:H-{SUBTITLE_BG_BLUR_BOTTOM_OFFSET}[vblur0]",
+        ]
+        prev = "vblur0"
 
     for idx, region in enumerate(extra_regions, start=1):
         wr = region["width_ratio"]
@@ -1443,11 +1454,18 @@ def build_subtitle_filter_tail(ass_path):
             bo = region["bottom_offset"]
             blur_filter = _blur_strip_filter(wr, h, bo)
             overlay_pos = f"(W-w)/2:H-{bo}"
-        parts.append(
-            f";[{prev}]split[main{idx}][blur{idx}];"
-            f"[blur{idx}]{blur_filter}[blurred{idx}];"
-            f"[main{idx}][blurred{idx}]overlay={overlay_pos}[vblur{idx}]"
-        )
+        if prev is None:
+            parts.append(
+                f"split[main{idx}][blur{idx}];"
+                f"[blur{idx}]{blur_filter}[blurred{idx}];"
+                f"[main{idx}][blurred{idx}]overlay={overlay_pos}[vblur{idx}]"
+            )
+        else:
+            parts.append(
+                f";[{prev}]split[main{idx}][blur{idx}];"
+                f"[blur{idx}]{blur_filter}[blurred{idx}];"
+                f"[main{idx}][blurred{idx}]overlay={overlay_pos}[vblur{idx}]"
+            )
         prev = f"vblur{idx}"
 
     parts.append(f";[{prev}]ass='{filter_path}'[vsub]")
@@ -1504,7 +1522,9 @@ def build_subtitle_filter(ass_path, src_wh=None):
     vt = build_visual_transform_filters(src_wh)
     if not vt:
         return tail
-    return f"[0:v]{vt},{tail}"
+    if "[vsub]" in tail:
+        return f"[0:v]{vt},{tail}"
+    return f"[0:v]{vt},{tail}[vsub]"
 
 
 def normalize_ass_colour(raw_value):
@@ -1581,6 +1601,12 @@ def build_step6_render_command(
         map_args = ["-map", "[vsub]", "-map", "0:a?"]
 
     if logo_path:
+        # Simple ass='…' (no blur) needs an explicit [vsub] pad for logo overlay.
+        if "[vsub]" not in filter_arg_value:
+            if filter_arg_value.startswith("["):
+                filter_arg_value = f"{filter_arg_value}[vsub]"
+            else:
+                filter_arg_value = f"[0:v]{filter_arg_value}[vsub]"
         if LOGO_WIDTH_RATIO > 0:
             ref_w = video_width
             if not ref_w:
@@ -1594,7 +1620,7 @@ def build_step6_render_command(
             f"[vsub][logo]overlay={int(LOGO_MARGIN_X)}:{int(LOGO_MARGIN_Y)}[vout]"
         )
         filter_arg_key = "-filter_complex"
-        filter_arg_value = f"{subtitle_filter};{logo_filter}"
+        filter_arg_value = f"{filter_arg_value};{logo_filter}"
         input_args.extend(["-i", str(logo_path)])
         map_args = ["-map", "[vout]", "-map", "0:a?"]
 
@@ -2948,6 +2974,12 @@ def parse_cli_args():
         help="Step6: overlay logo image on video. off = skip logo even if --logo-file exists.",
     )
     parser.add_argument(
+        "--skip-voice-step",
+        choices=["on", "off"],
+        default="on" if SKIP_VOICE_STEP else "off",
+        help="Skip Step3 TTS + Step4 audio merge; Step6 burns sub on original (or preprocess) video.",
+    )
+    parser.add_argument(
         "--merge-outro",
         choices=["on", "off"],
         default="on" if MERGE_OUTRO_ENABLED else "off",
@@ -3475,6 +3507,7 @@ def apply_cli_config(args):
     global LOGO_MARGIN_Y
     global LOGO_OPACITY
     global LOGO_ENABLED
+    global SKIP_VOICE_STEP
     global STEP6_VISUAL_TRANSFORM_ENABLED
     global STEP6_HFLIP
     global STEP6_ZOOM_PERCENT
@@ -3592,6 +3625,7 @@ def apply_cli_config(args):
     LOGO_MARGIN_Y = args.logo_margin_y
     LOGO_OPACITY = args.logo_opacity
     LOGO_ENABLED = args.logo_enabled == "on"
+    SKIP_VOICE_STEP = args.skip_voice_step == "on"
     MERGE_OUTRO_ENABLED = args.merge_outro == "on"
     OUTRO_FILE = str(args.outro_file or "").strip()
 

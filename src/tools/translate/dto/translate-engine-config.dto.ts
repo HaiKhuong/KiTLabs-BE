@@ -241,6 +241,15 @@ export class TranslateEngineConfigDto {
   @IsString()
   logo_enabled?: string;
 
+  /** on = bỏ Step3/4 (chỉ sub, không TTS/mix narration). */
+  @IsOptional()
+  @IsString()
+  skipVoiceStep?: string;
+
+  @IsOptional()
+  @IsString()
+  skip_voice_step?: string;
+
   @IsOptional()
   @Type(() => Number)
   @IsNumber()
