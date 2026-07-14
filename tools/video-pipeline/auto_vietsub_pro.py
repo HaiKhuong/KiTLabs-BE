@@ -302,7 +302,7 @@ PADDLEOCR_USE_GPU = False             # CPU tránh conflict CUDA với torch; su
 PADDLEOCR_USE_ANGLE_CLS = True      # nhận diện sub bị xoay/ngược
 PADDLEOCR_MIN_CONFIDENCE = 0.5      # loại bỏ kết quả dưới ngưỡng
 PADDLEOCR_LOW_CONF_FLOOR = 0.003    # ngưỡng tối thiểu để xem xét rescue cluster
-PADDLEOCR_BATCH_SIZE = 8            # số frame gộp 1 lần gọi batch inference
+PADDLEOCR_BATCH_SIZE = 4            # parallel OCR threads (giống EASYOCR_WORKERS)
 PADDLEOCR_SUBTITLE_CROP_BAND_HI = 0.20  # giới hạn cao nhất dải phụ đề (% từ đáy)
 PADDLEOCR_CROP_PROBE_FRAMES = 12    # số frame mẫu để auto-detect crop band
 PADDLEOCR_CROP_PROBE_H_TRIM_LEFT_FRAC = 0.15   # bỏ mé trái trước khi OCR
@@ -313,10 +313,11 @@ PADDLEOCR_MERGE_GAP_MS = 200        # merge các block gần nhau trong ngưỡn
 PADDLEOCR_FUZZY_THRESHOLD = 55      # % similarity để gộp / dedup block
 PADDLEOCR_BRIDGE_FRAMES = 8         # số frame lân cận để vote rescue cluster
 PADDLEOCR_BRIDGE_MIN_MATCH = 3      # số frame tương đồng tối thiểu để rescue
-# Frame Difference: Module 1 – chỉ OCR khi subtitle thực sự thay đổi.
-PADDLEOCR_SCAN_FPS = 10             # FPS quét change detection (nên cao hơn tốc độ sub thay đổi)
-PADDLEOCR_FRAMEDIFF_THRESHOLD = 8.0 # MAD pixel (0-255); ~8 = thay đổi sub, ~2 = nhiễu nén
-PADDLEOCR_FRAMEDIFF_SKIP_BLANK = True  # bỏ qua frame trống (nền đen/trắng không có chữ)
+# FPS extract frames (giống EasyOCR) — lưu frames/frame_XXXXX.png rồi OCR từng ảnh
+PADDLEOCR_SCAN_FPS = 2
+# Legacy framediff flags (không còn dùng trong step1_paddleocr; giữ CLI tương thích)
+PADDLEOCR_FRAMEDIFF_THRESHOLD = 8.0
+PADDLEOCR_FRAMEDIFF_SKIP_BLANK = True
 # Preprocessing frame (giống EasyOCR nhưng config độc lập để tuning riêng)
 PADDLEOCR_GRAY_CONTRAST = 2.0       # eq contrast
 PADDLEOCR_GRAY_BRIGHTNESS = -0.15   # eq brightness (âm = làm tối; giúp giảm logo sáng)
@@ -1881,6 +1882,7 @@ def _step1_ocr_with_paddleocr(video_path):
         log=log,
         run_command=run_command,
         ffmpeg_bin=FFMPEG_BIN,
+        progressbar=progressbar,
         get_media_duration_ms=get_media_duration_ms,
         fmt_time=fmt_time,
         get_zh_srt_path=get_zh_srt_path,
@@ -1888,15 +1890,13 @@ def _step1_ocr_with_paddleocr(video_path):
         lang=PADDLEOCR_LANG,
         use_gpu=PADDLEOCR_USE_GPU,
         use_angle_cls=PADDLEOCR_USE_ANGLE_CLS,
+        workers=PADDLEOCR_BATCH_SIZE,
         subtitle_crop_band_hi=PADDLEOCR_SUBTITLE_CROP_BAND_HI,
         crop_probe_frames=PADDLEOCR_CROP_PROBE_FRAMES,
         crop_probe_h_trim_left_frac=PADDLEOCR_CROP_PROBE_H_TRIM_LEFT_FRAC,
         crop_probe_h_trim_right_frac=PADDLEOCR_CROP_PROBE_H_TRIM_RIGHT_FRAC,
         max_strip_height_ratio=PADDLEOCR_MAX_STRIP_HEIGHT_RATIO,
-        scan_fps=PADDLEOCR_SCAN_FPS,
-        framediff_threshold=PADDLEOCR_FRAMEDIFF_THRESHOLD,
-        framediff_skip_blank=PADDLEOCR_FRAMEDIFF_SKIP_BLANK,
-        batch_size=PADDLEOCR_BATCH_SIZE,
+        fps=PADDLEOCR_SCAN_FPS,
         min_confidence=PADDLEOCR_MIN_CONFIDENCE,
         low_conf_floor=PADDLEOCR_LOW_CONF_FLOOR,
         bridge_frames=PADDLEOCR_BRIDGE_FRAMES,
@@ -1912,8 +1912,6 @@ def _step1_ocr_with_paddleocr(video_path):
         histeq_strength=PADDLEOCR_HISTEQ_STRENGTH,
         gray_invert=PADDLEOCR_GRAY_INVERT,
         unsharp=PADDLEOCR_UNSHARP,
-        watermark_blacklist=PADDLEOCR_WATERMARK_BLACKLIST,
-        watermark_min_frames=PADDLEOCR_WATERMARK_MIN_FRAMES,
     )
     return _step1_paddleocr_run(video_path)
 
@@ -3119,22 +3117,19 @@ def parse_cli_args():
         "--paddleocr-scan-fps",
         type=float,
         default=PADDLEOCR_SCAN_FPS,
-        help="PaddleOCR Frame Difference: FPS to scan video for change detection (default 10).",
+        help="PaddleOCR frame extract FPS (same as EasyOCR fps); writes frames/frame_XXXXX.png (default 2).",
     )
     parser.add_argument(
         "--paddleocr-framediff-threshold",
         type=float,
         default=PADDLEOCR_FRAMEDIFF_THRESHOLD,
-        help=(
-            "PaddleOCR Frame Difference: MAD pixel threshold (0-255) to trigger OCR on a frame. "
-            "~8=subtitle changed, ~2=compression noise. Default 8.0."
-        ),
+        help="Deprecated (ignored): former Frame Difference MAD threshold.",
     )
     parser.add_argument(
         "--paddleocr-batch-size",
         type=int,
         default=PADDLEOCR_BATCH_SIZE,
-        help="PaddleOCR frames per batch inference call (default 8).",
+        help="PaddleOCR parallel OCR worker threads (same role as --easyocr-workers; default 4).",
     )
     parser.add_argument(
         "--paddleocr-min-duration-ms",
