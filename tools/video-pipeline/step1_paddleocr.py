@@ -3,9 +3,8 @@ Step 1 – PaddleOCR engine: visual subtitle extraction.
 
 Flow mirrored from step1_easyocr (chỉ khác engine OCR):
   1) probe PNG → auto-detect crop band
-  2) ffmpeg crop → cropped.mp4 (đã preprocess)
-  3) extract frames/frame_XXXXX.png
-  4) OCR từng PNG → clean / merge → .zh.srt
+  2) ffmpeg 1-pass: crop+preprocess+fps → frames/frame_XXXXX.png
+  3) OCR PNG (ProcessPool) → clean / merge → .zh.srt
 
 Usage:
     from step1_paddleocr import configure_step1_paddleocr, run as paddleocr_run
@@ -18,6 +17,7 @@ from __future__ import annotations
 import json
 import re
 import shutil
+import time
 from pathlib import Path
 from typing import Any, Callable
 
@@ -640,13 +640,106 @@ def _detect_crop_band(video_path: Path, ocr, ocr_dir: Path):
 
 
 # ──────────────────────────────────────────────
-# Main OCR pipeline (giống EasyOCR)
+# Parallel OCR workers (ProcessPool — Paddle không thread-safe)
+# ──────────────────────────────────────────────
+
+_pool_ocr = None
+_pool_min_conf = 0.5
+_pool_low_floor = 0.0
+_pool_use_cls = True
+_pool_frame_interval = 0.5
+
+
+def _pool_worker_init(
+    lang: str,
+    use_gpu: bool,
+    use_angle: bool,
+    min_conf: float,
+    low_floor: float,
+    use_cls: bool,
+    frame_interval: float,
+) -> None:
+    global _pool_ocr, _pool_min_conf, _pool_low_floor, _pool_use_cls, _pool_frame_interval
+    _pool_min_conf = float(min_conf)
+    _pool_low_floor = float(low_floor)
+    _pool_use_cls = bool(use_cls)
+    _pool_frame_interval = float(frame_interval)
+    _pool_ocr = _create_paddle_ocr(
+        lang=lang,
+        use_gpu=use_gpu,
+        use_angle_cls=use_angle,
+        log=lambda _m: None,
+    )
+
+
+def _pool_ocr_one(item: tuple) -> tuple:
+    """OCR one frame in a worker process. item=(idx, path_str)."""
+    import cv2
+
+    idx, fpath_str = item
+    fpath = Path(fpath_str)
+    timestamp_sec = idx * _pool_frame_interval
+    debug_row = {
+        "frame_index": idx,
+        "frame_png": fpath.name,
+        "timestamp_sec": timestamp_sec,
+        "paddleocr_min_confidence": _pool_min_conf,
+        "raw_readtext_order": [],
+        "sorted_reading_order": [],
+        "joined_after_filter": "",
+        "error": None,
+    }
+    try:
+        img = cv2.imread(str(fpath))
+        if img is None:
+            debug_row["error"] = "cv2.imread failed"
+            return timestamp_sec, "", "", debug_row
+        lines = _run_paddle_ocr(_pool_ocr, img, cls=_pool_use_cls)
+        ser = [
+            {
+                "bbox": [[float(p[0]), float(p[1])] for p in box] if box else [],
+                "text": text,
+                "confidence": float(conf),
+            }
+            for box, text, conf in (lines or [])
+        ]
+        debug_row["raw_readtext_order"] = ser
+        sorted_results = _readtext_sort_for_join(lines)
+        debug_row["sorted_reading_order"] = [
+            {
+                "bbox": [[float(p[0]), float(p[1])] for p in box] if box else [],
+                "text": text,
+                "confidence": float(conf),
+            }
+            for box, text, conf in (sorted_results or [])
+        ]
+        texts = [
+            str(t).strip()
+            for _b, t, conf in sorted_results
+            if conf >= _pool_min_conf and str(t).strip()
+        ]
+        joined = " ".join(texts)
+        debug_row["joined_after_filter"] = joined
+        low_texts = [
+            str(t).strip()
+            for _b, t, conf in sorted_results
+            if _pool_low_floor <= conf < _pool_min_conf and str(t).strip()
+        ]
+        return timestamp_sec, joined, " ".join(low_texts), debug_row
+    except Exception as exc:
+        debug_row["error"] = str(exc)
+        return timestamp_sec, "", "", debug_row
+
+
+# ──────────────────────────────────────────────
+# Main OCR pipeline (giống EasyOCR, tối ưu tốc độ)
 # ──────────────────────────────────────────────
 
 def _ocr_with_paddleocr(video_path: Path) -> Path:
-    """Step1: extract subtitles via PaddleOCR — same disk/frame flow as EasyOCR."""
-    import concurrent.futures
-    import cv2
+    """Step1: extract subtitles via PaddleOCR — EasyOCR-like flow, faster extract + process pool."""
+    import gc
+    import os
+    from concurrent.futures import ProcessPoolExecutor, as_completed
 
     log = _cfg["log"]
     log("Step1: OCR (PaddleOCR)…")
@@ -678,94 +771,116 @@ def _ocr_with_paddleocr(video_path: Path) -> Path:
 
     log(f"Step1 PaddleOCR: crop apply lo={band_lo:.3f} hi={band_hi:.3f} strip_pct={(band_hi - band_lo) * 100:.1f}")
 
+    # Free crop-detect model before spawning OCR workers (tiết kiệm RAM)
+    del ocr
+    gc.collect()
+
     frames_dir.mkdir(parents=True, exist_ok=True)
 
-    # 1. Crop + preprocess subtitle region → cropped.mp4
-    crop_video = ocr_dir / "cropped.mp4"
+    # 1+2. Một lần ffmpeg: crop + preprocess + fps → PNG (bỏ cropped.mp4 — tiết kiệm vài phút)
+    fps = float(_cfg["fps"])
+    vf = f"{_crop_ffmpeg_vf(band_lo, band_hi)},fps={fps}"
+    log(f"Step1 PaddleOCR: ffmpeg extract cropped frames @ {fps} fps (1 pass)…")
+    t_ff = time.time()
     _cfg["run_command"](
-        [_cfg["ffmpeg_bin"], "-y", "-i", str(video_path),
-         "-vf", _crop_ffmpeg_vf(band_lo, band_hi),
-         "-an", "-c:v", "libx264", "-crf", "23", "-preset", "ultrafast", str(crop_video)],
-        "PaddleOCR: crop subtitle region",
+        [
+            _cfg["ffmpeg_bin"], "-y", "-i", str(video_path),
+            "-vf", vf, "-an",
+            str(frames_dir / "frame_%05d.png"),
+        ],
+        "PaddleOCR: extract cropped frames",
     )
-
-    # 2. Extract frames at target FPS
-    _cfg["run_command"](
-        [_cfg["ffmpeg_bin"], "-y", "-i", str(crop_video),
-         "-vf", f"fps={_cfg['fps']}", str(frames_dir / "frame_%05d.png")],
-        "PaddleOCR: extract frames",
-    )
-
     frame_files = sorted(frames_dir.glob("frame_*.png"))
     if not frame_files:
         raise RuntimeError("Step1 PaddleOCR: no frames extracted.")
+    log(
+        f"Step1 PaddleOCR: extracted {len(frame_files)} frames in {time.time() - t_ff:.0f}s"
+    )
 
-    # 3. OCR từng PNG (parallel ThreadPoolExecutor — giống EasyOCR)
-    frame_interval_sec = 1.0 / _cfg["fps"]
-    min_conf = _cfg["min_confidence"]
-    low_floor = _cfg["low_conf_floor"]
-    use_angle_cls = _cfg["use_angle_cls"]
+    # 3. OCR song song bằng ProcessPool (mỗi process 1 model — an toàn, nhanh hơn tuần tự)
+    frame_interval_sec = 1.0 / fps
+    min_conf = float(_cfg["min_confidence"])
+    low_floor = float(_cfg["low_conf_floor"])
+    use_angle_cls = bool(_cfg["use_angle_cls"])
+    use_gpu = bool(_cfg["use_gpu"])
 
-    def _serialize_boxes(lines):
-        return [
-            {
-                "bbox": [[float(p[0]), float(p[1])] for p in item[0]] if item[0] else [],
-                "text": item[1],
-                "confidence": float(item[2]),
-            }
-            for item in (lines or [])
-        ]
+    if use_gpu:
+        n_workers = 1
+    else:
+        n_workers = max(1, min(int(_cfg["workers"]), (os.cpu_count() or 2), 3))
 
-    def ocr_frame(idx_path):
-        idx, fpath = idx_path
-        timestamp_sec = idx * frame_interval_sec
-        debug_row = {
-            "frame_index": idx,
-            "frame_png": fpath.name,
-            "timestamp_sec": timestamp_sec,
-            "paddleocr_min_confidence": min_conf,
-            "raw_readtext_order": [],
-            "sorted_reading_order": [],
-            "joined_after_filter": "",
-            "error": None,
-        }
-        try:
-            img = cv2.imread(str(fpath))
-            if img is None:
-                debug_row["error"] = "cv2.imread failed"
-                return timestamp_sec, "", "", debug_row
-            lines = _run_paddle_ocr(ocr, img, cls=use_angle_cls)
-            debug_row["raw_readtext_order"] = _serialize_boxes(lines)
-            sorted_results = _readtext_sort_for_join(lines)
-            debug_row["sorted_reading_order"] = _serialize_boxes(sorted_results)
-            texts = [t.strip() for _b, t, conf in sorted_results if conf >= min_conf and str(t).strip()]
-            joined = " ".join(texts)
-            debug_row["joined_after_filter"] = joined
-            low_texts = [
-                t.strip()
-                for _b, t, conf in sorted_results
-                if low_floor <= conf < min_conf and str(t).strip()
-            ]
-            return timestamp_sec, joined, " ".join(low_texts), debug_row
-        except Exception as exc:
-            debug_row["error"] = str(exc)
-            return timestamp_sec, "", "", debug_row
+    jobs = [(idx, str(fp)) for idx, fp in enumerate(frame_files)]
+    total = len(jobs)
+    log_every = max(1, total // 20)
+    log(f"Step1 PaddleOCR: OCR {total} frames with {n_workers} process worker(s)…")
 
     raw_results: list = []
     low_conf_candidates: list = []
     debug_rows: list = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=_cfg["workers"]) as pool:
-        indexed = list(enumerate(frame_files))
-        futures = {pool.submit(ocr_frame, item): item[0] for item in indexed}
-        for fut in _cfg["progressbar"](
-            concurrent.futures.as_completed(futures), total=len(futures), desc="PaddleOCR frames"
-        ):
-            ts, text, low_text, dbg = fut.result()
+    t0 = time.time()
+    done = 0
+
+    initargs = (
+        str(_cfg["lang"]),
+        use_gpu,
+        use_angle_cls,
+        min_conf,
+        low_floor,
+        use_angle_cls,
+        frame_interval_sec,
+    )
+
+    if n_workers <= 1:
+        _pool_worker_init(*initargs)
+        for item in _cfg["progressbar"](jobs, total=total, desc="PaddleOCR frames"):
+            ts, text, low_text, dbg = _pool_ocr_one(item)
+            done += 1
             debug_rows.append(dbg)
             if text:
                 raw_results.append((ts, text))
             elif low_text:
                 low_conf_candidates.append((ts, low_text))
+            if done == 1 or done % log_every == 0 or done == total:
+                log(
+                    f"Step1 PaddleOCR: OCR progress {done}/{total} "
+                    f"({done * 100 / total:.0f}%) high={len(raw_results)} "
+                    f"elapsed={time.time() - t0:.0f}s"
+                )
+    else:
+        # Prefer fork on Linux (faster model share attempt); spawn is safer cross-platform.
+        try:
+            import multiprocessing as mp
+            ctx = mp.get_context("spawn")
+        except Exception:
+            ctx = None
+        with ProcessPoolExecutor(
+            max_workers=n_workers,
+            mp_context=ctx,
+            initializer=_pool_worker_init,
+            initargs=initargs,
+        ) as pool:
+            futures = {pool.submit(_pool_ocr_one, item): item[0] for item in jobs}
+            for fut in _cfg["progressbar"](
+                as_completed(futures), total=total, desc="PaddleOCR frames"
+            ):
+                ts, text, low_text, dbg = fut.result()
+                done += 1
+                debug_rows.append(dbg)
+                if text:
+                    raw_results.append((ts, text))
+                elif low_text:
+                    low_conf_candidates.append((ts, low_text))
+                if done == 1 or done % log_every == 0 or done == total:
+                    log(
+                        f"Step1 PaddleOCR: OCR progress {done}/{total} "
+                        f"({done * 100 / total:.0f}%) high={len(raw_results)} "
+                        f"elapsed={time.time() - t0:.0f}s"
+                    )
+
+    log(
+        f"Step1 PaddleOCR: OCR done — {done} frames, {len(raw_results)} high-conf, "
+        f"{len(low_conf_candidates)} low-conf, elapsed={time.time() - t0:.0f}s"
+    )
 
     # Low-confidence rescue (cluster voting)
     bridge_frames = _cfg["bridge_frames"]
