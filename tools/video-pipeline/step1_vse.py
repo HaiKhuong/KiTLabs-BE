@@ -456,20 +456,34 @@ def _ocr_image(ocr, image_path: Path, use_angle_cls: bool) -> str:
     img = cv2.imread(str(image_path))
     if img is None:
         return ""
+
+    # Inline minimal copy — keep VSE working if step1_paddleocr imports change.
+    # Prefer shared helpers when available.
     try:
-        result = ocr.ocr(img, cls=use_angle_cls)
-        lines = result[0] if result and result[0] else []
+        from step1_paddleocr import _run_paddle_ocr
+        lines = _run_paddle_ocr(ocr, img, cls=use_angle_cls)
     except Exception:
-        return ""
+        try:
+            result = ocr.ocr(img, cls=use_angle_cls)
+            page = result[0] if result and result[0] else []
+            lines = []
+            for item in page or []:
+                if not item or len(item) < 2:
+                    continue
+                rec = item[1]
+                text = str(rec[0]).strip() if rec else ""
+                conf = float(rec[1]) if rec and len(rec) > 1 else 0.0
+                lines.append((None, text, conf))
+        except Exception:
+            return ""
 
     min_conf = float(_cfg["min_confidence"])
     texts: list[str] = []
     for item in lines or []:
-        if not item or len(item) < 2:
+        if not item or len(item) < 3:
             continue
-        rec = item[1]
-        text = str(rec[0]).strip() if rec else ""
-        conf = float(rec[1]) if rec and len(rec) > 1 else 0.0
+        text = str(item[1] or "").strip()
+        conf = float(item[2])
         if text and conf >= min_conf:
             texts.append(text)
     return " ".join(texts).strip()

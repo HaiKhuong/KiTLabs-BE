@@ -260,13 +260,100 @@ def _extract_probe_frames_to_memory(video_path: Path, n_frames: int) -> list:
     return frames
 
 
+def _ensure_bgr3(img):
+    """PaddleOCR expects 3-channel; grayscale (H,W) raises/unpacks empty — EasyOCR does not."""
+    import cv2
+    import numpy as np
+
+    if img is None:
+        return None
+    arr = np.asarray(img)
+    if arr.ndim == 2:
+        return cv2.cvtColor(arr, cv2.COLOR_GRAY2BGR)
+    if arr.ndim == 3 and arr.shape[2] == 1:
+        return cv2.cvtColor(arr[:, :, 0], cv2.COLOR_GRAY2BGR)
+    if arr.ndim == 3 and arr.shape[2] == 4:
+        return cv2.cvtColor(arr, cv2.COLOR_BGRA2BGR)
+    return arr
+
+
+def _page_get(page, key: str):
+    if isinstance(page, dict):
+        return page.get(key)
+    if hasattr(page, "get"):
+        try:
+            return page.get(key)
+        except Exception:
+            pass
+    return getattr(page, key, None)
+
+
 def _parse_line(item):
-    """PaddleOCR 3.x: [[pt,...], (text, conf)] → (bbox, text, conf)."""
+    """Classic PaddleOCR 2.x: [[pt,...], (text, conf)] → (bbox, text, conf)."""
     bbox = item[0]
     rec = item[1]
     text = str(rec[0]) if rec else ""
     conf = float(rec[1]) if rec and len(rec) > 1 else 0.0
     return bbox, text, conf
+
+
+def _paddle_result_to_lines(result) -> list:
+    """Normalize PaddleOCR 2.x ocr() / 3.x predict() → list of (bbox, text, conf)."""
+    import numpy as np
+
+    if not result:
+        return []
+
+    first = result[0]
+    # PaddleOCR 3.x: list[dict|OCRResult] with rec_texts / rec_scores / dt_polys
+    looks_v3 = False
+    if isinstance(first, dict) or hasattr(first, "rec_texts") or (
+        hasattr(first, "get") and _page_get(first, "rec_texts") is not None
+    ):
+        looks_v3 = True
+    if looks_v3:
+        out: list = []
+        for page in result:
+            texts = list(_page_get(page, "rec_texts") or [])
+            scores = list(_page_get(page, "rec_scores") or [])
+            polys = list(_page_get(page, "dt_polys") or _page_get(page, "rec_polys") or [])
+            for i, text in enumerate(texts):
+                conf = float(scores[i]) if i < len(scores) else 0.0
+                poly = polys[i] if i < len(polys) else None
+                if poly is None:
+                    bbox = [[0.0, 0.0], [0.0, 0.0], [0.0, 0.0], [0.0, 0.0]]
+                else:
+                    pts = np.asarray(poly, dtype=np.float32).reshape(-1, 2)
+                    bbox = [[float(x), float(y)] for x, y in pts]
+                out.append((bbox, str(text or ""), conf))
+        return out
+
+    # Classic nested list: [ [ [bbox, (text, conf)], ... ] ]
+    page_lines = first if first is not None else []
+    out = []
+    for item in page_lines or []:
+        if not item or len(item) < 2:
+            continue
+        out.append(_parse_line(item))
+    return out
+
+
+def _run_paddle_ocr(ocr, img, *, cls: bool = True) -> list:
+    """Run PaddleOCR on image; always feed 3-channel BGR. Returns (bbox, text, conf) list."""
+    bgr = _ensure_bgr3(img)
+    if bgr is None or getattr(bgr, "size", 0) == 0:
+        return []
+    try:
+        raw = ocr.ocr(bgr, cls=cls)
+    except TypeError:
+        # PaddleOCR 3.x: ocr() → predict(); cls kw may be unsupported
+        try:
+            raw = ocr.ocr(bgr)
+        except Exception:
+            return []
+    except Exception:
+        return []
+    return _paddle_result_to_lines(raw)
 
 
 def _readtext_sort_for_join(lines):
@@ -330,17 +417,19 @@ def _detect_crop_band(video_path: Path, ocr, ocr_dir: Path):
         scan_strip = img[scan_top:, :]
         gray = _preprocess_strip(scan_strip, for_probe=True)
         try:
-            result = ocr.ocr(gray, cls=True)
-            lines = result[0] if result and result[0] else []
+            lines = _run_paddle_ocr(ocr, gray, cls=True)
         except Exception:
             continue
         frame_boxes = []
-        for item in lines:
-            if not item or len(item) < 2:
+        for bbox, text_s, conf_f in lines:
+            text_s = (text_s or "").strip()
+            if conf_f < float(_cfg["min_confidence"]):
+                log(
+                    f"Step1 PaddleOCR: crop detect [probe_{idx:02d}] "
+                    f"skip conf={conf_f:.2f} text=\"{text_s[:30]}\""
+                )
                 continue
-            bbox, text_s, conf_f = _parse_line(item)
-            text_s = text_s.strip()
-            if conf_f < float(_cfg["min_confidence"]) or not text_s or _should_skip_merged_text(text_s):
+            if not text_s or _should_skip_merged_text(text_s):
                 continue
             ys = [float(pt[1]) for pt in bbox]
             y_top_frame = scan_top + min(ys)
@@ -490,8 +579,7 @@ def _ocr_with_paddleocr(video_path: Path) -> Path:
     for ts, strip in _iter_change_frames(video_path, band_lo, band_hi):
         ocr_count += 1
         try:
-            result = ocr.ocr(strip, cls=use_angle_cls)
-            lines = result[0] if result and result[0] else []
+            lines = _run_paddle_ocr(ocr, strip, cls=use_angle_cls)
         except Exception as exc:
             debug_rows.append({"timestamp_sec": ts, "error": str(exc), "lines": []})
             continue
@@ -500,10 +588,10 @@ def _ocr_with_paddleocr(video_path: Path) -> Path:
         high_texts, low_texts = [], []
         dbg_lines = []
         for item in sorted_lines:
-            if not item or len(item) < 2:
+            if not item or len(item) < 3:
                 continue
-            bbox, text_s, conf_f = _parse_line(item)
-            text_s = text_s.strip()
+            bbox, text_s, conf_f = item[0], item[1], float(item[2])
+            text_s = (text_s or "").strip()
             dbg_lines.append({"text": text_s, "conf": conf_f})
             if not text_s:
                 continue
