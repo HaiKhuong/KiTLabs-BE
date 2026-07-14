@@ -9,6 +9,7 @@ function normalizeCookieContent(content) {
 
 /**
  * Parse Netscape HTTP Cookie File format into Playwright cookie objects.
+ * Supports yt-dlp `#HttpOnly_` prefix lines.
  */
 function parseNetscapeCookies(content) {
   const normalizedContent = normalizeCookieContent(content);
@@ -18,8 +19,16 @@ function parseNetscapeCookies(content) {
   const normalized = normalizedContent.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
 
   for (const line of normalized.split("\n")) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("#")) continue;
+    let trimmed = line.trim();
+    if (!trimmed) continue;
+
+    let httpOnly = false;
+    if (trimmed.startsWith("#HttpOnly_")) {
+      httpOnly = true;
+      trimmed = trimmed.slice("#HttpOnly_".length);
+    } else if (trimmed.startsWith("#")) {
+      continue;
+    }
 
     const parts = trimmed.split("\t");
     if (parts.length < 7) continue;
@@ -28,14 +37,16 @@ function parseNetscapeCookies(content) {
     const value = valueParts.join("\t");
     const expiresNum = parseInt(expires, 10);
 
+    if (!name) continue;
+
     cookies.push({
       name,
       value,
       domain,
       path: path || "/",
       expires: Number.isFinite(expiresNum) && expiresNum > 0 ? expiresNum : undefined,
-      httpOnly: false,
-      secure: secure.toUpperCase() === "TRUE",
+      httpOnly,
+      secure: String(secure).toUpperCase() === "TRUE",
       sameSite: "Lax",
     });
   }
