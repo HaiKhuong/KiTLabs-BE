@@ -301,6 +301,35 @@ def _preprocess_strip(bgr_strip, for_probe: bool = False):
 # PaddleOCR helpers (engine-only difference)
 # ──────────────────────────────────────────────
 
+def _create_paddle_ocr():
+    """Init PaddleOCR for 2.x and 3.x; disable doc preprocess (breaks subtitle strips)."""
+    from paddleocr import PaddleOCR
+
+    lang = _cfg["lang"]
+    use_gpu = bool(_cfg["use_gpu"])
+    use_angle = bool(_cfg["use_angle_cls"])
+    log = _cfg["log"]
+
+    try:
+        ocr = PaddleOCR(
+            lang=lang,
+            device="gpu" if use_gpu else "cpu",
+            use_doc_orientation_classify=False,
+            use_doc_unwarping=False,
+            use_textline_orientation=use_angle,
+            text_rec_score_thresh=0.0,
+        )
+        log(f"Step1 PaddleOCR: engine=3.x lang={lang} gpu={use_gpu} textline_orient={use_angle}")
+        return ocr
+    except TypeError as exc:
+        log(f"Step1 PaddleOCR: 3.x init failed ({exc}); fallback 2.x API")
+
+    try:
+        return PaddleOCR(lang=lang, use_angle_cls=use_angle, use_gpu=use_gpu, show_log=False)
+    except TypeError:
+        return PaddleOCR(lang=lang, use_angle_cls=use_angle)
+
+
 def _ensure_bgr3(img):
     """PaddleOCR expects 3-channel; grayscale (H,W) fails — EasyOCR does not."""
     import cv2
@@ -319,14 +348,23 @@ def _ensure_bgr3(img):
 
 
 def _page_get(page, key: str):
+    if page is None:
+        return None
     if isinstance(page, dict):
         return page.get(key)
-    if hasattr(page, "get"):
+    for accessor in (
+        lambda: page.get(key) if hasattr(page, "get") else None,
+        lambda: page[key] if hasattr(page, "__getitem__") else None,
+        lambda: getattr(page, key, None),
+        lambda: (getattr(page, "json", None) or {}).get(key) if hasattr(page, "json") else None,
+    ):
         try:
-            return page.get(key)
+            val = accessor()
+            if val is not None:
+                return val
         except Exception:
-            pass
-    return getattr(page, key, None)
+            continue
+    return None
 
 
 def _parse_line(item):
@@ -341,15 +379,29 @@ def _paddle_result_to_lines(result) -> list:
     """Normalize PaddleOCR 2.x / 3.x → list of (bbox, text, conf)."""
     import numpy as np
 
+    if result is None:
+        return []
+    if hasattr(result, "rec_texts") or (
+        hasattr(result, "get") and not isinstance(result, (list, tuple))
+    ):
+        result = [result]
+    try:
+        result = list(result)
+    except TypeError:
+        return []
     if not result:
         return []
 
     first = result[0]
-    looks_v3 = False
-    if isinstance(first, dict) or hasattr(first, "rec_texts") or (
-        hasattr(first, "get") and _page_get(first, "rec_texts") is not None
-    ):
-        looks_v3 = True
+    if first is None:
+        return []
+
+    looks_v3 = bool(
+        isinstance(first, dict)
+        or hasattr(first, "rec_texts")
+        or (hasattr(first, "__getitem__") and _page_get(first, "rec_texts") is not None)
+    )
+
     if looks_v3:
         out: list = []
         for page in result:
@@ -376,21 +428,63 @@ def _paddle_result_to_lines(result) -> list:
     return out
 
 
-def _run_paddle_ocr(ocr, img, *, cls: bool = True) -> list:
+def _run_paddle_ocr(ocr, img, *, cls: bool = True, log_errors: bool = False) -> list:
     """Run PaddleOCR; always feed 3-channel BGR. Returns (bbox, text, conf)."""
     bgr = _ensure_bgr3(img)
     if bgr is None or getattr(bgr, "size", 0) == 0:
         return []
-    try:
-        raw = ocr.ocr(bgr, cls=cls)
-    except TypeError:
+
+    raw = None
+    err = None
+
+    # 3.x predict() — never pass cls= (invalid kw)
+    if hasattr(ocr, "predict"):
         try:
-            raw = ocr.ocr(bgr)
-        except Exception:
-            return []
-    except Exception:
+            raw = ocr.predict(bgr, text_rec_score_thresh=0.0)
+        except TypeError:
+            try:
+                raw = ocr.predict(bgr)
+            except Exception as exc:
+                err = exc
+        except Exception as exc:
+            err = exc
+
+    if raw is None:
+        try:
+            raw = ocr.ocr(bgr, cls=cls)
+            err = None
+        except TypeError:
+            try:
+                raw = ocr.ocr(bgr)
+                err = None
+            except Exception as exc:
+                err = exc
+        except Exception as exc:
+            err = exc
+
+    if err is not None and log_errors:
+        _cfg["log"](f"Step1 PaddleOCR: OCR error: {type(err).__name__}: {err}")
+    if raw is None:
         return []
-    return _paddle_result_to_lines(raw)
+
+    lines = _paddle_result_to_lines(raw)
+    if log_errors and not lines:
+        preview = type(raw).__name__
+        try:
+            if isinstance(raw, (list, tuple)) and raw:
+                preview = f"{preview}[0]={type(raw[0]).__name__}"
+                sample = raw[0]
+                keys = None
+                if isinstance(sample, dict):
+                    keys = list(sample.keys())[:12]
+                elif hasattr(sample, "keys"):
+                    keys = list(sample.keys())[:12]
+                if keys:
+                    preview += f" keys={keys}"
+        except Exception:
+            pass
+        _cfg["log"](f"Step1 PaddleOCR: OCR returned 0 lines (raw={preview})")
+    return lines
 
 
 def _readtext_sort_for_join(lines):
@@ -460,8 +554,15 @@ def _detect_crop_band(video_path: Path, ocr, ocr_dir: Path):
         scan_strip = img[scan_top:, :]
         gray = _preprocess_strip(scan_strip, for_probe=True)
         try:
-            lines = _run_paddle_ocr(ocr, gray, cls=_cfg["use_angle_cls"])
-        except Exception:
+            try:
+                cv2.imwrite(str(debug_probe_dir / f"{fp.stem}_scan.png"), _ensure_bgr3(gray))
+            except Exception:
+                pass
+            lines = _run_paddle_ocr(
+                ocr, gray, cls=_cfg["use_angle_cls"], log_errors=(len(all_hi) == 0)
+            )
+        except Exception as exc:
+            log(f"Step1 PaddleOCR: crop detect [{fp.name}] exception: {exc}")
             continue
         frame_boxes = []
         for bbox, text, conf in lines:
@@ -524,7 +625,7 @@ def _ocr_with_paddleocr(video_path: Path) -> Path:
     log("Step1: OCR (PaddleOCR)…")
 
     try:
-        from paddleocr import PaddleOCR
+        from paddleocr import PaddleOCR  # noqa: F401
     except ImportError:
         raise RuntimeError(
             "paddleocr chưa được cài đặt.\n"
@@ -537,11 +638,7 @@ def _ocr_with_paddleocr(video_path: Path) -> Path:
     shutil.rmtree(ocr_dir, ignore_errors=True)
     ocr_dir.mkdir(parents=True, exist_ok=True)
 
-    ocr = PaddleOCR(
-        lang=_cfg["lang"],
-        use_angle_cls=_cfg["use_angle_cls"],
-        device="gpu" if _cfg["use_gpu"] else "cpu",
-    )
+    ocr = _create_paddle_ocr()
     log(
         f"Step1 PaddleOCR: gray eq contrast={_cfg['gray_contrast']:.3f} "
         f"brightness={_cfg['gray_brightness']:.3f} gamma={_cfg['gray_gamma']:.3f} "
