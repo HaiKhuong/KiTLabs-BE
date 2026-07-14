@@ -24,9 +24,9 @@ function normalizeUrl(url) {
 
 function pickThumbnail(video) {
   const cover =
+    video?.dynamic_cover?.url_list?.[0] ||
     video?.cover?.url_list?.[0] ||
-    video?.origin_cover?.url_list?.[0] ||
-    video?.dynamic_cover?.url_list?.[0];
+    video?.origin_cover?.url_list?.[0];
   return normalizeUrl(cover);
 }
 
