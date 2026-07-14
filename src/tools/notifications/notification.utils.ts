@@ -66,8 +66,8 @@ export function mapNotificationForClient(note: {
   title: string;
   message: string;
   isRead: boolean;
-  createdAt: Date;
-  updatedAt: Date;
+  createdAt: Date | string;
+  updatedAt: Date | string;
 }) {
   return {
     id: note.id,
@@ -76,7 +76,30 @@ export function mapNotificationForClient(note: {
     title: note.title,
     message: note.message,
     isRead: note.isRead,
-    createdAt: note.createdAt.toISOString(),
-    updatedAt: note.updatedAt.toISOString(),
+    createdAt: toClientIso(note.createdAt),
+    updatedAt: toClientIso(note.updatedAt),
   };
+}
+
+/**
+ * Emit ISO with explicit offset (not forced Z) so FE relative-time không bị lệch timezone.
+ * TIMESTAMP without time zone trên PG thường là wall-clock server.
+ */
+function toClientIso(value: Date | string): string {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return new Date().toISOString();
+  }
+
+  const pad = (n: number, len = 2) => String(Math.trunc(Math.abs(n))).padStart(len, "0");
+  const offsetMin = -date.getTimezoneOffset();
+  const sign = offsetMin >= 0 ? "+" : "-";
+  const abs = Math.abs(offsetMin);
+
+  return (
+    `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}` +
+    `T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}` +
+    `.${pad(date.getMilliseconds(), 3)}` +
+    `${sign}${pad(Math.floor(abs / 60))}:${pad(abs % 60)}`
+  );
 }

@@ -39,14 +39,21 @@ def configure_step3_edge(
 def _apply_tts_acronym_rules(t: str) -> str:
     """Thay viết tắt chữ cái → cách đọc tiếng Việt. Thứ tự: dài / có khoảng trắng trước."""
     t = re.sub(r"\bS\s+S\s+S\b", "Ba Ét", t, flags=re.IGNORECASE)
-    t = re.sub(r"\bSSS\b", "Ba Ét", t)
+    t = re.sub(r"\bSSS\b", "Ba Ét", t, flags=re.IGNORECASE)
     t = re.sub(r"\bS\s+S\b", "Hai Ét", t, flags=re.IGNORECASE)
-    t = re.sub(r"\bSS\b", "Hai Ét", t)
-    t = re.sub(r"\bS\b", "Ét", t)
+    t = re.sub(r"\bSS\b", "Hai Ét", t, flags=re.IGNORECASE)
+    t = re.sub(r"\bS\b", "Ét", t, flags=re.IGNORECASE)
     t = re.sub(r"\bHACK\b", "Hách", t, flags=re.IGNORECASE)
     t = re.sub(r"\bMecha\b", "Mê cha", t, flags=re.IGNORECASE)
     t = re.sub(r"\bHaiz+\b", "Hài", t, flags=re.IGNORECASE)
     t = t.replace("A.I", "Ây Ai").replace("AI", "Ây Ai")
+    # Lặp: "Đi thôi, đi thôi" / "Đi thôi. đi thôi" → "ĐI thôi"
+    t = re.sub(
+        r"\bđi\s+thôi\s*[,.]\s*đi\s+thôi\b",
+        "Đi thôi",
+        t,
+        flags=re.IGNORECASE,
+    )
     return t
 
 

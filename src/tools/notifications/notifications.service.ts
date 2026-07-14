@@ -23,7 +23,7 @@ export class NotificationsService {
     title: string;
     message: string;
     type?: NotificationType;
-  }): Promise<Notification> {
+  }): Promise<ReturnType<typeof mapNotificationForClient>> {
     const note = this.notificationRepository.create({
       userId: input.userId,
       title: input.title.trim().slice(0, 255),
@@ -33,11 +33,15 @@ export class NotificationsService {
     });
     const saved = await this.notificationRepository.save(note);
     this.emitCreated(saved);
-    return saved;
+    return mapNotificationForClient(saved);
   }
 
   /** Thành công — title/message do caller soạn (tiếng Việt). */
-  async pushSuccess(userId: string, title: string, message: string): Promise<Notification> {
+  async pushSuccess(
+    userId: string,
+    title: string,
+    message: string,
+  ): Promise<ReturnType<typeof mapNotificationForClient>> {
     return this.push({ userId, title, message, type: NotificationType.SUCCESS });
   }
 
@@ -50,7 +54,7 @@ export class NotificationsService {
     title: string,
     rawError: unknown,
     fallback = "Đã xảy ra lỗi khi xử lý. Vui lòng thử lại.",
-  ): Promise<Notification> {
+  ): Promise<ReturnType<typeof mapNotificationForClient>> {
     return this.push({
       userId,
       title,
@@ -59,7 +63,11 @@ export class NotificationsService {
     });
   }
 
-  async pushWarning(userId: string, title: string, message: string): Promise<Notification> {
+  async pushWarning(
+    userId: string,
+    title: string,
+    message: string,
+  ): Promise<ReturnType<typeof mapNotificationForClient>> {
     return this.push({ userId, title, message, type: NotificationType.WARNING });
   }
 
@@ -68,7 +76,7 @@ export class NotificationsService {
     title: string;
     message: string;
     userId?: string;
-  }): Promise<Notification | null> {
+  }): Promise<ReturnType<typeof mapNotificationForClient> | null> {
     if (input.userId?.trim()) {
       return this.push({
         userId: input.userId.trim(),
