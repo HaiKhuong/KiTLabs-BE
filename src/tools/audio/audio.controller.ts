@@ -19,9 +19,10 @@ import { diskStorage, memoryStorage } from "multer";
 import { basename, extname, join, resolve } from "path";
 
 import { Public } from "../../common/decorators/public.decorator";
-import { AUDIO_CLONE_UPLOAD_DIR } from "./audio.constants";
-import { AudioService } from "./audio.service";
+import { CreateAudioFromSrtDto } from "./dto/create-audio-from-srt.dto";
 import { CreateAudioJobDto } from "./dto/create-audio-job.dto";
+import { AudioService } from "./audio.service";
+import { AUDIO_CLONE_UPLOAD_DIR } from "./audio.constants";
 
 const CLONE_ALLOWED_EXT = new Set([".mp3", ".wav", ".m4a"]);
 
@@ -239,6 +240,16 @@ export class AudioController {
   @Post("generate")
   generate(@Body() dto: CreateAudioJobDto) {
     return this.audioService.enqueue(dto);
+  }
+
+  @ApiOperation({
+    summary: "Enqueue SRT timeline TTS — silence gaps + cue audio merged to full WAV",
+  })
+  @ApiBody({ type: CreateAudioFromSrtDto })
+  @Public()
+  @Post("generate-from-srt")
+  generateFromSrt(@Body() dto: CreateAudioFromSrtDto) {
+    return this.audioService.enqueueFromSrt(dto);
   }
 
   @ApiOperation({ summary: "List user audio generation jobs (paginated)" })

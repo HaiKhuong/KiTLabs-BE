@@ -28,10 +28,14 @@ import {
 } from "./audio.constants";
 import { AudioCloneVoice } from "./audio-clone-voice.entity";
 import { AudioHistory } from "./audio-history.entity";
+import { CreateAudioFromSrtDto } from "./dto/create-audio-from-srt.dto";
 import { CreateAudioJobDto } from "./dto/create-audio-job.dto";
 import { ExecuteVoiceDto } from "../workflow/dto/execute-voice.dto";
 
 export const AUDIO_QUEUE_NAME = "audio-tts";
+
+/** engine_config.jobKind for SRT timeline jobs from Audio Studio. */
+export const AUDIO_JOB_KIND_SRT_TIMELINE = "srt_timeline";
 
 /** engine_config.source cho audio sinh từ node Voice (page Videos). */
 export const AUDIO_HISTORY_SOURCE_VIDEO_VOICE = "video_voice";
@@ -249,6 +253,122 @@ export class AudioService {
       throw new Error(`OmniVoice did not produce output: ${outWav}`);
     }
     return outWav;
+  }
+
+  private async spawnSrtTimelineTts(
+    opts: {
+      srtText: string;
+      outWav: string;
+      refAudio: string;
+      refText: string;
+      language: string;
+      playbackSpeed?: number;
+      fitToCue?: boolean;
+    },
+    audioHistoryId?: string,
+  ): Promise<{ outWav: string; meta: Record<string, unknown> }> {
+    const refAudio = isAbsolute(opts.refAudio) ? opts.refAudio : resolve(process.cwd(), opts.refAudio);
+    if (!existsSync(refAudio)) {
+      throw new Error(`Reference audio not found: ${refAudio}`);
+    }
+    const outWav = isAbsolute(opts.outWav) ? opts.outWav : resolve(process.cwd(), opts.outWav);
+    const scriptDir = resolve(process.cwd(), VIDEO_PIPELINE_DIR);
+    const scriptPath = resolve(scriptDir, "audio_srt_timeline_tts.py");
+    if (!existsSync(scriptPath)) {
+      throw new Error(`Missing script: ${scriptPath}`);
+    }
+
+    const timeoutMs = Math.max(this.resolveCmdTimeoutMs(), 30 * 60_000);
+    const seed = this.resolveOmnivoiceSeed();
+    const payload = {
+      srt_text: opts.srtText,
+      out_wav: outWav,
+      ref_audio: refAudio,
+      ref_text: opts.refText ?? "",
+      model_id: (process.env.OMNIVOICE_MODEL_ID ?? "k2-fsa/OmniVoice").trim(),
+      device_map: (process.env.OMNIVOICE_DEVICE_MAP ?? "").trim() || "cuda:0",
+      dtype_str: (process.env.OMNIVOICE_DTYPE ?? "float16").trim(),
+      language: resolveOmnivoiceLanguageValue(opts.language),
+      num_step: Number(process.env.OMNIVOICE_NUM_STEP ?? 8),
+      guidance_scale: Number(process.env.OMNIVOICE_GUIDANCE_SCALE ?? 2),
+      ...(seed != null ? { seed } : {}),
+      playback_speed: opts.playbackSpeed ?? 1,
+      fit_to_cue: opts.fitToCue !== false,
+    };
+
+    const pythonBin = this.resolvePythonBin();
+    let stdout = "";
+
+    await new Promise<void>((resolvePromise, rejectPromise) => {
+      const child: ChildProcess = spawn(pythonBin, [scriptPath], {
+        cwd: scriptDir,
+        windowsHide: true,
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+
+      if (audioHistoryId) {
+        this.activeChildren.set(audioHistoryId, child);
+      }
+
+      let stderr = "";
+      const timeoutHandle = setTimeout(() => {
+        child.kill("SIGTERM");
+        rejectPromise(new Error(`SRT timeline TTS timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+
+      const cleanup = () => {
+        clearTimeout(timeoutHandle);
+        if (audioHistoryId) {
+          this.activeChildren.delete(audioHistoryId);
+        }
+      };
+
+      child.stdout?.on("data", (buf: Buffer) => {
+        stdout += buf.toString("utf8");
+        if (stdout.length > AudioService.MAX_LOG_BUFFER) {
+          stdout = stdout.slice(-AudioService.MAX_LOG_BUFFER);
+        }
+      });
+      child.stderr?.on("data", (buf: Buffer) => {
+        stderr += buf.toString("utf8");
+        if (stderr.length > AudioService.MAX_LOG_BUFFER) {
+          stderr = stderr.slice(-AudioService.MAX_LOG_BUFFER);
+        }
+      });
+      child.on("error", (err) => {
+        cleanup();
+        rejectPromise(err);
+      });
+      child.on("close", (code, signal) => {
+        cleanup();
+        if (audioHistoryId && this.isCancelled(audioHistoryId)) {
+          rejectPromise(new Error("Audio generation cancelled"));
+          return;
+        }
+        if (code !== 0) {
+          const suffix = signal ? ` (signal ${signal})` : "";
+          rejectPromise(new Error(stderr.trim() || `SRT timeline exited with code ${code}${suffix}`));
+          return;
+        }
+        resolvePromise();
+      });
+
+      child.stdin?.write(JSON.stringify(payload));
+      child.stdin?.end();
+    });
+
+    if (!existsSync(outWav)) {
+      throw new Error(`SRT timeline did not produce output: ${outWav}`);
+    }
+
+    let meta: Record<string, unknown> = {};
+    try {
+      const parsed = JSON.parse(stdout.trim().split("\n").filter(Boolean).pop() ?? "{}") as Record<string, unknown>;
+      if (parsed && typeof parsed === "object") meta = parsed;
+    } catch {
+      meta = {};
+    }
+    return { outWav, meta };
   }
 
   /** Tìm file trong voice dir (khớp tên không phân biệt hoa thường). */
@@ -756,6 +876,105 @@ export class AudioService {
     return saved;
   }
 
+  async enqueueFromSrt(dto: CreateAudioFromSrtDto): Promise<AudioHistory> {
+    const srtText = dto.srtText.trim();
+    if (!srtText) {
+      throw new BadRequestException("srtText is required");
+    }
+    if (srtText.length > 500_000) {
+      throw new BadRequestException("srtText exceeds 500000 characters");
+    }
+    if (!/\d{1,2}:\d{2}:\d{2}[,.]\d{1,3}\s*-->\s*\d{1,2}:\d{2}:\d{2}[,.]\d{1,3}/.test(srtText)) {
+      throw new BadRequestException("srtText does not look like a valid SRT timeline");
+    }
+
+    const user = await this.userRepository.findOne({ where: { id: dto.userId } });
+    if (!user) {
+      throw new BadRequestException("User not found");
+    }
+
+    let refAudioPath: string;
+    let refText: string;
+    let voiceId: string | null = null;
+    let omnivoiceLanguage: string | undefined;
+
+    if (dto.voiceMode === "preset") {
+      if (!dto.voiceId) {
+        throw new BadRequestException("voiceId is required for preset mode");
+      }
+      const preset = this.getPresetVoice(dto.voiceId);
+      voiceId = preset.id;
+      refAudioPath = this.resolvePresetRefAudioPath(preset.refWav);
+      refText = preset.refText;
+    } else {
+      const resolved = await this.resolveCloneReference({
+        userId: dto.userId,
+        voiceMode: "clone",
+        text: "srt",
+        cloneRefWav: dto.cloneRefWav,
+        pipelineRefWav: dto.pipelineRefWav,
+        cloneRefText: dto.cloneRefText,
+      } as CreateAudioJobDto);
+      refAudioPath = resolved.refAudioPath;
+      refText = resolved.refText;
+      if (dto.pipelineRefWav?.trim()) {
+        omnivoiceLanguage = await this.resolvePipelineVoiceLanguage(dto.pipelineRefWav.trim());
+      }
+    }
+
+    const cueCount = (srtText.match(/\d{1,2}:\d{2}:\d{2}[,.]\d{1,3}\s*-->/g) ?? []).length;
+    const displayName =
+      cueCount > 0 ? `SRT timeline (${cueCount} cue)` : "SRT timeline";
+
+    const history = this.audioRepository.create({
+      userId: dto.userId,
+      inputText: srtText.slice(0, 8000),
+      displayName,
+      voiceMode: dto.voiceMode,
+      voiceId,
+      engineConfig: {
+        jobKind: AUDIO_JOB_KIND_SRT_TIMELINE,
+        srtText,
+        refAudioPath,
+        refText,
+        speed: dto.speed ?? 1,
+        fitToCue: dto.fitToCue !== false,
+        cloneRefWav: dto.cloneRefWav ?? dto.pipelineRefWav ?? null,
+        ...(omnivoiceLanguage ? { omnivoiceLanguage } : {}),
+      },
+      status: QueueJobStatus.PENDING,
+      cost: (dto.estimatedCost ?? 0).toFixed(2),
+      queueJobId: null,
+      resultPath: null,
+      resultFileName: null,
+      errorMessage: null,
+    });
+    const created = await this.audioRepository.save(history);
+
+    const queueJob = await this.audioQueue.add(
+      AUDIO_QUEUE_NAME,
+      { audioHistoryId: created.id },
+      { attempts: 2, removeOnComplete: true, removeOnFail: 50 },
+    );
+    created.queueJobId = queueJob.id ? String(queueJob.id) : null;
+    const saved = await this.audioRepository.save(created);
+
+    await this.logsService.createLog({
+      userId: user.id,
+      action: "audio.srt_timeline.queued",
+      payload: {
+        audioHistoryId: saved.id,
+        queueJobId: saved.queueJobId,
+        voiceMode: saved.voiceMode,
+        voiceId: saved.voiceId,
+        cueCount,
+      },
+      ip: user.ip,
+    });
+
+    return saved;
+  }
+
   async resolveVideoVoiceReference(
     dto: ExecuteVoiceDto,
   ): Promise<{ refAudioPath: string; refText: string; language: string }> {
@@ -954,15 +1173,24 @@ export class AudioService {
   }
 
   mapHistoryForClient(row: AudioHistory) {
+    const config = (row.engineConfig ?? {}) as Record<string, unknown>;
+    const isSrt = String(config.jobKind ?? "") === AUDIO_JOB_KIND_SRT_TIMELINE;
     return {
       id: row.id,
       name: row.displayName,
-      detail: row.voiceMode === "preset" ? "Giọng mẫu" : "Clone",
+      detail: isSrt
+        ? row.voiceMode === "preset"
+          ? "SRT · Giọng mẫu"
+          : "SRT · Clone"
+        : row.voiceMode === "preset"
+          ? "Giọng mẫu"
+          : "Clone",
       completed: row.status === QueueJobStatus.COMPLETED,
       status: row.status,
       voiceMode: row.voiceMode,
       voiceId: row.voiceId,
       sourceType: this.resolveHistorySourceType(row),
+      jobKind: isSrt ? AUDIO_JOB_KIND_SRT_TIMELINE : "text",
       resultFileName: row.resultFileName,
       errorMessage: row.errorMessage,
       createdAt: row.createdAt,
@@ -1061,12 +1289,34 @@ export class AudioService {
       }
     }
 
+    const rawSpeed = Number(config.speed ?? 1);
+    const playbackSpeed = Number.isFinite(rawSpeed) ? Math.min(2, Math.max(0.5, rawSpeed)) : 1;
+
+    if (String(config.jobKind ?? "") === AUDIO_JOB_KIND_SRT_TIMELINE) {
+      const srtText = String(config.srtText ?? history.inputText ?? "").trim();
+      if (!srtText) {
+        throw new Error("engine_config.srtText is missing");
+      }
+      const fitToCue = config.fitToCue !== false;
+      await this.spawnSrtTimelineTts(
+        {
+          srtText,
+          outWav: outPath,
+          refAudio: refAudioPath,
+          refText,
+          language,
+          playbackSpeed,
+          fitToCue,
+        },
+        history.id,
+      );
+      return outPath.replaceAll("\\", "/");
+    }
+
     const pauseSettings =
       config.pauseSettings && typeof config.pauseSettings === "object"
         ? (config.pauseSettings as Record<string, number>)
         : undefined;
-    const rawSpeed = Number(config.speed ?? 1);
-    const playbackSpeed = Number.isFinite(rawSpeed) ? Math.min(2, Math.max(0.5, rawSpeed)) : 1;
     await this.spawnOmnivoiceTts(
       {
         text: history.inputText,
