@@ -86,35 +86,78 @@ def _append_pause_only(chunks: List[Dict[str, Optional[str]]], pause_after: str)
     chunks.append({"text": None, "pause_after": pause_after})
 
 
+def _tokenize_line_with_pauses(line: str) -> List[Dict[str, Optional[str]]]:
+    """
+    Tách một dòng theo dấu kết thúc câu.
+
+    Không tách tại dấu phẩy giữa dòng — OmniVoice đọc trọn cụm, tránh nuốt chữ
+    khi ghép nhiều segment quá ngắn.
+    """
+    line = str(line or "").strip()
+    if not line:
+        return []
+
+    delim_map = {
+        ".": "period",
+        ";": "semicolon",
+        "?": "question",
+        "!": "exclamation",
+        ":": "colon",
+        ELLIPSIS_CHAR: "ellipsis",
+    }
+    tokens = re.split(r"(…|[.;?!:])", line)
+    chunks: List[Dict[str, Optional[str]]] = []
+    buf: List[str] = []
+
+    def flush(pause_after: Optional[str]) -> None:
+        piece = "".join(buf).strip()
+        buf.clear()
+        if piece and _is_speakable_piece(piece):
+            chunks.append({"text": piece, "pause_after": pause_after})
+        elif pause_after:
+            _append_pause_only(chunks, pause_after)
+
+    for tok in tokens:
+        if not tok:
+            continue
+        if tok in delim_map:
+            flush(delim_map[tok])
+        else:
+            buf.append(tok)
+
+    flush(None)
+    return chunks
+
+
 def _tokenize_with_pauses(text: str) -> List[Dict[str, Optional[str]]]:
     """
     Tách văn bản thành đoạn TTS + pause_after.
 
-    Chỉ tách theo xuống dòng — mỗi dòng (kể cả nhiều câu / dấu phẩy / dấu chấm) là
-    một lần gọi OmniVoice, tránh nuốt/cắt đuôi khi ghép nhiều segment ngắn.
-    pause_after = newline giữa các dòng (trừ dòng cuối).
+    - Trong mỗi dòng: tách theo . ; ? ! : …
+    - Dấu phẩy giữa dòng: giữ nguyên (không tách)
+    - Xuống dòng: đoạn cuối mỗi dòng dùng pause newline (trừ dòng cuối)
     """
     t = _prepare_text_for_pause_tokenize(text)
     if not t:
         return []
 
-    raw_lines = t.split("\n")
-    lines = [ln.strip() for ln in raw_lines if ln.strip()]
-    if not lines:
-        return []
-
+    lines = t.split("\n")
     chunks: List[Dict[str, Optional[str]]] = []
+
     for line_idx, line in enumerate(lines):
-        if not _is_speakable_piece(line):
+        line_chunks = _tokenize_line_with_pauses(line)
+        if not line_chunks:
             if line_idx < len(lines) - 1:
                 _append_pause_only(chunks, "newline")
             continue
-        chunks.append(
-            {
-                "text": line,
-                "pause_after": "newline" if line_idx < len(lines) - 1 else None,
-            }
-        )
+
+        is_last_line = line_idx == len(lines) - 1
+        for chunk_idx, chunk in enumerate(line_chunks):
+            is_last_chunk_in_line = chunk_idx == len(line_chunks) - 1
+            if is_last_chunk_in_line and not is_last_line and chunk.get("text"):
+                chunk = dict(chunk)
+                chunk["pause_after"] = "newline"
+            chunks.append(chunk)
 
     while chunks and chunks[-1].get("text") is None:
         chunks.pop()
