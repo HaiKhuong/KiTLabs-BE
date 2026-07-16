@@ -34,6 +34,8 @@ _TRANSIENT_MARKERS = (
     "overloaded",
 )
 
+# Deprecated: pipeline v2 uses call_a1_story_analyst + call_a2_script_writer.
+# Kept for emergency rollback / older debug dumps only.
 SYSTEM_A = """# ROLE
 
 You are an expert movie recap writer.
@@ -125,6 +127,7 @@ Field meanings:
 
 All three arrays MUST have the same length."""
 
+# Deprecated: pipeline v2 uses call_b_shot_planner (Python diversity).
 SYSTEM_B = """# ROLE
 
 You are an expert movie editor.
@@ -427,6 +430,8 @@ def generate_script(
     key_tier: str = "",
     debug_dir: Path | None = None,
 ) -> dict[str, Any]:
+    """Deprecated monolith CallA — use call_a1 + call_a2 instead."""
+    LOG.warning("generate_script() is deprecated; prefer CallA-1 + CallA-2")
     result = _generate_json(
         SYSTEM_A,
         payload,
@@ -552,6 +557,8 @@ def pick_shots(
     key_tier: str = "",
     debug_dir: Path | None = None,
 ) -> dict[str, Any]:
+    """Deprecated Gemini B — use call_b_shot_planner instead."""
+    LOG.warning("pick_shots() is deprecated; prefer CallB planner")
     result = _generate_json(
         SYSTEM_B,
         payload,

@@ -54,7 +54,7 @@ export class RecapEngineConfigDto {
   @IsString()
   locale?: string;
 
-  @ApiPropertyOptional({ example: "edge", description: "edge | omnivoice" })
+  @ApiPropertyOptional({ example: "edge", description: "edge | omnivoice | voxcpm2" })
   @IsOptional()
   @IsString()
   ttsEngine?: string;
@@ -75,6 +75,28 @@ export class RecapEngineConfigDto {
   @Min(-50)
   @Max(100)
   edgeTtsRatePercent?: number;
+
+  @ApiPropertyOptional({
+    description: "Reference wav/mp3 filename under tools/video-pipeline/voice/ (OmniVoice / VoxCPM2)",
+  })
+  @IsOptional()
+  @IsString()
+  omnivoiceRefWav?: string;
+
+  @ApiPropertyOptional({
+    description: "Transcript matching omnivoiceRefWav (OmniVoice / VoxCPM2)",
+  })
+  @IsOptional()
+  @IsString()
+  omnivoiceRefText?: string;
+
+  @ApiPropertyOptional({
+    example: "vietnamese",
+    description: "Language for OmniVoice / VoxCPM2: vietnamese | english | korean | japanese",
+  })
+  @IsOptional()
+  @IsString()
+  omnivoiceLanguage?: string;
 
   @ApiPropertyOptional({ example: 1, description: "B-roll playback speed multiplier" })
   @IsOptional()

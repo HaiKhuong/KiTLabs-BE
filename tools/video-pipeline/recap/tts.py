@@ -2,12 +2,19 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
 import subprocess
+import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 LOG = logging.getLogger("recap.tts")
+
+# recap/ → video-pipeline/
+_PIPELINE_DIR = Path(__file__).resolve().parent.parent
+if str(_PIPELINE_DIR) not in sys.path:
+    sys.path.insert(0, str(_PIPELINE_DIR))
 
 
 def format_edge_rate(raw: Any, default: str = "+0%") -> str:
@@ -24,27 +31,66 @@ def format_edge_rate(raw: Any, default: str = "+0%") -> str:
         return default
 
 
+def _resolve_voice_dir() -> Path:
+    raw = (os.getenv("PIPELINE_VOICE_DIR") or os.getenv("AUDIO_PIPELINE_VOICE_DIR") or "").strip()
+    if raw:
+        return Path(raw).expanduser().resolve()
+    return (_PIPELINE_DIR / "voice").resolve()
+
+
+def _resolve_ref_audio(ref_wav: str | None) -> Path:
+    name = str(ref_wav or "").strip()
+    if not name:
+        raise ValueError("omnivoiceRefWav is required for OmniVoice / VoxCPM2")
+    p = Path(name).expanduser()
+    if not p.is_absolute():
+        p = _resolve_voice_dir() / name
+    p = p.resolve()
+    if not p.is_file():
+        raise FileNotFoundError(f"TTS ref audio not found: {p}")
+    return p
+
+
 def synthesize_segments(
     narrations: list[str],
     out_dir: Path,
     engine: str = "edge",
     voice: str = "vi-VN-HoaiMyNeural",
     rate: str = "+0%",
+    ref_audio: str | None = None,
+    ref_text: str | None = None,
+    language: str | None = None,
 ) -> list[dict[str, Any]]:
     out_dir.mkdir(parents=True, exist_ok=True)
+    eng = str(engine or "edge").strip().lower()
     meta: list[dict[str, Any]] = []
+
+    if eng in ("omnivoice", "voxcpm2"):
+        ref_path = _resolve_ref_audio(ref_audio)
+        rt = str(ref_text or "").strip()
+        if not rt:
+            raise ValueError(f"{eng}: omnivoiceRefText (transcript of ref audio) is required")
+        lang = str(language or "vietnamese").strip() or "vietnamese"
+
+        for i, text in enumerate(narrations):
+            wav = out_dir / f"seg_{i:03d}.wav"
+            if eng == "voxcpm2":
+                _voxcpm2_tts(text, wav, ref_path=ref_path, ref_text=rt, language=lang)
+            else:
+                _omnivoice_tts(text, wav, ref_path=ref_path, ref_text=rt, language=lang)
+            dur = _probe_duration(wav)
+            meta.append({"i": i, "file": str(wav), "audioDur": dur, "text": text, "engine": eng})
+            LOG.info("TTS seg %d engine=%s dur=%.2fs", i, eng, dur)
+        return meta
+
     for i, text in enumerate(narrations):
         wav = out_dir / f"seg_{i:03d}.wav"
         mp3 = out_dir / f"seg_{i:03d}.mp3"
-        if engine == "edge":
-            _edge_tts(text, mp3, voice=voice, rate=rate)
-            _to_wav(mp3, wav)
-        else:
-            _edge_tts(text, mp3, voice=voice, rate=rate)
-            _to_wav(mp3, wav)
+        _edge_tts(text, mp3, voice=voice, rate=rate)
+        _to_wav(mp3, wav)
         dur = _probe_duration(wav)
-        meta.append({"i": i, "file": str(wav), "audioDur": dur, "text": text})
-        LOG.info("TTS seg %d dur=%.2fs rate=%s", i, dur, rate)
+        meta.append({"i": i, "file": str(wav), "audioDur": dur, "text": text, "engine": "edge"})
+        LOG.info("TTS seg %d engine=edge dur=%.2fs rate=%s", i, dur, rate)
     return meta
 
 
@@ -61,6 +107,64 @@ def _edge_tts(text: str, out_mp3: Path, voice: str, rate: str) -> None:
         await communicate.save(str(out_mp3))
 
     asyncio.run(_run())
+
+
+def _resolve_seed(env_key: str, default: str = "42") -> Optional[int]:
+    raw = (os.getenv(env_key) or default).strip()
+    if not raw or raw.lower() in ("none", "null"):
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return 42
+
+
+def _omnivoice_tts(
+    text: str,
+    out_wav: Path,
+    *,
+    ref_path: Path,
+    ref_text: str,
+    language: str,
+) -> None:
+    from omnivoice_tts import synthesize_to_wav
+
+    synthesize_to_wav(
+        text=text or ".",
+        out_wav=out_wav,
+        ref_audio=str(ref_path),
+        ref_text=ref_text,
+        model_id=(os.getenv("OMNIVOICE_MODEL_ID") or "k2-fsa/OmniVoice").strip(),
+        device_map=(os.getenv("OMNIVOICE_DEVICE_MAP") or "").strip() or "cuda:0",
+        dtype_str=(os.getenv("OMNIVOICE_DTYPE") or "float16").strip() or "float16",
+        language=language,
+        num_step=int(os.getenv("OMNIVOICE_NUM_STEP") or 8),
+        guidance_scale=float(os.getenv("OMNIVOICE_GUIDANCE_SCALE") or 2),
+        seed=_resolve_seed("OMNIVOICE_SEED"),
+    )
+
+
+def _voxcpm2_tts(
+    text: str,
+    out_wav: Path,
+    *,
+    ref_path: Path,
+    ref_text: str,
+    language: str,
+) -> None:
+    from voxcpm2_tts import synthesize_to_wav
+
+    synthesize_to_wav(
+        text=text or ".",
+        out_wav=out_wav,
+        ref_audio=str(ref_path),
+        ref_text=ref_text,
+        model_id=(os.getenv("VOXCPM2_MODEL_ID") or "openbmb/VoxCPM2").strip(),
+        language=language,
+        cfg_value=float(os.getenv("VOXCPM2_CFG_VALUE") or 2.0),
+        inference_timesteps=int(os.getenv("VOXCPM2_INFERENCE_TIMESTEPS") or 10),
+        seed=_resolve_seed("VOXCPM2_SEED"),
+    )
 
 
 def _to_wav(src: Path, dst: Path) -> None:

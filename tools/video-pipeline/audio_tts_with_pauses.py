@@ -1,5 +1,5 @@
 """
-TTS OmniVoice theo đoạn + chèn khoảng lặng sau dấu câu / xuống dòng (audio tools).
+TTS OmniVoice / VoxCPM2 theo đoạn + chèn khoảng lặng sau dấu câu / xuống dòng (audio tools).
 """
 
 from __future__ import annotations
@@ -11,10 +11,14 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import pipeline_cache  # noqa: F401 — HF cache → tools/video-pipeline/cache
-from omnivoice_tts import prepare_omnivoice_input_text, resolve_omnivoice_language, synthesize_to_wav
+from omnivoice_tts import (
+    prepare_omnivoice_input_text,
+    resolve_omnivoice_language,
+    synthesize_to_wav as synthesize_omnivoice_to_wav,
+)
 
 FFMPEG_BIN = (os.getenv("FFMPEG_BIN") or "ffmpeg").strip() or "ffmpeg"
 _step3_ref_cfg_ready = False
@@ -74,9 +78,21 @@ def _prepare_text_for_pause_tokenize(text: str) -> str:
     return t.strip()
 
 
-def _is_speakable_piece(piece: str) -> bool:
-    """True nếu sau chuẩn hóa OmniVoice vẫn còn nội dung để synthesize."""
-    return bool(prepare_omnivoice_input_text(str(piece or "").strip()))
+def _resolve_tts_engine(raw: Any) -> str:
+    key = str(raw or "omnivoice").strip().lower()
+    return "voxcpm2" if key == "voxcpm2" else "omnivoice"
+
+
+def _is_speakable_piece(piece: str, engine: str = "omnivoice", language: str | None = None) -> bool:
+    """True nếu sau chuẩn hóa engine vẫn còn nội dung để synthesize."""
+    text = str(piece or "").strip()
+    if not text:
+        return False
+    if engine == "voxcpm2":
+        from voxcpm2_tts import prepare_voxcpm2_input_text
+
+        return bool(prepare_voxcpm2_input_text(text, language))
+    return bool(prepare_omnivoice_input_text(text))
 
 
 def _append_pause_only(chunks: List[Dict[str, Optional[str]]], pause_after: str) -> None:
@@ -86,11 +102,15 @@ def _append_pause_only(chunks: List[Dict[str, Optional[str]]], pause_after: str)
     chunks.append({"text": None, "pause_after": pause_after})
 
 
-def _tokenize_line_with_pauses(line: str) -> List[Dict[str, Optional[str]]]:
+def _tokenize_line_with_pauses(
+    line: str,
+    engine: str = "omnivoice",
+    language: str | None = None,
+) -> List[Dict[str, Optional[str]]]:
     """
     Tách một dòng theo dấu kết thúc câu.
 
-    Không tách tại dấu phẩy giữa dòng — OmniVoice đọc trọn cụm, tránh nuốt chữ
+    Không tách tại dấu phẩy giữa dòng — TTS đọc trọn cụm, tránh nuốt chữ
     khi ghép nhiều segment quá ngắn.
     """
     line = str(line or "").strip()
@@ -112,7 +132,7 @@ def _tokenize_line_with_pauses(line: str) -> List[Dict[str, Optional[str]]]:
     def flush(pause_after: Optional[str]) -> None:
         piece = "".join(buf).strip()
         buf.clear()
-        if piece and _is_speakable_piece(piece):
+        if piece and _is_speakable_piece(piece, engine, language):
             chunks.append({"text": piece, "pause_after": pause_after})
         elif pause_after:
             _append_pause_only(chunks, pause_after)
@@ -129,7 +149,11 @@ def _tokenize_line_with_pauses(line: str) -> List[Dict[str, Optional[str]]]:
     return chunks
 
 
-def _tokenize_with_pauses(text: str) -> List[Dict[str, Optional[str]]]:
+def _tokenize_with_pauses(
+    text: str,
+    engine: str = "omnivoice",
+    language: str | None = None,
+) -> List[Dict[str, Optional[str]]]:
     """
     Tách văn bản thành đoạn TTS + pause_after.
 
@@ -145,7 +169,7 @@ def _tokenize_with_pauses(text: str) -> List[Dict[str, Optional[str]]]:
     chunks: List[Dict[str, Optional[str]]] = []
 
     for line_idx, line in enumerate(lines):
-        line_chunks = _tokenize_line_with_pauses(line)
+        line_chunks = _tokenize_line_with_pauses(line, engine, language)
         if not line_chunks:
             if line_idx < len(lines) - 1:
                 _append_pause_only(chunks, "newline")
@@ -297,10 +321,11 @@ def _append_tts_segment(
     pause_after: Optional[str],
     pause_sec: Dict[str, float],
     tail_pad_sec: float,
-    omnivoice_kw: Dict[str, Any],
+    synthesize_fn: Callable[..., None],
+    synth_kw: Dict[str, Any],
 ) -> None:
     seg_path = tmp_dir / f"seg_{index:04d}.wav"
-    synthesize_to_wav(text=piece, out_wav=seg_path, **omnivoice_kw)
+    synthesize_fn(text=piece, out_wav=seg_path, **synth_kw)
     timeline.append(seg_path)
 
     # Luôn đệm đuôi sau mỗi đoạn nói — tránh cảm giác bị cắt trước khi chèn pause.
@@ -349,43 +374,67 @@ def synthesize_with_pause_settings(
     ref_audio: str | Path,
     ref_text: str,
     model_id: str,
-    device_map: str,
+    device_map: str = "cuda:0",
     dtype_str: str = "float16",
     language: str | None = None,
     num_step: Optional[int] = 8,
     guidance_scale: Optional[float] = 2.0,
+    cfg_value: Optional[float] = 2.0,
+    inference_timesteps: Optional[int] = 10,
     seed: Optional[int] = None,
     pause_settings: Optional[Dict[str, Any]] = None,
     playback_speed: Optional[float] = None,
+    engine: str = "omnivoice",
 ) -> None:
     out = Path(out_wav)
     out.parent.mkdir(parents=True, exist_ok=True)
     ref_prepared = _prepare_ref_audio_for_omnivoice(ref_audio)
+    tts_engine = _resolve_tts_engine(engine)
     resolved_seed = _resolve_omnivoice_seed(seed)
     pause_sec = _resolve_pause_sec(pause_settings)
-    chunks = _tokenize_with_pauses(text)
+
+    if tts_engine == "voxcpm2":
+        from voxcpm2_tts import resolve_voxcpm2_language, synthesize_to_wav as synthesize_voxcpm2_to_wav
+
+        resolved_language = resolve_voxcpm2_language(language)
+        synthesize_fn: Callable[..., None] = synthesize_voxcpm2_to_wav
+        synth_kw: Dict[str, Any] = dict(
+            ref_audio=str(ref_prepared),
+            ref_text=ref_text,
+            model_id=model_id or "openbmb/VoxCPM2",
+            language=resolved_language,
+            cfg_value=float(cfg_value if cfg_value is not None else 2.0),
+            inference_timesteps=int(inference_timesteps if inference_timesteps is not None else 10),
+            seed=resolved_seed,
+        )
+    else:
+        resolved_language = resolve_omnivoice_language(language)
+        synthesize_fn = synthesize_omnivoice_to_wav
+        synth_kw = dict(
+            ref_audio=str(ref_prepared),
+            ref_text=ref_text,
+            model_id=model_id,
+            device_map=device_map,
+            dtype_str=dtype_str,
+            language=resolved_language,
+            num_step=num_step,
+            guidance_scale=guidance_scale,
+            seed=resolved_seed,
+        )
+
+    chunks = _tokenize_with_pauses(text, tts_engine, resolved_language)
 
     if not chunks:
         raise ValueError("text is empty after tokenize")
 
-    resolved_language = resolve_omnivoice_language(language)
-
-    omnivoice_kw = dict(
-        ref_audio=str(ref_prepared),
-        ref_text=ref_text,
-        model_id=model_id,
-        device_map=device_map,
-        dtype_str=dtype_str,
-        language=resolved_language,
-        num_step=num_step,
-        guidance_scale=guidance_scale,
-        seed=resolved_seed,
-    )
-
     speed = _resolve_playback_speed(playback_speed)
     tail_pad_sec = _resolve_tail_pad_sec()
 
-    speakable = [c for c in chunks if c.get("text") and _is_speakable_piece(str(c["text"]))]
+    speakable = [
+        c
+        for c in chunks
+        if c.get("text") and _is_speakable_piece(str(c["text"]), tts_engine, resolved_language)
+    ]
 
     # Chỉ còn silence (xuống dòng thừa) hoặc không có đoạn nói
     if not speakable:
@@ -408,17 +457,17 @@ def synthesize_with_pause_settings(
 
     # Một đoạn nói, không pause sau đoạn → gọi trực tiếp (nhanh hơn)
     if len(chunks) == 1 and chunks[0].get("text") and not chunks[0].get("pause_after"):
-        synthesize_to_wav(text=str(chunks[0]["text"]), out_wav=out, **omnivoice_kw)
+        synthesize_fn(text=str(chunks[0]["text"]), out_wav=out, **synth_kw)
         _apply_playback_speed(out, speed)
         return
 
-    timeline: List[Path] = []
+    timeline = []
     with tempfile.TemporaryDirectory(prefix="audio_pause_") as tmp:
         tmp_dir = Path(tmp)
         for i, chunk in enumerate(chunks):
             piece = str(chunk.get("text") or "").strip()
             pause_key = chunk.get("pause_after")
-            if piece and _is_speakable_piece(piece):
+            if piece and _is_speakable_piece(piece, tts_engine, resolved_language):
                 _append_tts_segment(
                     timeline,
                     tmp_dir,
@@ -427,7 +476,8 @@ def synthesize_with_pause_settings(
                     pause_key,
                     pause_sec,
                     tail_pad_sec,
-                    omnivoice_kw,
+                    synthesize_fn,
+                    synth_kw,
                 )
             elif pause_key and pause_key in pause_sec:
                 _append_silence_to_timeline(

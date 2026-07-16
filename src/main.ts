@@ -20,6 +20,7 @@ async function bootstrap() {
   app.enableCors({
     origin: corsOrigins,
     credentials: true,
+    exposedHeaders: ["Accept-Ranges", "Content-Range", "Content-Length", "Content-Type"],
   });
   app.use((req: Request & { requestId?: string }, res: Response, next: NextFunction) => {
     const headerRequestId = req.headers["x-request-id"];

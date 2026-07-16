@@ -58,7 +58,7 @@ export class RecapProcessor extends WorkerHost {
       await this.recapService.processStarted(recapHistoryId);
       await this.recapService.updateRuntimeMessage(
         recapHistoryId,
-        "[STEP 0/8] Queue — spawning Python pipeline",
+        "[STEP 0/9] Queue — spawning Python pipeline",
       );
 
       const workDir = this.recapService.prepareWorkDir(recapHistoryId);
@@ -171,7 +171,7 @@ export class RecapProcessor extends WorkerHost {
       this.logger.log(`Recap child pid=${child.pid} history=${input.recapHistoryId}`);
       void this.recapService.updateRuntimeMessage(
         input.recapHistoryId,
-        `[STEP 0/8] Python started pid=${child.pid}`,
+        `[STEP 0/9] Python started pid=${child.pid}`,
       );
 
       const timer = setTimeout(() => {

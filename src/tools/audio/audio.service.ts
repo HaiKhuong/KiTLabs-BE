@@ -109,6 +109,23 @@ export class AudioService {
     return Number.isFinite(n) ? n : 42;
   }
 
+  /** Mặc định 42 — khớp VOXCPM2_SEED. Set env `none` để random. */
+  private resolveVoxcpm2Seed(): number | undefined {
+    const raw = (process.env.VOXCPM2_SEED ?? "42").trim();
+    if (!raw || raw.toLowerCase() === "none" || raw.toLowerCase() === "null") {
+      return undefined;
+    }
+    const n = Number(raw);
+    return Number.isFinite(n) ? n : 42;
+  }
+
+  private resolveTtsEngine(raw?: string | null): "omnivoice" | "voxcpm2" {
+    const key = String(raw ?? "")
+      .trim()
+      .toLowerCase();
+    return key === "voxcpm2" ? "voxcpm2" : "omnivoice";
+  }
+
   private resolveCmdTimeoutMs(): number {
     return Number(process.env.AUDIO_CMD_TIMEOUT_MS ?? process.env.TRANSLATE_CMD_TIMEOUT_MS ?? 600_000);
   }
@@ -156,6 +173,7 @@ export class AudioService {
       seed?: number;
       pauseSettings?: Record<string, number>;
       playbackSpeed?: number;
+      ttsEngine?: "omnivoice" | "voxcpm2";
     },
     audioHistoryId?: string,
   ): Promise<string> {
@@ -168,33 +186,56 @@ export class AudioService {
 
     const scriptDir = resolve(process.cwd(), VIDEO_PIPELINE_DIR);
     const timeoutMs = this.resolveCmdTimeoutMs();
+    const engine = this.resolveTtsEngine(opts.ttsEngine);
+    const language = opts.language
+      ? resolveOmnivoiceLanguageValue(opts.language)
+      : process.env.OMNIVOICE_LANGUAGE
+        ? resolveOmnivoiceLanguageValue(process.env.OMNIVOICE_LANGUAGE)
+        : (() => {
+            throw new Error("OmniVoice language is required");
+          })();
 
-    const seed = opts.seed ?? this.resolveOmnivoiceSeed();
+    const seed =
+      opts.seed ?? (engine === "voxcpm2" ? this.resolveVoxcpm2Seed() : this.resolveOmnivoiceSeed());
 
-    const payload = {
-      text: opts.text,
-      out_wav: outWav,
-      ref_audio: refAudio,
-      ref_text: opts.refText ?? "",
-      model_id: (process.env.OMNIVOICE_MODEL_ID ?? "k2-fsa/OmniVoice").trim(),
-      device_map: (process.env.OMNIVOICE_DEVICE_MAP ?? "").trim() || "cuda:0",
-      dtype_str: (process.env.OMNIVOICE_DTYPE ?? "float16").trim(),
-      language: opts.language
-        ? resolveOmnivoiceLanguageValue(opts.language)
-        : process.env.OMNIVOICE_LANGUAGE
-          ? resolveOmnivoiceLanguageValue(process.env.OMNIVOICE_LANGUAGE)
-          : (() => {
-              throw new Error("OmniVoice language is required");
-            })(),
-      num_step: Number(process.env.OMNIVOICE_NUM_STEP ?? 8),
-      guidance_scale: Number(process.env.OMNIVOICE_GUIDANCE_SCALE ?? 2),
-      ...(seed != null ? { seed } : {}),
-      ...(opts.pauseSettings ? { pause_settings: opts.pauseSettings } : {}),
-      ...(opts.playbackSpeed != null && Math.abs(opts.playbackSpeed - 1) > 1e-6
-        ? { playback_speed: opts.playbackSpeed }
-        : {}),
-    };
+    const payload =
+      engine === "voxcpm2"
+        ? {
+            engine: "voxcpm2",
+            text: opts.text,
+            out_wav: outWav,
+            ref_audio: refAudio,
+            ref_text: opts.refText ?? "",
+            model_id: (process.env.VOXCPM2_MODEL_ID ?? "openbmb/VoxCPM2").trim(),
+            language,
+            cfg_value: Number(process.env.VOXCPM2_CFG_VALUE ?? 2),
+            inference_timesteps: Number(process.env.VOXCPM2_INFERENCE_TIMESTEPS ?? 10),
+            ...(seed != null ? { seed } : {}),
+            ...(opts.pauseSettings ? { pause_settings: opts.pauseSettings } : {}),
+            ...(opts.playbackSpeed != null && Math.abs(opts.playbackSpeed - 1) > 1e-6
+              ? { playback_speed: opts.playbackSpeed }
+              : {}),
+          }
+        : {
+            engine: "omnivoice",
+            text: opts.text,
+            out_wav: outWav,
+            ref_audio: refAudio,
+            ref_text: opts.refText ?? "",
+            model_id: (process.env.OMNIVOICE_MODEL_ID ?? "k2-fsa/OmniVoice").trim(),
+            device_map: (process.env.OMNIVOICE_DEVICE_MAP ?? "").trim() || "cuda:0",
+            dtype_str: (process.env.OMNIVOICE_DTYPE ?? "float16").trim(),
+            language,
+            num_step: Number(process.env.OMNIVOICE_NUM_STEP ?? 8),
+            guidance_scale: Number(process.env.OMNIVOICE_GUIDANCE_SCALE ?? 2),
+            ...(seed != null ? { seed } : {}),
+            ...(opts.pauseSettings ? { pause_settings: opts.pauseSettings } : {}),
+            ...(opts.playbackSpeed != null && Math.abs(opts.playbackSpeed - 1) > 1e-6
+              ? { playback_speed: opts.playbackSpeed }
+              : {}),
+          };
 
+    const engineLabel = engine === "voxcpm2" ? "VoxCPM2" : "OmniVoice";
     const pythonBin = this.resolvePythonBin();
 
     await new Promise<void>((resolvePromise, rejectPromise) => {
@@ -211,7 +252,7 @@ export class AudioService {
       let stderr = "";
       const timeoutHandle = setTimeout(() => {
         child.kill("SIGTERM");
-        rejectPromise(new Error(`OmniVoice TTS timed out after ${timeoutMs}ms`));
+        rejectPromise(new Error(`${engineLabel} TTS timed out after ${timeoutMs}ms`));
       }, timeoutMs);
 
       const cleanup = () => {
@@ -239,7 +280,7 @@ export class AudioService {
         }
         if (code !== 0) {
           const suffix = signal ? ` (signal ${signal})` : "";
-          rejectPromise(new Error(stderr.trim() || `OmniVoice exited with code ${code}${suffix}`));
+          rejectPromise(new Error(stderr.trim() || `${engineLabel} exited with code ${code}${suffix}`));
           return;
         }
         resolvePromise();
@@ -250,7 +291,7 @@ export class AudioService {
     });
 
     if (!existsSync(outWav)) {
-      throw new Error(`OmniVoice did not produce output: ${outWav}`);
+      throw new Error(`${engineLabel} did not produce output: ${outWav}`);
     }
     return outWav;
   }
@@ -264,6 +305,7 @@ export class AudioService {
       language: string;
       playbackSpeed?: number;
       fitToCue?: boolean;
+      ttsEngine?: "omnivoice" | "voxcpm2";
     },
     audioHistoryId?: string,
   ): Promise<{ outWav: string; meta: Record<string, unknown> }> {
@@ -279,22 +321,42 @@ export class AudioService {
     }
 
     const timeoutMs = Math.max(this.resolveCmdTimeoutMs(), 30 * 60_000);
-    const seed = this.resolveOmnivoiceSeed();
-    const payload = {
-      srt_text: opts.srtText,
-      out_wav: outWav,
-      ref_audio: refAudio,
-      ref_text: opts.refText ?? "",
-      model_id: (process.env.OMNIVOICE_MODEL_ID ?? "k2-fsa/OmniVoice").trim(),
-      device_map: (process.env.OMNIVOICE_DEVICE_MAP ?? "").trim() || "cuda:0",
-      dtype_str: (process.env.OMNIVOICE_DTYPE ?? "float16").trim(),
-      language: resolveOmnivoiceLanguageValue(opts.language),
-      num_step: Number(process.env.OMNIVOICE_NUM_STEP ?? 8),
-      guidance_scale: Number(process.env.OMNIVOICE_GUIDANCE_SCALE ?? 2),
-      ...(seed != null ? { seed } : {}),
-      playback_speed: opts.playbackSpeed ?? 1,
-      fit_to_cue: opts.fitToCue !== false,
-    };
+    const engine = this.resolveTtsEngine(opts.ttsEngine);
+    const language = resolveOmnivoiceLanguageValue(opts.language);
+    const seed = engine === "voxcpm2" ? this.resolveVoxcpm2Seed() : this.resolveOmnivoiceSeed();
+
+    const payload =
+      engine === "voxcpm2"
+        ? {
+            engine: "voxcpm2",
+            srt_text: opts.srtText,
+            out_wav: outWav,
+            ref_audio: refAudio,
+            ref_text: opts.refText ?? "",
+            model_id: (process.env.VOXCPM2_MODEL_ID ?? "openbmb/VoxCPM2").trim(),
+            language,
+            cfg_value: Number(process.env.VOXCPM2_CFG_VALUE ?? 2),
+            inference_timesteps: Number(process.env.VOXCPM2_INFERENCE_TIMESTEPS ?? 10),
+            ...(seed != null ? { seed } : {}),
+            playback_speed: opts.playbackSpeed ?? 1,
+            fit_to_cue: opts.fitToCue !== false,
+          }
+        : {
+            engine: "omnivoice",
+            srt_text: opts.srtText,
+            out_wav: outWav,
+            ref_audio: refAudio,
+            ref_text: opts.refText ?? "",
+            model_id: (process.env.OMNIVOICE_MODEL_ID ?? "k2-fsa/OmniVoice").trim(),
+            device_map: (process.env.OMNIVOICE_DEVICE_MAP ?? "").trim() || "cuda:0",
+            dtype_str: (process.env.OMNIVOICE_DTYPE ?? "float16").trim(),
+            language,
+            num_step: Number(process.env.OMNIVOICE_NUM_STEP ?? 8),
+            guidance_scale: Number(process.env.OMNIVOICE_GUIDANCE_SCALE ?? 2),
+            ...(seed != null ? { seed } : {}),
+            playback_speed: opts.playbackSpeed ?? 1,
+            fit_to_cue: opts.fitToCue !== false,
+          };
 
     const pythonBin = this.resolvePythonBin();
     let stdout = "";
@@ -903,6 +965,7 @@ export class AudioService {
     const estimatedCost = dto.estimatedCost ?? 0;
 
     const displayName = text.length > 80 ? `${text.slice(0, 77).trim()}...` : text;
+    const ttsEngine = this.resolveTtsEngine(dto.ttsEngine);
 
     const history = this.audioRepository.create({
       userId: dto.userId,
@@ -911,6 +974,7 @@ export class AudioService {
       voiceMode: dto.voiceMode,
       voiceId,
       engineConfig: {
+        ttsEngine,
         refAudioPath,
         refText,
         speed: dto.speed ?? 1,
@@ -1011,6 +1075,7 @@ export class AudioService {
     const cueCount = (srtText.match(/\d{1,2}:\d{2}:\d{2}[,.]\d{1,3}\s*-->/g) ?? []).length;
     const displayName =
       cueCount > 0 ? `SRT timeline (${cueCount} cue)` : "SRT timeline";
+    const ttsEngine = this.resolveTtsEngine(dto.ttsEngine);
 
     const history = this.audioRepository.create({
       userId: dto.userId,
@@ -1020,6 +1085,7 @@ export class AudioService {
       voiceId,
       engineConfig: {
         jobKind: AUDIO_JOB_KIND_SRT_TIMELINE,
+        ttsEngine,
         srtText,
         refAudioPath,
         refText,
@@ -1403,6 +1469,9 @@ export class AudioService {
 
     const rawSpeed = Number(config.speed ?? 1);
     const playbackSpeed = Number.isFinite(rawSpeed) ? Math.min(2, Math.max(0.5, rawSpeed)) : 1;
+    const ttsEngine = this.resolveTtsEngine(
+      typeof config.ttsEngine === "string" ? config.ttsEngine : undefined,
+    );
 
     if (String(config.jobKind ?? "") === AUDIO_JOB_KIND_SRT_TIMELINE) {
       const srtText = String(config.srtText ?? history.inputText ?? "").trim();
@@ -1419,6 +1488,7 @@ export class AudioService {
           language,
           playbackSpeed,
           fitToCue,
+          ttsEngine,
         },
         history.id,
       );
@@ -1438,6 +1508,7 @@ export class AudioService {
         language,
         pauseSettings,
         playbackSpeed,
+        ttsEngine,
       },
       history.id,
     );

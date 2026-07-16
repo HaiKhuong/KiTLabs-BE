@@ -1,11 +1,14 @@
 """
-SRT → OmniVoice timeline WAV: TTS từng cue, chèn silence gap theo start time SRT, concat full audio.
+SRT → OmniVoice / VoxCPM2 timeline WAV: TTS từng cue, chèn silence gap theo start time SRT, concat full audio.
 
 Stdin JSON:
+  engine?: omnivoice | voxcpm2 (default omnivoice)
   srt_text | srt_path: str
   out_wav: str
-  ref_audio, ref_text, model_id, device_map, dtype_str, language
-  num_step?, guidance_scale?, seed?
+  ref_audio, ref_text, model_id, language
+  device_map, dtype_str, num_step?, guidance_scale?  (omnivoice)
+  cfg_value?, inference_timesteps?  (voxcpm2)
+  seed?
   playback_speed?: float (atempo after each cue TTS, default 1)
   fit_to_cue?: bool (default true) — nếu dài hơn cửa sổ cue thì atempo cho vừa
   sample_rate?: int (default 24000)
@@ -25,7 +28,11 @@ from pathlib import Path
 from typing import Any
 
 import pipeline_cache  # noqa: F401
-from omnivoice_tts import prepare_omnivoice_input_text, resolve_omnivoice_language, synthesize_to_wav
+from omnivoice_tts import (
+    prepare_omnivoice_input_text,
+    resolve_omnivoice_language,
+    synthesize_to_wav as synthesize_omnivoice_to_wav,
+)
 
 FFMPEG_BIN = (os.getenv("FFMPEG_BIN") or "ffmpeg").strip() or "ffmpeg"
 FFPROBE_BIN = (os.getenv("FFPROBE_BIN") or "ffprobe").strip() or "ffprobe"
@@ -219,13 +226,68 @@ def run_srt_timeline(payload: dict[str, Any]) -> dict[str, Any]:
     if not ref_audio.is_file():
         raise FileNotFoundError(f"ref_audio not found: {ref_audio}")
     ref_text = str(payload.get("ref_text") or "")
-    model_id = str(payload.get("model_id") or "k2-fsa/OmniVoice").strip()
-    device_map = str(payload.get("device_map") or "cpu").strip() or "cpu"
-    dtype_str = str(payload.get("dtype_str") or "float16").strip() or "float16"
-    language = resolve_omnivoice_language(str(payload.get("language") or "vietnamese"))
-    num_step = payload.get("num_step")
-    guidance_scale = payload.get("guidance_scale")
+    engine_key = str(payload.get("engine") or "omnivoice").strip().lower()
+    use_voxcpm2 = engine_key == "voxcpm2"
+    model_id = str(
+        payload.get("model_id")
+        or ("openbmb/VoxCPM2" if use_voxcpm2 else "k2-fsa/OmniVoice")
+    ).strip()
     seed = payload.get("seed")
+
+    if use_voxcpm2:
+        from voxcpm2_tts import (
+            prepare_voxcpm2_input_text,
+            resolve_voxcpm2_language,
+            synthesize_to_wav as synthesize_voxcpm2_to_wav,
+        )
+
+        language = resolve_voxcpm2_language(str(payload.get("language") or "vietnamese"))
+        cfg_value = float(payload.get("cfg_value") if payload.get("cfg_value") not in (None, "") else 2.0)
+        inference_timesteps = int(
+            payload.get("inference_timesteps")
+            if payload.get("inference_timesteps") not in (None, "")
+            else 10
+        )
+
+        def _prepare_text(raw: str) -> str:
+            return prepare_voxcpm2_input_text(raw, language)
+
+        def _synthesize(text: str, out_wav: Path) -> None:
+            synthesize_voxcpm2_to_wav(
+                text=text,
+                out_wav=out_wav,
+                ref_audio=str(ref_audio),
+                ref_text=ref_text,
+                model_id=model_id,
+                language=language,
+                cfg_value=cfg_value,
+                inference_timesteps=inference_timesteps,
+                seed=int(seed) if seed not in (None, "") else None,
+            )
+    else:
+        device_map = str(payload.get("device_map") or "cpu").strip() or "cpu"
+        dtype_str = str(payload.get("dtype_str") or "float16").strip() or "float16"
+        language = resolve_omnivoice_language(str(payload.get("language") or "vietnamese"))
+        num_step = payload.get("num_step")
+        guidance_scale = payload.get("guidance_scale")
+
+        def _prepare_text(raw: str) -> str:
+            return prepare_omnivoice_input_text(raw)
+
+        def _synthesize(text: str, out_wav: Path) -> None:
+            synthesize_omnivoice_to_wav(
+                text=text,
+                out_wav=out_wav,
+                ref_audio=str(ref_audio),
+                ref_text=ref_text,
+                model_id=model_id,
+                device_map=device_map,
+                dtype_str=dtype_str,
+                language=language,
+                num_step=int(num_step) if num_step not in (None, "") else None,
+                guidance_scale=float(guidance_scale) if guidance_scale not in (None, "") else None,
+                seed=int(seed) if seed not in (None, "") else None,
+            )
 
     gap_count = 0
     speak_count = 0
@@ -238,7 +300,7 @@ def run_srt_timeline(payload: dict[str, Any]) -> dict[str, Any]:
         for i, cue in enumerate(cues):
             start_ms = int(cue["start_ms"])
             end_ms = int(cue["end_ms"])
-            text = prepare_omnivoice_input_text(str(cue.get("text") or ""))
+            text = _prepare_text(str(cue.get("text") or ""))
             cue_dur_sec = max(0.05, (end_ms - start_ms) / 1000.0)
 
             if start_ms > current_ms:
@@ -257,19 +319,7 @@ def run_srt_timeline(payload: dict[str, Any]) -> dict[str, Any]:
                 continue
 
             raw_path = tmp_dir / f"raw_{i:04d}.wav"
-            synthesize_to_wav(
-                text=text,
-                out_wav=raw_path,
-                ref_audio=str(ref_audio),
-                ref_text=ref_text,
-                model_id=model_id,
-                device_map=device_map,
-                dtype_str=dtype_str,
-                language=language,
-                num_step=int(num_step) if num_step not in (None, "") else None,
-                guidance_scale=float(guidance_scale) if guidance_scale not in (None, "") else None,
-                seed=int(seed) if seed not in (None, "") else None,
-            )
+            _synthesize(text, raw_path)
 
             sped = tmp_dir / f"sped_{i:04d}.wav"
             _apply_speed(raw_path, sped, playback_speed)

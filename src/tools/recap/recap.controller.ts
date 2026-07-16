@@ -7,10 +7,11 @@ import {
   Patch,
   Post,
   Query,
+  Req,
   Res,
 } from "@nestjs/common";
 import { ApiBearerAuth, ApiOperation, ApiQuery, ApiTags } from "@nestjs/swagger";
-import { Response } from "express";
+import { Request, Response } from "express";
 import { createReadStream, existsSync, statSync } from "fs";
 import { extname } from "path";
 
@@ -81,6 +82,7 @@ export class RecapController {
   async artifact(
     @Query("recapHistoryId") recapHistoryId: string,
     @Query("type") type: "video" | "script" | "timeline" = "video",
+    @Req() req: Request,
     @Res() res: Response,
   ) {
     if (!recapHistoryId) throw new NotFoundException("recapHistoryId is required");
@@ -98,14 +100,55 @@ export class RecapController {
           ? "application/json"
           : "application/octet-stream";
 
-    res.setHeader("Content-Type", contentType);
-    res.setHeader("Content-Length", String(statSync(filePath).size));
-    if (type === "video") {
+    const { size: fileSize } = statSync(filePath);
+    const isVideo = type === "video" || ext === ".mp4";
+
+    if (isVideo) {
+      res.setHeader("Accept-Ranges", "bytes");
+      res.setHeader("Content-Type", contentType);
       res.setHeader(
         "Content-Disposition",
         `inline; filename="${history.resultFileName ?? "recap.mp4"}"`,
       );
+      res.setHeader(
+        "Access-Control-Expose-Headers",
+        "Accept-Ranges, Content-Range, Content-Length, Content-Type",
+      );
+
+      const range = req.headers.range;
+      if (range) {
+        const match = /^bytes=(\d*)-(\d*)$/.exec(range);
+        if (!match) {
+          res.status(416);
+          res.setHeader("Content-Range", `bytes */${fileSize}`);
+          return res.end();
+        }
+        const start = match[1] ? Number(match[1]) : 0;
+        const end = match[2] ? Number(match[2]) : fileSize - 1;
+        if (
+          !Number.isFinite(start) ||
+          !Number.isFinite(end) ||
+          start < 0 ||
+          end >= fileSize ||
+          start > end
+        ) {
+          res.status(416);
+          res.setHeader("Content-Range", `bytes */${fileSize}`);
+          return res.end();
+        }
+        const chunkSize = end - start + 1;
+        res.status(206);
+        res.setHeader("Content-Range", `bytes ${start}-${end}/${fileSize}`);
+        res.setHeader("Content-Length", String(chunkSize));
+        return createReadStream(filePath, { start, end }).pipe(res);
+      }
+
+      res.setHeader("Content-Length", String(fileSize));
+      return createReadStream(filePath).pipe(res);
     }
-    createReadStream(filePath).pipe(res);
+
+    res.setHeader("Content-Type", contentType);
+    res.setHeader("Content-Length", String(fileSize));
+    return createReadStream(filePath).pipe(res);
   }
 }
