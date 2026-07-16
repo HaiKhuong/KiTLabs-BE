@@ -62,7 +62,7 @@ def synthesize_segments(
     language: str | None = None,
 ) -> list[dict[str, Any]]:
     out_dir.mkdir(parents=True, exist_ok=True)
-    eng = str(engine or "edge").strip().lower()
+    eng = str(engine or "omnivoice").strip().lower()
     meta: list[dict[str, Any]] = []
 
     if eng in ("omnivoice", "voxcpm2"):

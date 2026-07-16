@@ -54,7 +54,7 @@ export class RecapEngineConfigDto {
   @IsString()
   locale?: string;
 
-  @ApiPropertyOptional({ example: "edge", description: "edge | omnivoice | voxcpm2" })
+  @ApiPropertyOptional({ example: "omnivoice", description: "edge | omnivoice | voxcpm2" })
   @IsOptional()
   @IsString()
   ttsEngine?: string;

@@ -82,7 +82,7 @@ export class RecapService {
       durationMaxSec: dto.engineConfig.durationMaxSec ?? 1200,
       wordsPerMinute: dto.engineConfig.wordsPerMinute ?? 140,
       locale: dto.engineConfig.locale ?? "vi",
-      ttsEngine: dto.engineConfig.ttsEngine ?? "edge",
+      ttsEngine: dto.engineConfig.ttsEngine ?? "omnivoice",
       edgeTtsVoice: dto.engineConfig.edgeTtsVoice ?? "vi-VN-HoaiMyNeural",
       edgeTtsRate:
         dto.engineConfig.edgeTtsRate ??

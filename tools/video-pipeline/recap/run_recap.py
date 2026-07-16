@@ -367,7 +367,7 @@ def main() -> int:
             default=format_edge_rate(cfg.get("edgeTtsRatePercent"), default="+0%"),
         )
         video_speed = float(cfg.get("videoSpeed") or 1.0)
-        tts_engine = str(cfg.get("ttsEngine") or "edge").strip().lower()
+        tts_engine = str(cfg.get("ttsEngine") or "omnivoice").strip().lower()
         step_start(7, "TTS", f"{len(narrations)} narrations · engine={tts_engine}")
         audio_dir = work_dir / "audio"
         audio_dir.mkdir(parents=True, exist_ok=True)
