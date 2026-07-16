@@ -9,6 +9,7 @@ import { UserSetting } from "../../tools/settings/user-setting.entity";
 import { AudioCloneVoice } from "../../tools/audio/audio-clone-voice.entity";
 import { AudioHistory } from "../../tools/audio/audio-history.entity";
 import { ImageHistory } from "../../tools/images/image-history.entity";
+import { RecapHistory } from "../../tools/recap/recap-history.entity";
 import { TranslateHistory } from "../../tools/translate/translate-history.entity";
 import { User } from "../../tools/users/user.entity";
 import { ChunkUpload } from "../../tools/files/entities/chunk-upload.entity";
@@ -31,6 +32,7 @@ export const TOOL_DB_ENTITIES = [
   ImageHistory,
   AudioCloneVoice,
   TranslateHistory,
+  RecapHistory,
   DownloadHistory,
   VideoDownload,
   Notification,
