@@ -52,6 +52,5 @@ scikit-image
 # ─── Recap: shot detect + semantic cluster ───
 # open_clip import name; needs torch + Pillow (above)
 open-clip-torch
-# Matches `from transnetv2 import TransNetV2` in recap/scenes.py.
-# If PyPI install fails: pip install "git+https://github.com/soCzech/TransNetV2.git"
-transnetv2
+# Not on PyPI — install from upstream (provides `from transnetv2 import TransNetV2`)
+git+https://github.com/soCzech/TransNetV2.git#egg=transnetv2
