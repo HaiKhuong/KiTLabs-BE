@@ -57,4 +57,6 @@ open-clip-torch
 # otherwise:
 tensorflow>=2.12
 # Not on PyPI — install from upstream (provides `from transnetv2 import TransNetV2`)
+# Weights are git-lfs; pip often installs pointer stubs. Recap auto-downloads real
+# weights into tools/video-pipeline/.cache/transnetv2-weights (or TRANSNET_WEIGHTS_DIR).
 git+https://github.com/soCzech/TransNetV2.git#egg=transnetv2
