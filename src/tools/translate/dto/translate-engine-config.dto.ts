@@ -323,13 +323,13 @@ export class TranslateEngineConfigDto {
   @IsString()
   edge_tts_pitch?: string;
 
-  /** edge | omnivoice */
+  /** edge | omnivoice | voxcpm2 */
   @IsOptional()
-  @IsIn(["edge", "omnivoice"])
+  @IsIn(["edge", "omnivoice", "voxcpm2"])
   step3TtsEngine?: string;
 
   @IsOptional()
-  @IsIn(["edge", "omnivoice"])
+  @IsIn(["edge", "omnivoice", "voxcpm2"])
   step3_tts_engine?: string;
 
   @IsOptional()

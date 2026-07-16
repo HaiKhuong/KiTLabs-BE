@@ -72,9 +72,9 @@ EDGE_TTS_VOICE = "vi-VN-HoaiMyNeural"
 EDGE_TTS_RATE = "+30%"
 EDGE_TTS_VOLUME = "+10%"
 EDGE_TTS_PITCH = "+20Hz"
-# Step3 TTS: edge = Microsoft Edge TTS; omnivoice = OmniVoice Vietnamese (pip install omnivoice, GPU khuyến nghị).
+# Step3 TTS: edge | omnivoice | voxcpm2 (voice-clone engines dùng GPU khuyến nghị).
 STEP3_TTS_ENGINE = "edge"
-# OmniVoice (splendor1811/omnivoice-vietnamese): ref_text nên là transcript khớp ref_audio.
+# OmniVoice (k2-fsa/OmniVoice): ref_text nên là transcript khớp ref_audio.
 OMNIVOICE_MODEL_ID = "k2-fsa/OmniVoice"
 OMNIVOICE_REF_WAV = str(SCRIPT_DIR / "voice" / "sample.wav")
 OMNIVOICE_REF_TEXT = "Chào bạn, tôi đang thực hiện một thử nghiệm để tạo ra bản sao kỹ thuật số cho giọng nói của mình. Quá trình này đòi hỏi sự rõ ràng, nhịp điệu tự nhiên và một chút cảm xúc trong từng câu chữ."
@@ -88,6 +88,16 @@ OMNIVOICE_NORMALIZE_TEXT = False
 OMNIVOICE_TRIM_TRAILING_SILENCE = True
 OMNIVOICE_TRAILING_SILENCE_MIN_MS = 120
 OMNIVOICE_TRAILING_SILENCE_THRESHOLD_DB = -42
+# VoxCPM2 (openbmb/VoxCPM2): Ultimate Cloning — cùng ref wav/text như OmniVoice khi chọn engine.
+VOXCPM2_MODEL_ID = "openbmb/VoxCPM2"
+VOXCPM2_LANGUAGE = "vietnamese"  # vietnamese | english | korean | japanese
+VOXCPM2_CFG_VALUE = 2.0
+VOXCPM2_INFERENCE_TIMESTEPS = 10
+VOXCPM2_SEED = 42
+VOXCPM2_NORMALIZE_TEXT = False
+VOXCPM2_LOAD_DENOISER = False
+VOXCPM2_OPTIMIZE = False
+VOXCPM2_TRIM_TRAILING_SILENCE = True
 STEP3_AUTO_RATE_ENABLED = True
 TRANSLATION_CONTEXT = ""  # Custom translation context for Gemini prompt
 STEP3_AUTO_RATE_TRIGGER_CHARS_PER_SEC = 14.0
@@ -2017,9 +2027,11 @@ def _omnivoice_resolve_device_map(raw: str) -> str:
 
 def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
     eng = str(STEP3_TTS_ENGINE or "edge").strip().lower()
-    if eng not in ("edge", "omnivoice"):
+    if eng not in ("edge", "omnivoice", "voxcpm2"):
         raise ValueError(f"Step3: --step3-tts-engine không hợp lệ: {eng!r}")
     use_omnivoice = eng == "omnivoice"
+    use_voxcpm2 = eng == "voxcpm2"
+    use_voice_clone = use_omnivoice or use_voxcpm2
     omni_ref_prepared = None
     omni_device = None
 
@@ -2033,27 +2045,34 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
         step3_tts_api_timeout_sec=STEP3_TTS_API_TIMEOUT_SEC,
     )
 
-    if use_omnivoice:
-        log("Step3: OmniVoice Vietnamese (timeline SRT)…")
-        _omni_mid = str(OMNIVOICE_MODEL_ID or "").strip()
-        if not _omni_mid:
-            raise ValueError("OmniVoice: cần OMNIVOICE_MODEL_ID trong auto_vietsub_pro.py (HF repo id).")
+    if use_voice_clone:
+        engine_label = "VoxCPM2" if use_voxcpm2 else "OmniVoice"
+        log(f"Step3: {engine_label} voice clone (timeline SRT)…")
+        if use_omnivoice:
+            _omni_mid = str(OMNIVOICE_MODEL_ID or "").strip()
+            if not _omni_mid:
+                raise ValueError("OmniVoice: cần OMNIVOICE_MODEL_ID trong auto_vietsub_pro.py (HF repo id).")
+        else:
+            _vox_mid = str(VOXCPM2_MODEL_ID or "").strip()
+            if not _vox_mid:
+                raise ValueError("VoxCPM2: cần VOXCPM2_MODEL_ID trong auto_vietsub_pro.py (HF repo id).")
         spk = Path(str(OMNIVOICE_REF_WAV or "").strip()).expanduser()
         if not str(OMNIVOICE_REF_WAV or "").strip() or not spk.is_file():
             raise FileNotFoundError(
-                f"OmniVoice: cần OMNIVOICE_REF_WAV (giọng mẫu): {spk}"
+                f"{engine_label}: cần OMNIVOICE_REF_WAV (giọng mẫu): {spk}"
             )
         LOG_DIR.mkdir(parents=True, exist_ok=True)
         omni_ref_prepared = prepare_speaker_reference(spk, LOG_DIR)
         omni_device = _omnivoice_resolve_device_map(str(OMNIVOICE_DEVICE_MAP or ""))
         if not str(OMNIVOICE_REF_TEXT or "").strip():
             raise ValueError(
-                "OmniVoice: cần OMNIVOICE_REF_TEXT (transcript của giọng mẫu) trong auto_vietsub_pro.py. "
+                f"{engine_label}: cần OMNIVOICE_REF_TEXT (transcript của giọng mẫu) trong auto_vietsub_pro.py. "
                 "Để trống sẽ kích hoạt auto ASR và có thể kéo TorchCodec/FFmpeg runtime."
             )
         log(
-            "OmniVoice: đã chuẩn bị giọng mẫu "
-            f"{spk.name} → {Path(omni_ref_prepared).name} (device={omni_device})"
+            f"{engine_label}: đã chuẩn bị giọng mẫu "
+            f"{spk.name} → {Path(omni_ref_prepared).name}"
+            + (f" (device={omni_device})" if use_omnivoice else "")
         )
     else:
         log("Step3: edge-tts (timeline SRT)…")
@@ -2149,7 +2168,7 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
             )
             continue
 
-        raw_ext = "wav" if use_omnivoice else "mp3"
+        raw_ext = "wav" if use_voice_clone else "mp3"
         raw_audio_path = chunk_dir / f"raw_{i:04d}.{raw_ext}"
         final_seg_path = chunk_dir / f"part_{i:04d}.wav"
 
@@ -2189,6 +2208,26 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
                     guidance_scale=gs if ns > 0 else None,
                     seed=OMNIVOICE_SEED if OMNIVOICE_SEED is not None else None,
                 )
+            elif use_voxcpm2:
+                from voxcpm2_tts import synthesize_to_wav as synthesize_voxcpm2_to_wav
+
+                tts_vox = tts_normalize_vi(subtitle_text, VOXCPM2_NORMALIZE_TEXT)
+                synthesize_voxcpm2_to_wav(
+                    text=tts_vox,
+                    out_wav=raw_audio_path,
+                    ref_audio=omni_ref_prepared,
+                    ref_text=str(OMNIVOICE_REF_TEXT or ""),
+                    model_id=str(VOXCPM2_MODEL_ID or "").strip() or "openbmb/VoxCPM2",
+                    language=str(VOXCPM2_LANGUAGE or "vietnamese").strip()
+                    or "vietnamese",
+                    cfg_value=float(VOXCPM2_CFG_VALUE),
+                    inference_timesteps=int(VOXCPM2_INFERENCE_TIMESTEPS),
+                    normalize=bool(VOXCPM2_NORMALIZE_TEXT),
+                    load_denoiser=bool(VOXCPM2_LOAD_DENOISER),
+                    optimize=bool(VOXCPM2_OPTIMIZE),
+                    seed=VOXCPM2_SEED if VOXCPM2_SEED is not None else None,
+                    target_sample_rate=24000,
+                )
             else:
                 run_edge_tts_mp3_save(subtitle_text, raw_audio_path, rate)
 
@@ -2217,7 +2256,7 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
 
         raw_segment_ms = get_media_duration_ms(raw_audio_path)
         if (
-            (not use_omnivoice)
+            (not use_voice_clone)
             and STEP3_AUTO_RATE_ENABLED
             and raw_segment_ms
             and subtitle_duration_ms > 220
@@ -2266,7 +2305,11 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
             raw_segment_ms = subtitle_duration_ms
 
         fit_filters = []
-        if use_omnivoice and OMNIVOICE_TRIM_TRAILING_SILENCE:
+        trim_clone_silence = (
+            (use_omnivoice and OMNIVOICE_TRIM_TRAILING_SILENCE)
+            or (use_voxcpm2 and VOXCPM2_TRIM_TRAILING_SILENCE)
+        )
+        if trim_clone_silence:
             stop_dur = max(
                 0.02, float(OMNIVOICE_TRAILING_SILENCE_MIN_MS) / 1000.0
             )
@@ -3383,22 +3426,25 @@ def parse_cli_args():
     parser.add_argument("--edge-tts-pitch", default=EDGE_TTS_PITCH)
     parser.add_argument(
         "--step3-tts-engine",
-        choices=["edge", "omnivoice"],
+        choices=["edge", "omnivoice", "voxcpm2"],
         default=STEP3_TTS_ENGINE,
-        help="edge=Edge TTS; omnivoice=OmniVoice Vi (pip install omnivoice, khuyến nghị GPU).",
+        help=(
+            "edge=Edge TTS; omnivoice=OmniVoice; voxcpm2=VoxCPM2 "
+            "(pip install omnivoice|voxcpm, khuyến nghị GPU)."
+        ),
     )
     parser.add_argument(
         "--omnivoice-ref-wav",
         default="",
         help=(
             "Tên file giọng mẫu đặt trong thư mục voice/ (vd: sample.wav). "
-            "Khi có giá trị, script sẽ dùng SCRIPT_DIR/voice/<tên_file> cho OMNIVOICE_REF_WAV."
+            "Dùng chung cho OmniVoice và VoxCPM2 (OMNIVOICE_REF_WAV)."
         ),
     )
     parser.add_argument(
         "--omnivoice-ref-text",
         default="",
-        help="Transcript khớp file giọng mẫu OmniVoice (OMNIVOICE_REF_TEXT).",
+        help="Transcript khớp file giọng mẫu (OmniVoice / VoxCPM2 Ultimate Cloning).",
     )
     parser.add_argument(
         "--auto-speed",

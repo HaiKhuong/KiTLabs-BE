@@ -27,6 +27,11 @@ underthesea
 vinorm
 omnivoice
 
+# ─── Step3: VoxCPM2 (optional: --step3-tts-engine voxcpm2) ───
+# PyTorch ≥2.5 khuyến nghị theo upstream; pin torch ở trên vẫn dùng được nếu CUDA ok.
+voxcpm>=2.0.0
+soundfile
+
 # ─── OCR: EasyOCR ───
 easyocr
 opencv-python-headless

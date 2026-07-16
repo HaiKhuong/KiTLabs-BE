@@ -1,9 +1,9 @@
 """
-Cache HF / torch chung cho pipeline (Whisper, OmniVoice, Translate, Image…).
+Cache HF / torch chung cho pipeline (Whisper, OmniVoice, VoxCPM2, Translate, Image…).
 
 Một root duy nhất:
   tools/video-pipeline/cache/
-  ├── huggingface/hub/   ← HF models (whisper, omnivoice, flux, z-image…)
+  ├── huggingface/hub/   ← HF models (whisper, omnivoice, voxcpm2, flux, z-image…)
   └── torch/
 
 Ghi đè: KITLABS_PYTHON_CACHE_DIR hoặc OMNIVOICE_CACHE_ROOT (legacy alias).

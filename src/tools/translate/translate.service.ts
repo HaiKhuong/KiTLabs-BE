@@ -371,7 +371,7 @@ export class TranslateService {
     const ttsEngine = String(
       this.pickConfigValue(config, ["step3TtsEngine", "step3_tts_engine"]) ?? "edge",
     ).toLowerCase();
-    if (ttsEngine !== "omnivoice") {
+    if (ttsEngine !== "omnivoice" && ttsEngine !== "voxcpm2") {
       return;
     }
 
