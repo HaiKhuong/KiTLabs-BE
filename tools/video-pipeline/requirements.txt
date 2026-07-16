@@ -14,10 +14,11 @@ torchaudio>=2.2,<2.9
 faster-whisper==1.2.1
 ctranslate2>=4.0,<5
 
-# ─── Step2: Gemini translation ───
+# ─── Gemini (Translate Step2 + Recap Call A/B) ───
 google-genai
+google-generativeai>=0.8.0
 
-# ─── Step3: TTS ───
+# ─── Step3 / Recap TTS ───
 edge-tts
 
 # ─── Step3: OmniVoice (optional: --step3-tts-engine omnivoice) ───
@@ -47,3 +48,10 @@ pysrt
 shapely
 pyclipper
 scikit-image
+
+# ─── Recap: shot detect + semantic cluster ───
+# open_clip import name; needs torch + Pillow (above)
+open-clip-torch
+# Matches `from transnetv2 import TransNetV2` in recap/scenes.py.
+# If PyPI install fails: pip install "git+https://github.com/soCzech/TransNetV2.git"
+transnetv2
