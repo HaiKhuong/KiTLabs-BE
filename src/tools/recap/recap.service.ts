@@ -63,7 +63,7 @@ export class RecapService {
     const user = await this.userRepository.findOne({ where: { id: dto.userId } });
     if (!user) throw new BadRequestException("User not found");
 
-    const estimatedCost = dto.estimatedCost ?? 2;
+    const estimatedCost = dto.estimatedCost ?? 0;
     if (Number(user.credit) < estimatedCost) {
       throw new BadRequestException("Insufficient credit for recap");
     }
