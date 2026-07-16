@@ -6,6 +6,7 @@ import argparse
 import json
 import logging
 import os
+import shutil
 import subprocess
 import sys
 import traceback
@@ -95,6 +96,70 @@ def write_json(path: Path, data: Any) -> None:
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def cleanup_work_artifacts(work_dir: Path, keep_debug: bool) -> None:
+    """When keep_debug=False, remove heavy intermediates after successful render."""
+    if keep_debug:
+        LOG.info("keepDebugArtifacts=true — retaining work-dir intermediates")
+        return
+    heavy = [
+        work_dir / "clips",
+        work_dir / "keyframes",
+        work_dir / "audio",
+        work_dir / "debug",
+        work_dir / "video_only.mp4",
+        work_dir / "voice_mix.wav",
+        work_dir / "concat_video.txt",
+        work_dir / "concat_voice.txt",
+        work_dir / ".mplconfig",
+        work_dir / ".cache",
+        work_dir / "audio_16k.wav",
+    ]
+    for p in heavy:
+        try:
+            if p.is_dir():
+                shutil.rmtree(p, ignore_errors=True)
+            elif p.is_file():
+                p.unlink(missing_ok=True)
+        except Exception as exc:
+            LOG.warning("cleanup skip %s: %s", p, exc)
+    LOG.info("keepDebugArtifacts=false — cleaned heavy intermediates (kept json + output)")
+
+
+def write_debug_index(debug_dir: Path, work_dir: Path) -> None:
+    lines = [
+        "Recap debug artifacts",
+        "=====================",
+        "",
+        "Work dir layout:",
+        f"  {work_dir}",
+        "",
+        "JSON manifests (always kept unless you delete the whole job folder):",
+        "  transcript.json          — Whisper ASR",
+        "  shots.json               — shot boundaries (TransNet / FFmpeg)",
+        "  semantic_scenes.json     — CLIP-clustered scenes",
+        "  script.json              — Gemini A canonical script",
+        "  candidates.json          — local shortlist per segment (pre Gemini B)",
+        "  picks.json               — selected shot ids per segment",
+        "  tts.json                 — TTS segment meta + durations",
+        "  timeline.json            — voice-master cues",
+        "",
+        "Folders:",
+        "  keyframes/               — mid-frame JPG per shot (CLIP)",
+        "  clips/                   — cut B-roll segments used in render",
+        "  audio/                   — TTS wav/mp3 per narration",
+        "  output/recap.mp4         — final mux",
+        "  logs/pipeline.log",
+        "",
+        "Gemini dumps (this folder):",
+        "  gemini_a_request.json / gemini_a_response.json / gemini_a_response_raw.txt",
+        "  gemini_b_request.json / gemini_b_response.json / gemini_b_response_raw.txt",
+        "  gemini_*_prompt.txt      — full prompt sent to model",
+        "",
+    ]
+    debug_dir.mkdir(parents=True, exist_ok=True)
+    (debug_dir / "README.txt").write_text("\n".join(lines), encoding="utf-8")
+
+
 def default_beats(total_max: int) -> list[list[Any]]:
     """Recap timeline beat grid (seconds)."""
     t = float(total_max)
@@ -132,14 +197,19 @@ def main() -> int:
         wpm = int(cfg.get("wordsPerMinute") or 140)
         locale = str(cfg.get("locale") or "vi")
         year = cfg.get("year")
+        keep_debug = bool(cfg.get("keepDebugArtifacts", True))
+        debug_dir = work_dir / "debug"
+        if keep_debug:
+            write_debug_index(debug_dir, work_dir)
         LOG.info("[RECAP] probing duration video=%s", video)
         movie_dur = probe_duration(video)
         LOG.info(
-            "Recap start title=%s source=%.0fs target=%d–%ds work=%s",
+            "Recap start title=%s source=%.0fs target=%d–%ds keepDebug=%s work=%s",
             title,
             movie_dur,
             dur_min,
             dur_max,
+            keep_debug,
             work_dir,
         )
 
@@ -204,7 +274,12 @@ def main() -> int:
                 "transcript": transcript_text,
                 "transcriptSummary": tr_merged,
             }
-            script = generate_script(payload_a, model=gemini_model, key_tier=gemini_tier)
+            script = generate_script(
+                payload_a,
+                model=gemini_model,
+                key_tier=gemini_tier,
+                debug_dir=debug_dir if keep_debug else None,
+            )
             script = canonicalize_script(script, payload_a)
             validate_script(script, dur_min=dur_min, dur_max=dur_max, movie_dur=movie_dur, wpm=wpm)
             write_json(script_path, script)
@@ -246,11 +321,16 @@ def main() -> int:
             )
             used.update(item["id"] for item in c[:3])
 
+        write_json(work_dir / "candidates.json", pick_segments)
+        if keep_debug:
+            write_json(debug_dir / "candidates.json", pick_segments)
+
         picks_path = work_dir / "picks.json"
         picks = pick_shots(
             {"task": "pick_shots", "segments": pick_segments},
             model=gemini_model,
             key_tier=gemini_tier,
+            debug_dir=debug_dir if keep_debug else None,
         )
         # Sanitize: only ids in shortlist; fallback fill
         sanitized: list[list[int]] = []
@@ -316,6 +396,8 @@ def main() -> int:
         if not out_mp4.exists():
             raise RuntimeError("Render finished but output missing")
         step_done(8, "Render", str(out_mp4))
+
+        cleanup_work_artifacts(work_dir, keep_debug=keep_debug)
 
         print(f"DONE: {out_mp4}", flush=True)
         LOG.info("DONE %s", out_mp4)

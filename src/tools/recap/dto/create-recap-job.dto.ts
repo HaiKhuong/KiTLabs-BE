@@ -1,6 +1,7 @@
 import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
 import { Type } from "class-transformer";
 import {
+  IsBoolean,
   IsInt,
   IsNumber,
   IsObject,
@@ -81,6 +82,15 @@ export class RecapEngineConfigDto {
   @Min(0.5)
   @Max(2)
   videoSpeed?: number;
+
+  @ApiPropertyOptional({
+    example: true,
+    description:
+      "Keep debug intermediates (keyframes, clips, Gemini dumps). false = cleanup after render",
+  })
+  @IsOptional()
+  @IsBoolean()
+  keepDebugArtifacts?: boolean;
 
   @ApiPropertyOptional({ description: "Gemini model override" })
   @IsOptional()

@@ -91,6 +91,7 @@ export class RecapService {
           : "+0%"),
       edgeTtsRatePercent: dto.engineConfig.edgeTtsRatePercent ?? 0,
       videoSpeed: dto.engineConfig.videoSpeed ?? 1,
+      keepDebugArtifacts: dto.engineConfig.keepDebugArtifacts ?? true,
     };
 
     const history = this.recapRepository.create({

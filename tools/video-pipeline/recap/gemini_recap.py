@@ -5,6 +5,7 @@ import logging
 import os
 import re
 import time
+from pathlib import Path
 from typing import Any
 
 LOG = logging.getLogger("recap.gemini")
@@ -203,11 +204,27 @@ def _is_transient(err: BaseException) -> bool:
     return any(m.lower() in msg for m in _TRANSIENT_MARKERS)
 
 
+def _dump_debug(debug_dir: Path | None, name: str, data: Any) -> None:
+    if not debug_dir:
+        return
+    try:
+        debug_dir.mkdir(parents=True, exist_ok=True)
+        path = debug_dir / name
+        if isinstance(data, (dict, list)):
+            path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        else:
+            path.write_text(str(data or ""), encoding="utf-8")
+    except Exception as exc:
+        LOG.warning("Failed to write debug %s: %s", name, exc)
+
+
 def _generate_json(
     system: str,
     user_obj: Any,
     model: str = "",
     key_tier: str = "",
+    debug_dir: Path | None = None,
+    debug_tag: str = "gemini",
 ) -> dict[str, Any]:
     tier = key_tier or os.environ.get("RECAP_GEMINI_KEY_TIER") or "vip"
     keys = _load_keys(tier)
@@ -217,6 +234,8 @@ def _generate_json(
 
     model_id = _model_name(model)
     prompt = system + "\n\n# INPUT JSON\n" + json.dumps(user_obj, ensure_ascii=False)
+    _dump_debug(debug_dir, f"{debug_tag}_request.json", user_obj)
+    _dump_debug(debug_dir, f"{debug_tag}_prompt.txt", prompt)
     last_err: Exception | None = None
 
     use_new_sdk = False
@@ -232,6 +251,7 @@ def _generate_json(
             return {}
 
     def _call_once(api_key: str) -> dict[str, Any]:
+        raw_text = ""
         if use_new_sdk:
             client = genai.Client(api_key=api_key)
             resp = client.models.generate_content(
@@ -239,14 +259,19 @@ def _generate_json(
                 contents=prompt,
                 config={"response_mime_type": "application/json", "temperature": 0.4},
             )
-            return _parse_json(getattr(resp, "text", None) or "")
-        configure(api_key=api_key)
-        m = GenerativeModel(
-            model_id,
-            generation_config={"response_mime_type": "application/json", "temperature": 0.4},
-        )
-        resp = m.generate_content(prompt)
-        return _parse_json(resp.text or "")
+            raw_text = getattr(resp, "text", None) or ""
+        else:
+            configure(api_key=api_key)
+            m = GenerativeModel(
+                model_id,
+                generation_config={"response_mime_type": "application/json", "temperature": 0.4},
+            )
+            resp = m.generate_content(prompt)
+            raw_text = resp.text or ""
+        _dump_debug(debug_dir, f"{debug_tag}_response_raw.txt", raw_text)
+        parsed = _parse_json(raw_text)
+        _dump_debug(debug_dir, f"{debug_tag}_response.json", parsed)
+        return parsed
 
     # Each key once. Transient 503/429: debounce 3s then retry once (global, not per key).
     transient_retried = False
@@ -274,6 +299,7 @@ def _generate_json(
 
     if last_err:
         LOG.error("All Gemini attempts failed: %s", last_err)
+        _dump_debug(debug_dir, f"{debug_tag}_error.txt", str(last_err))
     return {}
 
 
@@ -399,8 +425,16 @@ def generate_script(
     payload: dict[str, Any],
     model: str = "",
     key_tier: str = "",
+    debug_dir: Path | None = None,
 ) -> dict[str, Any]:
-    result = _generate_json(SYSTEM_A, payload, model=model, key_tier=key_tier)
+    result = _generate_json(
+        SYSTEM_A,
+        payload,
+        model=model,
+        key_tier=key_tier,
+        debug_dir=debug_dir,
+        debug_tag="gemini_a",
+    )
     result = canonicalize_script(result, payload)
     if script_is_valid(result):
         return result
@@ -516,8 +550,16 @@ def pick_shots(
     payload: dict[str, Any],
     model: str = "",
     key_tier: str = "",
+    debug_dir: Path | None = None,
 ) -> dict[str, Any]:
-    result = _generate_json(SYSTEM_B, payload, model=model, key_tier=key_tier)
+    result = _generate_json(
+        SYSTEM_B,
+        payload,
+        model=model,
+        key_tier=key_tier,
+        debug_dir=debug_dir,
+        debug_tag="gemini_b",
+    )
     result = canonicalize_picks(result)
     if picks_is_valid(result):
         return result
