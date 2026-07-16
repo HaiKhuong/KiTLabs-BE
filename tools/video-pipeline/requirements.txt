@@ -52,5 +52,9 @@ scikit-image
 # ─── Recap: shot detect + semantic cluster ───
 # open_clip import name; needs torch + Pillow (above)
 open-clip-torch
+# TransNet V2 (soCzech) needs TensorFlow. Prefer CPU wheel if sharing GPU with torch:
+#   pip install tensorflow-cpu
+# otherwise:
+tensorflow>=2.12
 # Not on PyPI — install from upstream (provides `from transnetv2 import TransNetV2`)
 git+https://github.com/soCzech/TransNetV2.git#egg=transnetv2

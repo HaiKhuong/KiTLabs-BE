@@ -56,6 +56,10 @@ export class RecapProcessor extends WorkerHost {
 
     try {
       await this.recapService.processStarted(recapHistoryId);
+      await this.recapService.updateRuntimeMessage(
+        recapHistoryId,
+        "[STEP 0/8] Queue — spawning Python pipeline",
+      );
 
       const workDir = this.recapService.prepareWorkDir(recapHistoryId);
       const configPath = this.recapService.writeJobConfig(workDir, history);
@@ -175,7 +179,13 @@ export class RecapProcessor extends WorkerHost {
         } else {
           stderrBuf = (stderrBuf + text).slice(-MAX_LOG_BUFFER);
         }
-        const line = text.trim();
+        const lines = text
+          .split(/\r?\n/)
+          .map((l) => l.trim())
+          .filter(Boolean);
+        // Prefer high-level step markers for FE status (avoid FFmpeg noise)
+        const stepLine = [...lines].reverse().find((l) => l.includes("[STEP "));
+        const line = stepLine || lines[lines.length - 1];
         if (line) {
           void this.recapService.updateRuntimeMessage(
             input.recapHistoryId,
