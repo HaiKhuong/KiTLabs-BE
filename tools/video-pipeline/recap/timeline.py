@@ -11,7 +11,9 @@ def pack_voice_master_timeline(
     picks: list[list[int]],
     candidates: list[list[int]],
     tts_meta: list[dict[str, Any]],
+    video_speed: float = 1.0,
 ) -> dict[str, Any]:
+    speed = max(0.5, min(2.0, float(video_speed or 1.0)))
     by_id = {int(s["id"]): s for s in shots}
     cues: list[dict[str, Any]] = []
     cursor = 0.0
@@ -34,11 +36,13 @@ def pack_voice_master_timeline(
             if not s:
                 return False
             natural = max(0.05, float(s["endSec"]) - float(s["startSec"]))
-            take = min(natural, remain)
+            # Faster B-roll: consume more source per output second (speed > 1).
+            max_out = natural / speed
+            take = min(max_out, remain)
             if take <= 0.01:
                 return False
             src_in = float(s["startSec"])
-            src_out = src_in + take
+            src_out = src_in + take * speed
             video_cues.append(
                 {
                     "shot": sid,
@@ -81,7 +85,7 @@ def pack_voice_master_timeline(
                     "t0": round(voice_t0, 3),
                     "t1": round(voice_t1, 3),
                     "srcIn": float(s0["startSec"]),
-                    "srcOut": float(s0["startSec"]) + audio_dur,
+                    "srcOut": round(float(s0["startSec"]) + audio_dur * speed, 3),
                 }
             )
 
@@ -108,4 +112,4 @@ def pack_voice_master_timeline(
         )
         cursor = voice_t1
 
-    return {"voiceMaster": True, "cues": cues, "durationSec": round(cursor, 3)}
+    return {"voiceMaster": True, "videoSpeed": speed, "cues": cues, "durationSec": round(cursor, 3)}

@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+import time
 from typing import Any
 
 LOG = logging.getLogger("recap.gemini")
@@ -16,6 +17,21 @@ SCRIPT_RECAP_TIMELINE = "recapTimelineRanges"
 SCRIPT_MOVIE_WINDOWS = "movieSourceWindows"
 
 PICKS_SELECTED_SHOTS = "selectedShotsBySegment"
+
+# Transient API errors — single retry after debounce (avoid spam)
+_RETRY_MAX = int(os.environ.get("RECAP_GEMINI_RETRY_MAX") or 1)  # retries after first fail
+_RETRY_DEBOUNCE_SEC = float(os.environ.get("RECAP_GEMINI_RETRY_DEBOUNCE_SEC") or 3.0)
+_TRANSIENT_MARKERS = (
+    "503",
+    "429",
+    "UNAVAILABLE",
+    "RESOURCE_EXHAUSTED",
+    "high demand",
+    "try again",
+    "timeout",
+    "temporar",
+    "overloaded",
+)
 
 SYSTEM_A = """# ROLE
 
@@ -182,6 +198,11 @@ def _model_name(override: str = "") -> str:
     return (override or os.environ.get("RECAP_GEMINI_MODEL") or "gemini-2.5-flash").strip()
 
 
+def _is_transient(err: BaseException) -> bool:
+    msg = str(err).lower()
+    return any(m.lower() in msg for m in _TRANSIENT_MARKERS)
+
+
 def _generate_json(
     system: str,
     user_obj: Any,
@@ -194,49 +215,65 @@ def _generate_json(
         LOG.warning("No Gemini keys (tier=%s); using heuristic fallback", tier)
         return {}
 
+    model_id = _model_name(model)
+    prompt = system + "\n\n# INPUT JSON\n" + json.dumps(user_obj, ensure_ascii=False)
+    last_err: Exception | None = None
+
+    use_new_sdk = False
     try:
         from google import genai  # type: ignore
+
+        use_new_sdk = True
     except Exception:
         try:
             from google.generativeai import GenerativeModel, configure  # type: ignore
         except Exception as exc:
             LOG.warning("google generative AI SDK missing (%s)", exc)
             return {}
-        else:
-            last_err: Exception | None = None
-            for key in keys:
-                try:
-                    configure(api_key=key)
-                    m = GenerativeModel(
-                        _model_name(model),
-                        generation_config={"response_mime_type": "application/json", "temperature": 0.4},
-                    )
-                    prompt = system + "\n\n# INPUT JSON\n" + json.dumps(user_obj, ensure_ascii=False)
-                    resp = m.generate_content(prompt)
-                    return _parse_json(resp.text or "")
-                except Exception as err:
-                    last_err = err
-                    LOG.warning("Gemini key failed: %s", err)
-            if last_err:
-                LOG.error("All Gemini keys failed: %s", last_err)
-            return {}
 
-    last_err = None
-    for key in keys:
-        try:
-            client = genai.Client(api_key=key)
-            prompt = system + "\n\n# INPUT JSON\n" + json.dumps(user_obj, ensure_ascii=False)
+    def _call_once(api_key: str) -> dict[str, Any]:
+        if use_new_sdk:
+            client = genai.Client(api_key=api_key)
             resp = client.models.generate_content(
-                model=_model_name(model),
+                model=model_id,
                 contents=prompt,
                 config={"response_mime_type": "application/json", "temperature": 0.4},
             )
             return _parse_json(getattr(resp, "text", None) or "")
+        configure(api_key=api_key)
+        m = GenerativeModel(
+            model_id,
+            generation_config={"response_mime_type": "application/json", "temperature": 0.4},
+        )
+        resp = m.generate_content(prompt)
+        return _parse_json(resp.text or "")
+
+    # Each key once. Transient 503/429: debounce 3s then retry once (global, not per key).
+    transient_retried = False
+    for key in keys:
+        try:
+            return _call_once(key)
         except Exception as err:
             last_err = err
-            LOG.warning("Gemini key failed: %s", err)
+            transient = _is_transient(err)
+            LOG.warning(
+                "Gemini key=...%s failed%s: %s",
+                key[-4:] if len(key) >= 4 else "????",
+                " (transient)" if transient else "",
+                err,
+            )
+            if transient and not transient_retried and _RETRY_MAX >= 1:
+                transient_retried = True
+                LOG.info("Gemini debounce %.1fs then retry once…", _RETRY_DEBOUNCE_SEC)
+                time.sleep(_RETRY_DEBOUNCE_SEC)
+                try:
+                    return _call_once(key)
+                except Exception as retry_err:
+                    last_err = retry_err
+                    LOG.warning("Gemini retry failed: %s", retry_err)
+
     if last_err:
-        LOG.error("All Gemini keys failed: %s", last_err)
+        LOG.error("All Gemini attempts failed: %s", last_err)
     return {}
 
 

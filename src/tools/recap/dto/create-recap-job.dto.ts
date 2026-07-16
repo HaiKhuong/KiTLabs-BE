@@ -63,6 +63,25 @@ export class RecapEngineConfigDto {
   @IsString()
   edgeTtsVoice?: string;
 
+  @ApiPropertyOptional({ example: "+20%", description: "Edge TTS rate string" })
+  @IsOptional()
+  @IsString()
+  edgeTtsRate?: string;
+
+  @ApiPropertyOptional({ example: 20, description: "Edge TTS rate as signed percent" })
+  @IsOptional()
+  @IsNumber()
+  @Min(-50)
+  @Max(100)
+  edgeTtsRatePercent?: number;
+
+  @ApiPropertyOptional({ example: 1, description: "B-roll playback speed multiplier" })
+  @IsOptional()
+  @IsNumber()
+  @Min(0.5)
+  @Max(2)
+  videoSpeed?: number;
+
   @ApiPropertyOptional({ description: "Gemini model override" })
   @IsOptional()
   @IsString()

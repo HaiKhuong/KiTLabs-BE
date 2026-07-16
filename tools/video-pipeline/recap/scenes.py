@@ -112,11 +112,14 @@ def _ffmpeg_scene(video: Path, movie_dur: float, threshold: float = 0.35) -> lis
     return shots or _fixed_grid(movie_dur)
 
 
-def _transnet_v2(video: Path, _work_dir: Path) -> list[dict[str, Any]]:
-    """Optional TransNet V2 via transnetv2 package."""
+def _transnet_v2(video: Path, work_dir: Path) -> list[dict[str, Any]]:
+    """Optional TransNet V2 via transnetv2 package (TensorFlow upstream)."""
     try:
         from transnetv2 import TransNetV2  # type: ignore
+    except Exception as exc:
+        raise RuntimeError(f"transnetv2 import failed: {exc}") from exc
 
+    try:
         model = TransNetV2()
         _video_frames, single_frame_predictions, _ = model.predict_video(str(video))
         scenes = model.predictions_to_scenes(single_frame_predictions)
@@ -132,11 +135,12 @@ def _transnet_v2(video: Path, _work_dir: Path) -> list[dict[str, Any]]:
                     "endSec": float(b) / fps,
                 }
             )
+        if not shots:
+            raise RuntimeError("TransNet V2 returned 0 scenes")
+        LOG.info("TransNet V2 detected %d shots (work=%s)", len(shots), work_dir)
         return shots
-    except Exception:
-        pass
-
-    raise RuntimeError("TransNet V2 not available")
+    except Exception as exc:
+        raise RuntimeError(f"TransNet V2 predict failed: {exc}") from exc
 
 
 def _probe_fps(video: Path) -> float:

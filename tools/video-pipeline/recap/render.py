@@ -13,7 +13,9 @@ def render_timeline(
     timeline: dict[str, Any],
     out_mp4: Path,
     work_dir: Path,
+    video_speed: float = 1.0,
 ) -> None:
+    speed = max(0.5, min(2.0, float(video_speed or timeline.get("videoSpeed") or 1.0)))
     clips_dir = work_dir / "clips"
     clips_dir.mkdir(parents=True, exist_ok=True)
     concat_list = work_dir / "concat_video.txt"
@@ -31,8 +33,9 @@ def render_timeline(
         for vc in cue.get("video") or []:
             dur = max(0.05, float(vc["t1"]) - float(vc["t0"]))
             src_in = float(vc["srcIn"])
+            src_span = max(0.05, float(vc["srcOut"]) - float(vc["srcIn"]))
             clip_path = clips_dir / f"clip_{idx:05d}.mp4"
-            _cut_clip(video, src_in, dur, clip_path)
+            _cut_clip(video, src_in, src_span, dur, speed, clip_path)
             video_parts.append(clip_path)
             idx += 1
 
@@ -77,10 +80,17 @@ def render_timeline(
     subprocess.check_call(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
-def _cut_clip(video: Path, src_in: float, dur: float, out: Path) -> None:
+def _cut_clip(
+    video: Path,
+    src_in: float,
+    src_span: float,
+    out_dur: float,
+    speed: float,
+    out: Path,
+) -> None:
     if out.exists():
         return
-    # Re-encode for consistent concat
+    vf = f"setpts=PTS/{speed}" if abs(speed - 1.0) > 0.01 else None
     cmd = [
         "ffmpeg",
         "-y",
@@ -89,18 +99,26 @@ def _cut_clip(video: Path, src_in: float, dur: float, out: Path) -> None:
         "-i",
         str(video),
         "-t",
-        f"{dur:.3f}",
+        f"{src_span:.3f}",
         "-an",
-        "-c:v",
-        "libx264",
-        "-preset",
-        "veryfast",
-        "-crf",
-        "23",
-        "-pix_fmt",
-        "yuv420p",
-        str(out),
     ]
+    if vf:
+        cmd.extend(["-filter:v", vf])
+    cmd.extend(
+        [
+            "-t",
+            f"{out_dur:.3f}",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast",
+            "-crf",
+            "23",
+            "-pix_fmt",
+            "yuv420p",
+            str(out),
+        ]
+    )
     subprocess.check_call(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 

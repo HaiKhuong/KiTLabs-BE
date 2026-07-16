@@ -153,6 +153,7 @@ export class RecapProcessor extends WorkerHost {
       let stderrBuf = "";
       let settled = false;
 
+      const mplDir = join(input.workDir, ".mplconfig");
       const child = spawn(pythonBin, args, {
         cwd: scriptDir,
         windowsHide: true,
@@ -160,8 +161,18 @@ export class RecapProcessor extends WorkerHost {
           ...process.env,
           PYTHONUNBUFFERED: "1",
           PYTHONIOENCODING: "utf-8",
+          // Nest often runs as www-data without writable ~/.config
+          MPLCONFIGDIR: mplDir,
+          XDG_CACHE_HOME: join(input.workDir, ".cache"),
+          TF_CPP_MIN_LOG_LEVEL: process.env.TF_CPP_MIN_LOG_LEVEL ?? "2",
         },
       });
+
+      this.logger.log(`Recap child pid=${child.pid} history=${input.recapHistoryId}`);
+      void this.recapService.updateRuntimeMessage(
+        input.recapHistoryId,
+        `[STEP 0/8] Python started pid=${child.pid}`,
+      );
 
       const timer = setTimeout(() => {
         if (settled) return;
@@ -183,8 +194,10 @@ export class RecapProcessor extends WorkerHost {
           .split(/\r?\n/)
           .map((l) => l.trim())
           .filter(Boolean);
-        // Prefer high-level step markers for FE status (avoid FFmpeg noise)
-        const stepLine = [...lines].reverse().find((l) => l.includes("[STEP "));
+        // Prefer high-level markers for FE status (avoid FFmpeg noise)
+        const stepLine = [...lines]
+          .reverse()
+          .find((l) => l.includes("[STEP ") || l.includes("[RECAP]"));
         const line = stepLine || lines[lines.length - 1];
         if (line) {
           void this.recapService.updateRuntimeMessage(

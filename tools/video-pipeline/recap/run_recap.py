@@ -12,6 +12,9 @@ import traceback
 from pathlib import Path
 from typing import Any
 
+# Flush immediately so Nest sees progress before heavy work / possible hangs.
+print(f"[RECAP] boot python={sys.executable}", flush=True)
+
 from asr import run_asr, merge_transcript_windows, format_transcript_timestamped
 from cluster import cluster_semantic_scenes, shortlist_shots
 from gemini_recap import (
@@ -28,7 +31,9 @@ from gemini_recap import (
 from render import render_timeline
 from scenes import detect_shots
 from timeline import pack_voice_master_timeline
-from tts import synthesize_segments
+from tts import format_edge_rate, synthesize_segments
+
+print("[RECAP] boot modules loaded", flush=True)
 
 LOG = logging.getLogger("recap")
 
@@ -81,7 +86,7 @@ def probe_duration(video: Path) -> float:
         "default=noprint_wrappers=1:nokey=1",
         str(video),
     ]
-    out = subprocess.check_output(cmd, text=True).strip()
+    out = subprocess.check_output(cmd, text=True, timeout=120).strip()
     return float(out)
 
 
@@ -114,6 +119,7 @@ def main() -> int:
     work_dir = Path(args.work_dir).resolve()
     work_dir.mkdir(parents=True, exist_ok=True)
     setup_logging(work_dir)
+    LOG.info("[RECAP] logging ready work=%s", work_dir)
 
     try:
         if not video.exists():
@@ -126,6 +132,7 @@ def main() -> int:
         wpm = int(cfg.get("wordsPerMinute") or 140)
         locale = str(cfg.get("locale") or "vi")
         year = cfg.get("year")
+        LOG.info("[RECAP] probing duration video=%s", video)
         movie_dur = probe_duration(video)
         LOG.info(
             "Recap start title=%s source=%.0fs target=%d–%ds work=%s",
@@ -264,7 +271,12 @@ def main() -> int:
         step_done(5, "Gemini B", f"{len(sanitized)} segments picked")
 
         # 6) TTS + measure audioDur
-        step_start(6, "TTS", f"{len(narrations)} narrations")
+        edge_rate = format_edge_rate(
+            cfg.get("edgeTtsRate"),
+            default=format_edge_rate(cfg.get("edgeTtsRatePercent"), default="+0%"),
+        )
+        video_speed = float(cfg.get("videoSpeed") or 1.0)
+        step_start(6, "TTS", f"{len(narrations)} narrations · rate={edge_rate}")
         audio_dir = work_dir / "audio"
         audio_dir.mkdir(parents=True, exist_ok=True)
         tts_meta = synthesize_segments(
@@ -272,27 +284,35 @@ def main() -> int:
             out_dir=audio_dir,
             engine=str(cfg.get("ttsEngine") or "edge"),
             voice=str(cfg.get("edgeTtsVoice") or "vi-VN-HoaiMyNeural"),
+            rate=edge_rate,
         )
         write_json(work_dir / "tts.json", tts_meta)
         step_done(6, "TTS", f"{len(tts_meta)} audio files")
 
         # 7) Voice-master pack
-        step_start(7, "Timeline", "voice-master pack")
+        step_start(7, "Timeline", f"voice-master pack · videoSpeed={video_speed}x")
         timeline = pack_voice_master_timeline(
             shots=shots,
             picks=sanitized,
             candidates=[[c["id"] for c in seg] for seg in candidate_segments],
             tts_meta=tts_meta,
+            video_speed=video_speed,
         )
         write_json(work_dir / "timeline.json", timeline)
         step_done(7, "Timeline", f"{timeline.get('durationSec')}s")
 
         # 8) Render
-        step_start(8, "Render", "FFmpeg mux")
+        step_start(8, "Render", f"FFmpeg mux · videoSpeed={video_speed}x")
         out_dir = work_dir / "output"
         out_dir.mkdir(parents=True, exist_ok=True)
         out_mp4 = out_dir / "recap.mp4"
-        render_timeline(video=video, timeline=timeline, out_mp4=out_mp4, work_dir=work_dir)
+        render_timeline(
+            video=video,
+            timeline=timeline,
+            out_mp4=out_mp4,
+            work_dir=work_dir,
+            video_speed=video_speed,
+        )
         if not out_mp4.exists():
             raise RuntimeError("Render finished but output missing")
         step_done(8, "Render", str(out_mp4))

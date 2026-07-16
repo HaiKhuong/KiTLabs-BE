@@ -84,6 +84,13 @@ export class RecapService {
       locale: dto.engineConfig.locale ?? "vi",
       ttsEngine: dto.engineConfig.ttsEngine ?? "edge",
       edgeTtsVoice: dto.engineConfig.edgeTtsVoice ?? "vi-VN-HoaiMyNeural",
+      edgeTtsRate:
+        dto.engineConfig.edgeTtsRate ??
+        (dto.engineConfig.edgeTtsRatePercent != null
+          ? `${dto.engineConfig.edgeTtsRatePercent >= 0 ? "+" : ""}${dto.engineConfig.edgeTtsRatePercent}%`
+          : "+0%"),
+      edgeTtsRatePercent: dto.engineConfig.edgeTtsRatePercent ?? 0,
+      videoSpeed: dto.engineConfig.videoSpeed ?? 1,
     };
 
     const history = this.recapRepository.create({
