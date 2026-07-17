@@ -49,7 +49,7 @@ class RenderConfig:
     font_file: str | None = None
     font_size: int = 60
     title_font_size: int = 72
-    subtitle_font_size: int = 60
+    subtitle_font_size: int = 84
 
     # Layout
     safe_margin: int = 60
@@ -129,8 +129,8 @@ class RenderConfig:
         """
         w, h, m = self.width, self.height, self.safe_margin
 
-        # Title strip lives at the very top in its own row.
-        title_y = m
+        # Title + image cluster is pushed down from the very top.
+        title_y = 200
         title_h = max(90, int(h * 0.06))
 
         # Image columns start below the title strip so they never overlap it.
@@ -141,8 +141,10 @@ class RenderConfig:
         left_x = m
         right_x = m * 2 + col_w
 
-        sub_y = img_y + col_h + m
+        # Subtitle band moved down toward the vertical center of the frame; its
+        # text is centered just above the screen center.
         sub_h = int(h * 0.18)
+        sub_y = int(h * 0.49) - sub_h // 2
 
         dragon_y = sub_y + sub_h + m // 2
         dragon_h = max(200, h - dragon_y - m)
