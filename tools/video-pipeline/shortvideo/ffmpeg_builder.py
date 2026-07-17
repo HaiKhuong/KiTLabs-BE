@@ -148,13 +148,15 @@ class FFmpegBuilder:
         def _enable(intervals: list[tuple[float, float]]) -> str:
             return "+".join(f"between(t,{s},{e})" for s, e in intervals) or "0"
 
-        # Left column: base (fit) + optional zoomed copy (fill+crop) used while focused.
+        # Left column: base fills the column; while focused a magnified copy fills
+        # a BIGGER frame (w*zf x h*zf) so the whole box grows, not just its content.
+        lzw, lzh = int(li["w"] * zf), int(li["h"] * zf)
         left_zoomed = bool(left_focus) and zf > 1.0
         if left_zoomed:
             chains.append(f"[{left_i}:v]split=2[lsrc][lzsrc]")
             chains.append(
-                f"[lzsrc]scale={int(li['w'] * zf)}:{int(li['h'] * zf)}:"
-                f"force_original_aspect_ratio=increase,crop={li['w']}:{li['h']},setsar=1[lzoom]"
+                f"[lzsrc]scale={lzw}:{lzh}:force_original_aspect_ratio=increase,"
+                f"crop={lzw}:{lzh},setsar=1[lzoom]"
             )
             left_src = "lsrc"
         else:
@@ -164,12 +166,13 @@ class FFmpegBuilder:
             f"crop={li['w']}:{li['h']},setsar=1[limg]"
         )
 
+        rzw, rzh = int(ri["w"] * zf), int(ri["h"] * zf)
         right_zoomed = bool(right_focus) and zf > 1.0
         if right_zoomed:
             chains.append(f"[{right_i}:v]split=2[rsrc][rzsrc]")
             chains.append(
-                f"[rzsrc]scale={int(ri['w'] * zf)}:{int(ri['h'] * zf)}:"
-                f"force_original_aspect_ratio=increase,crop={ri['w']}:{ri['h']},setsar=1[rzoom]"
+                f"[rzsrc]scale={rzw}:{rzh}:force_original_aspect_ratio=increase,"
+                f"crop={rzw}:{rzh},setsar=1[rzoom]"
             )
             right_src = "rsrc"
         else:
@@ -185,19 +188,24 @@ class FFmpegBuilder:
         cursor = "b2"
         fx = 0
 
-        # Zoom the focused column (magnified copy sits on top during its intervals).
+        # Grow the focused frame: the bigger copy is centered on the column so the
+        # box expands evenly around its center during the focus intervals.
         if left_zoomed:
+            lzx = li["x"] + (li["w"] - lzw) // 2
+            lzy = li["y"] + (li["h"] - lzh) // 2
             nxt = f"fx{fx}"
             chains.append(
-                f"[{cursor}][lzoom]overlay=x={li['x']}:y={li['y']}:"
+                f"[{cursor}][lzoom]overlay=x={lzx}:y={lzy}:"
                 f"enable='{_enable(left_focus)}'[{nxt}]"
             )
             cursor = nxt
             fx += 1
         if right_zoomed:
+            rzx = ri["x"] + (ri["w"] - rzw) // 2
+            rzy = ri["y"] + (ri["h"] - rzh) // 2
             nxt = f"fx{fx}"
             chains.append(
-                f"[{cursor}][rzoom]overlay=x={ri['x']}:y={ri['y']}:"
+                f"[{cursor}][rzoom]overlay=x={rzx}:y={rzy}:"
                 f"enable='{_enable(right_focus)}'[{nxt}]"
             )
             cursor = nxt
