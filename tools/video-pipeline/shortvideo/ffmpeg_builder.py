@@ -33,8 +33,7 @@ class FFmpegBuilder:
         self._ass_name: str | None = None
         self._audio_path: Path | None = None
         self._timeline: Timeline | None = None
-        self._sfx_path: Path | None = None
-        self._transition_times: list[float] = []
+        self._transition_hits: list[tuple[float, Path]] = []
 
     # -- Builder steps -----------------------------------------------------
 
@@ -82,10 +81,13 @@ class FFmpegBuilder:
         self._audio_path = path if path and path.is_file() else None
         return self
 
-    def transitions(self, times: list[float], sfx_path: Path | None) -> "FFmpegBuilder":
-        """Play a sound effect at each timestamp (dragon pose changes)."""
-        self._sfx_path = sfx_path if sfx_path and sfx_path.is_file() else None
-        self._transition_times = [max(0.0, float(t)) for t in (times or [])]
+    def transitions(self, hits: list[tuple[float, Path]]) -> "FFmpegBuilder":
+        """Play a sound effect at each (timestamp, sfx_file) — one per scene transition."""
+        self._transition_hits = [
+            (max(0.0, float(t)), Path(p))
+            for (t, p) in (hits or [])
+            if p and Path(p).is_file()
+        ]
         return self
 
     # -- Assembly / run ----------------------------------------------------
@@ -124,10 +126,10 @@ class FFmpegBuilder:
         audio_i = index
         index += 1
 
-        sfx_i: int | None = None
-        if self._sfx_path and self._transition_times:
-            input_args.extend(["-i", str(self._sfx_path)])
-            sfx_i = index
+        sfx_hits: list[tuple[int, float]] = []
+        for hit_time, hit_path in self._transition_hits:
+            input_args.extend(["-i", str(hit_path)])
+            sfx_hits.append((index, hit_time))
             index += 1
 
         chains: list[str] = []
@@ -238,24 +240,20 @@ class FFmpegBuilder:
         else:
             video_label = cursor
 
-        # Mix a transition SFX at each pose-change timestamp on top of the voice.
+        # Mix a per-scene transition SFX (each its own file) on top of the voice.
         audio_map = f"{audio_i}:a"
-        if sfx_i is not None:
-            n = len(self._transition_times)
+        if sfx_hits:
             vol = cfg.sfx_volume
-            chains.append(
-                f"[{sfx_i}:a]asplit={n}" + "".join(f"[sfxsrc{k}]" for k in range(n))
-            )
             sfx_labels: list[str] = []
-            for k, t in enumerate(self._transition_times):
+            for k, (idx, t) in enumerate(sfx_hits):
                 ms = int(round(t * 1000))
                 chains.append(
-                    f"[sfxsrc{k}]adelay={ms}|{ms},volume={vol}[sfxd{k}]"
+                    f"[{idx}:a]adelay={ms}|{ms},volume={vol}[sfxd{k}]"
                 )
                 sfx_labels.append(f"[sfxd{k}]")
             mix_inputs = f"[{audio_i}:a]" + "".join(sfx_labels)
             chains.append(
-                f"{mix_inputs}amix=inputs={n + 1}:duration=first:"
+                f"{mix_inputs}amix=inputs={len(sfx_labels) + 1}:duration=first:"
                 f"dropout_transition=0:normalize=0[aout]"
             )
             audio_map = "[aout]"

@@ -18,7 +18,7 @@ export class CreateShortVideoJobDto {
 
   @ApiProperty({
     description:
-      "ShortVideo JSON spec as a string: { background, left:{title,image}, right:{title,image}, voice, scenes:[{start,end,dragonPose,focus:'none'|'left'|'right'}], captions:[{time,text}], voiceConfig?:{ generate:true, engine:'omnivoice'|'voxcpm2', mode:'preset'|'clone', voiceId?, pipelineRefWav?, language?, speed?, syncTimeline?:boolean, gapSec? }, transitionSound? }",
+      "ShortVideo JSON spec as a string: { background, left:{title,image}, right:{title,image}, voice, scenes:[{start,end|duration,dragonPose,focus:'none'|'left'|'right',transitionSound?}], captions:[{time,text}], voiceConfig?:{ generate:true, engine:'omnivoice'|'voxcpm2', mode:'preset'|'clone', voiceId?, pipelineRefWav?, language?, speed?, syncTimeline?:boolean, gapSec? }, transitionSound? }. Per-scene transitionSound is a named key (e.g. 'whoosh_fast') resolved to assets/sfx/<name>.<mp3|wav|m4a|ogg>; played at the scene start.",
   })
   @IsString()
   @IsNotEmpty()

@@ -1,16 +1,24 @@
-# ShortVideo transition SFX
+# ShortVideo transition SFX library
 
-Drop a short sound effect here to be played whenever the `dragonPose` changes
-between consecutive scenes (e.g. `left → right`, `left → question`).
+Each scene can declare a named transition sound played at the scene's start:
 
-Priority of resolution (first match wins):
+```json
+{ "dragonPose": "left", "focus": "left", "transitionSound": "whoosh_fast", "duration": 2 }
+```
 
-1. `spec.transitionSound` (or `spec.sfx`) — a filename resolved from the job
-   `assetsDir` (this is what the standalone menu upload sets).
-2. A bundled default in this folder named `transition.<ext>` where `<ext>` is one
-   of: `.mp3`, `.wav`, `.m4a`, `.ogg`.
+The name `whoosh_fast` resolves to a file in this folder:
 
-If no file is found, the transition is silent (feature is a no-op).
+- `assets/sfx/whoosh_fast.mp3` (or `.wav`, `.m4a`, `.ogg`)
 
-Keep the clip short (~0.2–0.6s) — a whoosh / pop works best. Volume can be tuned
-via `engineConfig.transitionSfxVolume` (0..2, default 0.8).
+Resolution order for a scene's `transitionSound`:
+
+1. A file with that name provided in the job `assetsDir`.
+2. A bundled file here: `assets/sfx/<name>.<ext>`.
+
+Drop your sound library files here, e.g. `whoosh_fast.mp3`, `pop.mp3`, `swoosh.mp3`.
+
+Legacy fallback (only when NO scene declares a `transitionSound`):
+- top-level `spec.transitionSound` / `spec.sfx`, else a bundled `transition.<ext>`,
+  played at each dragon-pose change.
+
+Keep clips short (~0.2–0.6s). Volume via `engineConfig.transitionSfxVolume` (0..2, default 0.8).

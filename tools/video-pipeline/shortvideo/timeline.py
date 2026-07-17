@@ -31,6 +31,7 @@ class Scene:
     highlight: str  # none | left | right (legacy)
     zoom: str  # none | left | right (legacy)
     focus: str  # none | left | right
+    transition_sound: str  # named sfx key (e.g. "whoosh_fast") or "" / "none"
 
     @property
     def duration(self) -> float:
@@ -38,10 +39,15 @@ class Scene:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any], prev_end: float) -> "Scene":
-        start = _as_float(data.get("start"), prev_end)
-        end = _as_float(data.get("end"), start)
-        if end < start:
-            end = start
+        # Support both explicit start/end and duration-based sequential timing.
+        if data.get("start") is None and data.get("end") is None and data.get("duration") is not None:
+            start = prev_end
+            end = start + max(0.0, _as_float(data.get("duration"), 0.0))
+        else:
+            start = _as_float(data.get("start"), prev_end)
+            end = _as_float(data.get("end"), start)
+            if end < start:
+                end = start
         highlight = _as_side(data.get("highlight"))
         zoom = _as_side(data.get("zoom"))
         # `focus` is the new field; fall back to legacy highlight/zoom when absent.
@@ -57,6 +63,9 @@ class Scene:
             highlight=highlight,
             zoom=zoom,
             focus=focus,
+            transition_sound=str(
+                data.get("transitionSound") or data.get("transition_sound") or ""
+            ).strip(),
         )
 
 
@@ -110,6 +119,15 @@ class Timeline:
                 times.append(scene.start)
             prev = scene.dragon_pose
         return times
+
+    def transition_sound_hits(self) -> list[tuple[float, str]]:
+        """(start_time, sound_name) for scenes that declare a transitionSound."""
+        hits: list[tuple[float, str]] = []
+        for scene in self.scenes:
+            name = scene.transition_sound
+            if name and name.lower() != "none":
+                hits.append((scene.start, name))
+        return hits
 
     @classmethod
     def from_spec(cls, spec: dict[str, Any]) -> "Timeline":

@@ -35,17 +35,57 @@ DRAGON_ASSETS_DIR = SCRIPT_DIR / "assets" / "dragon"
 SFX_ASSETS_DIR = SCRIPT_DIR / "assets" / "sfx"
 
 
+_SFX_EXTS = (".mp3", ".wav", ".m4a", ".ogg")
+
+
+def _resolve_named_sfx(name: str | None, assets_dir: Path) -> Path | None:
+    """Resolve a transition sound by name: job assetsDir first, then bundled sfx library."""
+    name = str(name or "").strip()
+    if not name or name.lower() == "none":
+        return None
+    # 1) A file provided with the job (filename in assetsDir).
+    direct = _resolve_asset(name, assets_dir)
+    if direct:
+        return direct
+    # 2) Bundled library: assets/sfx/<name> or assets/sfx/<name>.<ext>.
+    exact = SFX_ASSETS_DIR / name
+    if exact.is_file():
+        return exact
+    for ext in _SFX_EXTS:
+        candidate = SFX_ASSETS_DIR / f"{name}{ext}"
+        if candidate.is_file():
+            return candidate
+    return None
+
+
 def _resolve_transition_sfx(spec: dict, assets_dir: Path) -> Path | None:
-    """Prefer a spec-provided SFX file, else a bundled default transition.<ext>."""
+    """Legacy single transition sound: spec.transitionSound/sfx, else bundled transition.<ext>."""
     name = spec.get("transitionSound") or spec.get("sfx")
-    resolved = _resolve_asset(name, assets_dir) if name else None
+    resolved = _resolve_named_sfx(name, assets_dir) if name else None
     if resolved:
         return resolved
-    for ext in (".mp3", ".wav", ".m4a", ".ogg"):
+    for ext in _SFX_EXTS:
         candidate = SFX_ASSETS_DIR / f"transition{ext}"
         if candidate.is_file():
             return candidate
     return None
+
+
+def _build_transition_hits(timeline, spec: dict, assets_dir: Path) -> list[tuple[float, Path]]:
+    """Per-scene named transitionSound hits; fall back to legacy pose-change SFX."""
+    named = timeline.transition_sound_hits()
+    if named:
+        hits: list[tuple[float, Path]] = []
+        for start, name in named:
+            path = _resolve_named_sfx(name, assets_dir)
+            if path:
+                hits.append((start, path))
+        return hits
+
+    default = _resolve_transition_sfx(spec, assets_dir)
+    if default:
+        return [(t, default) for t in timeline.pose_transition_times()]
+    return []
 
 
 def _log(step: int, total: int, message: str) -> None:
@@ -113,10 +153,7 @@ def render(config_path: Path, work_dir: Path) -> Path:
         .dragon(timeline, DRAGON_ASSETS_DIR)
         .subtitle(ass_path)
         .audio(voice_path)
-        .transitions(
-            timeline.pose_transition_times(),
-            _resolve_transition_sfx(spec, assets_dir),
-        )
+        .transitions(_build_transition_hits(timeline, spec, assets_dir))
     )
 
     _log(5, total_steps, f"Render {config.width}x{config.height} @ {config.fps}fps")
