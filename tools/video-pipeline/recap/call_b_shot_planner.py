@@ -6,6 +6,8 @@ import logging
 from pathlib import Path
 from typing import Any
 
+import recap_cache  # noqa: F401  — HF cache → ~/.cache/huggingface/hub (trước open_clip/torch)
+
 from diversity import mmr_select, order_by_story_flow, score_text_overlap
 from gemini_recap import PICKS_SELECTED_SHOTS
 

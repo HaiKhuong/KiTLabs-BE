@@ -15,6 +15,8 @@ from typing import Any
 # Flush immediately so Nest sees progress before heavy work / possible hangs.
 print(f"[RECAP] boot python={sys.executable}", flush=True)
 
+import recap_cache  # noqa: F401  — HF cache → ~/.cache/huggingface/hub (phải import trước torch/HF)
+
 from asr import run_asr, merge_transcript_windows, format_transcript_timestamped
 from call_a1_story_analyst import (
     attach_candidate_shots,

@@ -61,6 +61,48 @@ def _repair_cache_path(path: Path) -> None:
         path.unlink()
 
 
+def _hub_is_writable(hub: Path) -> bool:
+    """True nếu process có thể tạo/ghi file trong hub (kể cả khi hub đã tồn tại do user khác tạo)."""
+    try:
+        hub.mkdir(parents=True, exist_ok=True)
+        probe = hub / ".write_probe"
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink(missing_ok=True)
+        return True
+    except Exception:
+        return False
+
+
+def _fallback_cache_roots() -> list[Path]:
+    """Ứng viên cache khi repo cache không ghi được (giữ đúng thứ tự ưu tiên)."""
+    candidates: list[Path] = []
+    home = os.environ.get("HOME") or os.path.expanduser("~")
+    if home and home not in ("", "/"):
+        # ~/.cache → hub = ~/.cache/huggingface/hub (vị trí HF mặc định, thường đã có sẵn model)
+        candidates.append(Path(home) / ".cache")
+        candidates.append(Path(home) / ".cache" / "kitlabs-pipeline")
+    import tempfile
+
+    candidates.append(Path(tempfile.gettempdir()) / "kitlabs-pipeline-cache")
+    return candidates
+
+
+def _resolve_writable_root(base: Path) -> Path:
+    """Trả về cache root ghi được: ưu tiên `base`, fallback HOME/tmp nếu Errno 13."""
+    if _hub_is_writable(base / "huggingface" / "hub"):
+        return base
+    for alt in _fallback_cache_roots():
+        if _hub_is_writable(alt / "huggingface" / "hub"):
+            log.warning(
+                "cache root %s không ghi được (Permission denied) → fallback %s",
+                base,
+                alt,
+            )
+            return alt
+    log.warning("Không tìm được cache root ghi được; giữ %s (có thể lỗi tải model)", base)
+    return base
+
+
 def configure_pipeline_cache_env() -> Path:
     """
     Đặt HF/torch cache → tools/video-pipeline/cache (một chỗ).
@@ -69,7 +111,7 @@ def configure_pipeline_cache_env() -> Path:
     khi lib gọi os.mkdir(.../huggingface) không có exist_ok (đặc biệt với XDG_CACHE_HOME).
     """
     global _configured
-    base = resolve_pipeline_cache_root()
+    base = _resolve_writable_root(resolve_pipeline_cache_root())
     hf_home = base / "huggingface"
     hub = hf_home / "hub"
     torch_home = base / "torch"

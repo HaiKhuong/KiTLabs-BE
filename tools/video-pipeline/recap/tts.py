@@ -16,8 +16,8 @@ _PIPELINE_DIR = Path(__file__).resolve().parent.parent
 if str(_PIPELINE_DIR) not in sys.path:
     sys.path.insert(0, str(_PIPELINE_DIR))
 
-# HF/torch cache + disable XET before OmniVoice/VoxCPM2 load
-import pipeline_cache  # noqa: F401
+# HF/torch cache → ~/.cache/huggingface/hub (trước OmniVoice/VoxCPM2 load)
+import recap_cache  # noqa: F401
 
 
 def format_edge_rate(raw: Any, default: str = "+0%") -> str:
