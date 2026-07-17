@@ -32,6 +32,20 @@ from shortvideo.timeline import Timeline
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 DRAGON_ASSETS_DIR = SCRIPT_DIR / "assets" / "dragon"
+SFX_ASSETS_DIR = SCRIPT_DIR / "assets" / "sfx"
+
+
+def _resolve_transition_sfx(spec: dict, assets_dir: Path) -> Path | None:
+    """Prefer a spec-provided SFX file, else a bundled default transition.<ext>."""
+    name = spec.get("transitionSound") or spec.get("sfx")
+    resolved = _resolve_asset(name, assets_dir) if name else None
+    if resolved:
+        return resolved
+    for ext in (".mp3", ".wav", ".m4a", ".ogg"):
+        candidate = SFX_ASSETS_DIR / f"transition{ext}"
+        if candidate.is_file():
+            return candidate
+    return None
 
 
 def _log(step: int, total: int, message: str) -> None:
@@ -99,6 +113,10 @@ def render(config_path: Path, work_dir: Path) -> Path:
         .dragon(timeline, DRAGON_ASSETS_DIR)
         .subtitle(ass_path)
         .audio(voice_path)
+        .transitions(
+            timeline.pose_transition_times(),
+            _resolve_transition_sfx(spec, assets_dir),
+        )
     )
 
     _log(5, total_steps, f"Render {config.width}x{config.height} @ {config.fps}fps")

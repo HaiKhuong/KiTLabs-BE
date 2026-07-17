@@ -12,7 +12,7 @@ import { CreateShortVideoJobDto } from "./dto/create-shortvideo-job.dto";
 import { RenderShortVideoUploadDto } from "./dto/render-shortvideo-upload.dto";
 import { ShortVideoHistory } from "./shortvideo-history.entity";
 
-const UPLOAD_FIELDS = ["background", "left", "right", "voice"] as const;
+const UPLOAD_FIELDS = ["background", "left", "right", "voice", "sfx"] as const;
 type UploadField = (typeof UPLOAD_FIELDS)[number];
 type UploadedFiles = Partial<Record<UploadField, Express.Multer.File[]>>;
 
@@ -21,6 +21,7 @@ const DEFAULT_EXT: Record<UploadField, string> = {
   left: ".png",
   right: ".png",
   voice: ".mp3",
+  sfx: ".mp3",
 };
 
 export const SHORTVIDEO_QUEUE_NAME = "video-shortvideo";
@@ -139,6 +140,7 @@ export class ShortVideoService {
 
     if (fileNames.background) spec.background = fileNames.background;
     if (fileNames.voice) spec.voice = fileNames.voice;
+    if (fileNames.sfx) spec.transitionSound = fileNames.sfx;
     if (fileNames.left) {
       const left = (spec.left as Record<string, unknown>) ?? {};
       spec.left = { ...left, image: fileNames.left };
@@ -173,6 +175,26 @@ export class ShortVideoService {
 
   async getById(id: string): Promise<ShortVideoHistory | null> {
     return this.repository.findOne({ where: { id } });
+  }
+
+  /** Ordered non-empty caption texts (fallback: scene subtitles). */
+  static buildCaptionList(spec: Record<string, unknown> | null | undefined): string[] {
+    const src = (spec ?? {}) as Record<string, unknown>;
+    const captions = Array.isArray(src.captions) ? src.captions : [];
+    const fromCaptions = captions
+      .map((c) => String((c as Record<string, unknown>)?.text ?? "").trim())
+      .filter(Boolean);
+    if (fromCaptions.length > 0) return fromCaptions;
+
+    const scenes = Array.isArray(src.scenes) ? src.scenes : [];
+    return scenes
+      .map((s) => String((s as Record<string, unknown>)?.subtitle ?? "").trim())
+      .filter(Boolean);
+  }
+
+  /** Join every caption text into a single sentence for TTS (fallback: scene subtitles). */
+  static buildCaptionText(spec: Record<string, unknown> | null | undefined): string {
+    return ShortVideoService.buildCaptionList(spec).join(" ");
   }
 
   mapForClient(row: ShortVideoHistory) {
@@ -218,6 +240,10 @@ export class ShortVideoService {
 
   async updateRuntimeMessage(id: string, message: string): Promise<void> {
     await this.repository.update({ id }, { errorMessage: message });
+  }
+
+  async persistSpec(id: string, spec: Record<string, unknown>): Promise<void> {
+    await this.repository.update({ id }, { spec: spec as never });
   }
 
   prepareWorkDir(id: string): string {

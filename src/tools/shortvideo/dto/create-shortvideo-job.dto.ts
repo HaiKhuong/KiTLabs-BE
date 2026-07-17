@@ -18,7 +18,7 @@ export class CreateShortVideoJobDto {
 
   @ApiProperty({
     description:
-      "ShortVideo JSON spec as a string: { background, left:{title,image}, right:{title,image}, voice, scenes:[{start,end,dragonPose,focus:'none'|'left'|'right'}], captions:[{time,text}] }",
+      "ShortVideo JSON spec as a string: { background, left:{title,image}, right:{title,image}, voice, scenes:[{start,end,dragonPose,focus:'none'|'left'|'right'}], captions:[{time,text}], voiceConfig?:{ generate:true, engine:'omnivoice'|'voxcpm2', mode:'preset'|'clone', voiceId?, pipelineRefWav?, language?, speed?, syncTimeline?:boolean, gapSec? }, transitionSound? }",
   })
   @IsString()
   @IsNotEmpty()

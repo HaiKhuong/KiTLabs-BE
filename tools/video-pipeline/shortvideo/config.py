@@ -68,6 +68,9 @@ class RenderConfig:
     focus_zoom: float = 1.12  # scale factor of the focused column (1.0 = off)
     focus_dim: float = 0.45  # black overlay opacity on the non-focused column
 
+    # Sound effect mixed in when the dragon pose changes between scenes.
+    sfx_volume: float = 0.8  # 0..2 gain applied to each transition SFX hit
+
     extra: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -111,6 +114,10 @@ class RenderConfig:
         cfg.focus_dim = max(
             0.0, min(1.0, _as_float(data.get("focusDim") or data.get("focus_dim"), cfg.focus_dim))
         )
+        cfg.sfx_volume = max(
+            0.0,
+            min(2.0, _as_float(data.get("transitionSfxVolume") or data.get("sfx_volume"), cfg.sfx_volume)),
+        )
         cfg.extra = {k: v for k, v in data.items()}
         return cfg
 
@@ -123,9 +130,10 @@ class RenderConfig:
         w, h, m = self.width, self.height, self.safe_margin
 
         # Images start near the top; the title sits on top of each image.
+        # Image columns are locked to a 4:3 ratio (width : height = 4 : 3).
         img_y = m
         col_w = (w - 3 * m) // 2
-        col_h = int(h * 0.34)
+        col_h = int(col_w * 3 / 4)
         left_x = m
         right_x = m * 2 + col_w
 

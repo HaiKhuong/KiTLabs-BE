@@ -76,12 +76,14 @@ export class ShortVideoController {
         { name: "left", maxCount: 1 },
         { name: "right", maxCount: 1 },
         { name: "voice", maxCount: 1 },
+        { name: "sfx", maxCount: 1 },
       ],
       {
         storage: memoryStorage(),
         limits: { fileSize: Number(process.env.SHORTVIDEO_UPLOAD_MAX_BYTES ?? 50_000_000) },
         fileFilter: (_req, file, cb) => {
-          const allowed = file.fieldname === "voice" ? AUDIO_MIME : IMAGE_MIME;
+          const allowed =
+            file.fieldname === "voice" || file.fieldname === "sfx" ? AUDIO_MIME : IMAGE_MIME;
           if (!allowed.has(file.mimetype)) {
             cb(new Error(`Unsupported file type for ${file.fieldname}: ${file.mimetype}`), false);
             return;
@@ -99,6 +101,7 @@ export class ShortVideoController {
       left?: Express.Multer.File[];
       right?: Express.Multer.File[];
       voice?: Express.Multer.File[];
+      sfx?: Express.Multer.File[];
     },
   ) {
     const created = await this.shortVideoService.enqueueFromUpload(dto, files ?? {});

@@ -33,6 +33,8 @@ class FFmpegBuilder:
         self._ass_name: str | None = None
         self._audio_path: Path | None = None
         self._timeline: Timeline | None = None
+        self._sfx_path: Path | None = None
+        self._transition_times: list[float] = []
 
     # -- Builder steps -----------------------------------------------------
 
@@ -61,12 +63,13 @@ class FFmpegBuilder:
 
     def dragon(self, timeline: Timeline, assets_dir: Path) -> "FFmpegBuilder":
         self._timeline = timeline
-        r = self.layout["dragon"]
+        # Dragon poses are transparent PNGs — only overlay poses that actually exist
+        # (skip missing files so we never composite an opaque placeholder box).
         for pose in timeline.poses():
             path = assets_dir / f"{pose}.png"
-            spec = self._image_or_color(
-                path if path.is_file() else None, min(r["w"], 520), min(r["h"], 520), "0x00000000"
-            )
+            if not path.is_file():
+                continue
+            spec = {"kind": "image", "path": path}
             spec["intervals"] = timeline.intervals_for_pose(pose)
             self._dragon.append(spec)
         return self
@@ -77,6 +80,12 @@ class FFmpegBuilder:
 
     def audio(self, path: Path | None) -> "FFmpegBuilder":
         self._audio_path = path if path and path.is_file() else None
+        return self
+
+    def transitions(self, times: list[float], sfx_path: Path | None) -> "FFmpegBuilder":
+        """Play a sound effect at each timestamp (dragon pose changes)."""
+        self._sfx_path = sfx_path if sfx_path and sfx_path.is_file() else None
+        self._transition_times = [max(0.0, float(t)) for t in (times or [])]
         return self
 
     # -- Assembly / run ----------------------------------------------------
@@ -115,6 +124,12 @@ class FFmpegBuilder:
         audio_i = index
         index += 1
 
+        sfx_i: int | None = None
+        if self._sfx_path and self._transition_times:
+            input_args.extend(["-i", str(self._sfx_path)])
+            sfx_i = index
+            index += 1
+
         chains: list[str] = []
         li, ri = self.layout["imageLeft"], self.layout["imageRight"]
 
@@ -143,7 +158,8 @@ class FFmpegBuilder:
         else:
             left_src = f"{left_i}:v"
         chains.append(
-            f"[{left_src}]scale={li['w']}:{li['h']}:force_original_aspect_ratio=decrease,setsar=1[limg]"
+            f"[{left_src}]scale={li['w']}:{li['h']}:force_original_aspect_ratio=increase,"
+            f"crop={li['w']}:{li['h']},setsar=1[limg]"
         )
 
         right_zoomed = bool(right_focus) and zf > 1.0
@@ -157,17 +173,12 @@ class FFmpegBuilder:
         else:
             right_src = f"{right_i}:v"
         chains.append(
-            f"[{right_src}]scale={ri['w']}:{ri['h']}:force_original_aspect_ratio=decrease,setsar=1[rimg]"
+            f"[{right_src}]scale={ri['w']}:{ri['h']}:force_original_aspect_ratio=increase,"
+            f"crop={ri['w']}:{ri['h']},setsar=1[rimg]"
         )
 
-        chains.append(
-            f"[bg][limg]overlay=x={li['x']}+({li['w']}-overlay_w)/2:"
-            f"y={li['y']}+({li['h']}-overlay_h)/2[b1]"
-        )
-        chains.append(
-            f"[b1][rimg]overlay=x={ri['x']}+({ri['w']}-overlay_w)/2:"
-            f"y={ri['y']}+({ri['h']}-overlay_h)/2[b2]"
-        )
+        chains.append(f"[bg][limg]overlay=x={li['x']}:y={li['y']}[b1]")
+        chains.append(f"[b1][rimg]overlay=x={ri['x']}:y={ri['y']}[b2]")
 
         cursor = "b2"
         fx = 0
@@ -208,11 +219,11 @@ class FFmpegBuilder:
             cursor = nxt
             fx += 1
 
-        # Dragon: scale to 80% of the frame width, keep native aspect ratio,
+        # Dragon: scale to 70% of the frame width, keep native aspect ratio,
         # centered horizontally and anchored to the bottom safe margin.
-        dragon_w = int(w * 0.8)
+        dragon_w = int(w * 0.7)
         for n, (idx, spec) in enumerate(dragon_indices):
-            chains.append(f"[{idx}:v]scale={dragon_w}:-2,setsar=1[d{n}s]")
+            chains.append(f"[{idx}:v]scale={dragon_w}:-2,format=rgba,setsar=1[d{n}s]")
             enable = "+".join(f"between(t,{s},{e})" for s, e in spec["intervals"]) or "0"
             nxt = f"d{n}o"
             chains.append(
@@ -227,6 +238,28 @@ class FFmpegBuilder:
         else:
             video_label = cursor
 
+        # Mix a transition SFX at each pose-change timestamp on top of the voice.
+        audio_map = f"{audio_i}:a"
+        if sfx_i is not None:
+            n = len(self._transition_times)
+            vol = cfg.sfx_volume
+            chains.append(
+                f"[{sfx_i}:a]asplit={n}" + "".join(f"[sfxsrc{k}]" for k in range(n))
+            )
+            sfx_labels: list[str] = []
+            for k, t in enumerate(self._transition_times):
+                ms = int(round(t * 1000))
+                chains.append(
+                    f"[sfxsrc{k}]adelay={ms}|{ms},volume={vol}[sfxd{k}]"
+                )
+                sfx_labels.append(f"[sfxd{k}]")
+            mix_inputs = f"[{audio_i}:a]" + "".join(sfx_labels)
+            chains.append(
+                f"{mix_inputs}amix=inputs={n + 1}:duration=first:"
+                f"dropout_transition=0:normalize=0[aout]"
+            )
+            audio_map = "[aout]"
+
         filter_complex = ";".join(chains)
 
         cmd = [
@@ -238,7 +271,7 @@ class FFmpegBuilder:
             "-map",
             f"[{video_label}]",
             "-map",
-            f"{audio_i}:a",
+            audio_map,
             "-t",
             f"{total:.3f}",
             "-r",

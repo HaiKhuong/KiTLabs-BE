@@ -5,8 +5,10 @@ import { spawn } from "child_process";
 import { existsSync } from "fs";
 import { dirname, join } from "path";
 
+import { AudioService } from "../audio/audio.service";
 import { ToolsRealtimeGateway } from "../realtime/tools-realtime.gateway";
 import { SHORTVIDEO_QUEUE_NAME, ShortVideoService } from "./shortvideo.service";
+import { ShortVideoHistory } from "./shortvideo-history.entity";
 
 const MAX_LOG_BUFFER = 4 * 1024 * 1024;
 
@@ -22,6 +24,7 @@ export class ShortVideoProcessor extends WorkerHost {
   constructor(
     private readonly shortVideoService: ShortVideoService,
     private readonly realtimeGateway: ToolsRealtimeGateway,
+    private readonly audioService: AudioService,
   ) {
     super();
   }
@@ -52,6 +55,7 @@ export class ShortVideoProcessor extends WorkerHost {
       await this.shortVideoService.processStarted(id);
 
       const workDir = this.shortVideoService.prepareWorkDir(id);
+      await this.maybeGenerateVoice(history, workDir);
       const configPath = this.shortVideoService.writeJobConfig(workDir, history);
       const scriptPath = this.shortVideoService.resolveScriptPath();
       if (!existsSync(scriptPath)) {
@@ -87,6 +91,90 @@ export class ShortVideoProcessor extends WorkerHost {
         terminal: true,
       });
       throw error;
+    }
+  }
+
+  /** When spec.voiceConfig.generate is true, synthesize a voice track from the captions. */
+  private async maybeGenerateVoice(history: ShortVideoHistory, workDir: string): Promise<void> {
+    const spec = (history.spec ?? {}) as Record<string, unknown>;
+    const vc = spec.voiceConfig as Record<string, unknown> | undefined;
+    if (!vc || vc.generate !== true) return;
+
+    const captionList = ShortVideoService.buildCaptionList(spec);
+    if (captionList.length === 0) {
+      throw new UnrecoverableError("Không có caption/subtitle để tạo voice");
+    }
+
+    const outWav = join(workDir, "tts_voice.wav");
+    const refOpts = {
+      userId: history.userId,
+      ttsEngine: typeof vc.engine === "string" ? vc.engine : undefined,
+      voiceMode: (String(vc.mode ?? "preset") === "clone" ? "clone" : "preset") as
+        | "preset"
+        | "clone",
+      voiceId: typeof vc.voiceId === "string" ? vc.voiceId : undefined,
+      pipelineRefWav: typeof vc.pipelineRefWav === "string" ? vc.pipelineRefWav : undefined,
+      cloneRefText: typeof vc.refText === "string" ? vc.refText : undefined,
+      language: typeof vc.language === "string" ? vc.language : undefined,
+      speed: typeof vc.speed === "number" ? vc.speed : undefined,
+    };
+
+    const syncTimeline = vc.syncTimeline !== false;
+
+    if (syncTimeline) {
+      await this.shortVideoService.updateRuntimeMessage(
+        history.id,
+        "[STEP 0/6] Generate voice + sync timeline (TTS)",
+      );
+      const result = await this.audioService.generateVoiceTimeline({
+        ...refOpts,
+        captions: captionList,
+        outWav,
+        gapSec: typeof vc.gapSec === "number" ? vc.gapSec : undefined,
+      });
+      this.applySyncedTimeline(spec, captionList, result);
+    } else {
+      await this.shortVideoService.updateRuntimeMessage(
+        history.id,
+        "[STEP 0/6] Generate voice (TTS)",
+      );
+      await this.audioService.generateVoiceToFile({
+        ...refOpts,
+        text: captionList.join(" "),
+        outWav,
+      });
+    }
+
+    spec.voice = outWav.replaceAll("\\", "/");
+    history.spec = spec;
+    await this.shortVideoService.persistSpec(history.id, spec);
+  }
+
+  /** Rewrite captions from the generated audio timing and rescale scenes to the new total. */
+  private applySyncedTimeline(
+    spec: Record<string, unknown>,
+    captionList: string[],
+    result: { totalSec: number; segments: { start: number; end: number }[] },
+  ): void {
+    const segments = result.segments ?? [];
+    if (segments.length === 0) return;
+
+    spec.captions = segments.map((seg, i) => ({
+      time: seg.start,
+      text: captionList[i] ?? "",
+    }));
+
+    const scenes = Array.isArray(spec.scenes) ? (spec.scenes as Record<string, unknown>[]) : [];
+    const oldTotal = scenes.reduce((max, s) => Math.max(max, Number(s?.end) || 0), 0);
+    const newTotal = result.totalSec || segments[segments.length - 1].end;
+    if (oldTotal > 0 && newTotal > 0 && scenes.length > 0) {
+      const factor = newTotal / oldTotal;
+      const round3 = (n: number) => Math.round(n * 1000) / 1000;
+      spec.scenes = scenes.map((s) => ({
+        ...s,
+        start: round3((Number(s?.start) || 0) * factor),
+        end: round3((Number(s?.end) || 0) * factor),
+      }));
     }
   }
 

@@ -1150,6 +1150,224 @@ export class AudioService {
     };
   }
 
+  /** Resolve reference audio + refText + language for a preset/clone voice request. */
+  private async resolveTtsReference(opts: {
+    userId: string;
+    voiceMode: "preset" | "clone";
+    voiceId?: string | null;
+    pipelineRefWav?: string | null;
+    cloneRefText?: string | null;
+    language?: string | null;
+  }): Promise<{ refAudioPath: string; refText: string; language: string }> {
+    if (opts.voiceMode === "preset") {
+      if (!opts.voiceId?.trim()) {
+        throw new BadRequestException("voiceId is required for preset mode");
+      }
+      const preset = this.getPresetVoice(opts.voiceId.trim());
+      return {
+        refAudioPath: this.resolvePresetRefAudioPath(preset.refWav),
+        refText: preset.refText,
+        language: resolveOmnivoiceLanguage(preset),
+      };
+    }
+
+    if (!opts.pipelineRefWav?.trim()) {
+      throw new BadRequestException("pipelineRefWav is required for clone mode");
+    }
+    const verified = await this.assertPipelineVoiceReady(
+      opts.pipelineRefWav.trim(),
+      opts.cloneRefText?.trim(),
+      opts.userId,
+    );
+    const language = opts.language?.trim()
+      ? resolveOmnivoiceLanguageValue(opts.language)
+      : verified.omnivoiceLanguage?.trim()
+        ? resolveOmnivoiceLanguageValue(verified.omnivoiceLanguage)
+        : await this.resolvePipelineVoiceLanguage(opts.pipelineRefWav.trim(), opts.userId);
+    return { refAudioPath: verified.absolutePath, refText: verified.refText, language };
+  }
+
+  /**
+   * Synchronously generate a single TTS WAV for another module (e.g. ShortVideo).
+   * Resolves reference audio + language per voice mode, then runs OmniVoice/VoxCPM2.
+   * Returns the absolute path of the produced WAV.
+   */
+  async generateVoiceToFile(opts: {
+    userId: string;
+    text: string;
+    outWav: string;
+    ttsEngine?: string | null;
+    voiceMode: "preset" | "clone";
+    voiceId?: string | null;
+    pipelineRefWav?: string | null;
+    cloneRefText?: string | null;
+    language?: string | null;
+    speed?: number | null;
+  }): Promise<string> {
+    const text = String(opts.text ?? "").trim();
+    if (!text) {
+      throw new BadRequestException("text is required for voice generation");
+    }
+    if (text.length > AUDIO_MAX_TEXT_CHARS) {
+      throw new BadRequestException(`text exceeds ${AUDIO_MAX_TEXT_CHARS} characters`);
+    }
+
+    const { refAudioPath, refText, language } = await this.resolveTtsReference(opts);
+
+    const rawSpeed = Number(opts.speed ?? 1);
+    const playbackSpeed = Number.isFinite(rawSpeed) ? Math.min(2, Math.max(0.5, rawSpeed)) : 1;
+
+    await this.spawnOmnivoiceTts({
+      text,
+      outWav: opts.outWav,
+      refAudio: refAudioPath,
+      refText,
+      language,
+      playbackSpeed,
+      ttsEngine: this.resolveTtsEngine(opts.ttsEngine),
+    });
+
+    return opts.outWav;
+  }
+
+  /**
+   * Generate one voice WAV by synthesizing each caption (single model load) and
+   * return the real per-caption timeline so callers can align subtitles/scenes
+   * to the produced speech.
+   */
+  async generateVoiceTimeline(opts: {
+    userId: string;
+    captions: string[];
+    outWav: string;
+    ttsEngine?: string | null;
+    voiceMode: "preset" | "clone";
+    voiceId?: string | null;
+    pipelineRefWav?: string | null;
+    cloneRefText?: string | null;
+    language?: string | null;
+    speed?: number | null;
+    gapSec?: number | null;
+  }): Promise<{ outWav: string; totalSec: number; segments: { start: number; end: number }[] }> {
+    const captions = (opts.captions ?? []).map((c) => String(c ?? "").trim()).filter(Boolean);
+    if (captions.length === 0) {
+      throw new BadRequestException("captions are required for voice timeline generation");
+    }
+
+    const { refAudioPath, refText, language } = await this.resolveTtsReference(opts);
+    const outWav = isAbsolute(opts.outWav) ? opts.outWav : resolve(process.cwd(), opts.outWav);
+
+    const scriptDir = resolve(process.cwd(), VIDEO_PIPELINE_DIR);
+    const scriptPath = resolve(scriptDir, "shortvideo_voice_timeline.py");
+    if (!existsSync(scriptPath)) {
+      throw new Error(`Missing script: ${scriptPath}`);
+    }
+
+    const engine = this.resolveTtsEngine(opts.ttsEngine);
+    const timeoutMs = Math.max(this.resolveCmdTimeoutMs(), 30 * 60_000);
+    const seed = engine === "voxcpm2" ? this.resolveVoxcpm2Seed() : this.resolveOmnivoiceSeed();
+    const rawSpeed = Number(opts.speed ?? 1);
+    const playbackSpeed = Number.isFinite(rawSpeed) ? Math.min(2, Math.max(0.5, rawSpeed)) : 1;
+
+    const base = {
+      captions,
+      out_wav: outWav,
+      ref_audio: refAudioPath,
+      ref_text: refText,
+      language,
+      playback_speed: playbackSpeed,
+      ...(opts.gapSec != null ? { gap_sec: opts.gapSec } : {}),
+      ...(seed != null ? { seed } : {}),
+    };
+
+    const payload =
+      engine === "voxcpm2"
+        ? {
+            engine: "voxcpm2",
+            ...base,
+            model_id: (process.env.VOXCPM2_MODEL_ID ?? "openbmb/VoxCPM2").trim(),
+            cfg_value: Number(process.env.VOXCPM2_CFG_VALUE ?? 2),
+            inference_timesteps: Number(process.env.VOXCPM2_INFERENCE_TIMESTEPS ?? 10),
+          }
+        : {
+            engine: "omnivoice",
+            ...base,
+            model_id: (process.env.OMNIVOICE_MODEL_ID ?? "k2-fsa/OmniVoice").trim(),
+            device_map: (process.env.OMNIVOICE_DEVICE_MAP ?? "").trim() || "cuda:0",
+            dtype_str: (process.env.OMNIVOICE_DTYPE ?? "float16").trim(),
+            num_step: Number(process.env.OMNIVOICE_NUM_STEP ?? 8),
+            guidance_scale: Number(process.env.OMNIVOICE_GUIDANCE_SCALE ?? 2),
+          };
+
+    const pythonBin = this.resolvePythonBin();
+    let stdout = "";
+
+    await new Promise<void>((resolvePromise, rejectPromise) => {
+      const child: ChildProcess = spawn(pythonBin, [scriptPath], {
+        cwd: scriptDir,
+        windowsHide: true,
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+
+      let stderr = "";
+      const timeoutHandle = setTimeout(() => {
+        child.kill("SIGTERM");
+        rejectPromise(new Error(`Voice timeline TTS timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+
+      child.stdout?.on("data", (buf: Buffer) => {
+        stdout += buf.toString("utf8");
+        if (stdout.length > AudioService.MAX_LOG_BUFFER) {
+          stdout = stdout.slice(-AudioService.MAX_LOG_BUFFER);
+        }
+      });
+      child.stderr?.on("data", (buf: Buffer) => {
+        stderr += buf.toString("utf8");
+        if (stderr.length > AudioService.MAX_LOG_BUFFER) {
+          stderr = stderr.slice(-AudioService.MAX_LOG_BUFFER);
+        }
+      });
+      child.on("error", (err) => {
+        clearTimeout(timeoutHandle);
+        rejectPromise(err);
+      });
+      child.on("close", (code, signal) => {
+        clearTimeout(timeoutHandle);
+        if (code !== 0) {
+          const suffix = signal ? ` (signal ${signal})` : "";
+          rejectPromise(new Error(stderr.trim() || `Voice timeline exited with code ${code}${suffix}`));
+          return;
+        }
+        resolvePromise();
+      });
+
+      child.stdin?.write(JSON.stringify(payload));
+      child.stdin?.end();
+    });
+
+    if (!existsSync(outWav)) {
+      throw new Error(`Voice timeline did not produce output: ${outWav}`);
+    }
+
+    let meta: Record<string, unknown> = {};
+    try {
+      const line = stdout.trim().split("\n").filter(Boolean).pop() ?? "{}";
+      const parsed = JSON.parse(line) as Record<string, unknown>;
+      if (parsed && typeof parsed === "object") meta = parsed;
+    } catch {
+      meta = {};
+    }
+
+    const rawSegments = Array.isArray(meta.segments) ? meta.segments : [];
+    const segments = rawSegments.map((s) => {
+      const seg = (s ?? {}) as Record<string, unknown>;
+      return { start: Number(seg.start) || 0, end: Number(seg.end) || 0 };
+    });
+    const totalSec =
+      Number(meta.total_sec) || (segments.length ? segments[segments.length - 1].end : 0);
+
+    return { outWav, totalSec, segments };
+  }
+
   async createVideoVoiceHistory(input: {
     id: string;
     userId: string;

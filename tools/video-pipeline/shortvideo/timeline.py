@@ -101,6 +101,16 @@ class Timeline:
         """Time intervals where `side` (left/right) is the focused column."""
         return [(s.start, s.end) for s in self.scenes if s.focus == side]
 
+    def pose_transition_times(self) -> list[float]:
+        """Start times where the dragon pose changes from the previous scene."""
+        times: list[float] = []
+        prev: str | None = None
+        for scene in self.scenes:
+            if prev is not None and scene.dragon_pose != prev:
+                times.append(scene.start)
+            prev = scene.dragon_pose
+        return times
+
     @classmethod
     def from_spec(cls, spec: dict[str, Any]) -> "Timeline":
         raw = spec.get("scenes")
