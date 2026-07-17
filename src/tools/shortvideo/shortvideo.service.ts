@@ -327,6 +327,8 @@ export class ShortVideoService {
       nodeId: row.nodeId,
       displayName: row.displayName,
       status: row.status,
+      spec: row.spec,
+      engineConfig: row.engineConfig,
       resultPath: row.resultPath,
       resultFileName: row.resultFileName,
       errorMessage: row.errorMessage,
