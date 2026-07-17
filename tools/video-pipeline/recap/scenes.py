@@ -236,6 +236,40 @@ def ensure_transnet_weights() -> Path:
     return cache
 
 
+def _extract_transnet_frames(video: Path) -> Any:
+    """
+    Extract 48x27 RGB frames for TransNet via ffmpeg CLI.
+    Avoids the `ffmpeg-python` package (often missing even when ffmpeg binary exists).
+    """
+    import numpy as np
+
+    cmd = [
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-i",
+        str(video),
+        "-f",
+        "rawvideo",
+        "-pix_fmt",
+        "rgb24",
+        "-s",
+        "48x27",
+        "pipe:1",
+    ]
+    proc = subprocess.run(cmd, capture_output=True, check=False)
+    if proc.returncode != 0:
+        err = (proc.stderr or b"").decode("utf-8", errors="replace")[:400]
+        raise RuntimeError(f"ffmpeg frame extract failed (code={proc.returncode}): {err}")
+    raw = proc.stdout or b""
+    frame_bytes = 48 * 27 * 3
+    if len(raw) < frame_bytes:
+        raise RuntimeError("ffmpeg returned no video frames for TransNet")
+    n = len(raw) // frame_bytes
+    return np.frombuffer(raw[: n * frame_bytes], dtype=np.uint8).reshape([n, 27, 48, 3])
+
+
 def _transnet_v2(video: Path, work_dir: Path) -> list[dict[str, Any]]:
     """Optional TransNet V2 via transnetv2 package (TensorFlow upstream)."""
     try:
@@ -246,7 +280,14 @@ def _transnet_v2(video: Path, work_dir: Path) -> list[dict[str, Any]]:
     try:
         weights_dir = ensure_transnet_weights()
         model = TransNetV2(str(weights_dir))
-        _video_frames, single_frame_predictions, _ = model.predict_video(str(video))
+        # Prefer CLI ffmpeg → predict_frames (no ffmpeg-python dependency).
+        # Fall back to predict_video only if package is available.
+        try:
+            frames = _extract_transnet_frames(video)
+            single_frame_predictions, _ = model.predict_frames(frames)
+        except Exception as frame_exc:
+            LOG.warning("TransNet CLI frame extract failed (%s); trying predict_video", frame_exc)
+            _video_frames, single_frame_predictions, _ = model.predict_video(str(video))
         scenes = model.predictions_to_scenes(single_frame_predictions)
         fps = _probe_fps(video)
         shots = []
