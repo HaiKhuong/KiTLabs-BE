@@ -33,6 +33,29 @@ def _center(region: dict[str, int]) -> tuple[int, int]:
     return region["x"] + region["w"] // 2, region["y"] + region["h"] // 2
 
 
+def _sub_effect(style: str, cx: int, cy: int) -> str:
+    """Per-caption ASS override tags implementing a subtitle animation preset.
+
+    `\\t` / `\\move` / `\\fad` timings are relative to each caption line's start,
+    and each caption is its own Dialogue line, so the effect replays per chunk.
+    Scaling uses the style's center alignment so the text pops from its center.
+    """
+    s = (style or "pop").strip().lower()
+    if s in ("none", "plain", "static", "off"):
+        return f"\\pos({cx},{cy})"
+    if s == "fade":
+        return f"\\pos({cx},{cy})\\fad(180,120)"
+    if s in ("slide", "slideup", "slide-up", "fadeslide"):
+        return f"\\move({cx},{cy + 60},{cx},{cy},0,220)\\fad(150,90)"
+    # Default: pop bounce (TikTok) — spring in from 55% with a slight overshoot.
+    return (
+        f"\\pos({cx},{cy})\\fad(80,50)"
+        f"\\fscx55\\fscy55"
+        f"\\t(0,120,\\fscx113\\fscy113)"
+        f"\\t(120,210,\\fscx100\\fscy100)"
+    )
+
+
 def build_ass(
     timeline: Timeline,
     left_title: str,
@@ -54,7 +77,7 @@ ScaledBorderAndShadow: yes
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
 Style: Title,{font},{config.title_font_size},&H000000FF,&H000000FF,&H00202020,&H96000000,-1,0,0,0,100,100,0,0,1,3,1,5,10,10,10,1
-Style: Sub,{font},{config.subtitle_font_size},&H00FFFFFF,&H000000FF,&H00202020,&H96000000,-1,0,0,0,100,100,0,0,1,4,2,5,10,10,10,1
+Style: Sub,{font},{config.subtitle_font_size},&H00FFFFFF,&H000000FF,&H00000000,&H96000000,-1,0,0,0,100,100,0,0,1,6,3,5,10,10,10,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -66,7 +89,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         if not text:
             return
         cx, cy = _center(layout[region_key])
-        payload = f"{{\\pos({cx},{cy})}}{_escape(text)}"
+        payload = f"{{{_sub_effect(config.subtitle_style, cx, cy)}}}{_escape(text)}"
         lines.append(
             f"Dialogue: 0,{_fmt_time(start)},{_fmt_time(end)},{style},,0,0,0,,{payload}"
         )

@@ -26,7 +26,7 @@ export class CreateShortVideoJobDto {
 
   @ApiPropertyOptional({
     description:
-      "Render config overrides: width, height, fps, bitrate, font, fontSize, safeMargin, dragonPosition, subtitlePosition, titlePosition",
+      "Render config overrides: width, height, fps, bitrate, font, fontSize, titleFontSize, subtitleFontSize, safeMargin, dragonPosition, subtitlePosition, titlePosition, subtitleStyle:'pop'|'fade'|'slide'|'none'",
   })
   @IsOptional()
   @IsObject()

@@ -49,7 +49,7 @@ class RenderConfig:
     font_file: str | None = None
     font_size: int = 60
     title_font_size: int = 72
-    subtitle_font_size: int = 84
+    subtitle_font_size: int = 104
 
     # Layout
     safe_margin: int = 60
@@ -57,6 +57,9 @@ class RenderConfig:
     title_position: str = "top"
     subtitle_position: str = "center"
     dragon_position: str = "bottom-center"
+
+    # Subtitle animation preset: pop | fade | slide | none.
+    subtitle_style: str = "pop"
 
     # Colours (0xRRGGBB / 0xAARRGGBB for lavfi)
     background_color: str = "0x0B1021"
@@ -99,6 +102,9 @@ class RenderConfig:
         cfg.subtitle_position = _as_str(
             data.get("subtitlePosition") or data.get("subtitle_position"), cfg.subtitle_position
         )
+        cfg.subtitle_style = _as_str(
+            data.get("subtitleStyle") or data.get("subtitle_style"), cfg.subtitle_style
+        ).lower()
         cfg.dragon_position = _as_str(
             data.get("dragonPosition") or data.get("dragon_position"), cfg.dragon_position
         )
@@ -144,7 +150,7 @@ class RenderConfig:
         # Subtitle band moved down toward the vertical center of the frame; its
         # text is centered just above the screen center.
         sub_h = int(h * 0.18)
-        sub_y = int(h * 0.49) - sub_h // 2
+        sub_y = int(h * 0.43) - sub_h // 2
 
         dragon_y = sub_y + sub_h + m // 2
         dragon_h = max(200, h - dragon_y - m)
