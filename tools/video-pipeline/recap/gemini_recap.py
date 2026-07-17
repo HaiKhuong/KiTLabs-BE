@@ -19,9 +19,39 @@ SCRIPT_MOVIE_WINDOWS = "movieSourceWindows"
 
 PICKS_SELECTED_SHOTS = "selectedShotsBySegment"
 
+
+def _env_int(name: str, default: int) -> int:
+    raw = (os.environ.get(name) or "").strip()
+    if not raw:
+        return default
+    # tolerate inline comments / stray chars: take leading integer token
+    m = re.match(r"[-+]?\d+", raw)
+    if not m:
+        LOG.warning("%s=%r không phải số nguyên; dùng default %d", name, raw, default)
+        return default
+    try:
+        return int(m.group(0))
+    except ValueError:
+        return default
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = (os.environ.get(name) or "").strip()
+    if not raw:
+        return default
+    m = re.match(r"[-+]?\d*\.?\d+", raw)
+    if not m:
+        LOG.warning("%s=%r không phải số; dùng default %s", name, raw, default)
+        return default
+    try:
+        return float(m.group(0))
+    except ValueError:
+        return default
+
+
 # Transient API errors — single retry after debounce (avoid spam)
-_RETRY_MAX = int(os.environ.get("RECAP_GEMINI_RETRY_MAX") or 1)  # retries after first fail
-_RETRY_DEBOUNCE_SEC = float(os.environ.get("RECAP_GEMINI_RETRY_DEBOUNCE_SEC") or 3.0)
+_RETRY_MAX = _env_int("RECAP_GEMINI_RETRY_MAX", 1)  # retries after first fail
+_RETRY_DEBOUNCE_SEC = _env_float("RECAP_GEMINI_RETRY_DEBOUNCE_SEC", 3.0)
 _TRANSIENT_MARKERS = (
     "503",
     "429",
