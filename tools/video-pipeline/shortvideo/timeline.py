@@ -146,19 +146,40 @@ class Timeline:
         return cls(scenes=scenes, captions=captions)
 
     @staticmethod
+    def _caption_entries(spec: dict[str, Any]) -> list[dict[str, Any]]:
+        """Collect caption dicts, preferring per-scene `scenes[].captions`.
+
+        Falls back to a legacy top-level `captions: [{time, text}]` list. Each
+        caption's `time` is treated as an absolute (global) timeline position.
+        """
+        scenes = spec.get("scenes")
+        nested: list[dict[str, Any]] = []
+        if isinstance(scenes, list):
+            for scene in scenes:
+                if not isinstance(scene, dict):
+                    continue
+                caps = scene.get("captions")
+                if isinstance(caps, list):
+                    nested.extend(c for c in caps if isinstance(c, dict))
+        if nested:
+            return nested
+
+        raw = spec.get("captions")
+        return [c for c in raw if isinstance(c, dict)] if isinstance(raw, list) else []
+
+    @staticmethod
     def _build_captions(spec: dict[str, Any], scenes: list[Scene]) -> list["Caption"]:
         """Build subtitle captions.
 
-        Prefer a top-level `captions: [{time, text}]` list — each caption's end is
-        the next caption's `time` (the last one holds until the timeline end).
-        Fall back to per-scene `subtitle` text when `captions` is absent.
+        Prefer per-scene `scenes[].captions` (new flow), then a legacy top-level
+        `captions: [{time, text}]` list — each caption's end is the next
+        caption's `time` (the last one holds until the timeline end). Fall back
+        to per-scene `subtitle` text when no captions are present.
         """
-        raw = spec.get("captions")
-        if isinstance(raw, list) and raw:
+        entries = Timeline._caption_entries(spec)
+        if entries:
             parsed: list[tuple[float, str]] = []
-            for item in raw:
-                if not isinstance(item, dict):
-                    continue
+            for item in entries:
                 text = str(item.get("text") or "").strip()
                 if not text:
                     continue

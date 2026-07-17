@@ -100,10 +100,12 @@ export class ShortVideoProcessor extends WorkerHost {
     const vc = spec.voiceConfig as Record<string, unknown> | undefined;
     if (!vc || vc.generate !== true) return;
 
-    const captionList = ShortVideoService.buildCaptionList(spec);
-    if (captionList.length === 0) {
+    const voiceScenes = ShortVideoService.buildSceneVoiceTexts(spec);
+    if (voiceScenes.length === 0) {
       throw new UnrecoverableError("Không có caption/subtitle để tạo voice");
     }
+    // One joined sentence per scene so TTS reads each scene without pauses.
+    const captionList = voiceScenes.map((v) => v.text);
 
     const outWav = join(workDir, "tts_voice.wav");
     const refOpts = {
@@ -119,63 +121,109 @@ export class ShortVideoProcessor extends WorkerHost {
       speed: typeof vc.speed === "number" ? vc.speed : undefined,
     };
 
-    const syncTimeline = vc.syncTimeline !== false;
-
-    if (syncTimeline) {
-      await this.shortVideoService.updateRuntimeMessage(
-        history.id,
-        "[STEP 0/6] Generate voice + sync timeline (TTS)",
-      );
-      const result = await this.audioService.generateVoiceTimeline({
-        ...refOpts,
-        captions: captionList,
-        outWav,
-        gapSec: typeof vc.gapSec === "number" ? vc.gapSec : undefined,
-      });
-      this.applySyncedTimeline(spec, captionList, result);
-    } else {
-      await this.shortVideoService.updateRuntimeMessage(
-        history.id,
-        "[STEP 0/6] Generate voice (TTS)",
-      );
-      await this.audioService.generateVoiceToFile({
-        ...refOpts,
-        text: captionList.join(" "),
-        outWav,
-      });
-    }
+    // Timing is always driven by the generated voice: scene durations come from
+    // the measured audio and captions are distributed across it. The `duration`
+    // and caption `time` fields in the spec are ignored.
+    await this.shortVideoService.updateRuntimeMessage(
+      history.id,
+      "[STEP 0/6] Generate voice + sync timeline (TTS)",
+    );
+    const result = await this.audioService.generateVoiceTimeline({
+      ...refOpts,
+      captions: captionList,
+      outWav,
+      gapSec: typeof vc.gapSec === "number" ? vc.gapSec : undefined,
+    });
+    this.applySyncedTimeline(
+      spec,
+      voiceScenes,
+      result,
+      typeof vc.gapSec === "number" ? vc.gapSec : 0.12,
+    );
 
     spec.voice = outWav.replaceAll("\\", "/");
     history.spec = spec;
     await this.shortVideoService.persistSpec(history.id, spec);
   }
 
-  /** Rewrite captions from the generated audio timing and rescale scenes to the new total. */
+  /**
+   * Rebuild the whole timeline from the generated audio. Each scene produced one
+   * voice segment (its captions joined), so every scene's duration is the
+   * measured speech length and scenes are laid out contiguously. The scene's
+   * captions are then spread across that duration weighted by text length — the
+   * spec's `duration` and caption `time` fields are ignored entirely.
+   */
   private applySyncedTimeline(
     spec: Record<string, unknown>,
-    captionList: string[],
+    voiceScenes: { sceneIndex: number; text: string }[],
     result: { totalSec: number; segments: { start: number; end: number }[] },
+    gapSec: number,
   ): void {
     const segments = result.segments ?? [];
     if (segments.length === 0) return;
 
-    spec.captions = segments.map((seg, i) => ({
-      time: seg.start,
-      text: captionList[i] ?? "",
-    }));
-
+    const round3 = (n: number) => Math.round(n * 1000) / 1000;
     const scenes = Array.isArray(spec.scenes) ? (spec.scenes as Record<string, unknown>[]) : [];
-    const oldTotal = scenes.reduce((max, s) => Math.max(max, Number(s?.end) || 0), 0);
-    const newTotal = result.totalSec || segments[segments.length - 1].end;
-    if (oldTotal > 0 && newTotal > 0 && scenes.length > 0) {
-      const factor = newTotal / oldTotal;
-      const round3 = (n: number) => Math.round(n * 1000) / 1000;
-      spec.scenes = scenes.map((s) => ({
-        ...s,
-        start: round3((Number(s?.start) || 0) * factor),
-        end: round3((Number(s?.end) || 0) * factor),
+
+    // Map each measured segment back to the scene it was generated from.
+    const segByScene = new Map<number, { start: number; end: number }>();
+    voiceScenes.forEach((vs, i) => {
+      if (segments[i]) segByScene.set(vs.sceneIndex, segments[i]);
+    });
+    const lastVoiceIndex = voiceScenes.reduce((max, vs) => Math.max(max, vs.sceneIndex), -1);
+
+    // Lay scenes out back-to-back using the measured speech duration of each.
+    let cursor = 0;
+    const newBounds = scenes.map((_s, i) => {
+      const seg = segByScene.get(i);
+      const speech = seg ? Math.max(0, seg.end - seg.start) : 0;
+      const start = round3(cursor);
+      // Match the silence the TTS inserts between consecutive scene segments.
+      const tail = seg && i < lastVoiceIndex ? gapSec : 0;
+      const end = round3(start + speech + tail);
+      cursor = end;
+      return { start, end, speech };
+    });
+
+    // Spread each scene's captions across its voice duration by text length.
+    const perSceneCaptions = scenes.map((s, i) => {
+      const caps = Array.isArray((s as Record<string, unknown>)?.captions)
+        ? ((s as Record<string, unknown>).captions as Record<string, unknown>[])
+        : [];
+      const texts = caps.map((c) => String(c?.text ?? "").trim()).filter(Boolean);
+      if (texts.length === 0) return [] as { time: number; text: string }[];
+
+      const nb = newBounds[i];
+      const weights = texts.map((t) => Math.max(1, t.length));
+      const totalWeight = weights.reduce((sum, w) => sum + w, 0);
+      let acc = 0;
+      return texts.map((text, k) => {
+        const frac = totalWeight > 0 ? acc / totalWeight : 0;
+        acc += weights[k];
+        return { time: round3(nb.start + frac * nb.speech), text };
+      });
+    });
+
+    const flat = perSceneCaptions.flat();
+    if (flat.length > 0) {
+      flat.sort((a, b) => a.time - b.time);
+      spec.captions = flat;
+    } else {
+      // Legacy top-level captions: anchor each caption to its segment start.
+      spec.captions = segments.map((seg, i) => ({
+        time: round3(seg.start),
+        text: voiceScenes[i]?.text ?? "",
       }));
     }
+
+    // Write the resolved timing back into scenes (and their nested captions) so
+    // every consumer sees the voice-driven timeline as the source of truth.
+    spec.scenes = scenes.map((s, i) => ({
+      ...s,
+      start: newBounds[i].start,
+      end: newBounds[i].end,
+      ...(perSceneCaptions[i].length > 0 ? { captions: perSceneCaptions[i] } : {}),
+    }));
   }
 
   private spawnPipeline(input: {

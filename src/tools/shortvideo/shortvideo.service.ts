@@ -177,19 +177,78 @@ export class ShortVideoService {
     return this.repository.findOne({ where: { id } });
   }
 
+  /**
+   * Flatten caption entries ({time,text}) from the spec, preferring the new
+   * per-scene `scenes[].captions` and falling back to a legacy top-level
+   * `spec.captions` list. Empty texts are dropped.
+   */
+  static buildCaptionEntries(
+    spec: Record<string, unknown> | null | undefined,
+  ): { time: number; text: string }[] {
+    const src = (spec ?? {}) as Record<string, unknown>;
+    const scenes = Array.isArray(src.scenes) ? src.scenes : [];
+    const nested = scenes.flatMap((s) => {
+      const caps = (s as Record<string, unknown>)?.captions;
+      return Array.isArray(caps) ? caps : [];
+    });
+    const rawEntries = nested.length > 0
+      ? nested
+      : Array.isArray(src.captions)
+        ? src.captions
+        : [];
+    return rawEntries
+      .map((c) => {
+        const item = (c ?? {}) as Record<string, unknown>;
+        return { time: Number(item.time) || 0, text: String(item.text ?? "").trim() };
+      })
+      .filter((e) => e.text.length > 0);
+  }
+
   /** Ordered non-empty caption texts (fallback: scene subtitles). */
   static buildCaptionList(spec: Record<string, unknown> | null | undefined): string[] {
-    const src = (spec ?? {}) as Record<string, unknown>;
-    const captions = Array.isArray(src.captions) ? src.captions : [];
-    const fromCaptions = captions
-      .map((c) => String((c as Record<string, unknown>)?.text ?? "").trim())
-      .filter(Boolean);
-    if (fromCaptions.length > 0) return fromCaptions;
+    const entries = ShortVideoService.buildCaptionEntries(spec);
+    if (entries.length > 0) return entries.map((e) => e.text);
 
+    const src = (spec ?? {}) as Record<string, unknown>;
     const scenes = Array.isArray(src.scenes) ? src.scenes : [];
     return scenes
       .map((s) => String((s as Record<string, unknown>)?.subtitle ?? "").trim())
       .filter(Boolean);
+  }
+
+  /**
+   * One TTS text per scene: the scene's captions joined into a single sentence
+   * so the voice engine reads the whole scene without unnatural pauses between
+   * the word-by-word caption chunks. Falls back to `scene.subtitle`, then to a
+   * legacy top-level `spec.captions` list (one text per entry).
+   */
+  static buildSceneVoiceTexts(
+    spec: Record<string, unknown> | null | undefined,
+  ): { sceneIndex: number; text: string }[] {
+    const src = (spec ?? {}) as Record<string, unknown>;
+    const scenes = Array.isArray(src.scenes) ? src.scenes : [];
+
+    const out: { sceneIndex: number; text: string }[] = [];
+    scenes.forEach((s, index) => {
+      const scene = (s ?? {}) as Record<string, unknown>;
+      const caps = Array.isArray(scene.captions) ? scene.captions : [];
+      const joined = caps
+        .map((c) => String((c as Record<string, unknown>)?.text ?? "").trim())
+        .filter(Boolean)
+        .join(" ")
+        .trim();
+      const text = joined || String(scene.subtitle ?? "").trim();
+      if (text) out.push({ sceneIndex: index, text });
+    });
+    if (out.length > 0) return out;
+
+    const top = Array.isArray(src.captions) ? src.captions : [];
+    return top
+      .map((c, index) => ({
+        sceneIndex: index,
+        text: String((c as Record<string, unknown>)?.text ?? "").trim(),
+      }))
+      .filter((e) => e.text.length > 0);
   }
 
   /** Join every caption text into a single sentence for TTS (fallback: scene subtitles). */
