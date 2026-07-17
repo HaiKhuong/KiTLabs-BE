@@ -79,6 +79,25 @@ def setup_logging(work_dir: Path) -> None:
     root.addHandler(fh)
     root.addHandler(sh)
 
+    # Quiet noisy third-party INFO logs (HF hub HTTP, httpx, downloads…)
+    for noisy in (
+        "httpx",
+        "httpcore",
+        "huggingface_hub",
+        "urllib3",
+        "filelock",
+        "open_clip",
+        "PIL",
+        "matplotlib",
+        "transformers",
+        "asyncio",
+        "google",
+        "google_genai",
+        "faster_whisper",
+        "numba",
+    ):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
+
 
 def load_config(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
