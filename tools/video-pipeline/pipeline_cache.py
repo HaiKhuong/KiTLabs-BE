@@ -87,6 +87,12 @@ def configure_pipeline_cache_env() -> Path:
     # Không set XDG_CACHE_HOME=base — lib mkdir base/huggingface dễ Errno 17.
     os.environ.pop("XDG_CACHE_HOME", None)
 
+    # huggingface_hub xet_get hay gặp Permission denied (os error 13) trên Linux
+    # khi cache/xet session không ghi được. Mặc định tắt XET → HTTP download thường.
+    # Bật lại: HF_HUB_DISABLE_XET=0
+    if (os.getenv("HF_HUB_DISABLE_XET") or "").strip() == "":
+        os.environ["HF_HUB_DISABLE_XET"] = "1"
+
     if sys.platform == "win32":
         os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS", "1")
     else:

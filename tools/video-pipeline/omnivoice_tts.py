@@ -259,6 +259,16 @@ def _get_model(*, model_id: str, device_map: str, dtype_str: str):
             )
         else:
             raise
+    except OSError as exc:
+        msg = str(exc).lower()
+        if "permission denied" in msg or "os error 13" in msg:
+            raise OSError(
+                f"OmniVoice model download failed (Permission denied) for {mid}. "
+                f"HF cache={os.environ.get('HUGGINGFACE_HUB_CACHE') or os.environ.get('HF_HOME')}. "
+                "Fix: chown -R $USER tools/video-pipeline/cache "
+                "and ensure HF_HUB_DISABLE_XET=1 (set by pipeline_cache)."
+            ) from exc
+        raise
     _session_model_key = key
     return _session_model
 

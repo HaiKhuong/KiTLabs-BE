@@ -16,6 +16,9 @@ _PIPELINE_DIR = Path(__file__).resolve().parent.parent
 if str(_PIPELINE_DIR) not in sys.path:
     sys.path.insert(0, str(_PIPELINE_DIR))
 
+# HF/torch cache + disable XET before OmniVoice/VoxCPM2 load
+import pipeline_cache  # noqa: F401
+
 
 def format_edge_rate(raw: Any, default: str = "+0%") -> str:
     if raw is None or raw == "":
@@ -119,6 +122,19 @@ def _resolve_seed(env_key: str, default: str = "42") -> Optional[int]:
         return 42
 
 
+def _prepare_ref_audio(ref_path: Path) -> Path:
+    """Match Audio Studio: keep WAV; convert other formats to 24kHz mono WAV."""
+    if ref_path.suffix.lower() == ".wav":
+        return ref_path
+    try:
+        from audio_tts_with_pauses import _prepare_ref_audio_for_omnivoice
+
+        return _prepare_ref_audio_for_omnivoice(ref_path)
+    except Exception as exc:
+        LOG.warning("ref audio prepare failed (%s); using original %s", exc, ref_path)
+        return ref_path
+
+
 def _omnivoice_tts(
     text: str,
     out_wav: Path,
@@ -127,17 +143,18 @@ def _omnivoice_tts(
     ref_text: str,
     language: str,
 ) -> None:
-    from omnivoice_tts import synthesize_to_wav
+    """Recap OmniVoice → shared module tools/video-pipeline/omnivoice_tts.py"""
+    from omnivoice_tts import resolve_omnivoice_language, synthesize_to_wav
 
     synthesize_to_wav(
         text=text or ".",
         out_wav=out_wav,
-        ref_audio=str(ref_path),
+        ref_audio=str(_prepare_ref_audio(ref_path)),
         ref_text=ref_text,
         model_id=(os.getenv("OMNIVOICE_MODEL_ID") or "k2-fsa/OmniVoice").strip(),
         device_map=(os.getenv("OMNIVOICE_DEVICE_MAP") or "").strip() or "cuda:0",
         dtype_str=(os.getenv("OMNIVOICE_DTYPE") or "float16").strip() or "float16",
-        language=language,
+        language=resolve_omnivoice_language(language),
         num_step=int(os.getenv("OMNIVOICE_NUM_STEP") or 8),
         guidance_scale=float(os.getenv("OMNIVOICE_GUIDANCE_SCALE") or 2),
         seed=_resolve_seed("OMNIVOICE_SEED"),
