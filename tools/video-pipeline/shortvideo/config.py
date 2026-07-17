@@ -124,21 +124,22 @@ class RenderConfig:
     def layout(self) -> dict[str, dict[str, int]]:
         """Compute pixel rectangles for each region of the 9:16 layout.
 
-        Rows (top -> bottom): two image columns (titles overlaid on their top
-        edge) | subtitle band | dragon band.
+        Rows (top -> bottom): title strip | two image columns | subtitle band |
+        dragon band. Titles sit in their own strip above the images (no overlap).
         """
         w, h, m = self.width, self.height, self.safe_margin
 
-        # Images start near the top; the title sits on top of each image.
+        # Title strip lives at the very top in its own row.
+        title_y = m
+        title_h = max(90, int(h * 0.06))
+
+        # Image columns start below the title strip so they never overlap it.
         # Image columns are locked to a 4:3 ratio (width : height = 4 : 3).
-        img_y = m
+        img_y = title_y + title_h
         col_w = (w - 3 * m) // 2
         col_h = int(col_w * 3 / 4)
         left_x = m
         right_x = m * 2 + col_w
-
-        # Title strip overlaid on the upper part of each image column.
-        title_h = max(90, int(h * 0.06))
 
         sub_y = img_y + col_h + m
         sub_h = int(h * 0.18)
@@ -150,8 +151,8 @@ class RenderConfig:
 
         return {
             "canvas": {"x": 0, "y": 0, "w": w, "h": h},
-            "titleLeft": {"x": left_x, "y": img_y, "w": col_w, "h": title_h},
-            "titleRight": {"x": right_x, "y": img_y, "w": col_w, "h": title_h},
+            "titleLeft": {"x": left_x, "y": title_y, "w": col_w, "h": title_h},
+            "titleRight": {"x": right_x, "y": title_y, "w": col_w, "h": title_h},
             "imageLeft": {"x": left_x, "y": img_y, "w": col_w, "h": col_h},
             "imageRight": {"x": right_x, "y": img_y, "w": col_w, "h": col_h},
             "subtitle": {"x": m, "y": sub_y, "w": w - 2 * m, "h": sub_h},

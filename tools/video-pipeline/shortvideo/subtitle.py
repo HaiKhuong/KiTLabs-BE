@@ -53,7 +53,7 @@ ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Title,{font},{config.title_font_size},&H00FFFFFF,&H000000FF,&H00202020,&H96000000,-1,0,0,0,100,100,0,0,1,3,1,5,10,10,10,1
+Style: Title,{font},{config.title_font_size},&H000000FF,&H000000FF,&H00202020,&H96000000,-1,0,0,0,100,100,0,0,1,3,1,5,10,10,10,1
 Style: Sub,{font},{config.subtitle_font_size},&H00FFFFFF,&H000000FF,&H00202020,&H96000000,-1,0,0,0,100,100,0,0,1,4,2,5,10,10,10,1
 
 [Events]
