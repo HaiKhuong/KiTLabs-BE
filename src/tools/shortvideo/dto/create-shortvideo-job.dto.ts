@@ -18,7 +18,7 @@ export class CreateShortVideoJobDto {
 
   @ApiProperty({
     description:
-      "ShortVideo JSON spec as a string: { background, left:{title,image}, right:{title,image}, voice, scenes:[{start,end,dragonPose,subtitle,highlight,zoom}] }",
+      "ShortVideo JSON spec as a string: { background, left:{title,image}, right:{title,image}, voice, scenes:[{start,end,dragonPose,focus:'none'|'left'|'right'}], captions:[{time,text}] }",
   })
   @IsString()
   @IsNotEmpty()

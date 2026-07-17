@@ -117,18 +117,49 @@ class FFmpegBuilder:
 
         chains: list[str] = []
         li, ri = self.layout["imageLeft"], self.layout["imageRight"]
-        dr = self.layout["dragon"]
 
         chains.append(
             f"[{bg_i}:v]scale={w}:{h}:force_original_aspect_ratio=increase,"
             f"crop={w}:{h},setsar=1,fps={fps}[bg]"
         )
+        # Focus effect intervals (per column).
+        left_focus = self._timeline.intervals_for_focus("left") if self._timeline else []
+        right_focus = self._timeline.intervals_for_focus("right") if self._timeline else []
+        zf = cfg.focus_zoom
+        dim = cfg.focus_dim
+
+        def _enable(intervals: list[tuple[float, float]]) -> str:
+            return "+".join(f"between(t,{s},{e})" for s, e in intervals) or "0"
+
+        # Left column: base (fit) + optional zoomed copy (fill+crop) used while focused.
+        left_zoomed = bool(left_focus) and zf > 1.0
+        if left_zoomed:
+            chains.append(f"[{left_i}:v]split=2[lsrc][lzsrc]")
+            chains.append(
+                f"[lzsrc]scale={int(li['w'] * zf)}:{int(li['h'] * zf)}:"
+                f"force_original_aspect_ratio=increase,crop={li['w']}:{li['h']},setsar=1[lzoom]"
+            )
+            left_src = "lsrc"
+        else:
+            left_src = f"{left_i}:v"
         chains.append(
-            f"[{left_i}:v]scale={li['w']}:{li['h']}:force_original_aspect_ratio=decrease,setsar=1[limg]"
+            f"[{left_src}]scale={li['w']}:{li['h']}:force_original_aspect_ratio=decrease,setsar=1[limg]"
         )
+
+        right_zoomed = bool(right_focus) and zf > 1.0
+        if right_zoomed:
+            chains.append(f"[{right_i}:v]split=2[rsrc][rzsrc]")
+            chains.append(
+                f"[rzsrc]scale={int(ri['w'] * zf)}:{int(ri['h'] * zf)}:"
+                f"force_original_aspect_ratio=increase,crop={ri['w']}:{ri['h']},setsar=1[rzoom]"
+            )
+            right_src = "rsrc"
+        else:
+            right_src = f"{right_i}:v"
         chains.append(
-            f"[{right_i}:v]scale={ri['w']}:{ri['h']}:force_original_aspect_ratio=decrease,setsar=1[rimg]"
+            f"[{right_src}]scale={ri['w']}:{ri['h']}:force_original_aspect_ratio=decrease,setsar=1[rimg]"
         )
+
         chains.append(
             f"[bg][limg]overlay=x={li['x']}+({li['w']}-overlay_w)/2:"
             f"y={li['y']}+({li['h']}-overlay_h)/2[b1]"
@@ -139,37 +170,56 @@ class FFmpegBuilder:
         )
 
         cursor = "b2"
-        for n, (idx, spec) in enumerate(dragon_indices):
+        fx = 0
+
+        # Zoom the focused column (magnified copy sits on top during its intervals).
+        if left_zoomed:
+            nxt = f"fx{fx}"
             chains.append(
-                f"[{idx}:v]scale={min(dr['w'], 520)}:{min(dr['h'], 520)}:"
-                f"force_original_aspect_ratio=decrease,setsar=1[d{n}s]"
+                f"[{cursor}][lzoom]overlay=x={li['x']}:y={li['y']}:"
+                f"enable='{_enable(left_focus)}'[{nxt}]"
             )
+            cursor = nxt
+            fx += 1
+        if right_zoomed:
+            nxt = f"fx{fx}"
+            chains.append(
+                f"[{cursor}][rzoom]overlay=x={ri['x']}:y={ri['y']}:"
+                f"enable='{_enable(right_focus)}'[{nxt}]"
+            )
+            cursor = nxt
+            fx += 1
+
+        # Dim the non-focused column (black overlay while the other side is focused).
+        if dim > 0.0 and left_focus:  # left focused -> dim right
+            nxt = f"fx{fx}"
+            chains.append(
+                f"[{cursor}]drawbox=x={ri['x']}:y={ri['y']}:w={ri['w']}:h={ri['h']}:"
+                f"color=black@{dim}:t=fill:enable='{_enable(left_focus)}'[{nxt}]"
+            )
+            cursor = nxt
+            fx += 1
+        if dim > 0.0 and right_focus:  # right focused -> dim left
+            nxt = f"fx{fx}"
+            chains.append(
+                f"[{cursor}]drawbox=x={li['x']}:y={li['y']}:w={li['w']}:h={li['h']}:"
+                f"color=black@{dim}:t=fill:enable='{_enable(right_focus)}'[{nxt}]"
+            )
+            cursor = nxt
+            fx += 1
+
+        # Dragon: scale to 80% of the frame width, keep native aspect ratio,
+        # centered horizontally and anchored to the bottom safe margin.
+        dragon_w = int(w * 0.8)
+        for n, (idx, spec) in enumerate(dragon_indices):
+            chains.append(f"[{idx}:v]scale={dragon_w}:-2,setsar=1[d{n}s]")
             enable = "+".join(f"between(t,{s},{e})" for s, e in spec["intervals"]) or "0"
             nxt = f"d{n}o"
             chains.append(
-                f"[{cursor}][d{n}s]overlay=x={dr['x']}+({dr['w']}-overlay_w)/2:"
-                f"y={dr['y']}+{dr['h']}-overlay_h:enable='{enable}'[{nxt}]"
+                f"[{cursor}][d{n}s]overlay=x=(main_w-overlay_w)/2:"
+                f"y=main_h-overlay_h-{cfg.safe_margin}:enable='{enable}'[{nxt}]"
             )
             cursor = nxt
-
-        box_i = 0
-        if self._timeline:
-            for scene in self._timeline.scenes:
-                for side in ("highlight", "zoom"):
-                    which = getattr(scene, side)
-                    if which not in ("left", "right"):
-                        continue
-                    region = li if which == "left" else ri
-                    thickness = 16 if side == "zoom" else 8
-                    nxt = f"box{box_i}"
-                    chains.append(
-                        f"[{cursor}]drawbox=x={region['x']}:y={region['y']}:"
-                        f"w={region['w']}:h={region['h']}:"
-                        f"color={cfg.highlight_color}@0.9:t={thickness}:"
-                        f"enable='between(t,{scene.start},{scene.end})'[{nxt}]"
-                    )
-                    cursor = nxt
-                    box_i += 1
 
         if self._ass_name:
             chains.append(f"[{cursor}]subtitles={self._ass_name}[vout]")

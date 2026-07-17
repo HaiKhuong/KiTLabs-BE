@@ -28,8 +28,9 @@ class Scene:
     end: float
     dragon_pose: str
     subtitle: str
-    highlight: str  # none | left | right
-    zoom: str  # none | left | right
+    highlight: str  # none | left | right (legacy)
+    zoom: str  # none | left | right (legacy)
+    focus: str  # none | left | right
 
     @property
     def duration(self) -> float:
@@ -41,26 +42,49 @@ class Scene:
         end = _as_float(data.get("end"), start)
         if end < start:
             end = start
+        highlight = _as_side(data.get("highlight"))
+        zoom = _as_side(data.get("zoom"))
+        # `focus` is the new field; fall back to legacy highlight/zoom when absent.
+        focus = _as_side(data.get("focus"))
+        if focus == "none":
+            focus = highlight if highlight != "none" else zoom
         return cls(
             start=start,
             end=end,
             dragon_pose=str(data.get("dragonPose") or data.get("dragon_pose") or "idle").strip()
             or "idle",
             subtitle=str(data.get("subtitle") or "").strip(),
-            highlight=_as_side(data.get("highlight")),
-            zoom=_as_side(data.get("zoom")),
+            highlight=highlight,
+            zoom=zoom,
+            focus=focus,
         )
+
+
+@dataclass
+class Caption:
+    start: float
+    end: float
+    text: str
+
+    @property
+    def duration(self) -> float:
+        return max(0.0, self.end - self.start)
+
+
+# Hold the last caption on screen for this long when nothing else bounds it.
+_LAST_CAPTION_HOLD = 2.0
 
 
 @dataclass
 class Timeline:
     scenes: list[Scene]
+    captions: list["Caption"]
 
     @property
     def total_duration(self) -> float:
-        if not self.scenes:
-            return 0.0
-        return max(scene.end for scene in self.scenes)
+        ends = [scene.end for scene in self.scenes]
+        ends += [caption.end for caption in self.captions]
+        return max(ends) if ends else 0.0
 
     def poses(self) -> list[str]:
         """Unique dragon poses that appear, preserving first-seen order."""
@@ -72,6 +96,10 @@ class Timeline:
 
     def intervals_for_pose(self, pose: str) -> list[tuple[float, float]]:
         return [(s.start, s.end) for s in self.scenes if s.dragon_pose == pose]
+
+    def intervals_for_focus(self, side: str) -> list[tuple[float, float]]:
+        """Time intervals where `side` (left/right) is the focused column."""
+        return [(s.start, s.end) for s in self.scenes if s.focus == side]
 
     @classmethod
     def from_spec(cls, spec: dict[str, Any]) -> "Timeline":
@@ -85,4 +113,46 @@ class Timeline:
                 scene = Scene.from_dict(item, prev_end)
                 scenes.append(scene)
                 prev_end = scene.end
-        return cls(scenes=scenes)
+
+        captions = cls._build_captions(spec, scenes)
+        return cls(scenes=scenes, captions=captions)
+
+    @staticmethod
+    def _build_captions(spec: dict[str, Any], scenes: list[Scene]) -> list["Caption"]:
+        """Build subtitle captions.
+
+        Prefer a top-level `captions: [{time, text}]` list — each caption's end is
+        the next caption's `time` (the last one holds until the timeline end).
+        Fall back to per-scene `subtitle` text when `captions` is absent.
+        """
+        raw = spec.get("captions")
+        if isinstance(raw, list) and raw:
+            parsed: list[tuple[float, str]] = []
+            for item in raw:
+                if not isinstance(item, dict):
+                    continue
+                text = str(item.get("text") or "").strip()
+                if not text:
+                    continue
+                start = _as_float(item.get("time"), 0.0)
+                parsed.append((start, text))
+            parsed.sort(key=lambda p: p[0])
+
+            scene_end = max((s.end for s in scenes), default=0.0)
+            captions: list[Caption] = []
+            for i, (start, text) in enumerate(parsed):
+                if i + 1 < len(parsed):
+                    end = parsed[i + 1][0]
+                else:
+                    end = max(scene_end, start + _LAST_CAPTION_HOLD)
+                if end < start:
+                    end = start + _LAST_CAPTION_HOLD
+                captions.append(Caption(start=start, end=end, text=text))
+            return captions
+
+        # Backward compatible: derive captions from scene subtitles.
+        return [
+            Caption(start=s.start, end=s.end, text=s.subtitle)
+            for s in scenes
+            if s.subtitle
+        ]

@@ -20,6 +20,15 @@ def _as_int(value: Any, fallback: int) -> int:
         return fallback
 
 
+def _as_float(value: Any, fallback: float) -> float:
+    try:
+        if value is None or value == "":
+            return fallback
+        return float(value)
+    except (TypeError, ValueError):
+        return fallback
+
+
 def _as_str(value: Any, fallback: str) -> str:
     if value is None:
         return fallback
@@ -54,6 +63,10 @@ class RenderConfig:
     placeholder_left_color: str = "0x1E3A8A"
     placeholder_right_color: str = "0x0E7490"
     highlight_color: str = "0xF59E0B"
+
+    # Focus effect: focused column zooms in slightly, the other is dimmed.
+    focus_zoom: float = 1.12  # scale factor of the focused column (1.0 = off)
+    focus_dim: float = 0.45  # black overlay opacity on the non-focused column
 
     extra: dict[str, Any] = field(default_factory=dict)
 
@@ -92,24 +105,32 @@ class RenderConfig:
         cfg.highlight_color = _as_str(
             data.get("highlightColor") or data.get("highlight_color"), cfg.highlight_color
         )
+        cfg.focus_zoom = max(
+            1.0, min(2.0, _as_float(data.get("focusZoom") or data.get("focus_zoom"), cfg.focus_zoom))
+        )
+        cfg.focus_dim = max(
+            0.0, min(1.0, _as_float(data.get("focusDim") or data.get("focus_dim"), cfg.focus_dim))
+        )
         cfg.extra = {k: v for k, v in data.items()}
         return cfg
 
     def layout(self) -> dict[str, dict[str, int]]:
         """Compute pixel rectangles for each region of the 9:16 layout.
 
-        Rows (top -> bottom): title | two image columns | subtitle band | dragon band.
+        Rows (top -> bottom): two image columns (titles overlaid on their top
+        edge) | subtitle band | dragon band.
         """
         w, h, m = self.width, self.height, self.safe_margin
 
-        title_h = max(120, int(h * 0.08))
-        title_y = m
-
-        img_y = title_y + title_h + m
+        # Images start near the top; the title sits on top of each image.
+        img_y = m
         col_w = (w - 3 * m) // 2
-        col_h = int(h * 0.32)
+        col_h = int(h * 0.34)
         left_x = m
         right_x = m * 2 + col_w
+
+        # Title strip overlaid on the upper part of each image column.
+        title_h = max(90, int(h * 0.06))
 
         sub_y = img_y + col_h + m
         sub_h = int(h * 0.18)
@@ -121,8 +142,8 @@ class RenderConfig:
 
         return {
             "canvas": {"x": 0, "y": 0, "w": w, "h": h},
-            "titleLeft": {"x": left_x, "y": title_y, "w": col_w, "h": title_h},
-            "titleRight": {"x": right_x, "y": title_y, "w": col_w, "h": title_h},
+            "titleLeft": {"x": left_x, "y": img_y, "w": col_w, "h": title_h},
+            "titleRight": {"x": right_x, "y": img_y, "w": col_w, "h": title_h},
             "imageLeft": {"x": left_x, "y": img_y, "w": col_w, "h": col_h},
             "imageRight": {"x": right_x, "y": img_y, "w": col_w, "h": col_h},
             "subtitle": {"x": m, "y": sub_y, "w": w - 2 * m, "h": sub_h},

@@ -71,11 +71,23 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             f"Dialogue: 0,{_fmt_time(start)},{_fmt_time(end)},{style},,0,0,0,,{payload}"
         )
 
-    _dialogue("Title", 0.0, total, "titleLeft", left_title)
-    _dialogue("Title", 0.0, total, "titleRight", right_title)
+    def _title(region_key: str, text: str) -> None:
+        """Anchor the title on the top edge of its image column (top-center)."""
+        if not text:
+            return
+        region = layout[region_key]
+        cx = region["x"] + region["w"] // 2
+        y = region["y"] + max(10, config.safe_margin // 4)
+        payload = f"{{\\an8\\pos({cx},{y})}}{_escape(text)}"
+        lines.append(
+            f"Dialogue: 0,{_fmt_time(0.0)},{_fmt_time(total)},Title,,0,0,0,,{payload}"
+        )
 
-    for scene in timeline.scenes:
-        _dialogue("Sub", scene.start, scene.end, "subtitle", scene.subtitle)
+    _title("titleLeft", left_title)
+    _title("titleRight", right_title)
+
+    for caption in timeline.captions:
+        _dialogue("Sub", caption.start, caption.end, "subtitle", caption.text)
 
     out_path.write_text(header + "\n".join(lines) + "\n", encoding="utf-8")
     return out_path
