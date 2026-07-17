@@ -39,7 +39,9 @@ def run_asr(video: Path, work_dir: Path) -> dict[str, Any]:
         LOG.warning("faster-whisper unavailable (%s); using empty transcript", exc)
         return {"language": "unknown", "segments": []}
 
-    model_size = (os_env("RECAP_WHISPER_MODEL") or "base").strip()
+    # Default large-v3 to reuse the shared faster-whisper cache (auto_vietsub already
+    # downloaded it). Avoids writing a new model dir into a www-data-owned HF cache.
+    model_size = (os_env("RECAP_WHISPER_MODEL") or "large-v3").strip()
     device = (os_env("RECAP_WHISPER_DEVICE") or "cpu").strip()
     compute = (os_env("RECAP_WHISPER_COMPUTE") or "int8").strip()
     LOG.info("Whisper model=%s device=%s", model_size, device)
