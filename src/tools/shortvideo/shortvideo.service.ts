@@ -3,7 +3,7 @@ import { InjectQueue } from "@nestjs/bullmq";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Queue } from "bullmq";
 import { randomUUID } from "crypto";
-import { existsSync, mkdirSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "fs";
 import { basename, extname, isAbsolute, join, resolve } from "path";
 import { Repository } from "typeorm";
 
@@ -175,6 +175,67 @@ export class ShortVideoService {
 
   async getById(id: string): Promise<ShortVideoHistory | null> {
     return this.repository.findOne({ where: { id } });
+  }
+
+  /** Paginated render history for a user, newest first. */
+  async listHistory(
+    userId: string,
+    page = 1,
+    limit = 20,
+  ): Promise<{
+    items: ReturnType<ShortVideoService["mapForClient"]>[];
+    total: number;
+    page: number;
+    limit: number;
+    hasMore: boolean;
+  }> {
+    if (!userId?.trim()) throw new BadRequestException("userId is required");
+    const take = Math.min(Math.max(1, Math.trunc(limit) || 20), 50);
+    const currentPage = Math.max(1, Math.trunc(page) || 1);
+    const skip = (currentPage - 1) * take;
+
+    const [rows, total] = await this.repository.findAndCount({
+      where: { userId: userId.trim() },
+      order: { createdAt: "DESC" },
+      take,
+      skip,
+    });
+
+    return {
+      items: rows.map((row) => this.mapForClient(row)),
+      total,
+      page: currentPage,
+      limit: take,
+      hasMore: skip + rows.length < total,
+    };
+  }
+
+  /** Delete a single history entry (and its work dir) owned by the user. */
+  async deleteHistory(id: string, userId: string): Promise<{ deleted: boolean; id: string }> {
+    if (!userId?.trim()) throw new BadRequestException("userId is required");
+    const row = await this.repository.findOne({ where: { id, userId: userId.trim() } });
+    if (!row) throw new NotFoundException("ShortVideo history not found");
+    this.safeRemoveWorkDir(id);
+    await this.repository.delete({ id, userId: userId.trim() });
+    return { deleted: true, id };
+  }
+
+  /** Delete every history entry (and work dirs) for a user. */
+  async deleteAllHistory(userId: string): Promise<{ deleted: number }> {
+    if (!userId?.trim()) throw new BadRequestException("userId is required");
+    const rows = await this.repository.find({ where: { userId: userId.trim() } });
+    for (const row of rows) this.safeRemoveWorkDir(row.id);
+    const result = await this.repository.delete({ userId: userId.trim() });
+    return { deleted: result.affected ?? rows.length };
+  }
+
+  private safeRemoveWorkDir(id: string): void {
+    try {
+      const dir = join(this.resolveWorkRoot(), id);
+      if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+    } catch (err) {
+      this.logger.warn(`Failed to remove work dir for ${id}: ${String(err)}`);
+    }
   }
 
   /**

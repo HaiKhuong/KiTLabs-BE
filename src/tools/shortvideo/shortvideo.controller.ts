@@ -1,7 +1,10 @@
 import {
+  BadRequestException,
   Controller,
+  Delete,
   Get,
   NotFoundException,
+  Param,
   Post,
   Body,
   Query,
@@ -111,6 +114,39 @@ export class ShortVideoController {
       type: "short_video" as const,
       status: "queued" as const,
     };
+  }
+
+  @ApiOperation({ summary: "List a user's ShortVideo render history (paginated, newest first)" })
+  @ApiQuery({ name: "userId", required: true })
+  @ApiQuery({ name: "page", required: false })
+  @ApiQuery({ name: "limit", required: false })
+  @Public()
+  @Get("history")
+  async history(
+    @Query("userId") userId: string,
+    @Query("page") page?: string,
+    @Query("limit") limit?: string,
+  ) {
+    if (!userId) throw new BadRequestException("userId is required");
+    return this.shortVideoService.listHistory(userId, Number(page) || 1, Number(limit) || 20);
+  }
+
+  @ApiOperation({ summary: "Delete all ShortVideo history for a user" })
+  @ApiQuery({ name: "userId", required: true })
+  @Public()
+  @Delete("history")
+  async deleteAllHistory(@Query("userId") userId: string) {
+    if (!userId) throw new BadRequestException("userId is required");
+    return this.shortVideoService.deleteAllHistory(userId);
+  }
+
+  @ApiOperation({ summary: "Delete a single ShortVideo history entry" })
+  @ApiQuery({ name: "userId", required: true })
+  @Public()
+  @Delete("history/:id")
+  async deleteHistory(@Param("id") id: string, @Query("userId") userId: string) {
+    if (!userId) throw new BadRequestException("userId is required");
+    return this.shortVideoService.deleteHistory(id, userId);
   }
 
   @ApiOperation({ summary: "Stream a rendered ShortVideo mp4 (range requests supported)" })
