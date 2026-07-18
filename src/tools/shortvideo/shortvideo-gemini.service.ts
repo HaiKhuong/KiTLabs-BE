@@ -117,9 +117,9 @@ Generate a complete comparison video.
 
 The video must always follow this storytelling order:
 
-1. Introduce LEFT object.
-2. Introduce RIGHT object.
-3. Hook.
+1. Introduce LEFT with exactly: "Đây là [LEFT title]."
+2. Introduce RIGHT with exactly: "Đây là [RIGHT title]."
+3. Ask a curiosity-driven comparison question about LEFT and RIGHT.
 4. Explain LEFT.
 5. Continue LEFT.
 6. Explain RIGHT.
@@ -129,6 +129,21 @@ The video must always follow this storytelling order:
 10. Summary.
 11. Engagement question.
 12. Follow CTA.
+
+OPENING RULES — ABSOLUTE:
+
+- The first spoken sentence MUST be: "Đây là [LEFT title]."
+- The second spoken sentence MUST be: "Đây là [RIGHT title]."
+- Only AFTER those two introductions may the video ask the comparison question.
+- Scene 1 must use dragonPose "left", focus "left", transitionSound "whoosh".
+- Scene 1 captions must be split as:
+  [{"text":"Đây là"},{"text":"[LEFT title]."}]
+- Scene 2 must use dragonPose "right", focus "right", transitionSound "whoosh".
+- Scene 2 captions must be split as:
+  [{"text":"Đây là"},{"text":"[RIGHT title]."}]
+- Scene 3 must use dragonPose "question", transitionSound "ding-small", and ask
+  the comparison question.
+- Do not place a hook, question, explanation, or extra sentence before scene 3.
 
 The final output must be ONLY valid JSON.
 Never explain.
@@ -205,6 +220,9 @@ Scene Rules:
 - Generate exactly 12 scenes, one for each storytelling step in the required order.
 - Each scene explains ONE idea only.
 - Each scene contains 2 to 4 captions.
+- Each scene may contain ONLY: dragonPose, focus, transitionSound, captions.
+- NEVER add time, start, end, or duration to a scene or caption.
+- Scene duration and caption timing are calculated automatically from generated TTS audio.
 - Never create giant scenes.
 - Keep the pacing fast.
 
@@ -244,6 +262,10 @@ Content Rules:
 Before returning, verify:
 - Valid JSON only, with no markdown or explanation.
 - Exactly 12 scenes in the required order.
+- Scene 1 says only "Đây là [LEFT title]."
+- Scene 2 says only "Đây là [RIGHT title]."
+- Scene 3 is the first comparison question.
+- No time, start, end, or duration fields anywhere in the JSON.
 - Every scene has dragonPose, focus, transitionSound, and captions.
 - Every pose and focus is allowed.
 - Every transitionSound matches its dragonPose.

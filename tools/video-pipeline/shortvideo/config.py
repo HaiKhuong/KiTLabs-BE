@@ -137,7 +137,8 @@ class RenderConfig:
 
         # Title + image cluster is pushed down from the very top.
         title_y = 200
-        title_h = max(90, int(h * 0.06))
+        # Reserve enough room for two wrapped title lines plus outline/shadow.
+        title_h = max(90, int(h * 0.06), int(self.title_font_size * 2 + 30))
 
         # Image columns start below the title strip so they never overlap it.
         # Image columns are locked to a 4:3 ratio (width : height = 4 : 3).

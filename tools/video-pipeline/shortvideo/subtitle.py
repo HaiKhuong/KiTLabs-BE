@@ -33,6 +33,35 @@ def _center(region: dict[str, int]) -> tuple[int, int]:
     return region["x"] + region["w"] // 2, region["y"] + region["h"] // 2
 
 
+def _wrap_title(text: str, region_width: int, font_size: int) -> str:
+    """Wrap a title to at most two balanced lines within its column."""
+    normalized = " ".join(str(text or "").split())
+    if not normalized:
+        return ""
+
+    # Approximate bold font width; libass performs the final glyph rendering.
+    usable_width = max(1, region_width - 20)
+    estimated_width = len(normalized) * max(1, font_size) * 0.56
+    if estimated_width <= usable_width:
+        return normalized
+
+    words = normalized.split()
+    if len(words) == 1:
+        midpoint = max(1, len(normalized) // 2)
+        return f"{normalized[:midpoint]}\n{normalized[midpoint:]}"
+
+    # Pick the word boundary that minimizes the wider of the two lines.
+    best_left, best_right = words[0], " ".join(words[1:])
+    best_score = max(len(best_left), len(best_right))
+    for index in range(1, len(words)):
+        left = " ".join(words[:index])
+        right = " ".join(words[index:])
+        score = max(len(left), len(right))
+        if score < best_score:
+            best_left, best_right, best_score = left, right, score
+    return f"{best_left}\n{best_right}"
+
+
 def _sub_effect(style: str, cx: int, cy: int) -> str:
     """Per-caption ASS override tags implementing a subtitle animation preset.
 
@@ -101,7 +130,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         region = layout[region_key]
         cx = region["x"] + region["w"] // 2
         y = region["y"] + max(10, config.safe_margin // 4)
-        payload = f"{{\\an8\\pos({cx},{y})}}{_escape(text)}"
+        wrapped = _wrap_title(text, region["w"], config.title_font_size)
+        payload = f"{{\\an8\\pos({cx},{y})}}{_escape(wrapped)}"
         lines.append(
             f"Dialogue: 0,{_fmt_time(0.0)},{_fmt_time(total)},Title,,0,0,0,,{payload}"
         )
