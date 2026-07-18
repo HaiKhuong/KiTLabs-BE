@@ -41,4 +41,13 @@ export class ShortVideoHistory extends BaseEntity {
 
   @Column({ type: "varchar", name: "queue_job_id", nullable: true })
   queueJobId!: string | null;
+
+  @Column({ type: "timestamp", name: "render_started_at", nullable: true })
+  renderStartedAt!: Date | null;
+
+  @Column({ type: "timestamp", name: "render_finished_at", nullable: true })
+  renderFinishedAt!: Date | null;
+
+  @Column({ type: "integer", name: "render_duration_ms", nullable: true })
+  renderDurationMs!: number | null;
 }

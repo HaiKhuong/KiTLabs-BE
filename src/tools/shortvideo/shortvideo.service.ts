@@ -98,6 +98,9 @@ export class ShortVideoService {
       resultFileName: null,
       errorMessage: null,
       queueJobId: null,
+      renderStartedAt: null,
+      renderFinishedAt: null,
+      renderDurationMs: null,
     });
     const created = await this.repository.save(history);
 
@@ -131,10 +134,7 @@ export class ShortVideoService {
   }
 
   /** Standalone menu flow: save uploaded assets, merge them into the spec, then enqueue. */
-  async enqueueFromUpload(
-    body: RenderShortVideoUploadDto,
-    files: UploadedFiles,
-  ): Promise<ShortVideoHistory> {
+  async enqueueFromUpload(body: RenderShortVideoUploadDto, files: UploadedFiles): Promise<ShortVideoHistory> {
     const spec = this.parseSpec(body.spec);
     const { assetsDir, fileNames } = this.saveUploadAssets(files);
 
@@ -243,20 +243,14 @@ export class ShortVideoService {
    * per-scene `scenes[].captions` and falling back to a legacy top-level
    * `spec.captions` list. Empty texts are dropped.
    */
-  static buildCaptionEntries(
-    spec: Record<string, unknown> | null | undefined,
-  ): { time: number; text: string }[] {
+  static buildCaptionEntries(spec: Record<string, unknown> | null | undefined): { time: number; text: string }[] {
     const src = (spec ?? {}) as Record<string, unknown>;
     const scenes = Array.isArray(src.scenes) ? src.scenes : [];
     const nested = scenes.flatMap((s) => {
       const caps = (s as Record<string, unknown>)?.captions;
       return Array.isArray(caps) ? caps : [];
     });
-    const rawEntries = nested.length > 0
-      ? nested
-      : Array.isArray(src.captions)
-        ? src.captions
-        : [];
+    const rawEntries = nested.length > 0 ? nested : Array.isArray(src.captions) ? src.captions : [];
     return rawEntries
       .map((c) => {
         const item = (c ?? {}) as Record<string, unknown>;
@@ -272,9 +266,7 @@ export class ShortVideoService {
 
     const src = (spec ?? {}) as Record<string, unknown>;
     const scenes = Array.isArray(src.scenes) ? src.scenes : [];
-    return scenes
-      .map((s) => String((s as Record<string, unknown>)?.subtitle ?? "").trim())
-      .filter(Boolean);
+    return scenes.map((s) => String((s as Record<string, unknown>)?.subtitle ?? "").trim()).filter(Boolean);
   }
 
   /**
@@ -318,9 +310,7 @@ export class ShortVideoService {
   }
 
   mapForClient(row: ShortVideoHistory) {
-    const playUrl = row.resultPath
-      ? `/api/tools/shortvideo/artifact?shortVideoHistoryId=${row.id}`
-      : null;
+    const playUrl = row.resultPath ? `/api/tools/shortvideo/artifact?shortVideoHistoryId=${row.id}` : null;
     return {
       id: row.id,
       userId: row.userId,
@@ -333,6 +323,9 @@ export class ShortVideoService {
       resultFileName: row.resultFileName,
       errorMessage: row.errorMessage,
       queueJobId: row.queueJobId,
+      renderStartedAt: row.renderStartedAt,
+      renderFinishedAt: row.renderFinishedAt,
+      renderDurationMs: row.renderDurationMs,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
       playUrl,
@@ -341,10 +334,20 @@ export class ShortVideoService {
   }
 
   async processStarted(id: string): Promise<void> {
-    await this.repository.update({ id }, { status: QueueJobStatus.RUNNING, errorMessage: null });
+    await this.repository.update(
+      { id },
+      {
+        status: QueueJobStatus.RUNNING,
+        errorMessage: null,
+        renderStartedAt: new Date(),
+        renderFinishedAt: null,
+        renderDurationMs: null,
+      },
+    );
   }
 
   async processCompleted(id: string, resultPath: string): Promise<void> {
+    const timing = await this.resolveRenderTiming(id);
     await this.repository.update(
       { id },
       {
@@ -352,12 +355,30 @@ export class ShortVideoService {
         resultPath,
         resultFileName: basename(resultPath),
         errorMessage: null,
+        ...timing,
       },
     );
   }
 
   async processFailed(id: string, errorMessage: string): Promise<void> {
-    await this.repository.update({ id }, { status: QueueJobStatus.FAILED, errorMessage });
+    const timing = await this.resolveRenderTiming(id);
+    await this.repository.update({ id }, { status: QueueJobStatus.FAILED, errorMessage, ...timing });
+  }
+
+  private async resolveRenderTiming(id: string): Promise<{
+    renderFinishedAt: Date;
+    renderDurationMs: number;
+  }> {
+    const row = await this.repository.findOne({
+      where: { id },
+      select: { id: true, createdAt: true, renderStartedAt: true },
+    });
+    const renderFinishedAt = new Date();
+    const startedAt = row?.renderStartedAt ?? row?.createdAt ?? renderFinishedAt;
+    return {
+      renderFinishedAt,
+      renderDurationMs: Math.max(0, renderFinishedAt.getTime() - startedAt.getTime()),
+    };
   }
 
   async updateRuntimeMessage(id: string, message: string): Promise<void> {
@@ -396,8 +417,7 @@ export class ShortVideoService {
   }
 
   resolveScriptPath(): string {
-    const raw =
-      process.env.SHORTVIDEO_PYTHON_SCRIPT ?? "tools/video-pipeline/shortvideo/render.py";
+    const raw = process.env.SHORTVIDEO_PYTHON_SCRIPT ?? "tools/video-pipeline/shortvideo/render.py";
     return isAbsolute(raw) ? raw : resolve(process.cwd(), raw);
   }
 }
