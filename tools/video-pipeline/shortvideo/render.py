@@ -102,6 +102,18 @@ def _resolve_asset(name: str | None, assets_dir: Path) -> Path | None:
     return resolved if resolved.is_file() else None
 
 
+def _resolve_generated_voice_volume(spec: dict) -> float:
+    """Return TTS voice gain; ignore volume for non-generated/uploaded voice."""
+    voice_config = spec.get("voiceConfig")
+    if not isinstance(voice_config, dict) or voice_config.get("generate") is not True:
+        return 1.0
+    try:
+        volume = float(voice_config.get("volume", 1.0))
+    except (TypeError, ValueError):
+        return 1.0
+    return max(0.0, min(2.0, volume))
+
+
 def render(config_path: Path, work_dir: Path) -> Path:
     total_steps = 6
 
@@ -152,7 +164,7 @@ def render(config_path: Path, work_dir: Path) -> Path:
         .titles(str(left.get("title") or ""), str(right.get("title") or ""))
         .dragon(timeline, DRAGON_ASSETS_DIR)
         .subtitle(ass_path)
-        .audio(voice_path)
+        .audio(voice_path, _resolve_generated_voice_volume(spec))
         .transitions(_build_transition_hits(timeline, spec, assets_dir))
     )
 

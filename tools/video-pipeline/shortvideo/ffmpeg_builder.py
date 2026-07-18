@@ -32,6 +32,7 @@ class FFmpegBuilder:
         self._dragon: list[dict[str, Any]] = []
         self._ass_name: str | None = None
         self._audio_path: Path | None = None
+        self._audio_volume = 1.0
         self._timeline: Timeline | None = None
         self._transition_hits: list[tuple[float, Path]] = []
 
@@ -77,8 +78,9 @@ class FFmpegBuilder:
         self._ass_name = ass_path.name if ass_path else None
         return self
 
-    def audio(self, path: Path | None) -> "FFmpegBuilder":
+    def audio(self, path: Path | None, volume: float = 1.0) -> "FFmpegBuilder":
         self._audio_path = path if path and path.is_file() else None
+        self._audio_volume = max(0.0, min(2.0, float(volume)))
         return self
 
     def transitions(self, hits: list[tuple[float, Path]]) -> "FFmpegBuilder":
@@ -257,8 +259,10 @@ class FFmpegBuilder:
         else:
             video_label = cursor
 
-        # Mix a per-scene transition SFX (each its own file) on top of the voice.
-        audio_map = f"{audio_i}:a"
+        # Apply voice gain before mixing transition SFX. The caller supplies a
+        # non-default gain only when this track was generated through TTS.
+        chains.append(f"[{audio_i}:a]volume={self._audio_volume:.3f}[voice]")
+        audio_map = "[voice]"
         if sfx_hits:
             vol = cfg.sfx_volume
             sfx_labels: list[str] = []
@@ -268,7 +272,7 @@ class FFmpegBuilder:
                     f"[{idx}:a]adelay={ms}|{ms},volume={vol}[sfxd{k}]"
                 )
                 sfx_labels.append(f"[sfxd{k}]")
-            mix_inputs = f"[{audio_i}:a]" + "".join(sfx_labels)
+            mix_inputs = "[voice]" + "".join(sfx_labels)
             chains.append(
                 f"{mix_inputs}amix=inputs={len(sfx_labels) + 1}:duration=first:"
                 f"dropout_transition=0:normalize=0[aout]"
