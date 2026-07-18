@@ -121,12 +121,19 @@ class Timeline:
         return times
 
     def transition_sound_hits(self) -> list[tuple[float, str]]:
-        """(start_time, sound_name) for scenes that declare a transitionSound."""
+        """(start_time, sound_name) for scenes that declare a transitionSound.
+
+        Skip SFX when the dragon pose is unchanged from the previous scene
+        (e.g. left:whoosh followed by left:whoosh) — no real pose transition.
+        """
         hits: list[tuple[float, str]] = []
+        prev_pose: str | None = None
         for scene in self.scenes:
             name = scene.transition_sound
             if name and name.lower() != "none":
-                hits.append((scene.start, name))
+                if prev_pose is None or scene.dragon_pose != prev_pose:
+                    hits.append((scene.start, name))
+            prev_pose = scene.dragon_pose
         return hits
 
     @classmethod
