@@ -145,8 +145,9 @@ class FFmpegBuilder:
         # Keep the final pose/focus visible through the last encoded frame
         # (pts can land slightly past a scene end due to fps rounding).
         frame_eps = 1.0 / max(1, fps)
-        left_focus = self._extend_last_interval(left_focus, total + frame_eps)
-        right_focus = self._extend_last_interval(right_focus, total + frame_eps)
+        until = total + frame_eps
+        left_focus = self._extend_last_interval(left_focus, until)
+        right_focus = self._extend_last_interval(right_focus, until)
         zf = cfg.focus_zoom
         dim = cfg.focus_dim
 
