@@ -142,6 +142,11 @@ class FFmpegBuilder:
         # Focus effect intervals (per column).
         left_focus = self._timeline.intervals_for_focus("left") if self._timeline else []
         right_focus = self._timeline.intervals_for_focus("right") if self._timeline else []
+        # Keep the final pose/focus visible through the last encoded frame
+        # (pts can land slightly past a scene end due to fps rounding).
+        frame_eps = 1.0 / max(1, fps)
+        left_focus = self._extend_last_interval(left_focus, total + frame_eps)
+        right_focus = self._extend_last_interval(right_focus, total + frame_eps)
         zf = cfg.focus_zoom
         dim = cfg.focus_dim
 
@@ -234,7 +239,10 @@ class FFmpegBuilder:
         dragon_w = int(w * 0.7)
         for n, (idx, spec) in enumerate(dragon_indices):
             chains.append(f"[{idx}:v]scale={dragon_w}:-2,format=rgba,setsar=1[d{n}s]")
-            enable = "+".join(f"between(t,{s},{e})" for s, e in spec["intervals"]) or "0"
+            intervals = self._extend_last_interval(
+                list(spec["intervals"]), total + frame_eps
+            )
+            enable = "+".join(f"between(t,{s},{e})" for s, e in intervals) or "0"
             nxt = f"d{n}o"
             chains.append(
                 f"[{cursor}][d{n}s]overlay=x=(main_w-overlay_w)/2:"
@@ -306,6 +314,29 @@ class FFmpegBuilder:
         return out_path
 
     # -- Helpers -----------------------------------------------------------
+
+    @staticmethod
+    def _extend_last_interval(
+        intervals: list[tuple[float, float]], until: float
+    ) -> list[tuple[float, float]]:
+        """Stretch the last interval only if it already covers (near) the end.
+
+        Prevents an earlier pose/focus from being wrongly kept on screen after
+        its scene ended, while still covering the final encoded frame when pts
+        lands slightly past the last scene end.
+        """
+        if not intervals:
+            return intervals
+        last_i = max(range(len(intervals)), key=lambda i: intervals[i][1])
+        start, end = intervals[last_i]
+        # Ignore tracks that finished well before the video ends.
+        if end + 0.05 < until - 0.05:
+            return intervals
+        if until <= end:
+            return intervals
+        out = list(intervals)
+        out[last_i] = (start, until)
+        return out
 
     @staticmethod
     def _image_or_color(path: Path | None, w: int, h: int, color: str) -> dict[str, Any]:

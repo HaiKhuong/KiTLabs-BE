@@ -5,6 +5,7 @@ import { TypeOrmModule } from "@nestjs/typeorm";
 import { AudioModule } from "../audio/audio.module";
 import { ToolsRealtimeModule } from "../realtime/tools-realtime.module";
 import { ShortVideoController } from "./shortvideo.controller";
+import { ShortVideoGeminiService } from "./shortvideo-gemini.service";
 import { ShortVideoHistory } from "./shortvideo-history.entity";
 import { ShortVideoProcessor } from "./shortvideo.processor";
 import { SHORTVIDEO_QUEUE_NAME, ShortVideoService } from "./shortvideo.service";
@@ -17,7 +18,7 @@ import { SHORTVIDEO_QUEUE_NAME, ShortVideoService } from "./shortvideo.service";
     AudioModule,
   ],
   controllers: [ShortVideoController],
-  providers: [ShortVideoService, ShortVideoProcessor],
+  providers: [ShortVideoService, ShortVideoProcessor, ShortVideoGeminiService],
   exports: [ShortVideoService],
 })
 export class ShortVideoModule {}

@@ -143,7 +143,20 @@ class Timeline:
                 prev_end = scene.end
 
         captions = cls._build_captions(spec, scenes)
-        return cls(scenes=scenes, captions=captions)
+        timeline = cls(scenes=scenes, captions=captions)
+        # Caption hold / rounding can push total_duration past the last scene end.
+        # Keep the final scene (dragon pose + focus) visible through the full video.
+        timeline.pin_last_scene_to_end()
+        return timeline
+
+    def pin_last_scene_to_end(self) -> None:
+        """Extend the last scene so it covers the full timeline duration."""
+        if not self.scenes:
+            return
+        total = self.total_duration
+        last = self.scenes[-1]
+        if total > last.end:
+            last.end = total
 
     @staticmethod
     def _caption_entries(spec: dict[str, Any]) -> list[dict[str, Any]]:
@@ -192,8 +205,11 @@ class Timeline:
             for i, (start, text) in enumerate(parsed):
                 if i + 1 < len(parsed):
                     end = parsed[i + 1][0]
+                elif scene_end > start:
+                    # Hold until the timeline end (last scene), not past it.
+                    end = scene_end
                 else:
-                    end = max(scene_end, start + _LAST_CAPTION_HOLD)
+                    end = start + _LAST_CAPTION_HOLD
                 if end < start:
                     end = start + _LAST_CAPTION_HOLD
                 captions.append(Caption(start=start, end=end, text=text))
