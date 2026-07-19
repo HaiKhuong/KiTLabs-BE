@@ -8,6 +8,7 @@ import { basename, extname, isAbsolute, join, resolve } from "path";
 import { Repository } from "typeorm";
 
 import { QueueJobStatus } from "../../common/enums/domain.enums";
+import { NotificationsService } from "../notifications/notifications.service";
 import { CreateShortVideoJobDto } from "./dto/create-shortvideo-job.dto";
 import { RenderShortVideoUploadDto } from "./dto/render-shortvideo-upload.dto";
 import { ShortVideoHistory } from "./shortvideo-history.entity";
@@ -42,6 +43,7 @@ export class ShortVideoService {
     private readonly shortVideoQueue: Queue,
     @InjectRepository(ShortVideoHistory, "tool")
     private readonly repository: Repository<ShortVideoHistory>,
+    private readonly notificationsService: NotificationsService,
   ) {}
 
   static resolveQueueLockDurationMs(): number {
@@ -358,6 +360,21 @@ export class ShortVideoService {
         ...timing,
       },
     );
+    const history = await this.repository.findOne({
+      where: { id },
+      select: { id: true, userId: true, displayName: true },
+    });
+    if (history?.userId) {
+      try {
+        await this.notificationsService.pushSuccess(
+          history.userId,
+          "ShortVideo hoàn tất",
+          `Video "${history.displayName}" đã sẵn sàng.`,
+        );
+      } catch (error) {
+        this.logger.warn(`Failed to send ShortVideo success notification: ${String(error)}`);
+      }
+    }
   }
 
   async processFailed(id: string, errorMessage: string): Promise<void> {

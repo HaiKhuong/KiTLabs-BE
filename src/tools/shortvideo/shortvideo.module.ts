@@ -3,6 +3,7 @@ import { BullModule } from "@nestjs/bullmq";
 import { TypeOrmModule } from "@nestjs/typeorm";
 
 import { AudioModule } from "../audio/audio.module";
+import { NotificationsModule } from "../notifications/notifications.module";
 import { ToolsRealtimeModule } from "../realtime/tools-realtime.module";
 import { ShortVideoController } from "./shortvideo.controller";
 import { ShortVideoGeminiService } from "./shortvideo-gemini.service";
@@ -16,6 +17,7 @@ import { SHORTVIDEO_QUEUE_NAME, ShortVideoService } from "./shortvideo.service";
     TypeOrmModule.forFeature([ShortVideoHistory], "tool"),
     ToolsRealtimeModule,
     AudioModule,
+    NotificationsModule,
   ],
   controllers: [ShortVideoController],
   providers: [ShortVideoService, ShortVideoProcessor, ShortVideoGeminiService],
