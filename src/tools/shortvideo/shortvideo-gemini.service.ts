@@ -1,6 +1,9 @@
 import { BadGatewayException, BadRequestException, Injectable, Logger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { GoogleGenerativeAI } from "@google/generative-ai";
+import { randomUUID } from "crypto";
+import { mkdir, writeFile } from "fs/promises";
+import { join, resolve } from "path";
 
 import { geminiKeyPoolEnvHint, loadGeminiKeyPools } from "../../common/gemini/gemini-key-pools";
 
@@ -56,10 +59,26 @@ export class ShortVideoGeminiService {
 
     const modelName = this.config.get<string>("SHORTVIDEO_GEMINI_MODEL")?.trim() || "gemini-2.5-flash";
     const prompt = this.buildPrompt(topic);
+    const traceDir = await this.prepareTraceDir();
+    await this.writeTraceFile(
+      traceDir,
+      "request.txt",
+      [
+        `model: ${modelName}`,
+        "temperature: 0.7",
+        "responseMimeType: application/json",
+        "maxOutputTokens: 4096",
+        `topic: ${topic}`,
+        "",
+        "PROMPT",
+        prompt,
+      ].join("\n"),
+    );
     let lastError: unknown;
     const maxAttempts = Math.max(this.apiKeys.length, 2);
 
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      let rawResponse: string | null = null;
       try {
         const genAI = new GoogleGenerativeAI(this.nextKey());
         const model = genAI.getGenerativeModel({
@@ -72,9 +91,20 @@ export class ShortVideoGeminiService {
         });
         const result = await model.generateContent(prompt);
         const raw = result.response.text() ?? "";
-        return { topic, model: modelName, spec: this.parseAndValidate(raw) };
+        rawResponse = raw;
+        await this.writeTraceFile(traceDir, `response-attempt-${attempt + 1}.txt`, raw);
+        const spec = this.parseAndValidate(raw);
+        await this.writeTraceFile(traceDir, "response.txt", raw);
+        return { topic, model: modelName, spec };
       } catch (error: any) {
         lastError = error;
+        if (rawResponse === null) {
+          await this.writeTraceFile(
+            traceDir,
+            `response-attempt-${attempt + 1}.txt`,
+            `[ERROR]\n${this.errorMessage(error)}`,
+          );
+        }
         const status = error?.status ?? error?.httpStatusCode ?? 0;
         const retryable = error instanceof BadGatewayException || status === 429 || status === 500 || status === 503;
         if (retryable && attempt < maxAttempts - 1) {
@@ -86,8 +116,39 @@ export class ShortVideoGeminiService {
     }
 
     const message = lastError instanceof Error ? lastError.message : "Gemini generation failed";
+    await this.writeTraceFile(traceDir, "response.txt", `[FAILED]\n${message}`);
     this.logger.error(`ShortVideo spec generation failed: ${message}`);
     throw new BadGatewayException(`Không thể tạo JSON bằng Gemini: ${message}`);
+  }
+
+  private async prepareTraceDir(): Promise<string> {
+    const root = resolve(
+      process.cwd(),
+      this.config.get<string>("SHORTVIDEO_WORK_ROOT")?.trim() || "uploads/shortvideo",
+      "gemini",
+    );
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const dir = join(root, `${timestamp}_${randomUUID()}`);
+    try {
+      await mkdir(dir, { recursive: true });
+      return dir;
+    } catch (error) {
+      this.logger.warn(`Không thể tạo thư mục Gemini trace ${dir}: ${this.errorMessage(error)}`);
+      return "";
+    }
+  }
+
+  private async writeTraceFile(dir: string, fileName: string, content: string): Promise<void> {
+    if (!dir) return;
+    try {
+      await writeFile(join(dir, fileName), content, "utf8");
+    } catch (error) {
+      this.logger.warn(`Không thể ghi Gemini trace ${fileName}: ${this.errorMessage(error)}`);
+    }
+  }
+
+  private errorMessage(error: unknown): string {
+    return error instanceof Error ? `${error.name}: ${error.message}` : String(error);
   }
 
   private nextKey(): string {
