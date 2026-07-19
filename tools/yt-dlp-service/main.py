@@ -121,6 +121,7 @@ def extract_video(req: ExtractRequest):
                 "acodec": f.get("acodec"),
                 "fps": f.get("fps"),
                 "tbr": f.get("tbr"),
+                "url": f.get("url"),
             })
 
         formats.sort(key=lambda x: x.get("height") or 0, reverse=True)
@@ -187,6 +188,19 @@ def extract_profile(req: ExtractProfileRequest):
             best_height = 0
             if video_formats:
                 best_height = max((f.get("height") or 0) for f in video_formats)
+            mapped_formats = [{
+                "format_id": f.get("format_id"),
+                "height": f.get("height"),
+                "width": f.get("width"),
+                "ext": f.get("ext"),
+                "filesize": f.get("filesize") or f.get("filesize_approx"),
+                "vcodec": f.get("vcodec"),
+                "acodec": f.get("acodec"),
+                "fps": f.get("fps"),
+                "tbr": f.get("tbr"),
+                "url": f.get("url"),
+            } for f in video_formats]
+            mapped_formats.sort(key=lambda x: x.get("height") or 0, reverse=True)
 
             thumbnails = entry.get("thumbnails", [])
             thumb = thumbnails[-1]["url"] if thumbnails else entry.get("thumbnail")
@@ -198,6 +212,7 @@ def extract_profile(req: ExtractProfileRequest):
                 "duration": entry.get("duration"),
                 "best_height": best_height,
                 "webpage_url": entry.get("webpage_url"),
+                "formats": mapped_formats,
             })
 
         if not videos:

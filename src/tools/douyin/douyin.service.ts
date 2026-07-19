@@ -21,6 +21,7 @@ interface YtDlpFormat {
   acodec: string | null;
   fps: number | null;
   tbr: number | null;
+  url: string | null;
 }
 
 interface YtDlpExtractResponse {
@@ -41,6 +42,7 @@ interface YtDlpProfileVideo {
   duration: number | null;
   best_height: number;
   webpage_url: string | null;
+  formats: YtDlpFormat[];
 }
 
 interface YtDlpProfileResponse {
@@ -177,6 +179,7 @@ export class DouyinService {
       vcodec: f.vcodec,
       acodec: f.acodec,
       fps: f.fps,
+      playUrl: f.url,
     }));
 
     const seen = new Set<string>();
@@ -279,7 +282,7 @@ export class DouyinService {
         bestQuality: this.heightToLabel(v.best_height),
         bestHeight: v.best_height,
         webpageUrl: v.webpage_url,
-        formats: [],
+        formats: this.mapYtDlpFormats(v.formats || []),
       })),
       hasMore: false,
       nextCursor: 0,
