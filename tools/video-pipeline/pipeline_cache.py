@@ -4,7 +4,9 @@ Cache HF / torch chung cho pipeline (Whisper, OmniVoice, VoxCPM2, Translate, Ima
 Một root duy nhất:
   tools/video-pipeline/cache/
   ├── huggingface/hub/   ← HF models (whisper, omnivoice, voxcpm2, flux, z-image…)
-  └── torch/
+  ├── torch/
+  ├── numba/             ← NUMBA_CACHE_DIR (librosa/VoxCPM, www-data writable)
+  └── matplotlib/        ← MPLCONFIGDIR
 
 Ghi đè: KITLABS_PYTHON_CACHE_DIR hoặc OMNIVOICE_CACHE_ROOT (legacy alias).
 
@@ -125,6 +127,13 @@ def configure_pipeline_cache_env() -> Path:
     os.environ["HUGGINGFACE_HUB_CACHE"] = str(hub)
     os.environ["TRANSFORMERS_CACHE"] = str(hub)
     os.environ["TORCH_HOME"] = str(torch_home)
+    # librosa/numba default cache vào site-packages → fail khi Nest chạy www-data.
+    numba_cache = base / "numba"
+    mpl_cache = base / "matplotlib"
+    numba_cache.mkdir(parents=True, exist_ok=True)
+    mpl_cache.mkdir(parents=True, exist_ok=True)
+    os.environ.setdefault("NUMBA_CACHE_DIR", str(numba_cache))
+    os.environ.setdefault("MPLCONFIGDIR", str(mpl_cache))
     # Không ép XDG_CACHE_HOME về $HOME — trùng cache ngoài repo.
     # Không set XDG_CACHE_HOME=base — lib mkdir base/huggingface dễ Errno 17.
     os.environ.pop("XDG_CACHE_HOME", None)
