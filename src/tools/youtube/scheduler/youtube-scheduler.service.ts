@@ -12,6 +12,9 @@ import { TrendsService } from "../services/trends.service";
 import { RecommendationService } from "../services/recommendation.service";
 import { YouTubeAuthService } from "../auth/youtube-auth.service";
 
+/** Tạm tắt cron YouTube; đổi thành true khi bật lại scheduler. */
+const YOUTUBE_CRON_ENABLED = false;
+
 @Injectable()
 export class YouTubeSchedulerService {
   private readonly logger = new Logger(YouTubeSchedulerService.name);
@@ -31,7 +34,7 @@ export class YouTubeSchedulerService {
     private readonly authService: YouTubeAuthService,
   ) {}
 
-  @Cron(CronExpression.EVERY_DAY_AT_6AM)
+  @Cron(CronExpression.EVERY_DAY_AT_6AM, { disabled: !YOUTUBE_CRON_ENABLED })
   async syncYouTubeAnalytics(): Promise<void> {
     this.logger.log("Starting YouTube analytics sync...");
 
@@ -62,7 +65,7 @@ export class YouTubeSchedulerService {
     this.logger.log("YouTube analytics sync completed");
   }
 
-  @Cron(CronExpression.EVERY_DAY_AT_6AM)
+  @Cron(CronExpression.EVERY_DAY_AT_6AM, { disabled: !YOUTUBE_CRON_ENABLED })
   async syncGoogleTrends(): Promise<void> {
     this.logger.log("Starting Google Trends sync...");
 
