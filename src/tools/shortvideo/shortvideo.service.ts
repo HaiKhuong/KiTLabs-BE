@@ -179,11 +179,12 @@ export class ShortVideoService {
     return this.repository.findOne({ where: { id } });
   }
 
-  /** Paginated render history for a user, newest first. */
+  /** Paginated render history for a user, newest first. Optional `search` filters by name/topic. */
   async listHistory(
     userId: string,
     page = 1,
     limit = 20,
+    search?: string,
   ): Promise<{
     items: ReturnType<ShortVideoService["mapForClient"]>[];
     total: number;
@@ -195,13 +196,30 @@ export class ShortVideoService {
     const take = Math.min(Math.max(1, Math.trunc(limit) || 20), 50);
     const currentPage = Math.max(1, Math.trunc(page) || 1);
     const skip = (currentPage - 1) * take;
+    const keyword = search?.trim() ?? "";
 
-    const [rows, total] = await this.repository.findAndCount({
-      where: { userId: userId.trim() },
-      order: { createdAt: "DESC" },
-      take,
-      skip,
-    });
+    const qb = this.repository
+      .createQueryBuilder("h")
+      .where("h.user_id = :userId", { userId: userId.trim() });
+
+    if (keyword) {
+      qb.andWhere(
+        `(
+          h.display_name ILIKE :keyword
+          OR COALESCE(h.result_file_name, '') ILIKE :keyword
+          OR COALESCE(h.spec->>'topic', '') ILIKE :keyword
+          OR COALESCE(h.spec->'left'->>'title', '') ILIKE :keyword
+          OR COALESCE(h.spec->'right'->>'title', '') ILIKE :keyword
+        )`,
+        { keyword: `%${keyword}%` },
+      );
+    }
+
+    const [rows, total] = await qb
+      .orderBy("h.created_at", "DESC")
+      .take(take)
+      .skip(skip)
+      .getManyAndCount();
 
     return {
       items: rows.map((row) => this.mapForClient(row)),

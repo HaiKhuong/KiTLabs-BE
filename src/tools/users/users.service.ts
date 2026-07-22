@@ -1,7 +1,7 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import * as bcrypt from "bcrypt";
-import { Brackets, Repository } from "typeorm";
+import { Repository } from "typeorm";
 
 import { LogsService } from "../logs/logs.service";
 import { CreateUserDto } from "./dto/create-user.dto";
@@ -137,23 +137,34 @@ export class UsersService {
   }
 
   private async findGuestByIdentity(deviceId?: string, ip?: string, mac?: string): Promise<User | null> {
-    return this.userRepository
+    // Prefer stable device identity so each browser/device keeps its own user
+    // (and ShortVideo/Audio history). Do not OR-match by public IP — that merges
+    // unrelated guests behind the same NAT into one shared history.
+    const qb = this.userRepository
       .createQueryBuilder("user")
-      .where("user.authType = :authType", { authType: UserAuthType.GUEST })
-      .andWhere(
-        new Brackets((qb) => {
-          if (deviceId) {
-            qb.orWhere("user.deviceId = :deviceId", { deviceId });
-          }
-          if (ip) {
-            qb.orWhere("user.ip = :ip", { ip });
-          }
-          if (mac) {
-            qb.orWhere("user.mac = :mac", { mac });
-          }
-        }),
-      )
-      .orderBy("user.updatedAt", "DESC")
-      .getOne();
+      .where("user.authType = :authType", { authType: UserAuthType.GUEST });
+
+    if (deviceId?.trim()) {
+      return qb
+        .andWhere("user.deviceId = :deviceId", { deviceId: deviceId.trim() })
+        .orderBy("user.updatedAt", "DESC")
+        .getOne();
+    }
+
+    if (mac?.trim()) {
+      return qb
+        .andWhere("user.mac = :mac", { mac: mac.trim() })
+        .orderBy("user.updatedAt", "DESC")
+        .getOne();
+    }
+
+    if (ip?.trim()) {
+      return qb
+        .andWhere("user.ip = :ip", { ip: ip.trim() })
+        .orderBy("user.updatedAt", "DESC")
+        .getOne();
+    }
+
+    return null;
   }
 }

@@ -120,15 +120,32 @@ export class ShortVideoController {
     };
   }
 
-  @ApiOperation({ summary: "List a user's ShortVideo render history (paginated, newest first)" })
+  @ApiOperation({
+    summary: "List a user's ShortVideo render history (paginated, newest first)",
+  })
   @ApiQuery({ name: "userId", required: true })
   @ApiQuery({ name: "page", required: false })
   @ApiQuery({ name: "limit", required: false })
+  @ApiQuery({
+    name: "search",
+    required: false,
+    description: "Filter by displayName, result file name, topic, or left/right titles",
+  })
   @Public()
   @Get("history")
-  async history(@Query("userId") userId: string, @Query("page") page?: string, @Query("limit") limit?: string) {
+  async history(
+    @Query("userId") userId: string,
+    @Query("page") page?: string,
+    @Query("limit") limit?: string,
+    @Query("search") search?: string,
+  ) {
     if (!userId) throw new BadRequestException("userId is required");
-    return this.shortVideoService.listHistory(userId, Number(page) || 1, Number(limit) || 20);
+    return this.shortVideoService.listHistory(
+      userId,
+      Number(page) || 1,
+      Number(limit) || 20,
+      search,
+    );
   }
 
   @ApiOperation({ summary: "Delete all ShortVideo history for a user" })
