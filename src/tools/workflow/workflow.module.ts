@@ -8,14 +8,21 @@ import { WorkflowController } from "./workflow.controller";
 import { WorkflowEntity } from "./workflow.entity";
 import { WorkflowImageService } from "./workflow-image.service";
 import { WorkflowJobsService } from "./workflow-jobs.service";
+import { WorkflowRunEntity } from "./workflow-run.entity";
+import { WorkflowRunService } from "./workflow-run.service";
 import { WorkflowService } from "./workflow.service";
 import { WorkflowVoiceService } from "./workflow-voice.service";
 
 @Module({
-  imports: [TypeOrmModule.forFeature([WorkflowEntity], "tool"), AudioModule, ToolsRealtimeModule],
+  imports: [
+    TypeOrmModule.forFeature([WorkflowEntity, WorkflowRunEntity], "tool"),
+    AudioModule,
+    ToolsRealtimeModule,
+  ],
   controllers: [WorkflowController],
   providers: [
     WorkflowService,
+    WorkflowRunService,
     WorkflowAiService,
     WorkflowVoiceService,
     WorkflowImageService,
@@ -23,6 +30,7 @@ import { WorkflowVoiceService } from "./workflow-voice.service";
   ],
   exports: [
     WorkflowService,
+    WorkflowRunService,
     WorkflowAiService,
     WorkflowVoiceService,
     WorkflowImageService,

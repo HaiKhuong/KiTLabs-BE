@@ -31,8 +31,22 @@ from shortvideo.subtitle import build_ass
 from shortvideo.timeline import Timeline
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-DRAGON_ASSETS_DIR = SCRIPT_DIR / "assets" / "dragon"
+DRAGON_ASSETS_ROOT = SCRIPT_DIR / "assets" / "dragon"
 SFX_ASSETS_DIR = SCRIPT_DIR / "assets" / "sfx"
+
+_VALID_STYLE_SLUGS = frozenset(
+    {
+        "nha-sinh-vat-hoc",
+        "nha-dia-ly",
+        "nha-tham-hiem",
+        "nha-thien-van-hoc",
+        "nha-co-sinh-vat-hoc",
+        "nha-khao-co",
+        "kien-truc-su",
+        "ky-su",
+        "nha-hoa-hoc",
+    }
+)
 
 
 _SFX_EXTS = (".mp3", ".wav", ".m4a", ".ogg")
@@ -102,6 +116,23 @@ def _resolve_asset(name: str | None, assets_dir: Path) -> Path | None:
     return resolved if resolved.is_file() else None
 
 
+def _dragon_folder_has_poses(folder: Path) -> bool:
+    return any(folder.glob("*.png"))
+
+
+def _resolve_dragon_assets_dir(spec: dict, engine_config: dict) -> Path:
+    """Resolve mascot pose folder from spec.style or engineConfig.style."""
+    style = str(spec.get("style") or engine_config.get("style") or "").strip()
+    if style in _VALID_STYLE_SLUGS:
+        styled = DRAGON_ASSETS_ROOT / style
+        if styled.is_dir() and _dragon_folder_has_poses(styled):
+            return styled
+    default_dir = DRAGON_ASSETS_ROOT / "default"
+    if default_dir.is_dir() and _dragon_folder_has_poses(default_dir):
+        return default_dir
+    return DRAGON_ASSETS_ROOT
+
+
 def _resolve_generated_voice_volume(spec: dict) -> float:
     """Return TTS voice gain; ignore volume for non-generated/uploaded voice."""
     voice_config = spec.get("voiceConfig")
@@ -162,7 +193,7 @@ def render(config_path: Path, work_dir: Path) -> Path:
         .leftImage(left_image_path)
         .rightImage(right_image_path)
         .titles(str(left.get("title") or ""), str(right.get("title") or ""))
-        .dragon(timeline, DRAGON_ASSETS_DIR)
+        .dragon(timeline, _resolve_dragon_assets_dir(spec, engine_config))
         .subtitle(ass_path)
         .audio(voice_path, _resolve_generated_voice_volume(spec))
         .transitions(_build_transition_hits(timeline, spec, assets_dir))

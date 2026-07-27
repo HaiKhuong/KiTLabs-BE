@@ -12,6 +12,7 @@ import { NotificationsService } from "../notifications/notifications.service";
 import { CreateShortVideoJobDto } from "./dto/create-shortvideo-job.dto";
 import { RenderShortVideoUploadDto } from "./dto/render-shortvideo-upload.dto";
 import { ShortVideoHistory } from "./shortvideo-history.entity";
+import { isShortVideoStyle, SHORT_VIDEO_STYLES } from "./shortvideo-styles";
 
 const UPLOAD_FIELDS = ["background", "left", "right", "voice", "sfx"] as const;
 type UploadField = (typeof UPLOAD_FIELDS)[number];
@@ -70,6 +71,11 @@ export class ShortVideoService {
     const scenes = (spec as Record<string, unknown>).scenes;
     if (!Array.isArray(scenes) || scenes.length === 0) {
       throw new BadRequestException("spec.scenes must be a non-empty array");
+    }
+    const style = (spec as Record<string, unknown>).style;
+    if (style !== undefined && style !== null && String(style).trim() && !isShortVideoStyle(style)) {
+      const allowed = SHORT_VIDEO_STYLES.map((item) => item.value).join(", ");
+      throw new BadRequestException(`spec.style must be one of: ${allowed}`);
     }
     return spec as Record<string, unknown>;
   }
