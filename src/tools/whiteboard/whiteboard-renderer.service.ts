@@ -1,5 +1,5 @@
 import { Injectable, Logger } from "@nestjs/common";
-import { readFileSync, writeFileSync } from "fs";
+import { existsSync, readFileSync, writeFileSync } from "fs";
 import { join, resolve } from "path";
 import type { WhiteboardSceneJson } from "./whiteboard-vision.service";
 import type { WhiteboardPathPlan } from "./whiteboard-path-planner";
@@ -63,10 +63,16 @@ export class WhiteboardRendererService {
 
     this.logger.log(`[${input.historyId}] Rendering ${durationInFrames} frames at ${fps}fps…`);
 
+    const browserExecutable = this.resolveBrowserExecutable();
+    if (browserExecutable) {
+      this.logger.log(`[${input.historyId}] Using browser executable: ${browserExecutable}`);
+    }
+
     const composition = await selectComposition({
       serveUrl: bundleDir,
       id: "WhiteboardReveal",
       inputProps,
+      browserExecutable,
     });
 
     await renderMedia({
@@ -75,6 +81,7 @@ export class WhiteboardRendererService {
       codec: "h264",
       outputLocation: outputPath,
       inputProps,
+      browserExecutable,
       timeoutInMilliseconds: Number(process.env.WHITEBOARD_CMD_TIMEOUT_MS ?? 1_800_000),
       onProgress: ({ progress }: { progress: number }) => {
         const pct = Math.round(progress * 100);
@@ -84,6 +91,22 @@ export class WhiteboardRendererService {
 
     this.logger.log(`[${input.historyId}] Render complete: ${outputPath}`);
     return outputPath;
+  }
+
+  /**
+   * Without this, Remotion downloads its own Chrome Headless Shell into
+   * node_modules/.remotion, which fails when the server user cannot write to
+   * node_modules (deps installed by another user).
+   */
+  private resolveBrowserExecutable(): string | null {
+    const configured = process.env.WHITEBOARD_BROWSER_EXECUTABLE?.trim();
+    if (!configured) return null;
+    if (!existsSync(configured)) {
+      throw new Error(
+        `WHITEBOARD_BROWSER_EXECUTABLE points to a missing file: ${configured}`,
+      );
+    }
+    return configured;
   }
 
   private async importRemotion() {
