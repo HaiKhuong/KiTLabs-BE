@@ -1,5 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
-import { IsBoolean, IsIn, IsNotEmpty, IsOptional, IsString } from "class-validator";
+import { IsBoolean, IsIn, IsNotEmpty, IsOptional, IsString, IsUUID } from "class-validator";
 
 export const GEMINI_IMAGE_MODELS = [
   "gemini-3.1-flash-lite-image",
@@ -31,6 +31,10 @@ export type GeminiImageAspectRatio = (typeof GEMINI_IMAGE_ASPECT_RATIOS)[number]
 export type GeminiImageSize = (typeof GEMINI_IMAGE_SIZES)[number];
 
 export class GenerateGeminiImageDto {
+  @ApiProperty({ description: "Owner user UUID" })
+  @IsUUID()
+  userId!: string;
+
   @ApiProperty({ description: "Text prompt for Gemini image generation" })
   @IsString()
   @IsNotEmpty()

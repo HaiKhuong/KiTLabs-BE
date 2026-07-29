@@ -182,10 +182,7 @@ function isHistoryComplete(entry: ComfyHistoryEntry | undefined): boolean {
   return false;
 }
 
-function resolveHistoryEntry(
-  data: Record<string, ComfyHistoryEntry>,
-  promptId: string,
-): ComfyHistoryEntry | undefined {
+function resolveHistoryEntry(data: Record<string, ComfyHistoryEntry>, promptId: string): ComfyHistoryEntry | undefined {
   if (data[promptId]) return data[promptId];
   const keys = Object.keys(data);
   if (keys.length === 1) return data[keys[0]];
@@ -225,10 +222,7 @@ export class WorkflowImageService {
     return JSON.parse(JSON.stringify(workflow));
   }
 
-  private aspectToSize(
-    aspectRatio: string,
-    quality?: string,
-  ): { width: number; height: number } {
+  private aspectToSize(aspectRatio: string, quality?: string): { width: number; height: number } {
     const key = (aspectRatio || "9:16").trim();
     const is1080 = (quality ?? "720p").toLowerCase() === "1080p";
 
@@ -311,10 +305,7 @@ export class WorkflowImageService {
     return workflow;
   }
 
-  private async submitPrompt(
-    workflow: Record<string, unknown>,
-    clientId: string,
-  ): Promise<string> {
+  private async submitPrompt(workflow: Record<string, unknown>, clientId: string): Promise<string> {
     const client = this.getHttpClient();
     const { data } = await client.post<ComfyPromptResponse>("/prompt", {
       prompt: workflow,
@@ -322,9 +313,7 @@ export class WorkflowImageService {
     });
 
     if (data.error) {
-      const nodeErrors = data.node_errors
-        ? ` | node_errors: ${JSON.stringify(data.node_errors)}`
-        : "";
+      const nodeErrors = data.node_errors ? ` | node_errors: ${JSON.stringify(data.node_errors)}` : "";
       throw new Error(`ComfyUI rejected prompt: ${data.error}${nodeErrors}`);
     }
 
@@ -340,9 +329,7 @@ export class WorkflowImageService {
     await sleep(500);
 
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-      const { data } = await client.get<Record<string, ComfyHistoryEntry>>(
-        `/history/${promptId}`,
-      );
+      const { data } = await client.get<Record<string, ComfyHistoryEntry>>(`/history/${promptId}`);
       const entry = resolveHistoryEntry(data, promptId);
       if (isHistoryComplete(entry)) {
         return entry!;
@@ -364,11 +351,7 @@ export class WorkflowImageService {
    */
   private async runComfyPrompt(workflow: Record<string, unknown>): Promise<ComfyHistoryEntry> {
     const clientId = randomUUID();
-    const waiter = new ComfyPromptWaiter(
-      resolveComfyuiWebSocketUrl(clientId),
-      this.getTimeoutMs(),
-      this.logger,
-    );
+    const waiter = new ComfyPromptWaiter(resolveComfyuiWebSocketUrl(clientId), this.getTimeoutMs(), this.logger);
 
     try {
       await waiter.connect();
@@ -381,12 +364,7 @@ export class WorkflowImageService {
     }
   }
 
-  private async downloadImage(
-    filename: string,
-    subfolder: string,
-    type: string,
-    outPath: string,
-  ): Promise<void> {
+  private async downloadImage(filename: string, subfolder: string, type: string, outPath: string): Promise<void> {
     const client = this.getHttpClient();
     const { data } = await client.get("/view", {
       params: { filename, subfolder, type },
@@ -457,9 +435,7 @@ export class WorkflowImageService {
     const model = resolveImageModel(options.model);
     const seed = resolveImageSeed(options.seed);
     const { width, height } = this.aspectToSize(options.aspectRatio, options.quality);
-    const fullPrompt = options.style
-      ? `${options.prompt}, ${options.style} style`
-      : options.prompt;
+    const fullPrompt = options.style ? `${options.prompt}, ${options.style} style` : options.prompt;
 
     const workflow = this.buildWorkflow(model, {
       prompt: fullPrompt,
@@ -495,9 +471,7 @@ export class WorkflowImageService {
   ): Promise<ExecuteImageResult> {
     const mode = (dto.mode ?? "generate").trim().toLowerCase();
     if (mode !== "generate") {
-      throw new BadRequestException(
-        `Image mode "${mode}" chưa hỗ trợ — chỉ "generate" với ComfyUI`,
-      );
+      throw new BadRequestException(`Image mode "${mode}" chưa hỗ trợ — chỉ "generate" với ComfyUI`);
     }
 
     const model = resolveImageModel(dto.model);
@@ -512,9 +486,7 @@ export class WorkflowImageService {
       outPath: join(outputDir, `scene-${scene.sceneNumber}.png`),
     }));
 
-    this.logger.log(
-      `[Image] ${scenes.length} scene — aspect=${aspectRatio} style=${style} model=${model}`,
-    );
+    this.logger.log(`[Image] ${scenes.length} scene — aspect=${aspectRatio} style=${style} model=${model}`);
 
     const images: ImageSegmentResult[] = [];
     let completedCount = 0;
@@ -527,11 +499,7 @@ export class WorkflowImageService {
       if (existsSync(item.outPath)) {
         skippedCount += 1;
         completedCount += 1;
-        const imageUrl = buildSceneImageRelativeUrl(
-          dto.userId.trim(),
-          dto.nodeId.trim(),
-          item.scene.sceneNumber,
-        );
+        const imageUrl = buildSceneImageRelativeUrl(dto.userId.trim(), dto.nodeId.trim(), item.scene.sceneNumber);
         const segmentResult: ImageSegmentResult = {
           sceneNumber: item.scene.sceneNumber,
           status: "completed",
@@ -540,7 +508,11 @@ export class WorkflowImageService {
         };
         images.push(segmentResult);
         this.logger.log(`[Image] ⏭ ${sceneTag} skip`);
-        onSceneProgress?.({ ...segmentResult, completedSoFar: completedCount + failedCount, totalScenes: sceneJobs.length });
+        onSceneProgress?.({
+          ...segmentResult,
+          completedSoFar: completedCount + failedCount,
+          totalScenes: sceneJobs.length,
+        });
         continue;
       }
 
@@ -564,11 +536,7 @@ export class WorkflowImageService {
 
         if (result.ok && existsSync(item.outPath)) {
           completedCount += 1;
-          const imageUrl = buildSceneImageRelativeUrl(
-            dto.userId.trim(),
-            dto.nodeId.trim(),
-            item.scene.sceneNumber,
-          );
+          const imageUrl = buildSceneImageRelativeUrl(dto.userId.trim(), dto.nodeId.trim(), item.scene.sceneNumber);
           const segmentResult: ImageSegmentResult = {
             sceneNumber: item.scene.sceneNumber,
             status: "completed",
@@ -577,14 +545,22 @@ export class WorkflowImageService {
           };
           images.push(segmentResult);
           this.logger.log(`[Image] ✓ ${sceneTag} (${elapsed}s)`);
-          onSceneProgress?.({ ...segmentResult, completedSoFar: completedCount + failedCount, totalScenes: sceneJobs.length });
+          onSceneProgress?.({
+            ...segmentResult,
+            completedSoFar: completedCount + failedCount,
+            totalScenes: sceneJobs.length,
+          });
         } else {
           failedCount += 1;
           const failReason = result.error ?? "Image generation failed";
           const segmentResult = failedImage(item.scene, failReason);
           images.push(segmentResult);
           this.logger.error(`[Image] ✗ ${sceneTag} (${elapsed}s) — ${failReason}`);
-          onSceneProgress?.({ ...segmentResult, completedSoFar: completedCount + failedCount, totalScenes: sceneJobs.length });
+          onSceneProgress?.({
+            ...segmentResult,
+            completedSoFar: completedCount + failedCount,
+            totalScenes: sceneJobs.length,
+          });
 
           this.logger.error(`[Image] drop ${sceneJobs.length - sceneIdx} scene còn lại`);
           for (const remaining of sceneJobs.slice(images.length)) {
@@ -601,7 +577,11 @@ export class WorkflowImageService {
         const segmentResult = failedImage(item.scene, errorMessage(err));
         images.push(segmentResult);
         this.logger.error(`[Image] ✗ ${sceneTag} (${elapsed}s) — ${errorMessage(err)}`);
-        onSceneProgress?.({ ...segmentResult, completedSoFar: completedCount + failedCount, totalScenes: sceneJobs.length });
+        onSceneProgress?.({
+          ...segmentResult,
+          completedSoFar: completedCount + failedCount,
+          totalScenes: sceneJobs.length,
+        });
 
         this.logger.error(`[Image] drop ${sceneJobs.length - sceneIdx} scene còn lại`);
         for (const remaining of sceneJobs.slice(images.length)) {
@@ -631,7 +611,7 @@ export class WorkflowImageService {
 
   resolveImageFilePath(userId: string, nodeId: string, filename: string): string | null {
     const safeName = filename.replace(/[^a-zA-Z0-9._-]/g, "");
-    if (!safeName || safeName !== filename || !safeName.endsWith(".png")) {
+    if (!safeName || safeName !== filename || !/\.(png|jpe?g|webp)$/i.test(safeName)) {
       return null;
     }
 
@@ -690,9 +670,7 @@ export class WorkflowImageService {
     }
 
     const imageUrl = buildStudioImageRelativeUrl(userId, resolvedJobId);
-    this.logger.log(
-      `[Image Studio] OK (${((Date.now() - runStartedAt) / 1000).toFixed(1)}s) — ${imageUrl}`,
-    );
+    this.logger.log(`[Image Studio] OK (${((Date.now() - runStartedAt) / 1000).toFixed(1)}s) — ${imageUrl}`);
 
     return {
       jobId: resolvedJobId,

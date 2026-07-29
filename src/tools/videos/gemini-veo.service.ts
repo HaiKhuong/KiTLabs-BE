@@ -1,4 +1,11 @@
-import { BadGatewayException, BadRequestException, Injectable, Logger, NotFoundException } from "@nestjs/common";
+import {
+  BadGatewayException,
+  BadRequestException,
+  Injectable,
+  Logger,
+  NotFoundException,
+  OnModuleInit,
+} from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { GoogleGenAI, VideoGenerationReferenceType } from "@google/genai";
 import axios, { AxiosError } from "axios";
@@ -11,6 +18,7 @@ import {
 } from "../../common/gemini/gemini-key-pools";
 import { GenerateVeoVideoDto, VEO_MODELS, VeoInlineImageDto, VeoModel } from "./dto/generate-veo-video.dto";
 import { buildVeoCapabilities } from "./veo-capabilities";
+import { VideoHistoryService } from "./video-history.service";
 
 type VeoOperationStatus = Record<string, unknown> & {
   name?: string;
@@ -40,16 +48,26 @@ export type VeoVideoDownload = {
 const GEMINI_API_BASE_URL = "https://generativelanguage.googleapis.com/v1beta";
 
 @Injectable()
-export class GeminiVeoService {
+export class GeminiVeoService implements OnModuleInit {
   private readonly logger = new Logger(GeminiVeoService.name);
   private readonly keyPools: Record<GeminiKeyTier, string[]>;
   private readonly keyIndexes: Record<GeminiKeyTier, number> = { normal: 0, vip: 0 };
   private readonly operationContexts = new Map<string, OperationContext>();
   private readonly defaultModel: VeoModel;
 
-  constructor(private readonly config: ConfigService) {
+  constructor(
+    private readonly config: ConfigService,
+    private readonly videoHistoryService: VideoHistoryService,
+  ) {
     this.keyPools = loadGeminiKeyPools(config);
     this.defaultModel = this.resolveDefaultModel();
+  }
+
+  async onModuleInit(): Promise<void> {
+    const running = await this.videoHistoryService.getRunningOperations();
+    for (const item of running) {
+      this.startTracking(item.operationName, item.apiKeyTier);
+    }
   }
 
   getCapabilities() {
@@ -59,12 +77,13 @@ export class GeminiVeoService {
   async generate(dto: GenerateVeoVideoDto) {
     this.validateRequest(dto);
 
-    const tier = resolveGeminiKeyTier(dto.apiKeyTier);
-    const apiKey = this.nextApiKey(tier);
-    const client = new GoogleGenAI({ apiKey });
     const model = dto.model ?? this.defaultModel;
+    const history = await this.videoHistoryService.createPending(dto, model);
 
     try {
+      const tier = resolveGeminiKeyTier(dto.apiKeyTier);
+      const apiKey = this.nextApiKey(tier);
+      const client = new GoogleGenAI({ apiKey });
       const operation = await client.models.generateVideos({
         model,
         prompt: dto.prompt.trim(),
@@ -94,21 +113,40 @@ export class GeminiVeoService {
       }
 
       this.operationContexts.set(operation.name, { apiKey, tier });
+      await this.videoHistoryService.markRunning(history.id, operation.name, tier);
+      this.startTracking(operation.name, tier);
       this.logger.log(`Veo operation queued: ${operation.name} (${model}, ${tier})`);
       return {
+        historyId: history.id,
         operationName: operation.name,
         done: operation.done ?? false,
         model,
         apiKeyTier: tier,
       };
     } catch (error) {
+      await this.videoHistoryService.markFailed(history.id, error);
       throw this.toHttpException(error, "Không thể khởi tạo Gemini Veo operation");
     }
   }
 
   async getOperation(operationName: string, requestedTier?: string) {
     const { status, tier } = await this.fetchOperation(operationName, requestedTier);
-    return this.normalizeStatus(status, tier);
+    const resolvedOperationName = status.name ?? operationName;
+    const video = status.response?.generateVideoResponse?.generatedSamples?.[0]?.video;
+    if (status.error) {
+      await this.videoHistoryService.markFailedByOperation(resolvedOperationName, status.error);
+    } else if (status.done && video?.uri) {
+      await this.videoHistoryService.markCompletedByOperation(resolvedOperationName, {
+        uri: video.uri,
+        mimeType: video.mimeType,
+      });
+    } else if (status.done) {
+      await this.videoHistoryService.markFailedByOperation(
+        resolvedOperationName,
+        "Gemini Veo completed without a generated video",
+      );
+    }
+    return this.normalizeStatus({ ...status, name: resolvedOperationName }, tier);
   }
 
   async downloadGeneratedVideo(operationName: string, requestedTier?: string): Promise<VeoVideoDownload> {
@@ -194,6 +232,57 @@ export class GeminiVeoService {
       return configured as VeoModel;
     }
     return "veo-3.1-generate-preview";
+  }
+
+  private async trackOperation(operationName: string, tier: string): Promise<void> {
+    const pollIntervalMs = Number(this.config.get<string>("VEO_BACKGROUND_POLL_INTERVAL_MS") ?? 10_000);
+    const timeoutMs = Number(this.config.get<string>("VEO_BACKGROUND_TIMEOUT_MS") ?? 15 * 60_000);
+    const startedAt = Date.now();
+
+    while (Date.now() - startedAt < timeoutMs) {
+      try {
+        const { status } = await this.fetchOperation(operationName, tier);
+        const resolvedOperationName = status.name ?? operationName;
+        const video = status.response?.generateVideoResponse?.generatedSamples?.[0]?.video;
+        if (status.error) {
+          await this.videoHistoryService.markFailedByOperation(resolvedOperationName, status.error);
+          return;
+        }
+        if (status.done && video?.uri) {
+          await this.videoHistoryService.markCompletedByOperation(resolvedOperationName, {
+            uri: video.uri,
+            mimeType: video.mimeType,
+          });
+          return;
+        }
+        if (status.done) {
+          await this.videoHistoryService.markFailedByOperation(
+            resolvedOperationName,
+            "Gemini Veo completed without a generated video",
+          );
+          return;
+        }
+      } catch (error) {
+        this.logger.warn(
+          `Background poll failed for ${operationName}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+      await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+    }
+
+    await this.videoHistoryService.markFailedByOperation(
+      operationName,
+      `Gemini Veo operation timed out after ${Math.round(timeoutMs / 60_000)} minutes`,
+    );
+  }
+
+  private startTracking(operationName: string, tier: string): void {
+    void this.trackOperation(operationName, tier).catch((error) => {
+      this.logger.error(
+        `Veo background tracking stopped for ${operationName}`,
+        error instanceof Error ? error.stack : String(error),
+      );
+    });
   }
 
   private toSdkImage(image: VeoInlineImageDto): { imageBytes: string; mimeType: string } {

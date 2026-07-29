@@ -1,10 +1,11 @@
-import { Column, Entity, JoinColumn, ManyToOne } from "typeorm";
+import { Column, Entity, Index, JoinColumn, ManyToOne } from "typeorm";
 
 import { BaseEntity } from "../../common/entities/base.entity";
 import { QueueJobStatus } from "../../common/enums/domain.enums";
 import { User } from "../users/user.entity";
 
 @Entity("image_histories")
+@Index("IDX_image_histories_provider_created_at", ["provider", "createdAt"])
 export class ImageHistory extends BaseEntity {
   @Column({ name: "user_id" })
   userId!: string;
@@ -31,6 +32,21 @@ export class ImageHistory extends BaseEntity {
   @Column({ type: "varchar", length: 128 })
   model!: string;
 
+  @Column({ type: "varchar", length: 32, default: "comfyui" })
+  provider!: string;
+
+  @Column({ name: "interaction_id", type: "varchar", length: 255, nullable: true })
+  interactionId!: string | null;
+
+  @Column({ name: "image_size", type: "varchar", length: 16, nullable: true })
+  imageSize!: string | null;
+
+  @Column({ name: "api_key_tier", type: "varchar", length: 16, nullable: true })
+  apiKeyTier!: string | null;
+
+  @Column({ name: "use_google_search", type: "boolean", default: false })
+  useGoogleSearch!: boolean;
+
   @Column({ name: "num_inference_steps", type: "int", nullable: true })
   numInferenceSteps!: number | null;
 
@@ -45,6 +61,9 @@ export class ImageHistory extends BaseEntity {
 
   @Column({ type: "varchar", name: "result_file_name", nullable: true })
   resultFileName!: string | null;
+
+  @Column({ name: "result_mime_type", type: "varchar", length: 128, nullable: true })
+  resultMimeType!: string | null;
 
   @Column({ name: "error_message", type: "text", nullable: true })
   errorMessage!: string | null;

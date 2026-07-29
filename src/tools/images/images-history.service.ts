@@ -6,6 +6,7 @@ import { isAbsolute, resolve } from "path";
 import { Repository } from "typeorm";
 
 import { QueueJobStatus } from "../../common/enums/domain.enums";
+import { GenerateGeminiImageDto, GeminiImageModel } from "./dto/generate-gemini-image.dto";
 import { GenerateStudioImageDto } from "./dto/generate-studio-image.dto";
 import { ImageHistory } from "./image-history.entity";
 import { STUDIO_IMAGE_FILENAME } from "../workflow/workflow-image.constants";
@@ -45,6 +46,57 @@ export class ImagesHistoryService {
     return this.imageHistoryRepository.save(history);
   }
 
+  async createGeminiPending(dto: GenerateGeminiImageDto, model: GeminiImageModel): Promise<ImageHistory> {
+    const prompt = dto.prompt.trim();
+    return this.imageHistoryRepository.save(
+      this.imageHistoryRepository.create({
+        userId: dto.userId.trim(),
+        prompt,
+        displayName: this.buildDisplayName(prompt),
+        negativePrompt: null,
+        style: "gemini",
+        aspectRatio: dto.aspectRatio ?? "1:1",
+        model,
+        provider: "gemini",
+        interactionId: null,
+        imageSize: dto.imageSize ?? "1K",
+        apiKeyTier: dto.apiKeyTier ?? "normal",
+        useGoogleSearch: dto.useGoogleSearch ?? false,
+        numInferenceSteps: null,
+        seed: null,
+        status: QueueJobStatus.RUNNING,
+        resultPath: null,
+        resultFileName: null,
+        resultMimeType: null,
+        errorMessage: null,
+      }),
+    );
+  }
+
+  async markGeminiCompleted(
+    id: string,
+    result: {
+      path: string;
+      fileName: string;
+      mimeType: string;
+      interactionId?: string;
+      apiKeyTier: string;
+    },
+  ): Promise<void> {
+    await this.imageHistoryRepository.update(
+      { id },
+      {
+        status: QueueJobStatus.COMPLETED,
+        resultPath: result.path.replaceAll("\\", "/"),
+        resultFileName: result.fileName,
+        resultMimeType: result.mimeType,
+        interactionId: result.interactionId ?? null,
+        apiKeyTier: result.apiKeyTier,
+        errorMessage: null,
+      },
+    );
+  }
+
   async markCompleted(
     jobId: string,
     resultPath: string,
@@ -60,6 +112,7 @@ export class ImagesHistoryService {
         status: QueueJobStatus.COMPLETED,
         resultPath: resultPath.replaceAll("\\", "/"),
         resultFileName: STUDIO_IMAGE_FILENAME,
+        resultMimeType: "image/png",
         errorMessage: null,
         enrichedPrompt: geminiData?.enrichedPrompt ?? null,
         geminiAnalysis: (geminiData?.geminiAnalysis ?? null) as any,
@@ -136,8 +189,8 @@ export class ImagesHistoryService {
 
   mapHistoryForClient(row: ImageHistory) {
     const imageUrl =
-      row.status === QueueJobStatus.COMPLETED && row.id
-        ? `/api/tools/images/${encodeURIComponent(row.userId)}/${encodeURIComponent(row.id)}/${STUDIO_IMAGE_FILENAME}`
+      row.status === QueueJobStatus.COMPLETED && row.id && row.resultFileName
+        ? `/api/tools/images/${encodeURIComponent(row.userId)}/${encodeURIComponent(row.id)}/${encodeURIComponent(row.resultFileName)}`
         : null;
     return {
       id: row.id,
@@ -147,9 +200,15 @@ export class ImagesHistoryService {
       style: row.style,
       aspectRatio: row.aspectRatio,
       model: row.model,
+      provider: row.provider,
+      interactionId: row.interactionId,
+      imageSize: row.imageSize,
+      apiKeyTier: row.apiKeyTier,
+      useGoogleSearch: row.useGoogleSearch,
       completed: row.status === QueueJobStatus.COMPLETED,
       status: row.status,
       resultFileName: row.resultFileName,
+      resultMimeType: row.resultMimeType,
       errorMessage: row.errorMessage,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,

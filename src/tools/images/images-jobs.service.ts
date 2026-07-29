@@ -30,11 +30,7 @@ export class ImagesJobsService {
     return { jobId, status: "queued" };
   }
 
-  private async runStudioImage(
-    jobId: string,
-    userId: string,
-    dto: GenerateStudioImageDto,
-  ): Promise<void> {
+  private async runStudioImage(jobId: string, userId: string, dto: GenerateStudioImageDto): Promise<void> {
     const resultPath = join(resolveWorkflowImagesOutputDir(), userId, jobId, STUDIO_IMAGE_FILENAME);
     try {
       const result = await this.workflowImageService.generateStudioImage(dto, jobId);

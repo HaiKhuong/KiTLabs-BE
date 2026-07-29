@@ -1,6 +1,8 @@
 import { BadGatewayException, BadRequestException, Injectable, Logger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { GoogleGenAI } from "@google/genai";
+import { mkdir, writeFile } from "fs/promises";
+import { join } from "path";
 
 import {
   GeminiKeyTier,
@@ -15,6 +17,8 @@ import {
   GenerateGeminiImageDto,
   GeminiImageModel,
 } from "./dto/generate-gemini-image.dto";
+import { ImagesHistoryService } from "./images-history.service";
+import { resolveWorkflowImagesOutputDir } from "../workflow/workflow-image.constants";
 
 const DEFAULT_GEMINI_IMAGE_MODEL: GeminiImageModel = "gemini-3.1-flash-image";
 
@@ -25,7 +29,10 @@ export class GeminiImageService {
   private readonly keyIndexes: Record<GeminiKeyTier, number> = { normal: 0, vip: 0 };
   private readonly defaultModel: GeminiImageModel;
 
-  constructor(private readonly config: ConfigService) {
+  constructor(
+    private readonly config: ConfigService,
+    private readonly imagesHistoryService: ImagesHistoryService,
+  ) {
     this.keyPools = loadGeminiKeyPools(config);
     this.defaultModel = this.resolveDefaultModel();
   }
@@ -69,50 +76,90 @@ export class GeminiImageService {
     this.validateRequest(model, imageSize, aspectRatio, dto.useGoogleSearch ?? false);
 
     const tier = resolveGeminiKeyTier(dto.apiKeyTier);
-    const keys = this.keysForTier(tier);
-    let lastError: unknown;
+    const history = await this.imagesHistoryService.createGeminiPending(dto, model);
 
-    for (let attempt = 0; attempt < keys.length; attempt++) {
-      const apiKey = this.nextApiKey(tier);
-      try {
-        const client = new GoogleGenAI({ apiKey });
-        const interaction = await client.interactions.create({
-          model,
-          input: dto.prompt.trim(),
-          tools: dto.useGoogleSearch ? [{ type: "google_search" }] : undefined,
-          response_format: {
-            type: "image",
-            delivery: "inline",
-            mime_type: "image/jpeg",
-            aspect_ratio: aspectRatio,
-            image_size: imageSize,
-          },
-        });
+    try {
+      const keys = this.keysForTier(tier);
+      let lastError: unknown;
 
-        const image = interaction.output_image;
-        if (!image?.data) {
-          throw new BadGatewayException("Gemini image response did not contain inline image data");
+      for (let attempt = 0; attempt < keys.length; attempt++) {
+        const apiKey = this.nextApiKey(tier);
+        try {
+          const client = new GoogleGenAI({ apiKey });
+          const interaction = await client.interactions.create({
+            model,
+            input: dto.prompt.trim(),
+            tools: dto.useGoogleSearch ? [{ type: "google_search" }] : undefined,
+            response_format: {
+              type: "image",
+              delivery: "inline",
+              mime_type: "image/jpeg",
+              aspect_ratio: aspectRatio,
+              image_size: imageSize,
+            },
+          });
+
+          const image = interaction.output_image;
+          if (!image?.data) {
+            throw new BadGatewayException("Gemini image response did not contain inline image data");
+          }
+
+          const mimeType = image.mime_type ?? "image/jpeg";
+          const fileName = this.fileNameForMimeType(mimeType);
+          const resultPath = await this.saveImage(dto.userId, history.id, fileName, image.data);
+          await this.imagesHistoryService.markGeminiCompleted(history.id, {
+            path: resultPath,
+            fileName,
+            mimeType,
+            interactionId: interaction.id,
+            apiKeyTier: tier,
+          });
+          const imageUrl = `/api/tools/images/${encodeURIComponent(dto.userId)}/${encodeURIComponent(history.id)}/${encodeURIComponent(fileName)}`;
+
+          return {
+            historyId: history.id,
+            interactionId: interaction.id,
+            model,
+            apiKeyTier: tier,
+            aspectRatio,
+            imageSize,
+            image: {
+              mimeType,
+              data: image.data,
+              url: imageUrl,
+              downloadUrl: imageUrl,
+            },
+          };
+        } catch (error) {
+          lastError = error;
+          if (!this.isRetryable(error) || attempt === keys.length - 1) break;
+          this.logger.warn(`Gemini image key failed; retrying with the next ${tier} key`);
         }
-
-        return {
-          interactionId: interaction.id,
-          model,
-          apiKeyTier: tier,
-          aspectRatio,
-          imageSize,
-          image: {
-            mimeType: image.mime_type ?? "image/jpeg",
-            data: image.data,
-          },
-        };
-      } catch (error) {
-        lastError = error;
-        if (!this.isRetryable(error) || attempt === keys.length - 1) break;
-        this.logger.warn(`Gemini image key failed; retrying with the next ${tier} key`);
       }
-    }
 
-    throw this.toHttpException(lastError);
+      throw lastError;
+    } catch (error) {
+      await this.imagesHistoryService.markFailed(history.id, this.errorMessage(error));
+      throw this.toHttpException(error);
+    }
+  }
+
+  private async saveImage(userId: string, historyId: string, fileName: string, base64: string): Promise<string> {
+    const directory = join(resolveWorkflowImagesOutputDir(), userId.trim(), historyId);
+    await mkdir(directory, { recursive: true });
+    const outputPath = join(directory, fileName);
+    const data = Buffer.from(base64, "base64");
+    if (data.length === 0) {
+      throw new BadGatewayException("Gemini image response contained empty image data");
+    }
+    await writeFile(outputPath, data);
+    return outputPath;
+  }
+
+  private fileNameForMimeType(mimeType: string): string {
+    if (mimeType === "image/png") return "output.png";
+    if (mimeType === "image/webp") return "output.webp";
+    return "output.jpg";
   }
 
   private validateRequest(
@@ -171,6 +218,17 @@ export class GeminiImageService {
     const value = error as { status?: unknown; httpStatusCode?: unknown };
     const status = Number(value.status ?? value.httpStatusCode);
     return status === 429 || status === 500 || status === 502 || status === 503 || status === 504;
+  }
+
+  private errorMessage(error: unknown): string {
+    if (typeof error === "string") return error.trim() || "Gemini image generation failed";
+    if (error && typeof error === "object") {
+      const value = error as { message?: unknown; response?: { data?: { message?: unknown } } };
+      const providerMessage = value.response?.data?.message;
+      if (typeof providerMessage === "string") return providerMessage;
+      if (typeof value.message === "string") return value.message;
+    }
+    return "Gemini image generation failed";
   }
 
   private toHttpException(error: unknown) {

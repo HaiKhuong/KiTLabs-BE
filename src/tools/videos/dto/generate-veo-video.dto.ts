@@ -10,6 +10,7 @@ import {
   IsOptional,
   IsString,
   IsUrl,
+  IsUUID,
   Min,
   ValidateIf,
   ValidateNested,
@@ -62,6 +63,10 @@ export class VeoInputVideoDto {
 }
 
 export class GenerateVeoVideoDto {
+  @ApiProperty({ description: "Owner user UUID" })
+  @IsUUID()
+  userId!: string;
+
   @ApiProperty({ description: "Video generation prompt (audio cues are supported)" })
   @IsString()
   @IsNotEmpty()

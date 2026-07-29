@@ -12,6 +12,7 @@ import {
 } from "@nestjs/common";
 import { ApiBearerAuth, ApiBody, ApiOperation, ApiQuery, ApiTags } from "@nestjs/swagger";
 import type { Response } from "express";
+import { extname } from "path";
 
 import { Public } from "../../common/decorators/public.decorator";
 import { GenerateGeminiImageDto } from "./dto/generate-gemini-image.dto";
@@ -127,7 +128,10 @@ export class ImagesController {
     if (!abs) {
       throw new NotFoundException("Image not found");
     }
-    res.setHeader("Content-Type", "image/png");
+    const extension = extname(filename).toLowerCase();
+    const contentType =
+      extension === ".jpg" || extension === ".jpeg" ? "image/jpeg" : extension === ".webp" ? "image/webp" : "image/png";
+    res.setHeader("Content-Type", contentType);
     res.setHeader("Cache-Control", "public, max-age=86400");
     return res.sendFile(abs);
   }
