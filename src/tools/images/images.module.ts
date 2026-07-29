@@ -4,17 +4,15 @@ import { TypeOrmModule } from "@nestjs/typeorm";
 import { NotificationsModule } from "../notifications/notifications.module";
 import { WorkflowModule } from "../workflow/workflow.module";
 import { ImageHistory } from "./image-history.entity";
+import { GeminiImageService } from "./gemini-image.service";
 import { ImagesController } from "./images.controller";
 import { ImagesHistoryService } from "./images-history.service";
 import { ImagesJobsService } from "./images-jobs.service";
 
 @Module({
-  imports: [
-    WorkflowModule,
-    NotificationsModule,
-    TypeOrmModule.forFeature([ImageHistory], "tool"),
-  ],
+  imports: [WorkflowModule, NotificationsModule, TypeOrmModule.forFeature([ImageHistory], "tool")],
   controllers: [ImagesController],
-  providers: [ImagesJobsService, ImagesHistoryService],
+  providers: [GeminiImageService, ImagesJobsService, ImagesHistoryService],
+  exports: [GeminiImageService],
 })
 export class ImagesModule {}

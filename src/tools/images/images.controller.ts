@@ -14,7 +14,9 @@ import { ApiBearerAuth, ApiBody, ApiOperation, ApiQuery, ApiTags } from "@nestjs
 import type { Response } from "express";
 
 import { Public } from "../../common/decorators/public.decorator";
+import { GenerateGeminiImageDto } from "./dto/generate-gemini-image.dto";
 import { GenerateStudioImageDto } from "./dto/generate-studio-image.dto";
+import { GeminiImageService } from "./gemini-image.service";
 import { ImagesHistoryService } from "./images-history.service";
 import { ImagesJobsService } from "./images-jobs.service";
 import { WorkflowImageService } from "../workflow/workflow-image.service";
@@ -24,10 +26,26 @@ import { WorkflowImageService } from "../workflow/workflow-image.service";
 @Controller("tools/images")
 export class ImagesController {
   constructor(
+    private readonly geminiImageService: GeminiImageService,
     private readonly imagesJobsService: ImagesJobsService,
     private readonly imagesHistoryService: ImagesHistoryService,
     private readonly workflowImageService: WorkflowImageService,
   ) {}
+
+  @ApiOperation({ summary: "Gemini Text-to-Image parameter capabilities and constraints" })
+  @Public()
+  @Get("gemini/capabilities")
+  getGeminiCapabilities() {
+    return this.geminiImageService.getCapabilities();
+  }
+
+  @ApiOperation({ summary: "Generate an image from text using Gemini Nano Banana" })
+  @ApiBody({ type: GenerateGeminiImageDto })
+  @Public()
+  @Post("gemini/generate")
+  generateGeminiImage(@Body() dto: GenerateGeminiImageDto) {
+    return this.geminiImageService.generate(dto);
+  }
 
   @ApiOperation({
     summary: "Queue studio image generation — kết quả qua socket images.studio.completed / failed",
@@ -45,11 +63,7 @@ export class ImagesController {
   @ApiQuery({ name: "limit", required: false })
   @Public()
   @Get("jobs")
-  async listJobs(
-    @Query("userId") userId?: string,
-    @Query("page") page?: string,
-    @Query("limit") limit?: string,
-  ) {
+  async listJobs(@Query("userId") userId?: string, @Query("page") page?: string, @Query("limit") limit?: string) {
     if (!userId) {
       throw new BadRequestException("userId is required");
     }

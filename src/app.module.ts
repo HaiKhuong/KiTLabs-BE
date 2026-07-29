@@ -31,6 +31,7 @@ import { TranslateModule } from "./tools/translate/translate.module";
 import { UsersModule } from "./tools/users/users.module";
 import { WorkflowModule } from "./tools/workflow/workflow.module";
 import { ImagesModule } from "./tools/images/images.module";
+import { VideosModule } from "./tools/videos/videos.module";
 import { YouTubeModule } from "./tools/youtube/youtube.module";
 
 @Module({
@@ -109,6 +110,7 @@ import { YouTubeModule } from "./tools/youtube/youtube.module";
     YouTubeModule,
     WorkflowModule,
     ImagesModule,
+    VideosModule,
   ],
   controllers: [AppController],
   providers: [
