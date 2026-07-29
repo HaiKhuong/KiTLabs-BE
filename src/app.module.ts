@@ -27,6 +27,7 @@ import { AudioModule } from "./tools/audio/audio.module";
 import { ToolsRealtimeModule } from "./tools/realtime/tools-realtime.module";
 import { RecapModule } from "./tools/recap/recap.module";
 import { ShortVideoModule } from "./tools/shortvideo/shortvideo.module";
+import { WhiteboardModule } from "./tools/whiteboard/whiteboard.module";
 import { TranslateModule } from "./tools/translate/translate.module";
 import { UsersModule } from "./tools/users/users.module";
 import { WorkflowModule } from "./tools/workflow/workflow.module";
@@ -100,6 +101,7 @@ import { YouTubeModule } from "./tools/youtube/youtube.module";
     TranslateModule,
     RecapModule,
     ShortVideoModule,
+    WhiteboardModule,
     AudioModule,
     NotificationsModule,
     SettingsModule,
