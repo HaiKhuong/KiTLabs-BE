@@ -20,4 +20,13 @@ export class UpdateUserSettingProfileDto {
   @IsOptional()
   @IsBoolean()
   isDefault?: boolean;
+
+  @ApiProperty({
+    example: true,
+    required: false,
+    description: "Re-enable a soft-disabled profile (true) or soft-disable (false)",
+  })
+  @IsOptional()
+  @IsBoolean()
+  isEnabled?: boolean;
 }

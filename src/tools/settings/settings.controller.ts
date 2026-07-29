@@ -66,13 +66,24 @@ export class SettingsController {
   @ApiOperation({ summary: "List user setting profiles by userId" })
   @ApiQuery({ name: "userId", required: true, description: "User UUID" })
   @ApiQuery({ name: "type", required: false, description: "Filter by setting type" })
+  @ApiQuery({
+    name: "includeDisabled",
+    required: false,
+    description: "Include soft-disabled profiles (settings management UI)",
+  })
   @Public()
   @Get("user/profiles")
-  async listUserSettingProfiles(@Query("userId") userId?: string, @Query("type") type?: string) {
+  async listUserSettingProfiles(
+    @Query("userId") userId?: string,
+    @Query("type") type?: string,
+    @Query("includeDisabled") includeDisabled?: string,
+  ) {
     if (!userId) {
       throw new BadRequestException("userId is required");
     }
-    return this.settingsService.listUserSettingProfiles(userId, type);
+    return this.settingsService.listUserSettingProfiles(userId, type, {
+      includeDisabled: includeDisabled === "true" || includeDisabled === "1",
+    });
   }
 
   @ApiOperation({ summary: "Create user setting profile" })
@@ -91,7 +102,7 @@ export class SettingsController {
     return this.settingsService.updateUserSettingProfile(id, dto);
   }
 
-  @ApiOperation({ summary: "Delete user setting profile" })
+  @ApiOperation({ summary: "Soft-disable user setting profile (can re-enable later)" })
   @ApiQuery({ name: "userId", required: true, description: "User UUID" })
   @Public()
   @Delete("user/profiles/:id")

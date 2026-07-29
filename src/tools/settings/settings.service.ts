@@ -103,19 +103,27 @@ export class SettingsService {
     });
   }
 
-  async listUserSettingProfiles(userId: string, type?: string): Promise<UserSettingProfile[]> {
+  async listUserSettingProfiles(
+    userId: string,
+    type?: string,
+    options?: { includeDisabled?: boolean },
+  ): Promise<UserSettingProfile[]> {
+    const includeDisabled = options?.includeDisabled === true;
+
     if (!type) {
-      return this.userSettingProfileRepository.find({
+      const rows = await this.userSettingProfileRepository.find({
         where: { userId },
         order: { isDefault: "DESC", name: "ASC" },
       });
+      return includeDisabled ? rows : rows.filter((row) => row.isEnabled !== false);
     }
 
     await this.ensureDefaultProfile(userId, type);
-    return this.userSettingProfileRepository.find({
+    const rows = await this.userSettingProfileRepository.find({
       where: { userId, type },
       order: { isDefault: "DESC", name: "ASC" },
     });
+    return includeDisabled ? rows : rows.filter((row) => row.isEnabled !== false);
   }
 
   async updateUserSettingProfile(id: string, dto: UpdateUserSettingProfileDto): Promise<UserSettingProfile> {
@@ -149,18 +157,29 @@ export class SettingsService {
       profile.directUrl = dto.directUrl.trim() || undefined;
     }
 
+    if (dto.isEnabled === true) {
+      profile.isEnabled = true;
+      profile.disabledAt = null;
+    } else if (dto.isEnabled === false) {
+      await this.softDisableProfile(profile);
+      return this.userSettingProfileRepository.findOneOrFail({ where: { id: profile.id } });
+    }
+
     if (dto.isDefault === true) {
+      if (profile.isEnabled === false) {
+        throw new BadRequestException("Cannot set a disabled profile as default");
+      }
       await this.userSettingProfileRepository.update(
         { userId: dto.userId, type: profile.type, isDefault: true },
         { isDefault: false },
       );
       profile.isDefault = true;
     } else if (dto.isDefault === false && profile.isDefault) {
-      const otherProfiles = await this.userSettingProfileRepository.count({
-        where: { userId: dto.userId, type: profile.type },
+      const otherEnabled = await this.userSettingProfileRepository.count({
+        where: { userId: dto.userId, type: profile.type, isEnabled: true },
       });
-      if (otherProfiles <= 1) {
-        throw new BadRequestException("Cannot unset default on the only profile");
+      if (otherEnabled <= 1) {
+        throw new BadRequestException("Cannot unset default on the only enabled profile");
       }
       profile.isDefault = false;
     }
@@ -180,19 +199,11 @@ export class SettingsService {
       throw new BadRequestException("Profile not found");
     }
 
-    const profileCount = await this.userSettingProfileRepository.count({
-      where: { userId, type: profile.type },
-    });
-    if (profileCount <= 1) {
-      throw new BadRequestException("Cannot delete the only profile");
+    if (profile.isEnabled === false) {
+      return;
     }
 
-    const wasDefault = profile.isDefault;
-    await this.userSettingProfileRepository.remove(profile);
-
-    if (wasDefault) {
-      await this.ensureDefaultProfile(userId, profile.type);
-    }
+    await this.softDisableProfile(profile);
   }
 
   async createUserSettingProfile(dto: CreateUserSettingProfileDto): Promise<UserSettingProfile> {
@@ -210,6 +221,22 @@ export class SettingsService {
       where: { userId: dto.userId, type: dto.type, name },
     });
     if (existed) {
+      // Creating with same name re-enables a soft-disabled profile.
+      if (existed.isEnabled === false) {
+        existed.isEnabled = true;
+        existed.disabledAt = null;
+        if (directUrl !== undefined) {
+          existed.directUrl = directUrl;
+        }
+        if (dto.isDefault) {
+          await this.userSettingProfileRepository.update(
+            { userId: dto.userId, type: dto.type, isDefault: true },
+            { isDefault: false },
+          );
+          existed.isDefault = true;
+        }
+        return this.userSettingProfileRepository.save(existed);
+      }
       return existed;
     }
 
@@ -227,6 +254,8 @@ export class SettingsService {
         name,
         isDefault: dto.isDefault ?? false,
         directUrl,
+        isEnabled: true,
+        disabledAt: null,
       }),
     );
   }
@@ -234,6 +263,25 @@ export class SettingsService {
   async getValue(type: string, code: string): Promise<string | null> {
     const item = await this.settingRepository.findOne({ where: { type, code } });
     return item?.value ?? null;
+  }
+
+  private async softDisableProfile(profile: UserSettingProfile): Promise<void> {
+    const enabledCount = await this.userSettingProfileRepository.count({
+      where: { userId: profile.userId, type: profile.type, isEnabled: true },
+    });
+    if (enabledCount <= 1) {
+      throw new BadRequestException("Cannot disable the only enabled profile");
+    }
+
+    const wasDefault = profile.isDefault;
+    profile.isEnabled = false;
+    profile.disabledAt = new Date();
+    profile.isDefault = false;
+    await this.userSettingProfileRepository.save(profile);
+
+    if (wasDefault) {
+      await this.ensureDefaultProfile(profile.userId, profile.type);
+    }
   }
 
   private async resolveProfile(userId: string, type: string, profileId?: string): Promise<UserSettingProfile> {
@@ -244,6 +292,9 @@ export class SettingsService {
       if (!profile) {
         throw new BadRequestException("Profile not found");
       }
+      if (profile.isEnabled === false) {
+        throw new BadRequestException("Profile is disabled");
+      }
       return profile;
     }
     return this.ensureDefaultProfile(userId, type);
@@ -251,22 +302,26 @@ export class SettingsService {
 
   private async ensureDefaultProfile(userId: string, type: string): Promise<UserSettingProfile> {
     const existed = await this.userSettingProfileRepository.findOne({
-      where: { userId, type, isDefault: true },
+      where: { userId, type, isDefault: true, isEnabled: true },
     });
     if (existed) {
       return existed;
     }
 
-    const firstProfile = await this.userSettingProfileRepository.findOne({
-      where: { userId, type },
+    const firstEnabled = await this.userSettingProfileRepository.findOne({
+      where: { userId, type, isEnabled: true },
       order: { createdAt: "ASC" },
     });
-    if (firstProfile) {
-      if (!firstProfile.isDefault) {
-        firstProfile.isDefault = true;
-        return this.userSettingProfileRepository.save(firstProfile);
+    if (firstEnabled) {
+      if (!firstEnabled.isDefault) {
+        await this.userSettingProfileRepository.update(
+          { userId, type, isDefault: true },
+          { isDefault: false },
+        );
+        firstEnabled.isDefault = true;
+        return this.userSettingProfileRepository.save(firstEnabled);
       }
-      return firstProfile;
+      return firstEnabled;
     }
 
     return this.userSettingProfileRepository.save(
@@ -275,6 +330,8 @@ export class SettingsService {
         type,
         name: "Default",
         isDefault: true,
+        isEnabled: true,
+        disabledAt: null,
       }),
     );
   }

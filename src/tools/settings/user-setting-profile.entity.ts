@@ -26,6 +26,13 @@ export class UserSettingProfile extends BaseEntity {
   @Column({ name: "direct_url", nullable: true })
   directUrl?: string;
 
+  /** Soft-disable: hidden from app selectors, can be re-enabled in settings. */
+  @Column({ name: "is_enabled", default: true })
+  isEnabled!: boolean;
+
+  @Column({ name: "disabled_at", type: "timestamp", nullable: true })
+  disabledAt?: Date | null;
+
   @OneToMany(() => UserSetting, (setting) => setting.profile)
   userSettings!: UserSetting[];
 }
