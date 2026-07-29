@@ -1,29 +1,59 @@
 import React from "react";
-import { Composition, getInputProps } from "remotion";
+import { Composition, registerRoot } from "remotion";
 import { WhiteboardComposition } from "./WhiteboardComposition";
 import type { WhiteboardCompositionProps } from "./WhiteboardComposition";
 
-const inputProps = getInputProps() as WhiteboardCompositionProps & {
-  durationInFrames?: number;
-  fps?: number;
+const FALLBACK_FPS = 30;
+const FALLBACK_WIDTH = 1280;
+const FALLBACK_HEIGHT = 720;
+const FALLBACK_DURATION_SEC = 10;
+
+/** h264 rejects odd frame dimensions, so every side is rounded up to an even number. */
+const toEvenSize = (value: number | undefined, fallback: number): number => {
+  const n = Math.round(Number(value));
+  const safe = Number.isFinite(n) && n > 0 ? n : fallback;
+  return safe % 2 === 0 ? safe : safe + 1;
 };
 
-const fps = inputProps.fps ?? 30;
-const totalDurationSec = inputProps.pathPlan?.totalDurationSec ?? 10;
-const durationInFrames = Math.max(1, Math.ceil(totalDurationSec * fps));
-const imageWidth = inputProps.imageWidth ?? 1280;
-const imageHeight = inputProps.imageHeight ?? 720;
+const defaultProps: WhiteboardCompositionProps = {
+  sourceImageDataUrl: "",
+  imageWidth: FALLBACK_WIDTH,
+  imageHeight: FALLBACK_HEIGHT,
+  pathPlan: {
+    totalDurationSec: FALLBACK_DURATION_SEC,
+    fps: FALLBACK_FPS,
+    brushSize: 60,
+    brushSpeedPx: 600,
+    objectPaths: [],
+  },
+};
 
 export const RemotionRoot: React.FC = () => {
   return (
     <Composition
       id="WhiteboardReveal"
       component={WhiteboardComposition}
-      durationInFrames={durationInFrames}
-      fps={fps}
-      width={imageWidth}
-      height={imageHeight}
-      defaultProps={inputProps}
+      durationInFrames={FALLBACK_DURATION_SEC * FALLBACK_FPS}
+      fps={FALLBACK_FPS}
+      width={FALLBACK_WIDTH}
+      height={FALLBACK_HEIGHT}
+      defaultProps={defaultProps}
+      calculateMetadata={({ props }) => {
+        const fps = Number(props.pathPlan?.fps) || FALLBACK_FPS;
+        const totalDurationSec = Number(props.pathPlan?.totalDurationSec) || FALLBACK_DURATION_SEC;
+        const width = toEvenSize(props.imageWidth, FALLBACK_WIDTH);
+        const height = toEvenSize(props.imageHeight, FALLBACK_HEIGHT);
+
+        return {
+          fps,
+          durationInFrames: Math.max(1, Math.ceil(totalDurationSec * fps)),
+          width,
+          height,
+          props: { ...props, imageWidth: width, imageHeight: height },
+        };
+      }}
     />
   );
 };
+
+registerRoot(RemotionRoot);

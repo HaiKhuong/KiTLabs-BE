@@ -1,5 +1,12 @@
-import React, { useCallback, useEffect, useRef } from "react";
-import { useCurrentFrame, useVideoConfig, staticFile } from "remotion";
+import React, { useCallback, useEffect, useRef, useState } from "react";
+import {
+  cancelRender,
+  continueRender,
+  delayRender,
+  staticFile,
+  useCurrentFrame,
+  useVideoConfig,
+} from "remotion";
 
 /** Hand pen-tip offset relative to hand PNG top-left corner (as fraction of hand image dimensions). */
 const HAND_TIP_OFFSET_X = 0.18;
@@ -36,6 +43,15 @@ export interface WhiteboardCompositionProps {
   imageWidth: number;
   imageHeight: number;
   pathPlan: WhiteboardPathPlan;
+}
+
+function loadImage(src: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error(`Failed to load image: ${src.slice(0, 64)}`));
+    img.src = src;
+  });
 }
 
 function interpolatePath(points: PathPoint[], t: number): PathPoint {
@@ -142,23 +158,46 @@ export const WhiteboardComposition: React.FC<WhiteboardCompositionProps> = ({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const sourceImgRef = useRef<HTMLImageElement | null>(null);
   const handImgRef = useRef<HTMLImageElement | null>(null);
+  const [assetsReady, setAssetsReady] = useState(false);
+  const [handle] = useState(() => delayRender("Loading whiteboard assets"));
 
-  // Load source image once
+  // Frames must not be captured before the bitmaps are decoded, otherwise the
+  // canvas is painted empty.
   useEffect(() => {
-    const img = new Image();
-    img.onload = () => { sourceImgRef.current = img; };
-    img.src = sourceImageDataUrl;
+    let cancelled = false;
 
-    const hand = new Image();
-    hand.onload = () => { handImgRef.current = hand; };
-    hand.onerror = () => {
-      // Try SVG fallback
-      const handSvg = new Image();
-      handSvg.onload = () => { handImgRef.current = handSvg; };
-      handSvg.src = staticFile("whiteboard-hand.svg");
+    const loadHand = async (): Promise<HTMLImageElement | null> => {
+      for (const name of ["whiteboard-hand.png", "whiteboard-hand.svg"]) {
+        try {
+          return await loadImage(staticFile(name));
+        } catch {
+          // try the next candidate
+        }
+      }
+      return null;
     };
-    hand.src = staticFile("whiteboard-hand.png");
-  }, [sourceImageDataUrl]);
+
+    const loadSource = sourceImageDataUrl
+      ? loadImage(sourceImageDataUrl)
+      : Promise.resolve(null);
+
+    Promise.all([loadSource, loadHand()])
+      .then(([source, hand]) => {
+        if (cancelled) return;
+        sourceImgRef.current = source;
+        handImgRef.current = hand;
+        setAssetsReady(true);
+        continueRender(handle);
+      })
+      .catch((err) => {
+        if (!cancelled) cancelRender(err);
+      });
+
+    return () => {
+      cancelled = true;
+      continueRender(handle);
+    };
+  }, [sourceImageDataUrl, handle]);
 
   const renderFrame = useCallback(() => {
     const canvas = canvasRef.current;
@@ -227,7 +266,7 @@ export const WhiteboardComposition: React.FC<WhiteboardCompositionProps> = ({
         HAND_DISPLAY_HEIGHT,
       );
     }
-  }, [frame, fps, pathPlan, imageWidth, imageHeight]);
+  }, [frame, fps, pathPlan, imageWidth, imageHeight, assetsReady]);
 
   useEffect(() => {
     renderFrame();
