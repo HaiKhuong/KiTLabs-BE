@@ -24,7 +24,15 @@ const HAND_STYLES = new Set([
   "svg_stroke_fill",
 ]);
 const EFFECT_STYLES = new Set(["zoom_in", "fade_in", "slide_up", "pop"]);
-const SVG_STROKE_PORTION = 0.8;
+/** Absolute fill fade after stroke completes — keeps fill snappy for long stroke times. */
+const SVG_FILL_DURATION_SEC = 0.22;
+const SVG_MIN_STROKE_PORTION = 0.7;
+
+function svgStrokePortion(drawDurationSec: number): number {
+  if (!(drawDurationSec > 0)) return 0.9;
+  const fillPortion = Math.min(1 - SVG_MIN_STROKE_PORTION, SVG_FILL_DURATION_SEC / drawDurationSec);
+  return clamp01(1 - fillPortion);
+}
 
 export interface PathPoint {
   x: number;
@@ -250,8 +258,10 @@ function computeObjectStates(plan: WhiteboardPathPlan, tSec: number): ObjectFram
       });
     } else if (tSec >= transitEnd) {
       const drawT = op.drawDurationSec > 0 ? (tSec - transitEnd) / op.drawDurationSec : 1;
+      const strokePortion =
+        op.revealStyle === "svg_stroke_fill" ? svgStrokePortion(op.drawDurationSec) : 1;
       const svgStrokeT =
-        op.revealStyle === "svg_stroke_fill" ? clamp01(drawT / SVG_STROKE_PORTION) : drawT;
+        op.revealStyle === "svg_stroke_fill" ? clamp01(drawT / Math.max(0.001, strokePortion)) : drawT;
       const vectorState = op.strokePaths?.length
         ? buildPartialStrokePaths(op.strokePaths, svgStrokeT)
         : null;
@@ -364,8 +374,9 @@ function drawSvgStrokeFill(
     return;
   }
 
+  const strokePortion = svgStrokePortion(state.op.drawDurationSec);
   const fillProgress = easeOutCubic(
-    clamp01((state.progress - SVG_STROKE_PORTION) / (1 - SVG_STROKE_PORTION)),
+    clamp01((state.progress - strokePortion) / Math.max(0.001, 1 - strokePortion)),
   );
   if (fillProgress > 0) {
     ctx.save();
@@ -522,7 +533,7 @@ export const WhiteboardComposition: React.FC<WhiteboardCompositionProps> = ({
         isHandStyle(state.op.revealStyle ?? "zigzag") &&
         (state.op.revealStyle !== "svg_stroke_fill" ||
           state.phase === "transit" ||
-          state.progress < SVG_STROKE_PORTION),
+          state.progress < svgStrokePortion(state.op.drawDurationSec)),
     );
 
     if (active?.handPos && handImgRef.current) {
