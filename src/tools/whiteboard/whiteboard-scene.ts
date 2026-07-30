@@ -9,12 +9,37 @@ export const WHITEBOARD_OBJECT_TYPES = [
 
 export type WhiteboardObjectType = (typeof WHITEBOARD_OBJECT_TYPES)[number];
 
+export const WHITEBOARD_HAND_STYLES = [
+  "zigzag",
+  "left_right",
+  "right_left",
+  "top_bottom",
+] as const;
+
+export const WHITEBOARD_EFFECT_STYLES = [
+  "zoom_in",
+  "fade_in",
+  "slide_up",
+  "pop",
+] as const;
+
+export const WHITEBOARD_REVEAL_STYLES = [
+  ...WHITEBOARD_HAND_STYLES,
+  ...WHITEBOARD_EFFECT_STYLES,
+] as const;
+
+export type WhiteboardHandStyle = (typeof WHITEBOARD_HAND_STYLES)[number];
+export type WhiteboardEffectStyle = (typeof WHITEBOARD_EFFECT_STYLES)[number];
+export type WhiteboardRevealStyle = (typeof WHITEBOARD_REVEAL_STYLES)[number];
+
 export interface WhiteboardObject {
   id: string;
   type: WhiteboardObjectType;
   /** [x1, y1, x2, y2] in source-image pixels, top-left to bottom-right. */
   bbox: [number, number, number, number];
   order: number;
+  /** Optional reveal style; falls back to heuristic hand path when omitted. */
+  revealStyle?: WhiteboardRevealStyle;
 }
 
 export interface WhiteboardSceneJson {
@@ -24,6 +49,8 @@ export interface WhiteboardSceneJson {
 }
 
 const ALLOWED_TYPES = new Set<string>(WHITEBOARD_OBJECT_TYPES);
+const ALLOWED_REVEAL_STYLES = new Set<string>(WHITEBOARD_REVEAL_STYLES);
+const ALLOWED_HAND_STYLES = new Set<string>(WHITEBOARD_HAND_STYLES);
 
 /** Boxes thinner than this in either axis carry no drawable area. */
 const MIN_BOX_SIDE_PX = 4;
@@ -75,11 +102,32 @@ export function normalizeSceneObjects(
     const rawOrder = Number(obj.order);
     const order = Number.isFinite(rawOrder) ? Math.max(1, Math.round(rawOrder)) : index + 1;
 
-    objects.push({ id: uniqueId, type, bbox, order });
+    const rawRevealStyle = String(obj.revealStyle ?? obj.handStyle ?? "")
+      .trim()
+      .toLowerCase();
+    const revealStyle = ALLOWED_REVEAL_STYLES.has(rawRevealStyle)
+      ? (rawRevealStyle as WhiteboardRevealStyle)
+      : undefined;
+
+    objects.push({
+      id: uniqueId,
+      type,
+      bbox,
+      order,
+      ...(revealStyle ? { revealStyle } : {}),
+    });
   });
 
   objects.sort((a, b) => a.order - b.order || a.bbox[1] - b.bbox[1] || a.bbox[0] - b.bbox[0]);
   return objects.map((obj, index) => ({ ...obj, order: index + 1 }));
+}
+
+export function isHandRevealStyle(style: WhiteboardRevealStyle | undefined): boolean {
+  return Boolean(style && ALLOWED_HAND_STYLES.has(style));
+}
+
+export function isEffectRevealStyle(style: WhiteboardRevealStyle | undefined): boolean {
+  return Boolean(style && (WHITEBOARD_EFFECT_STYLES as readonly string[]).includes(style));
 }
 
 /** Clamp to canvas, fix inverted corners, and reject boxes with no drawable area. */

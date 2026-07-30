@@ -16,6 +16,9 @@ const HAND_TIP_OFFSET_Y = 0.08;
 const HAND_DISPLAY_WIDTH = 120;
 const HAND_DISPLAY_HEIGHT = 120;
 
+const HAND_STYLES = new Set(["zigzag", "left_right", "right_left", "top_bottom"]);
+const EFFECT_STYLES = new Set(["zoom_in", "fade_in", "slide_up", "pop"]);
+
 export interface PathPoint {
   x: number;
   y: number;
@@ -24,6 +27,7 @@ export interface PathPoint {
 export interface ObjectPath {
   objectId: string;
   bbox: [number, number, number, number];
+  revealStyle?: string;
   drawPoints: PathPoint[];
   drawDurationSec: number;
   transitDurationSec: number;
@@ -45,6 +49,15 @@ export interface WhiteboardCompositionProps {
   pathPlan: WhiteboardPathPlan;
 }
 
+type ObjectFrameState = {
+  op: ObjectPath;
+  /** 0 = not started, (0,1) = in progress, 1 = done */
+  progress: number;
+  phase: "pending" | "transit" | "drawing" | "done";
+  handPos: PathPoint | null;
+  partialPoints: PathPoint[];
+};
+
 function loadImage(src: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
     const img = new Image();
@@ -52,6 +65,23 @@ function loadImage(src: string): Promise<HTMLImageElement> {
     img.onerror = () => reject(new Error(`Failed to load image: ${src.slice(0, 64)}`));
     img.src = src;
   });
+}
+
+function clamp01(value: number): number {
+  return Math.max(0, Math.min(1, value));
+}
+
+function easeOutCubic(t: number): number {
+  const x = clamp01(t);
+  return 1 - Math.pow(1 - x, 3);
+}
+
+/** Overshoot ease for pop. */
+function easeOutBack(t: number): number {
+  const x = clamp01(t);
+  const c1 = 1.70158;
+  const c3 = c1 + 1;
+  return 1 + c3 * Math.pow(x - 1, 3) + c1 * Math.pow(x - 1, 2);
 }
 
 function interpolatePath(points: PathPoint[], t: number): PathPoint {
@@ -85,66 +115,210 @@ function interpolatePath(points: PathPoint[], t: number): PathPoint {
   return points[points.length - 1];
 }
 
-/**
- * Returns all (point, isDrawing) pairs that have been traversed up to time tSec,
- * plus the current hand position.
- */
-function computeFrameState(plan: WhiteboardPathPlan, tSec: number) {
-  const strokesDrawn: { points: PathPoint[]; brushSize: number }[] = [];
-  let handPos: PathPoint = { x: 0, y: 0 };
+function buildPartialStroke(points: PathPoint[], drawT: number, partialPoint: PathPoint): PathPoint[] {
+  if (points.length === 0) return [];
+  if (points.length === 1 || drawT <= 0) return [points[0]];
+  if (drawT >= 1) return points;
 
+  let totalLen = 0;
+  for (let i = 1; i < points.length; i++) {
+    const dx = points[i].x - points[i - 1].x;
+    const dy = points[i].y - points[i - 1].y;
+    totalLen += Math.sqrt(dx * dx + dy * dy);
+  }
+
+  const targetLen = totalLen * drawT;
+  const partialPoints: PathPoint[] = [points[0]];
+  let prevLen = 0;
+  for (let i = 1; i < points.length; i++) {
+    const dx = points[i].x - points[i - 1].x;
+    const dy = points[i].y - points[i - 1].y;
+    const seg = Math.sqrt(dx * dx + dy * dy);
+    if (prevLen + seg >= targetLen) {
+      partialPoints.push(partialPoint);
+      break;
+    }
+    prevLen += seg;
+    partialPoints.push(points[i]);
+  }
+  return partialPoints;
+}
+
+function isHandStyle(style: string | undefined): boolean {
+  return Boolean(style && HAND_STYLES.has(style));
+}
+
+function isEffectStyle(style: string | undefined): boolean {
+  return Boolean(style && EFFECT_STYLES.has(style));
+}
+
+function computeObjectStates(plan: WhiteboardPathPlan, tSec: number): ObjectFrameState[] {
+  const states: ObjectFrameState[] = [];
   let elapsed = 0;
+
   for (const op of plan.objectPaths) {
     const transitEnd = elapsed + op.transitDurationSec;
     const drawEnd = transitEnd + op.drawDurationSec;
+    const center = {
+      x: Math.round((op.bbox[0] + op.bbox[2]) / 2),
+      y: Math.round((op.bbox[1] + op.bbox[3]) / 2),
+    };
 
-    if (tSec < elapsed) break;
-
-    if (tSec >= drawEnd) {
-      // Entire object has been drawn — include full stroke
-      strokesDrawn.push({ points: op.drawPoints, brushSize: plan.brushSize });
-      handPos = op.drawPoints[op.drawPoints.length - 1] ?? handPos;
+    if (tSec < elapsed) {
+      states.push({
+        op,
+        progress: 0,
+        phase: "pending",
+        handPos: null,
+        partialPoints: [],
+      });
+    } else if (tSec >= drawEnd) {
+      states.push({
+        op,
+        progress: 1,
+        phase: "done",
+        handPos: op.drawPoints[op.drawPoints.length - 1] ?? center,
+        partialPoints: op.drawPoints,
+      });
     } else if (tSec >= transitEnd) {
-      // Currently drawing this object
       const drawT = op.drawDurationSec > 0 ? (tSec - transitEnd) / op.drawDurationSec : 1;
       const partialPoint = interpolatePath(op.drawPoints, drawT);
-
-      // Build partial stroke: all points up to the interpolated position
-      const partialPoints: PathPoint[] = [];
-      let totalLen = 0;
-      for (let i = 1; i < op.drawPoints.length; i++) {
-        const dx = op.drawPoints[i].x - op.drawPoints[i - 1].x;
-        const dy = op.drawPoints[i].y - op.drawPoints[i - 1].y;
-        totalLen += Math.sqrt(dx * dx + dy * dy);
-      }
-      let pathLen = 0;
-      let prevLen = 0;
-      const targetLen = totalLen * drawT;
-      partialPoints.push(op.drawPoints[0]);
-      for (let i = 1; i < op.drawPoints.length; i++) {
-        const dx = op.drawPoints[i].x - op.drawPoints[i - 1].x;
-        const dy = op.drawPoints[i].y - op.drawPoints[i - 1].y;
-        const seg = Math.sqrt(dx * dx + dy * dy);
-        if (prevLen + seg >= targetLen) {
-          partialPoints.push(partialPoint);
-          break;
-        }
-        prevLen += seg;
-        partialPoints.push(op.drawPoints[i]);
-      }
-
-      strokesDrawn.push({ points: partialPoints, brushSize: plan.brushSize });
-      handPos = partialPoint;
-    } else if (tSec >= elapsed) {
-      // Transit phase — move toward first draw point
-      const firstPt = op.drawPoints[0] ?? { x: op.bbox[0], y: op.bbox[1] };
-      handPos = firstPt;
+      states.push({
+        op,
+        progress: clamp01(drawT),
+        phase: "drawing",
+        handPos: partialPoint,
+        partialPoints: buildPartialStroke(op.drawPoints, drawT, partialPoint),
+      });
+    } else {
+      states.push({
+        op,
+        progress: 0,
+        phase: "transit",
+        handPos: op.drawPoints[0] ?? center,
+        partialPoints: [],
+      });
     }
 
     elapsed = drawEnd;
   }
 
-  return { strokesDrawn, handPos };
+  return states;
+}
+
+function eraseStroke(
+  ctx: CanvasRenderingContext2D,
+  points: PathPoint[],
+  brushSize: number,
+  offsetX = 0,
+  offsetY = 0,
+) {
+  if (points.length === 0) return;
+  ctx.beginPath();
+  ctx.lineWidth = brushSize;
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  ctx.strokeStyle = "rgba(0,0,0,1)";
+  ctx.fillStyle = "rgba(0,0,0,1)";
+
+  if (points.length === 1) {
+    ctx.arc(points[0].x - offsetX, points[0].y - offsetY, brushSize / 2, 0, Math.PI * 2);
+    ctx.fill();
+    return;
+  }
+
+  ctx.moveTo(points[0].x - offsetX, points[0].y - offsetY);
+  for (let i = 1; i < points.length; i++) {
+    ctx.lineTo(points[i].x - offsetX, points[i].y - offsetY);
+  }
+  ctx.stroke();
+}
+
+function drawHandReveal(
+  ctx: CanvasRenderingContext2D,
+  source: HTMLImageElement,
+  state: ObjectFrameState,
+  brushSize: number,
+) {
+  const [x1, y1, x2, y2] = state.op.bbox;
+  const w = Math.max(1, x2 - x1);
+  const h = Math.max(1, y2 - y1);
+
+  if (state.progress >= 1) {
+    ctx.drawImage(source, x1, y1, w, h, x1, y1, w, h);
+    return;
+  }
+  if (state.partialPoints.length === 0) return;
+
+  const temp = document.createElement("canvas");
+  temp.width = w;
+  temp.height = h;
+  const tempCtx = temp.getContext("2d");
+  if (!tempCtx) return;
+
+  tempCtx.drawImage(source, x1, y1, w, h, 0, 0, w, h);
+
+  const mask = document.createElement("canvas");
+  mask.width = w;
+  mask.height = h;
+  const maskCtx = mask.getContext("2d");
+  if (!maskCtx) return;
+
+  maskCtx.fillStyle = "#ffffff";
+  maskCtx.fillRect(0, 0, w, h);
+  maskCtx.globalCompositeOperation = "destination-out";
+  eraseStroke(maskCtx, state.partialPoints, brushSize, x1, y1);
+  maskCtx.globalCompositeOperation = "source-over";
+
+  tempCtx.drawImage(mask, 0, 0);
+  ctx.drawImage(temp, x1, y1);
+}
+
+function drawEffectReveal(
+  ctx: CanvasRenderingContext2D,
+  source: HTMLImageElement,
+  state: ObjectFrameState,
+) {
+  if (state.progress <= 0) return;
+
+  const [x1, y1, x2, y2] = state.op.bbox;
+  const w = Math.max(1, x2 - x1);
+  const h = Math.max(1, y2 - y1);
+  const cx = x1 + w / 2;
+  const cy = y1 + h / 2;
+  const style = state.op.revealStyle ?? "zoom_in";
+  const t = state.progress;
+
+  ctx.save();
+
+  if (style === "fade_in") {
+    ctx.globalAlpha = easeOutCubic(t);
+    ctx.drawImage(source, x1, y1, w, h, x1, y1, w, h);
+  } else if (style === "slide_up") {
+    const eased = easeOutCubic(t);
+    const offsetY = (1 - eased) * h * 0.45;
+    ctx.beginPath();
+    ctx.rect(x1, y1, w, h);
+    ctx.clip();
+    ctx.globalAlpha = Math.min(1, eased * 1.2);
+    ctx.drawImage(source, x1, y1, w, h, x1, y1 + offsetY, w, h);
+  } else if (style === "pop") {
+    const scale = 0.2 + 0.8 * easeOutBack(t);
+    ctx.translate(cx, cy);
+    ctx.scale(scale, scale);
+    ctx.translate(-cx, -cy);
+    ctx.drawImage(source, x1, y1, w, h, x1, y1, w, h);
+  } else {
+    // zoom_in (default effect)
+    const scale = 0.12 + 0.88 * easeOutCubic(t);
+    ctx.translate(cx, cy);
+    ctx.scale(scale, scale);
+    ctx.translate(-cx, -cy);
+    ctx.globalAlpha = Math.min(1, 0.35 + t * 0.9);
+    ctx.drawImage(source, x1, y1, w, h, x1, y1, w, h);
+  }
+
+  ctx.restore();
 }
 
 export const WhiteboardComposition: React.FC<WhiteboardCompositionProps> = ({
@@ -161,8 +335,6 @@ export const WhiteboardComposition: React.FC<WhiteboardCompositionProps> = ({
   const [assetsReady, setAssetsReady] = useState(false);
   const [handle] = useState(() => delayRender("Loading whiteboard assets"));
 
-  // Frames must not be captured before the bitmaps are decoded, otherwise the
-  // canvas is painted empty.
   useEffect(() => {
     let cancelled = false;
 
@@ -205,63 +377,39 @@ export const WhiteboardComposition: React.FC<WhiteboardCompositionProps> = ({
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
+    const source = sourceImgRef.current;
     const tSec = frame / fps;
-    const { strokesDrawn, handPos } = computeFrameState(pathPlan, tSec);
+    const states = computeObjectStates(pathPlan, tSec);
 
-    // --- Layer 1: white background ---
     ctx.fillStyle = "#ffffff";
     ctx.fillRect(0, 0, imageWidth, imageHeight);
 
-    // --- Layer 2: composite image ---
-    if (sourceImgRef.current) {
-      ctx.drawImage(sourceImgRef.current, 0, 0, imageWidth, imageHeight);
-    }
-
-    // --- Layer 3: white mask (off-screen) then composite ---
-    const maskCanvas = document.createElement("canvas");
-    maskCanvas.width = imageWidth;
-    maskCanvas.height = imageHeight;
-    const maskCtx = maskCanvas.getContext("2d")!;
-
-    // Fill mask white
-    maskCtx.fillStyle = "#ffffff";
-    maskCtx.fillRect(0, 0, imageWidth, imageHeight);
-
-    // Erase (destination-out) the areas that have been "drawn"
-    maskCtx.globalCompositeOperation = "destination-out";
-    for (const stroke of strokesDrawn) {
-      if (stroke.points.length === 0) continue;
-      maskCtx.beginPath();
-      maskCtx.lineWidth = stroke.brushSize;
-      maskCtx.lineCap = "round";
-      maskCtx.lineJoin = "round";
-      // Stroke alpha = 1 ensures full erase
-      maskCtx.strokeStyle = "rgba(0,0,0,1)";
-
-      if (stroke.points.length === 1) {
-        maskCtx.arc(stroke.points[0].x, stroke.points[0].y, stroke.brushSize / 2, 0, Math.PI * 2);
-        maskCtx.fill();
-      } else {
-        maskCtx.moveTo(stroke.points[0].x, stroke.points[0].y);
-        for (let i = 1; i < stroke.points.length; i++) {
-          maskCtx.lineTo(stroke.points[i].x, stroke.points[i].y);
+    if (source) {
+      for (const state of states) {
+        if (state.progress <= 0 && state.phase !== "drawing") continue;
+        const style = state.op.revealStyle;
+        if (isEffectStyle(style)) {
+          drawEffectReveal(ctx, source, state);
+        } else {
+          // Hand styles (and legacy missing style) use brush reveal.
+          drawHandReveal(ctx, source, state, pathPlan.brushSize);
         }
-        maskCtx.stroke();
       }
     }
-    maskCtx.globalCompositeOperation = "source-over";
 
-    // Draw the mask on top of the image (white parts hide image)
-    ctx.drawImage(maskCanvas, 0, 0);
+    const active = [...states].reverse().find(
+      (state) =>
+        (state.phase === "drawing" || state.phase === "transit") &&
+        isHandStyle(state.op.revealStyle ?? "zigzag"),
+    );
 
-    // --- Layer 4: hand ---
-    if (handImgRef.current) {
+    if (active?.handPos && handImgRef.current) {
       const tipX = HAND_TIP_OFFSET_X * HAND_DISPLAY_WIDTH;
       const tipY = HAND_TIP_OFFSET_Y * HAND_DISPLAY_HEIGHT;
       ctx.drawImage(
         handImgRef.current,
-        handPos.x - tipX,
-        handPos.y - tipY,
+        active.handPos.x - tipX,
+        active.handPos.y - tipY,
         HAND_DISPLAY_WIDTH,
         HAND_DISPLAY_HEIGHT,
       );

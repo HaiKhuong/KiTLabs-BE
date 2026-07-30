@@ -1,4 +1,11 @@
-import type { WhiteboardObject, WhiteboardSceneJson } from "./whiteboard-scene";
+import {
+  isEffectRevealStyle,
+  isHandRevealStyle,
+  type WhiteboardHandStyle,
+  type WhiteboardObject,
+  type WhiteboardRevealStyle,
+  type WhiteboardSceneJson,
+} from "./whiteboard-scene";
 
 export interface PathPoint {
   x: number;
@@ -9,9 +16,11 @@ export interface ObjectPath {
   objectId: string;
   type: WhiteboardObject["type"];
   bbox: [number, number, number, number];
-  /** Points that the brush travels along while erasing the mask (draw phase). */
+  /** Reveal style used by Remotion (hand path or effect). */
+  revealStyle: WhiteboardRevealStyle;
+  /** Points that the brush travels along while erasing the mask (draw phase). Empty for effects. */
   drawPoints: PathPoint[];
-  /** Estimated duration of the draw phase in seconds. */
+  /** Estimated duration of the draw/effect phase in seconds. */
   drawDurationSec: number;
   /** Transit duration before drawing starts (hand moving from previous endpoint). */
   transitDurationSec: number;
@@ -37,6 +46,11 @@ const DEFAULT_FPS = 30;
 /** Minimum zigzag row spacing relative to brush size. */
 const ZIGZAG_ROW_FACTOR = 0.7;
 
+/** Fixed duration range for non-hand effects. */
+const EFFECT_DURATION_MIN_SEC = 0.55;
+const EFFECT_DURATION_MAX_SEC = 1.4;
+const EFFECT_TRANSIT_SEC = 0.18;
+
 export class WhiteboardPathPlanner {
   static plan(
     sceneJson: WhiteboardSceneJson,
@@ -58,26 +72,47 @@ export class WhiteboardPathPlanner {
 
     for (const obj of objects) {
       const [x1, y1, x2, y2] = obj.bbox;
-      const w = x2 - x1;
-      const h = y2 - y1;
-      const drawPoints = WhiteboardPathPlanner.buildDrawPoints(obj.type, x1, y1, x2, y2, brushSize);
+      const revealStyle = WhiteboardPathPlanner.resolveRevealStyle(obj);
+      const cx = (x1 + x2) / 2;
+      const cy = (y1 + y2) / 2;
 
-      const drawLength = WhiteboardPathPlanner.pathLength(drawPoints);
-      const drawDurationSec = drawLength / brushSpeedPx;
+      let drawPoints: PathPoint[];
+      let drawDurationSec: number;
+      let transitDurationSec: number;
 
-      const transitDist = WhiteboardPathPlanner.dist(prevEndPoint, drawPoints[0] ?? { x: x1, y: y1 });
-      const transitDurationSec = transitDist / TRANSIT_SPEED_PX;
+      if (isEffectRevealStyle(revealStyle)) {
+        drawPoints = [{ x: Math.round(cx), y: Math.round(cy) }];
+        drawDurationSec = WhiteboardPathPlanner.effectDurationSec(x2 - x1, y2 - y1);
+        transitDurationSec = EFFECT_TRANSIT_SEC;
+      } else {
+        drawPoints = WhiteboardPathPlanner.buildDrawPoints(
+          obj.type,
+          x1,
+          y1,
+          x2,
+          y2,
+          brushSize,
+          revealStyle as WhiteboardHandStyle,
+        );
+        const drawLength = WhiteboardPathPlanner.pathLength(drawPoints);
+        drawDurationSec = Math.max(0.1, drawLength / brushSpeedPx);
+        const transitDist = WhiteboardPathPlanner.dist(
+          prevEndPoint,
+          drawPoints[0] ?? { x: x1, y: y1 },
+        );
+        transitDurationSec = Math.max(0, transitDist / TRANSIT_SPEED_PX);
+        prevEndPoint = drawPoints[drawPoints.length - 1] ?? { x: x2, y: y2 };
+      }
 
       objectPaths.push({
         objectId: obj.id,
         type: obj.type,
         bbox: obj.bbox,
+        revealStyle,
         drawPoints,
-        drawDurationSec: Math.max(0.1, drawDurationSec),
-        transitDurationSec: Math.max(0, transitDurationSec),
+        drawDurationSec,
+        transitDurationSec,
       });
-
-      prevEndPoint = drawPoints[drawPoints.length - 1] ?? { x: x2, y: y2 };
     }
 
     let totalDurationSec = objectPaths.reduce(
@@ -98,6 +133,28 @@ export class WhiteboardPathPlanner {
     return { totalDurationSec, fps, brushSize, brushSpeedPx, objectPaths };
   }
 
+  private static resolveRevealStyle(obj: WhiteboardObject): WhiteboardRevealStyle {
+    if (obj.revealStyle) return obj.revealStyle;
+    // Heuristic default for legacy objects without an explicit style.
+    const [x1, y1, x2, y2] = obj.bbox;
+    const w = x2 - x1;
+    const h = y2 - y1;
+    if (obj.type === "arrow" || obj.type === "text" || obj.type === "icon" || (w < 100 && h < 100)) {
+      return "left_right";
+    }
+    const aspect = w / Math.max(1, h);
+    if (aspect > 2) return "left_right";
+    if (aspect < 0.5) return "top_bottom";
+    return "zigzag";
+  }
+
+  private static effectDurationSec(width: number, height: number): number {
+    const area = Math.max(1, width * height);
+    // Larger boxes take a bit longer; clamp to a readable range.
+    const scaled = 0.45 + Math.sqrt(area) / 900;
+    return Math.min(EFFECT_DURATION_MAX_SEC, Math.max(EFFECT_DURATION_MIN_SEC, scaled));
+  }
+
   private static buildDrawPoints(
     type: WhiteboardObject["type"],
     x1: number,
@@ -105,6 +162,7 @@ export class WhiteboardPathPlanner {
     x2: number,
     y2: number,
     brushSize: number,
+    handStyle?: WhiteboardHandStyle,
   ): PathPoint[] {
     const w = x2 - x1;
     const h = y2 - y1;
@@ -121,6 +179,10 @@ export class WhiteboardPathPlanner {
     const cx2 = Math.max(bx2, (x1 + x2) / 2);
     const cy2 = Math.max(by2, (y1 + y2) / 2);
 
+    if (handStyle && isHandRevealStyle(handStyle)) {
+      return WhiteboardPathPlanner.pointsForStyle(handStyle, cx1, cy1, cx2, cy2, brushSize);
+    }
+
     // Strategy selection
     if (type === "arrow") {
       return WhiteboardPathPlanner.horizontalSweep(cx1, cy1, cx2, cy2);
@@ -134,15 +196,33 @@ export class WhiteboardPathPlanner {
     // Large image
     const aspect = w / h;
     if (aspect > 2) {
-      // Very wide: left-to-right single pass
       return WhiteboardPathPlanner.horizontalSweep(cx1, cy1, cx2, cy2);
     }
     if (aspect < 0.5) {
-      // Very tall: top-to-bottom
       return WhiteboardPathPlanner.verticalSweep(cx1, cy1, cx2, cy2);
     }
-    // Large square-ish: zigzag
     return WhiteboardPathPlanner.zigzag(cx1, cy1, cx2, cy2, brushSize);
+  }
+
+  private static pointsForStyle(
+    style: WhiteboardHandStyle,
+    x1: number,
+    y1: number,
+    x2: number,
+    y2: number,
+    brushSize: number,
+  ): PathPoint[] {
+    switch (style) {
+      case "left_right":
+        return WhiteboardPathPlanner.directionalRows(x1, y1, x2, y2, brushSize, "ltr");
+      case "right_left":
+        return WhiteboardPathPlanner.directionalRows(x1, y1, x2, y2, brushSize, "rtl");
+      case "top_bottom":
+        return WhiteboardPathPlanner.directionalColumns(x1, y1, x2, y2, brushSize);
+      case "zigzag":
+      default:
+        return WhiteboardPathPlanner.zigzag(x1, y1, x2, y2, brushSize);
+    }
   }
 
   /** Horizontal sweep: left→right at midpoint y. For multi-line text, adds rows. */
@@ -206,6 +286,52 @@ export class WhiteboardPathPlanner {
     return points;
   }
 
+  /** Fill rows in a fixed horizontal direction (no reverse). */
+  private static directionalRows(
+    x1: number,
+    y1: number,
+    x2: number,
+    y2: number,
+    brushSize: number,
+    direction: "ltr" | "rtl",
+  ): PathPoint[] {
+    const rowSpacing = Math.max(4, brushSize * ZIGZAG_ROW_FACTOR);
+    const points: PathPoint[] = [];
+    let y = y1;
+    while (y <= y2 + rowSpacing / 2) {
+      const clampedY = Math.min(y, y2);
+      if (direction === "ltr") {
+        points.push({ x: Math.round(x1), y: Math.round(clampedY) });
+        points.push({ x: Math.round(x2), y: Math.round(clampedY) });
+      } else {
+        points.push({ x: Math.round(x2), y: Math.round(clampedY) });
+        points.push({ x: Math.round(x1), y: Math.round(clampedY) });
+      }
+      y += rowSpacing;
+    }
+    return points;
+  }
+
+  /** Fill columns top→bottom. */
+  private static directionalColumns(
+    x1: number,
+    y1: number,
+    x2: number,
+    y2: number,
+    brushSize: number,
+  ): PathPoint[] {
+    const colSpacing = Math.max(4, brushSize * ZIGZAG_ROW_FACTOR);
+    const points: PathPoint[] = [];
+    let x = x1;
+    while (x <= x2 + colSpacing / 2) {
+      const clampedX = Math.min(x, x2);
+      points.push({ x: Math.round(clampedX), y: Math.round(y1) });
+      points.push({ x: Math.round(clampedX), y: Math.round(y2) });
+      x += colSpacing;
+    }
+    return points;
+  }
+
   static pathLength(points: PathPoint[]): number {
     let len = 0;
     for (let i = 1; i < points.length; i++) {
@@ -234,13 +360,10 @@ export class WhiteboardPathPlanner {
       const drawEnd = transitEnd + op.drawDurationSec;
 
       if (tSec <= transitEnd) {
-        // Transit phase — linear interpolation from previous end to first draw point
-        const t = op.transitDurationSec > 0 ? (tSec - elapsed) / op.transitDurationSec : 1;
         const start = op.drawPoints[0] ?? { x: op.bbox[0], y: op.bbox[1] };
         return { x: start.x, y: start.y, drawing: false };
       }
       if (tSec <= drawEnd) {
-        // Draw phase
         const drawT = op.drawDurationSec > 0 ? (tSec - transitEnd) / op.drawDurationSec : 1;
         const pos = WhiteboardPathPlanner.interpolatePath(op.drawPoints, drawT);
         return { ...pos, drawing: true };
@@ -249,7 +372,6 @@ export class WhiteboardPathPlanner {
       elapsed = drawEnd;
     }
 
-    // Past the end — stay at last point
     const lastPath = plan.objectPaths[plan.objectPaths.length - 1];
     if (lastPath) {
       const last = lastPath.drawPoints[lastPath.drawPoints.length - 1];

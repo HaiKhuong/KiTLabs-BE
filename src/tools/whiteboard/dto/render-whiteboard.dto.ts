@@ -15,7 +15,7 @@ import {
   ValidateNested,
 } from "class-validator";
 
-import { WHITEBOARD_OBJECT_TYPES, WhiteboardObjectType } from "../whiteboard-scene";
+import { WHITEBOARD_OBJECT_TYPES, WHITEBOARD_REVEAL_STYLES, WhiteboardObjectType, WhiteboardRevealStyle } from "../whiteboard-scene";
 
 export class WhiteboardEngineConfigDto {
   @ApiPropertyOptional({ minimum: 1, maximum: 60 })
@@ -68,6 +68,14 @@ export class WhiteboardObjectDto {
   @IsInt()
   @Min(1)
   order!: number;
+
+  @ApiPropertyOptional({
+    enum: WHITEBOARD_REVEAL_STYLES,
+    description: "Reveal style: hand path (zigzag/…) or effect (zoom_in/fade_in/…)",
+  })
+  @IsOptional()
+  @IsIn(WHITEBOARD_REVEAL_STYLES as unknown as string[])
+  revealStyle?: WhiteboardRevealStyle;
 }
 
 export class RenderWhiteboardDto {

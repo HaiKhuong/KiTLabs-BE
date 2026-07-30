@@ -82,6 +82,47 @@ describe("WhiteboardPathPlanner.plan", () => {
     expect(plan.objectPaths[0].objectId).toBe("a");
     expect(plan.objectPaths[1].objectId).toBe("b");
   });
+
+  it("respects explicit revealStyle left_right", () => {
+    const scene: WhiteboardSceneJson = {
+      imageWidth: 1280,
+      imageHeight: 720,
+      objects: [
+        {
+          id: "img",
+          type: "image",
+          bbox: [0, 0, 400, 400],
+          order: 1,
+          revealStyle: "left_right",
+        },
+      ],
+    };
+    const plan = WhiteboardPathPlanner.plan(scene, 1280, 720, config);
+    const points = plan.objectPaths[0].drawPoints;
+    expect(points.length).toBeGreaterThan(2);
+    // First segment of each row should start on the left edge
+    expect(points[0].x).toBeLessThan(points[1].x);
+  });
+
+  it("plans effect styles without brush strokes", () => {
+    const scene: WhiteboardSceneJson = {
+      imageWidth: 1280,
+      imageHeight: 720,
+      objects: [
+        {
+          id: "img",
+          type: "image",
+          bbox: [100, 100, 500, 400],
+          order: 1,
+          revealStyle: "zoom_in",
+        },
+      ],
+    };
+    const plan = WhiteboardPathPlanner.plan(scene, 1280, 720, config);
+    expect(plan.objectPaths[0].revealStyle).toBe("zoom_in");
+    expect(plan.objectPaths[0].drawPoints).toHaveLength(1);
+    expect(plan.objectPaths[0].drawDurationSec).toBeGreaterThan(0.4);
+  });
 });
 
 describe("WhiteboardPathPlanner.interpolate", () => {
