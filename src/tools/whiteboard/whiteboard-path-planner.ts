@@ -264,7 +264,7 @@ export class WhiteboardPathPlanner {
 
   /**
    * Zigzag raster made of parallel 45° diagonal strokes.
-   * Lines follow y = x + k and are clipped to the bounding rectangle.
+   * Lines follow y = k - x ("/" direction) and are clipped to the bounding rectangle.
    */
   private static zigzag(
     x1: number,
@@ -274,21 +274,21 @@ export class WhiteboardPathPlanner {
     brushSize: number,
   ): PathPoint[] {
     const perpendicularSpacing = Math.max(4, brushSize * ZIGZAG_ROW_FACTOR);
-    // For y - x = k, changing k by d moves the line d / sqrt(2) perpendicularly.
+    // For x + y = k, changing k by d moves the line d / sqrt(2) perpendicularly.
     const kStep = perpendicularSpacing * Math.SQRT2;
-    const minK = y1 - x2;
-    const maxK = y2 - x1;
+    const minK = x1 + y1;
+    const maxK = x2 + y2;
     const points: PathPoint[] = [];
     let strokeIndex = 0;
 
     for (let k = minK; k <= maxK + kStep / 2; k += kStep) {
       const clampedK = Math.min(k, maxK);
-      const startX = Math.max(x1, y1 - clampedK);
-      const endX = Math.min(x2, y2 - clampedK);
+      const startX = Math.max(x1, clampedK - y2);
+      const endX = Math.min(x2, clampedK - y1);
       if (endX < startX) continue;
 
-      const start = { x: Math.round(startX), y: Math.round(startX + clampedK) };
-      const end = { x: Math.round(endX), y: Math.round(endX + clampedK) };
+      const start = { x: Math.round(startX), y: Math.round(clampedK - startX) };
+      const end = { x: Math.round(endX), y: Math.round(clampedK - endX) };
       if (strokeIndex % 2 === 0) {
         points.push(start, end);
       } else {
