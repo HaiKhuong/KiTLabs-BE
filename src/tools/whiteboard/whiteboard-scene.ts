@@ -63,7 +63,7 @@ const ALLOWED_HAND_STYLES = new Set<string>(WHITEBOARD_HAND_STYLES);
 const MIN_BOX_SIDE_PX = 4;
 
 const MAX_ID_LENGTH = 64;
-const MAX_STROKE_PATHS = 128;
+const MAX_STROKE_PATHS = 256;
 const MAX_STROKE_POINTS = 4_000;
 
 /**

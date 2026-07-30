@@ -94,7 +94,7 @@ export class WhiteboardObjectDto {
   })
   @IsOptional()
   @IsArray()
-  @ArrayMaxSize(128)
+  @ArrayMaxSize(256)
   strokePaths?: unknown[];
 }
 
