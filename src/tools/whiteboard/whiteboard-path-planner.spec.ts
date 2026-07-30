@@ -32,8 +32,13 @@ describe("WhiteboardPathPlanner.plan", () => {
     const scene = makeScene("infographic", "image", [0, 0, 800, 600]);
     const plan = WhiteboardPathPlanner.plan(scene, 1280, 720, config);
     const op = plan.objectPaths[0];
-    // zigzag produces many rows — more than 2 points
+    // Diagonal zigzag produces many clipped strokes.
     expect(op.drawPoints.length).toBeGreaterThan(6);
+    const diagonalSegments = op.drawPoints.filter((_, index) => index % 2 === 0).map((point, index) => {
+      const next = op.drawPoints[index * 2 + 1];
+      return next ? Math.abs(Math.abs(next.x - point.x) - Math.abs(next.y - point.y)) : Infinity;
+    });
+    expect(diagonalSegments.some((delta) => delta <= 2)).toBe(true);
   });
 
   it("produces vertical sweep for very tall image (aspect < 0.5)", () => {
@@ -122,6 +127,25 @@ describe("WhiteboardPathPlanner.plan", () => {
     expect(plan.objectPaths[0].revealStyle).toBe("zoom_in");
     expect(plan.objectPaths[0].drawPoints).toHaveLength(1);
     expect(plan.objectPaths[0].drawDurationSec).toBeGreaterThan(0.4);
+  });
+
+  it("uses per-object durationSec for hand styles", () => {
+    const scene: WhiteboardSceneJson = {
+      imageWidth: 1280,
+      imageHeight: 720,
+      objects: [
+        {
+          id: "timed",
+          type: "image",
+          bbox: [100, 100, 500, 400],
+          order: 1,
+          revealStyle: "zigzag",
+          durationSec: 4.5,
+        },
+      ],
+    };
+    const plan = WhiteboardPathPlanner.plan(scene, 1280, 720, config);
+    expect(plan.objectPaths[0].drawDurationSec).toBe(4.5);
   });
 });
 

@@ -95,7 +95,10 @@ export class WhiteboardPathPlanner {
           revealStyle as WhiteboardHandStyle,
         );
         const drawLength = WhiteboardPathPlanner.pathLength(drawPoints);
-        drawDurationSec = Math.max(0.1, drawLength / brushSpeedPx);
+        drawDurationSec =
+          Number.isFinite(obj.durationSec) && Number(obj.durationSec) > 0
+            ? Math.min(60, Math.max(0.1, Number(obj.durationSec)))
+            : Math.max(0.1, drawLength / brushSpeedPx);
         const transitDist = WhiteboardPathPlanner.dist(
           prevEndPoint,
           drawPoints[0] ?? { x: x1, y: y1 },
@@ -259,7 +262,10 @@ export class WhiteboardPathPlanner {
     return points;
   }
 
-  /** Zigzag raster: fills a bounding box with alternating horizontal rows. */
+  /**
+   * Zigzag raster made of parallel 45° diagonal strokes.
+   * Lines follow y = x + k and are clipped to the bounding rectangle.
+   */
   private static zigzag(
     x1: number,
     y1: number,
@@ -267,22 +273,30 @@ export class WhiteboardPathPlanner {
     y2: number,
     brushSize: number,
   ): PathPoint[] {
-    const rowSpacing = Math.max(4, brushSize * ZIGZAG_ROW_FACTOR);
+    const perpendicularSpacing = Math.max(4, brushSize * ZIGZAG_ROW_FACTOR);
+    // For y - x = k, changing k by d moves the line d / sqrt(2) perpendicularly.
+    const kStep = perpendicularSpacing * Math.SQRT2;
+    const minK = y1 - x2;
+    const maxK = y2 - x1;
     const points: PathPoint[] = [];
-    let y = y1;
-    let rowIdx = 0;
-    while (y <= y2 + rowSpacing / 2) {
-      const clampedY = Math.min(y, y2);
-      if (rowIdx % 2 === 0) {
-        points.push({ x: Math.round(x1), y: Math.round(clampedY) });
-        points.push({ x: Math.round(x2), y: Math.round(clampedY) });
+    let strokeIndex = 0;
+
+    for (let k = minK; k <= maxK + kStep / 2; k += kStep) {
+      const clampedK = Math.min(k, maxK);
+      const startX = Math.max(x1, y1 - clampedK);
+      const endX = Math.min(x2, y2 - clampedK);
+      if (endX < startX) continue;
+
+      const start = { x: Math.round(startX), y: Math.round(startX + clampedK) };
+      const end = { x: Math.round(endX), y: Math.round(endX + clampedK) };
+      if (strokeIndex % 2 === 0) {
+        points.push(start, end);
       } else {
-        points.push({ x: Math.round(x2), y: Math.round(clampedY) });
-        points.push({ x: Math.round(x1), y: Math.round(clampedY) });
+        points.push(end, start);
       }
-      y += rowSpacing;
-      rowIdx++;
+      strokeIndex++;
     }
+
     return points;
   }
 

@@ -40,6 +40,8 @@ export interface WhiteboardObject {
   order: number;
   /** Optional reveal style; falls back to heuristic hand path when omitted. */
   revealStyle?: WhiteboardRevealStyle;
+  /** Optional per-object drawing duration in seconds. */
+  durationSec?: number;
 }
 
 export interface WhiteboardSceneJson {
@@ -108,6 +110,11 @@ export function normalizeSceneObjects(
     const revealStyle = ALLOWED_REVEAL_STYLES.has(rawRevealStyle)
       ? (rawRevealStyle as WhiteboardRevealStyle)
       : undefined;
+    const rawDurationSec = Number(obj.durationSec);
+    const durationSec =
+      Number.isFinite(rawDurationSec) && rawDurationSec > 0
+        ? Math.min(60, Math.max(0.1, rawDurationSec))
+        : undefined;
 
     objects.push({
       id: uniqueId,
@@ -115,6 +122,7 @@ export function normalizeSceneObjects(
       bbox,
       order,
       ...(revealStyle ? { revealStyle } : {}),
+      ...(durationSec ? { durationSec } : {}),
     });
   });
 

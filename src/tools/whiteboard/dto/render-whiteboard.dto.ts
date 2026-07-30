@@ -76,6 +76,17 @@ export class WhiteboardObjectDto {
   @IsOptional()
   @IsIn(WHITEBOARD_REVEAL_STYLES as unknown as string[])
   revealStyle?: WhiteboardRevealStyle;
+
+  @ApiPropertyOptional({
+    description: "Desired drawing duration for this object in seconds (hand styles)",
+    minimum: 0.1,
+    maximum: 60,
+  })
+  @IsOptional()
+  @IsNumber()
+  @Min(0.1)
+  @Max(60)
+  durationSec?: number;
 }
 
 export class RenderWhiteboardDto {
