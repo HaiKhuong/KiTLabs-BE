@@ -1,14 +1,13 @@
 import { Logger } from "@nestjs/common";
 import { Processor, WorkerHost } from "@nestjs/bullmq";
 import { Job, UnrecoverableError } from "bullmq";
-import { existsSync } from "fs";
-import { join } from "path";
 
 import { ToolsRealtimeGateway } from "../realtime/tools-realtime.gateway";
 import { WHITEBOARD_QUEUE_NAME, WhiteboardService } from "./whiteboard.service";
 import { WhiteboardVisionService } from "./whiteboard-vision.service";
 import { WhiteboardPathPlanner } from "./whiteboard-path-planner";
 import { WhiteboardRendererService } from "./whiteboard-renderer.service";
+import { readSceneObjects, WhiteboardObject, WhiteboardSceneJson } from "./whiteboard-scene";
 
 @Processor(WHITEBOARD_QUEUE_NAME, {
   concurrency: 1,
@@ -41,40 +40,45 @@ export class WhiteboardProcessor extends WorkerHost {
     try {
       await this.whiteboardService.processStarted(id);
 
-      // Resolve the uploaded source image path
-      const sceneRaw = (history.sceneJson ?? {}) as Record<string, unknown>;
-      const assetsDir = String(sceneRaw.assetsDir ?? "");
-      const sourceFileName = history.sourceImageFileName ?? "source.png";
-      const sourceImagePath = join(assetsDir, sourceFileName);
+      const sourceImagePath = this.whiteboardService.resolveSourceImagePath(history);
 
-      if (!existsSync(sourceImagePath)) {
-        throw new UnrecoverableError(`Source image not found: ${sourceImagePath}`);
+      // The review flow stores an approved scene, so vision only runs as a fallback
+      // for jobs queued without a review pass.
+      const reviewed = readSceneObjects(history.sceneJson);
+      let scene: WhiteboardSceneJson;
+      if (reviewed) {
+        await this.whiteboardService.updateRuntimeMessage(id, "[STEP 1/2] Using reviewed scene…");
+        this.logger.log(`[${id}] Reusing reviewed scene (${reviewed.length} objects)`);
+        scene = {
+          imageWidth: history.imageWidth ?? 0,
+          imageHeight: history.imageHeight ?? 0,
+          objects: reviewed as WhiteboardObject[],
+        };
+      } else {
+        await this.whiteboardService.updateRuntimeMessage(id, "[STEP 1/2] Vision analysis with Gemini…");
+        this.logger.log(`[${id}] Running vision analysis on ${sourceImagePath}`);
+        scene = (await this.visionService.analyze(sourceImagePath)).sceneJson;
+        await this.whiteboardService.saveAnalyzedScene(id, scene);
       }
 
-      // Step 1: Vision analysis
-      await this.whiteboardService.updateRuntimeMessage(id, "[STEP 1/3] Vision analysis with Gemini…");
-      this.logger.log(`[${id}] Running vision analysis on ${sourceImagePath}`);
-      const { sceneJson, imageWidth, imageHeight } = await this.visionService.analyze(sourceImagePath);
-      await this.whiteboardService.updateImageDimensions(id, imageWidth, imageHeight);
-      await this.whiteboardService.updateSceneJson(id, { ...sceneJson, assetsDir });
-
-      // Step 2: Path planning
-      await this.whiteboardService.updateRuntimeMessage(id, "[STEP 2/3] Generating hand path plan…");
-      this.logger.log(`[${id}] Planning hand path`);
+      await this.whiteboardService.updateRuntimeMessage(id, "[STEP 2/2] Planning hand path + rendering…");
       const engineConfig = (history.engineConfig ?? {}) as Record<string, unknown>;
-      const pathPlan = WhiteboardPathPlanner.plan(sceneJson, imageWidth, imageHeight, engineConfig);
+      const pathPlan = WhiteboardPathPlanner.plan(
+        scene,
+        scene.imageWidth,
+        scene.imageHeight,
+        engineConfig,
+      );
       await this.whiteboardService.updatePathPlan(id, pathPlan as unknown as Record<string, unknown>);
 
-      // Step 3: Remotion render
-      await this.whiteboardService.updateRuntimeMessage(id, "[STEP 3/3] Rendering whiteboard video…");
       this.logger.log(`[${id}] Starting Remotion render`);
       const workDir = this.whiteboardService.prepareWorkDir(id);
       const resultPath = await this.rendererService.render({
         historyId: id,
         sourceImagePath,
-        imageWidth,
-        imageHeight,
-        sceneJson,
+        imageWidth: scene.imageWidth,
+        imageHeight: scene.imageHeight,
+        sceneJson: scene,
         pathPlan,
         engineConfig,
         workDir,

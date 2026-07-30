@@ -4,13 +4,20 @@ import { InjectRepository } from "@nestjs/typeorm";
 import { Queue } from "bullmq";
 import { randomUUID } from "crypto";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "fs";
-import { basename, extname, isAbsolute, join, resolve } from "path";
-import { Repository } from "typeorm";
+import { basename, extname, join, resolve } from "path";
+import { Not, IsNull, Repository } from "typeorm";
 
 import { QueueJobStatus } from "../../common/enums/domain.enums";
 import { NotificationsService } from "../notifications/notifications.service";
-import { RenderWhiteboardUploadDto } from "./dto/render-whiteboard-upload.dto";
+import { AnalyzeWhiteboardDto } from "./dto/analyze-whiteboard.dto";
+import { RenderWhiteboardDto } from "./dto/render-whiteboard.dto";
 import { WhiteboardHistory } from "./whiteboard-history.entity";
+import {
+  normalizeSceneObjects,
+  readSceneObjects,
+  WhiteboardObject,
+  WhiteboardSceneJson,
+} from "./whiteboard-scene";
 
 export const WHITEBOARD_QUEUE_NAME = "video-whiteboard";
 
@@ -53,18 +60,6 @@ export class WhiteboardService {
     return workDir;
   }
 
-  saveSourceImage(file: Express.Multer.File): { assetsDir: string; fileName: string } {
-    if (!IMAGE_MIME.has(file.mimetype)) {
-      throw new BadRequestException(`Unsupported image type: ${file.mimetype}`);
-    }
-    const assetsDir = join(this.resolveWorkRoot(), "_uploads", randomUUID());
-    mkdirSync(assetsDir, { recursive: true });
-    const ext = extname(file.originalname).toLowerCase() || ".png";
-    const fileName = `source${ext}`;
-    writeFileSync(join(assetsDir, fileName), file.buffer);
-    return { assetsDir, fileName };
-  }
-
   parseEngineConfig(raw: string | undefined): WhiteboardEngineConfig {
     if (!raw?.trim()) return {};
     try {
@@ -76,53 +71,145 @@ export class WhiteboardService {
     }
   }
 
-  async enqueueFromUpload(
-    dto: RenderWhiteboardUploadDto,
+  private saveSourceImage(file: Express.Multer.File): { assetsDir: string; fileName: string } {
+    if (!IMAGE_MIME.has(file.mimetype)) {
+      throw new BadRequestException(`Unsupported image type: ${file.mimetype}`);
+    }
+    const assetsDir = join(this.resolveWorkRoot(), "_uploads", randomUUID());
+    mkdirSync(assetsDir, { recursive: true });
+    const ext = extname(file.originalname).toLowerCase() || ".png";
+    const fileName = `source${ext}`;
+    writeFileSync(join(assetsDir, fileName), file.buffer);
+    return { assetsDir, fileName };
+  }
+
+  /**
+   * Step 1 of the review flow: persist the upload and open a draft row. The draft
+   * stays out of the render queue (and out of history) until the reviewer accepts
+   * the detected scene and calls `enqueueReviewed`.
+   */
+  async createAnalysisDraft(
+    dto: AnalyzeWhiteboardDto,
     file: Express.Multer.File,
   ): Promise<WhiteboardHistory> {
     const userId = dto.userId?.trim();
     if (!userId) throw new BadRequestException("userId is required");
 
-    const engineConfig = this.parseEngineConfig(dto.engineConfig);
     const { assetsDir, fileName } = this.saveSourceImage(file);
+    const displayName =
+      dto.displayName?.trim() || `Whiteboard — ${new Date().toISOString().slice(0, 10)}`;
 
-    const displayName = dto.displayName?.trim() || `Whiteboard — ${new Date().toISOString().slice(0, 10)}`;
-
-    const history = this.repository.create({
+    const draft = this.repository.create({
       userId,
-      nodeId: dto.nodeId?.trim() ?? null,
+      nodeId: dto.nodeId?.trim() || null,
       displayName,
+      assetsDir,
       sourceImageFileName: fileName,
-      imageWidth: null,
-      imageHeight: null,
-      sceneJson: { assetsDir } as Record<string, unknown>,
-      pathPlan: null,
-      engineConfig: engineConfig as Record<string, unknown>,
+      status: QueueJobStatus.PENDING,
+    } as Partial<WhiteboardHistory>);
+
+    return (await this.repository.save(draft)) as WhiteboardHistory;
+  }
+
+  /** Persist the freshly detected scene so the reviewer can inspect it. */
+  async saveAnalyzedScene(id: string, scene: WhiteboardSceneJson): Promise<void> {
+    await this.repository.update(
+      { id },
+      {
+        sceneJson: scene as never,
+        imageWidth: scene.imageWidth,
+        imageHeight: scene.imageHeight,
+        analyzedAt: new Date(),
+      },
+    );
+  }
+
+  /**
+   * Re-validate a reviewer-edited object list against the stored image size.
+   * Client payloads are never trusted: boxes are clamped, ids de-duplicated and
+   * the order resequenced before anything reaches the path planner.
+   */
+  async applyReviewedScene(
+    history: WhiteboardHistory,
+    objects: unknown,
+  ): Promise<WhiteboardSceneJson> {
+    const imageWidth = history.imageWidth ?? 0;
+    const imageHeight = history.imageHeight ?? 0;
+    if (imageWidth <= 0 || imageHeight <= 0) {
+      throw new BadRequestException("Analysis has no image dimensions — re-run analyze first");
+    }
+
+    const normalized = normalizeSceneObjects(objects, imageWidth, imageHeight);
+    if (normalized.length === 0) {
+      throw new BadRequestException("Keep at least one object to render");
+    }
+
+    const scene: WhiteboardSceneJson = { imageWidth, imageHeight, objects: normalized };
+    await this.repository.update({ id: history.id }, { sceneJson: scene as never });
+    return scene;
+  }
+
+  /** Step 2 of the review flow: queue the render for an already-analyzed draft. */
+  async enqueueReviewed(dto: RenderWhiteboardDto): Promise<WhiteboardHistory> {
+    const userId = dto.userId?.trim();
+    const analysisId = dto.analysisId?.trim();
+    if (!userId) throw new BadRequestException("userId is required");
+    if (!analysisId) throw new BadRequestException("analysisId is required");
+
+    const history = await this.repository.findOne({ where: { id: analysisId, userId } });
+    if (!history) throw new NotFoundException("Whiteboard analysis not found");
+    if (history.status === QueueJobStatus.RUNNING) {
+      throw new BadRequestException("This analysis is already rendering");
+    }
+    if (!readSceneObjects(history.sceneJson)) {
+      throw new BadRequestException("Analysis has no reviewed scene yet");
+    }
+
+    if (dto.objects !== undefined) {
+      await this.applyReviewedScene(history, dto.objects);
+    }
+
+    const patch: Partial<WhiteboardHistory> = {
       status: QueueJobStatus.PENDING,
       resultPath: null,
       resultFileName: null,
       errorMessage: null,
-      queueJobId: null,
       renderStartedAt: null,
       renderFinishedAt: null,
       renderDurationMs: null,
-    } as Partial<WhiteboardHistory>);
-    const created = await this.repository.save(history);
+    };
+    if (dto.displayName?.trim()) patch.displayName = dto.displayName.trim();
+    if (dto.engineConfig) {
+      patch.engineConfig = dto.engineConfig as unknown as Record<string, unknown>;
+    }
+    await this.repository.update({ id: analysisId }, patch as never);
 
     const queueJob = await this.queue.add(
       WHITEBOARD_QUEUE_NAME,
-      { whiteboardHistoryId: (created as WhiteboardHistory).id },
+      { whiteboardHistoryId: analysisId },
       { attempts: 1, removeOnComplete: true, removeOnFail: 50 },
     );
+    await this.repository.update(
+      { id: analysisId },
+      { queueJobId: queueJob.id ? String(queueJob.id) : null },
+    );
 
-    (created as WhiteboardHistory).queueJobId = queueJob.id ? String(queueJob.id) : null;
-    return this.repository.save(created as WhiteboardHistory);
+    const queued = await this.repository.findOne({ where: { id: analysisId } });
+    return queued as WhiteboardHistory;
   }
 
   async getById(id: string): Promise<WhiteboardHistory | null> {
     return this.repository.findOne({ where: { id } });
   }
 
+  async getOwnedById(id: string, userId: string): Promise<WhiteboardHistory> {
+    if (!userId?.trim()) throw new BadRequestException("userId is required");
+    const row = await this.repository.findOne({ where: { id, userId: userId.trim() } });
+    if (!row) throw new NotFoundException("Whiteboard analysis not found");
+    return row;
+  }
+
+  /** Only rows that reached the queue; analyze-only drafts stay hidden. */
   async listHistory(
     userId: string,
     page = 1,
@@ -143,7 +230,8 @@ export class WhiteboardService {
 
     const qb = this.repository
       .createQueryBuilder("h")
-      .where("h.user_id = :userId", { userId: userId.trim() });
+      .where("h.user_id = :userId", { userId: userId.trim() })
+      .andWhere("h.queue_job_id IS NOT NULL");
 
     if (keyword) {
       qb.andWhere("h.display_name ILIKE :keyword", { keyword: `%${keyword}%` });
@@ -165,28 +253,35 @@ export class WhiteboardService {
   }
 
   async deleteHistory(id: string, userId: string): Promise<{ deleted: boolean; id: string }> {
-    if (!userId?.trim()) throw new BadRequestException("userId is required");
-    const row = await this.repository.findOne({ where: { id, userId: userId.trim() } });
-    if (!row) throw new NotFoundException("Whiteboard history not found");
-    this.safeRemoveWorkDir(id);
+    const row = await this.getOwnedById(id, userId);
+    this.safeRemoveArtifacts(row);
     await this.repository.delete({ id, userId: userId.trim() });
     return { deleted: true, id };
   }
 
   async deleteAllHistory(userId: string): Promise<{ deleted: number }> {
     if (!userId?.trim()) throw new BadRequestException("userId is required");
-    const rows = await this.repository.find({ where: { userId: userId.trim() } });
-    for (const row of rows) this.safeRemoveWorkDir(row.id);
-    const result = await this.repository.delete({ userId: userId.trim() });
+    const rows = await this.repository.find({
+      where: { userId: userId.trim(), queueJobId: Not(IsNull()) },
+    });
+    for (const row of rows) this.safeRemoveArtifacts(row);
+    const result = await this.repository.delete({
+      userId: userId.trim(),
+      queueJobId: Not(IsNull()),
+    });
     return { deleted: result.affected ?? rows.length };
   }
 
-  private safeRemoveWorkDir(id: string): void {
-    try {
-      const dir = join(this.resolveWorkRoot(), id);
-      if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
-    } catch (err) {
-      this.logger.warn(`Failed to remove work dir for ${id}: ${String(err)}`);
+  /** Remove both the render work dir and the uploaded source image. */
+  private safeRemoveArtifacts(row: WhiteboardHistory): void {
+    const dirs = [join(this.resolveWorkRoot(), row.id)];
+    if (row.assetsDir) dirs.push(row.assetsDir);
+    for (const dir of dirs) {
+      try {
+        if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+      } catch (err) {
+        this.logger.warn(`Failed to remove ${dir} for ${row.id}: ${String(err)}`);
+      }
     }
   }
 
@@ -202,7 +297,8 @@ export class WhiteboardService {
       status: row.status,
       imageWidth: row.imageWidth,
       imageHeight: row.imageHeight,
-      sceneJson: row.sceneJson,
+      scene: this.mapScene(row),
+      analyzedAt: row.analyzedAt,
       engineConfig: row.engineConfig,
       resultFileName: row.resultFileName,
       errorMessage: row.errorMessage,
@@ -211,9 +307,31 @@ export class WhiteboardService {
       renderDurationMs: row.renderDurationMs,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
+      sourceImageUrl: `/api/tools/whiteboard/source-image?whiteboardHistoryId=${row.id}`,
       playUrl,
       downloadUrl: playUrl,
     };
+  }
+
+  /** Expose only the reviewable scene; never the server-side upload path. */
+  private mapScene(row: WhiteboardHistory): WhiteboardSceneJson | null {
+    const raw = row.sceneJson as Record<string, unknown> | null;
+    const objects = readSceneObjects(raw);
+    if (!objects) return null;
+    return {
+      imageWidth: Number(raw?.imageWidth ?? row.imageWidth ?? 0),
+      imageHeight: Number(raw?.imageHeight ?? row.imageHeight ?? 0),
+      objects: objects as WhiteboardObject[],
+    };
+  }
+
+  resolveSourceImagePath(history: WhiteboardHistory): string {
+    if (!history.assetsDir || !history.sourceImageFileName) {
+      throw new NotFoundException("Whiteboard source image not found");
+    }
+    const filePath = join(history.assetsDir, history.sourceImageFileName);
+    if (!existsSync(filePath)) throw new NotFoundException("Whiteboard source image not found");
+    return filePath;
   }
 
   resolveArtifactPath(history: WhiteboardHistory): string {
@@ -226,7 +344,13 @@ export class WhiteboardService {
   async processStarted(id: string): Promise<void> {
     await this.repository.update(
       { id },
-      { status: QueueJobStatus.RUNNING, errorMessage: null, renderStartedAt: new Date(), renderFinishedAt: null, renderDurationMs: null },
+      {
+        status: QueueJobStatus.RUNNING,
+        errorMessage: null,
+        renderStartedAt: new Date(),
+        renderFinishedAt: null,
+        renderDurationMs: null,
+      },
     );
   }
 
@@ -234,9 +358,18 @@ export class WhiteboardService {
     const timing = await this.resolveRenderTiming(id);
     await this.repository.update(
       { id },
-      { status: QueueJobStatus.COMPLETED, resultPath, resultFileName: basename(resultPath), errorMessage: null, ...timing },
+      {
+        status: QueueJobStatus.COMPLETED,
+        resultPath,
+        resultFileName: basename(resultPath),
+        errorMessage: null,
+        ...timing,
+      },
     );
-    const history = await this.repository.findOne({ where: { id }, select: { id: true, userId: true, displayName: true } });
+    const history = await this.repository.findOne({
+      where: { id },
+      select: { id: true, userId: true, displayName: true },
+    });
     if (history?.userId) {
       try {
         await this.notificationsService.pushSuccess(
@@ -255,26 +388,27 @@ export class WhiteboardService {
     await this.repository.update({ id }, { status: QueueJobStatus.FAILED, errorMessage, ...timing });
   }
 
-  async updateSceneJson(id: string, sceneJson: Record<string, unknown>): Promise<void> {
-    await this.repository.update({ id }, { sceneJson: sceneJson as never });
-  }
-
   async updatePathPlan(id: string, pathPlan: Record<string, unknown>): Promise<void> {
     await this.repository.update({ id }, { pathPlan: pathPlan as never });
-  }
-
-  async updateImageDimensions(id: string, width: number, height: number): Promise<void> {
-    await this.repository.update({ id }, { imageWidth: width, imageHeight: height });
   }
 
   async updateRuntimeMessage(id: string, message: string): Promise<void> {
     await this.repository.update({ id }, { errorMessage: message });
   }
 
-  private async resolveRenderTiming(id: string): Promise<{ renderFinishedAt: Date; renderDurationMs: number }> {
-    const row = await this.repository.findOne({ where: { id }, select: { id: true, createdAt: true, renderStartedAt: true } });
+  private async resolveRenderTiming(id: string): Promise<{
+    renderFinishedAt: Date;
+    renderDurationMs: number;
+  }> {
+    const row = await this.repository.findOne({
+      where: { id },
+      select: { id: true, createdAt: true, renderStartedAt: true },
+    });
     const renderFinishedAt = new Date();
     const startedAt = row?.renderStartedAt ?? row?.createdAt ?? renderFinishedAt;
-    return { renderFinishedAt, renderDurationMs: Math.max(0, renderFinishedAt.getTime() - startedAt.getTime()) };
+    return {
+      renderFinishedAt,
+      renderDurationMs: Math.max(0, renderFinishedAt.getTime() - startedAt.getTime()),
+    };
   }
 }

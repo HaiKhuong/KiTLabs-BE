@@ -1,12 +1,12 @@
 import {
   BadRequestException,
+  Body,
   Controller,
   Delete,
   Get,
   NotFoundException,
   Param,
   Post,
-  Body,
   Query,
   Req,
   Res,
@@ -17,21 +17,36 @@ import { FileInterceptor } from "@nestjs/platform-express";
 import { ApiBearerAuth, ApiBody, ApiConsumes, ApiOperation, ApiQuery, ApiTags } from "@nestjs/swagger";
 import { Request, Response } from "express";
 import { createReadStream, existsSync, statSync } from "fs";
+import { extname } from "path";
 import { memoryStorage } from "multer";
 
 import { Public } from "../../common/decorators/public.decorator";
-import { RenderWhiteboardUploadDto } from "./dto/render-whiteboard-upload.dto";
+import { AnalyzeWhiteboardDto } from "./dto/analyze-whiteboard.dto";
+import { RenderWhiteboardDto } from "./dto/render-whiteboard.dto";
 import { WhiteboardService } from "./whiteboard.service";
+import { WhiteboardVisionService } from "./whiteboard-vision.service";
 
 const IMAGE_MIME = new Set(["image/png", "image/jpeg", "image/jpg", "image/webp"]);
+
+const IMAGE_CONTENT_TYPE: Record<string, string> = {
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".webp": "image/webp",
+};
 
 @ApiTags("Whiteboard")
 @ApiBearerAuth("bearer")
 @Controller("tools/whiteboard")
 export class WhiteboardController {
-  constructor(private readonly whiteboardService: WhiteboardService) {}
+  constructor(
+    private readonly whiteboardService: WhiteboardService,
+    private readonly visionService: WhiteboardVisionService,
+  ) {}
 
-  @ApiOperation({ summary: "Upload composite image + options and queue a whiteboard render" })
+  @ApiOperation({
+    summary: "Upload a composite image and detect its objects — returns the scene for review",
+  })
   @ApiConsumes("multipart/form-data")
   @ApiBody({
     schema: {
@@ -41,13 +56,12 @@ export class WhiteboardController {
         userId: { type: "string" },
         nodeId: { type: "string" },
         displayName: { type: "string" },
-        engineConfig: { type: "string", description: "JSON string with fps, durationSec, brushSize, brushSpeedPx" },
         image: { type: "string", format: "binary" },
       },
     },
   })
   @Public()
-  @Post("render")
+  @Post("analyze")
   @UseInterceptors(
     FileInterceptor("image", {
       storage: memoryStorage(),
@@ -61,18 +75,72 @@ export class WhiteboardController {
       },
     }),
   )
-  async render(
-    @Body() dto: RenderWhiteboardUploadDto,
-    @UploadedFile() file: Express.Multer.File,
-  ) {
+  async analyze(@Body() dto: AnalyzeWhiteboardDto, @UploadedFile() file: Express.Multer.File) {
     if (!file) throw new BadRequestException("image file is required");
-    const created = await this.whiteboardService.enqueueFromUpload(dto, file);
+
+    const draft = await this.whiteboardService.createAnalysisDraft(dto, file);
+    const sourceImagePath = this.whiteboardService.resolveSourceImagePath(draft);
+    const { sceneJson } = await this.visionService.analyze(sourceImagePath);
+    await this.whiteboardService.saveAnalyzedScene(draft.id, sceneJson);
+
     return {
-      jobId: created.id,
-      nodeId: created.nodeId,
+      analysisId: draft.id,
+      displayName: draft.displayName,
+      imageWidth: sceneJson.imageWidth,
+      imageHeight: sceneJson.imageHeight,
+      objects: sceneJson.objects,
+      sourceImageUrl: `/api/tools/whiteboard/source-image?whiteboardHistoryId=${draft.id}`,
+    };
+  }
+
+  @ApiOperation({
+    summary: "Queue a render for a reviewed analysis — result via socket workflow.job.completed / failed",
+  })
+  @ApiBody({ type: RenderWhiteboardDto })
+  @Public()
+  @Post("render")
+  async render(@Body() dto: RenderWhiteboardDto) {
+    const queued = await this.whiteboardService.enqueueReviewed(dto);
+    return {
+      jobId: queued.id,
+      nodeId: queued.nodeId,
       type: "whiteboard" as const,
       status: "queued" as const,
     };
+  }
+
+  @ApiOperation({ summary: "Read back a stored scene (bounding boxes + reading order)" })
+  @ApiQuery({ name: "whiteboardHistoryId", required: true })
+  @ApiQuery({ name: "userId", required: true })
+  @Public()
+  @Get("scene")
+  async scene(
+    @Query("whiteboardHistoryId") whiteboardHistoryId: string,
+    @Query("userId") userId: string,
+  ) {
+    if (!whiteboardHistoryId) throw new BadRequestException("whiteboardHistoryId is required");
+    const history = await this.whiteboardService.getOwnedById(whiteboardHistoryId, userId);
+    return this.whiteboardService.mapForClient(history);
+  }
+
+  @ApiOperation({ summary: "Stream the uploaded composite image used for review overlays" })
+  @ApiQuery({ name: "whiteboardHistoryId", required: true })
+  @Public()
+  @Get("source-image")
+  async sourceImage(
+    @Query("whiteboardHistoryId") whiteboardHistoryId: string,
+    @Res() res: Response,
+  ) {
+    if (!whiteboardHistoryId) throw new NotFoundException("whiteboardHistoryId is required");
+    const history = await this.whiteboardService.getById(whiteboardHistoryId);
+    if (!history) throw new NotFoundException("Whiteboard job not found");
+
+    const filePath = this.whiteboardService.resolveSourceImagePath(history);
+    const contentType = IMAGE_CONTENT_TYPE[extname(filePath).toLowerCase()] ?? "image/png";
+    res.setHeader("Content-Type", contentType);
+    res.setHeader("Content-Length", String(statSync(filePath).size));
+    res.setHeader("Cache-Control", "private, max-age=3600");
+    return createReadStream(filePath).pipe(res);
   }
 
   @ApiOperation({ summary: "List render history (paginated)" })

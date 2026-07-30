@@ -18,9 +18,17 @@ export class WhiteboardHistory extends BaseEntity {
   @Column({ name: "display_name", type: "varchar", length: 255 })
   displayName!: string;
 
-  /** Uploaded source image filename inside work dir. */
+  /** Absolute directory holding the uploaded source image. */
+  @Column({ name: "assets_dir", type: "varchar", length: 1024, nullable: true })
+  assetsDir!: string | null;
+
+  /** Uploaded source image filename inside `assetsDir`. */
   @Column({ name: "source_image_file_name", type: "varchar", length: 512, nullable: true })
   sourceImageFileName!: string | null;
+
+  /** Set once vision analysis produced a scene for review. */
+  @Column({ name: "analyzed_at", type: "timestamp", nullable: true })
+  analyzedAt!: Date | null;
 
   /** Original image dimensions in pixels. */
   @Column({ name: "image_width", type: "integer", nullable: true })

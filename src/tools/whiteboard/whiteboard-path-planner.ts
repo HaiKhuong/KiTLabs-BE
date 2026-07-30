@@ -1,4 +1,4 @@
-import type { WhiteboardObject, WhiteboardSceneJson } from "./whiteboard-vision.service";
+import type { WhiteboardObject, WhiteboardSceneJson } from "./whiteboard-scene";
 
 export interface PathPoint {
   x: number;

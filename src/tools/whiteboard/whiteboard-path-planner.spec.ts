@@ -1,5 +1,5 @@
 import { WhiteboardPathPlanner } from "./whiteboard-path-planner";
-import type { WhiteboardSceneJson } from "./whiteboard-vision.service";
+import type { WhiteboardSceneJson } from "./whiteboard-scene";
 
 function makeScene(
   id: string,

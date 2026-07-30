@@ -5,21 +5,7 @@ import { readFileSync } from "fs";
 import { extname } from "path";
 
 import { geminiKeyPoolEnvHint, loadGeminiKeyPools } from "../../common/gemini/gemini-key-pools";
-
-export interface WhiteboardObject {
-  id: string;
-  type: "text" | "image" | "icon" | "arrow" | "shape" | "other";
-  bbox: [number, number, number, number]; // [x1, y1, x2, y2] pixels
-  order: number;
-}
-
-export interface WhiteboardSceneJson {
-  imageWidth: number;
-  imageHeight: number;
-  objects: WhiteboardObject[];
-}
-
-const ALLOWED_TYPES = new Set(["text", "image", "icon", "arrow", "shape", "other"]);
+import { normalizeSceneObjects, WhiteboardSceneJson } from "./whiteboard-scene";
 
 const VISION_PROMPT = `You are a layout analyzer for whiteboard/infographic images.
 
@@ -143,57 +129,10 @@ export class WhiteboardVisionService {
     }
 
     const input = parsed as Record<string, unknown>;
-    const rawObjects = Array.isArray(input.objects) ? input.objects : [];
-    if (rawObjects.length === 0) {
-      throw new BadGatewayException("Gemini vision returned no objects");
-    }
-
-    const seenIds = new Set<string>();
-    const objects: WhiteboardObject[] = [];
-
-    for (const raw of rawObjects) {
-      if (!raw || typeof raw !== "object") continue;
-      const obj = raw as Record<string, unknown>;
-
-      const id = String(obj.id ?? "").trim().replace(/\W+/g, "_").slice(0, 64);
-      if (!id) continue;
-
-      // Ensure unique ids
-      let uniqueId = id;
-      let suffix = 2;
-      while (seenIds.has(uniqueId)) {
-        uniqueId = `${id}_${suffix++}`;
-      }
-      seenIds.add(uniqueId);
-
-      const rawType = String(obj.type ?? "other").trim().toLowerCase();
-      const type = ALLOWED_TYPES.has(rawType) ? (rawType as WhiteboardObject["type"]) : "other";
-
-      const rawBbox = Array.isArray(obj.bbox) ? obj.bbox : [];
-      if (rawBbox.length < 4) continue;
-      const [rx1, ry1, rx2, ry2] = rawBbox.map((v) => Math.round(Number(v)));
-      if (!Number.isFinite(rx1) || !Number.isFinite(ry1) || !Number.isFinite(rx2) || !Number.isFinite(ry2)) continue;
-
-      // Normalize so x1 < x2, y1 < y2
-      const x1 = Math.max(0, Math.min(rx1, rx2));
-      const y1 = Math.max(0, Math.min(ry1, ry2));
-      const x2 = Math.min(imageWidth, Math.max(rx1, rx2));
-      const y2 = Math.min(imageHeight, Math.max(ry1, ry2));
-
-      // Skip degenerate boxes (< 4px area)
-      if ((x2 - x1) < 4 || (y2 - y1) < 4) continue;
-
-      const order = Math.max(1, Math.round(Number(obj.order) || 1));
-
-      objects.push({ id: uniqueId, type, bbox: [x1, y1, x2, y2], order });
-    }
-
+    const objects = normalizeSceneObjects(input.objects, imageWidth, imageHeight);
     if (objects.length === 0) {
-      throw new BadGatewayException("No valid objects found in vision response");
+      throw new BadGatewayException("Gemini vision returned no usable objects");
     }
-
-    // Sort by reading order for determinism
-    objects.sort((a, b) => a.order - b.order || a.bbox[1] - b.bbox[1] || a.bbox[0] - b.bbox[0]);
 
     return { imageWidth, imageHeight, objects };
   }

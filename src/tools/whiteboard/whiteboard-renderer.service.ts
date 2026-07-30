@@ -1,7 +1,7 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { existsSync, readFileSync, writeFileSync } from "fs";
 import { join, resolve } from "path";
-import type { WhiteboardSceneJson } from "./whiteboard-vision.service";
+import type { WhiteboardSceneJson } from "./whiteboard-scene";
 import type { WhiteboardPathPlan } from "./whiteboard-path-planner";
 
 export interface WhiteboardRenderInput {
