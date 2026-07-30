@@ -23,8 +23,8 @@ import { memoryStorage } from "multer";
 import { Public } from "../../common/decorators/public.decorator";
 import { AnalyzeWhiteboardDto } from "./dto/analyze-whiteboard.dto";
 import { RenderWhiteboardDto } from "./dto/render-whiteboard.dto";
+import { readImageDimensionsFromPath } from "./whiteboard-image";
 import { WhiteboardService } from "./whiteboard.service";
-import { WhiteboardVisionService } from "./whiteboard-vision.service";
 
 const IMAGE_MIME = new Set(["image/png", "image/jpeg", "image/jpg", "image/webp"]);
 
@@ -39,13 +39,10 @@ const IMAGE_CONTENT_TYPE: Record<string, string> = {
 @ApiBearerAuth("bearer")
 @Controller("tools/whiteboard")
 export class WhiteboardController {
-  constructor(
-    private readonly whiteboardService: WhiteboardService,
-    private readonly visionService: WhiteboardVisionService,
-  ) {}
+  constructor(private readonly whiteboardService: WhiteboardService) {}
 
   @ApiOperation({
-    summary: "Upload a composite image and detect its objects — returns the scene for review",
+    summary: "Upload a composite image for manual box drawing — returns canvas size, no auto-detect",
   })
   @ApiConsumes("multipart/form-data")
   @ApiBody({
@@ -80,15 +77,15 @@ export class WhiteboardController {
 
     const draft = await this.whiteboardService.createAnalysisDraft(dto, file);
     const sourceImagePath = this.whiteboardService.resolveSourceImagePath(draft);
-    const { sceneJson } = await this.visionService.analyze(sourceImagePath);
-    await this.whiteboardService.saveAnalyzedScene(draft.id, sceneJson);
+    const { imageWidth, imageHeight } = readImageDimensionsFromPath(sourceImagePath);
+    await this.whiteboardService.savePreparedCanvas(draft.id, imageWidth, imageHeight);
 
     return {
       analysisId: draft.id,
       displayName: draft.displayName,
-      imageWidth: sceneJson.imageWidth,
-      imageHeight: sceneJson.imageHeight,
-      objects: sceneJson.objects,
+      imageWidth,
+      imageHeight,
+      objects: [],
       sourceImageUrl: `/api/tools/whiteboard/source-image?whiteboardHistoryId=${draft.id}`,
     };
   }

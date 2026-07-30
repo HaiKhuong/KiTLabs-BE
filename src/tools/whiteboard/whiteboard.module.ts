@@ -10,7 +10,6 @@ import { WhiteboardPathPlanner } from "./whiteboard-path-planner";
 import { WhiteboardProcessor } from "./whiteboard.processor";
 import { WhiteboardRendererService } from "./whiteboard-renderer.service";
 import { WHITEBOARD_QUEUE_NAME, WhiteboardService } from "./whiteboard.service";
-import { WhiteboardVisionService } from "./whiteboard-vision.service";
 
 @Module({
   imports: [
@@ -23,7 +22,6 @@ import { WhiteboardVisionService } from "./whiteboard-vision.service";
   providers: [
     WhiteboardService,
     WhiteboardProcessor,
-    WhiteboardVisionService,
     WhiteboardRendererService,
   ],
   exports: [WhiteboardService],

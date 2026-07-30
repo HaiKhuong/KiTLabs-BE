@@ -2,9 +2,9 @@ import { BadGatewayException, BadRequestException, Injectable, Logger } from "@n
 import { ConfigService } from "@nestjs/config";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { readFileSync } from "fs";
-import { extname } from "path";
 
 import { geminiKeyPoolEnvHint, loadGeminiKeyPools } from "../../common/gemini/gemini-key-pools";
+import { mimeFromPath, readImageDimensions } from "./whiteboard-image";
 import { normalizeSceneObjects, WhiteboardSceneJson } from "./whiteboard-scene";
 
 const VISION_PROMPT = `You are a layout analyzer for whiteboard/infographic images.
@@ -29,13 +29,6 @@ Rules:
 - id must be unique; use descriptive slugs like "title_1", "lion_image", "arrow_2"
 - Include every visible distinct element; do not skip small icons or arrows
 - Return JSON only — no markdown, no explanation`;
-
-const MIME_MAP: Record<string, string> = {
-  ".jpg": "image/jpeg",
-  ".jpeg": "image/jpeg",
-  ".png": "image/png",
-  ".webp": "image/webp",
-};
 
 @Injectable()
 export class WhiteboardVisionService {
@@ -62,13 +55,10 @@ export class WhiteboardVisionService {
     const modelName =
       this.config.get<string>("WHITEBOARD_GEMINI_MODEL")?.trim() || "gemini-2.5-flash";
 
-    const ext = extname(sourceImagePath).toLowerCase();
-    const mimeType = MIME_MAP[ext] ?? "image/png";
+    const mimeType = mimeFromPath(sourceImagePath);
     const imageData = readFileSync(sourceImagePath);
     const base64Image = imageData.toString("base64");
-
-    // Get image dimensions using a lightweight approach
-    const { imageWidth, imageHeight } = this.readImageDimensions(imageData, mimeType);
+    const { imageWidth, imageHeight } = readImageDimensions(imageData, mimeType);
 
     let lastError: unknown;
     const maxAttempts = Math.max(this.apiKeys.length, 2);
@@ -141,47 +131,5 @@ export class WhiteboardVisionService {
     const key = this.apiKeys[this.keyIndex];
     this.keyIndex = (this.keyIndex + 1) % this.apiKeys.length;
     return key;
-  }
-
-  /**
-   * Read image dimensions from raw bytes without an external lib.
-   * Supports PNG and JPEG. Falls back to 1280x720 if parsing fails.
-   */
-  private readImageDimensions(buf: Buffer, mimeType: string): { imageWidth: number; imageHeight: number } {
-    try {
-      if (mimeType === "image/png") {
-        // PNG: IHDR chunk starts at byte 16, width at 16-19, height at 20-23
-        if (buf.length >= 24) {
-          const width = buf.readUInt32BE(16);
-          const height = buf.readUInt32BE(20);
-          if (width > 0 && height > 0) return { imageWidth: width, imageHeight: height };
-        }
-      } else if (mimeType === "image/jpeg" || mimeType === "image/jpg") {
-        // JPEG: scan for SOF0/SOF2 marker (0xFFC0 / 0xFFC2)
-        let i = 2;
-        while (i < buf.length - 8) {
-          if (buf[i] !== 0xff) break;
-          const marker = buf[i + 1];
-          const segLen = buf.readUInt16BE(i + 2);
-          if ((marker >= 0xc0 && marker <= 0xc3) || (marker >= 0xc5 && marker <= 0xc7)) {
-            const height = buf.readUInt16BE(i + 5);
-            const width = buf.readUInt16BE(i + 7);
-            if (width > 0 && height > 0) return { imageWidth: width, imageHeight: height };
-          }
-          i += 2 + segLen;
-        }
-      } else if (mimeType === "image/webp") {
-        // WebP: "RIFF....WEBPVP8 " — width at byte 26-27, height at 28-29 (little-endian, mask 0x3FFF)
-        if (buf.length >= 30 && buf.slice(0, 4).toString() === "RIFF" && buf.slice(8, 12).toString() === "WEBP") {
-          const width = (buf.readUInt16LE(26) & 0x3fff) + 1;
-          const height = (buf.readUInt16LE(28) & 0x3fff) + 1;
-          if (width > 0 && height > 0) return { imageWidth: width, imageHeight: height };
-        }
-      }
-    } catch {
-      // fall through
-    }
-    this.logger.warn("Could not parse image dimensions, defaulting to 1280x720");
-    return { imageWidth: 1280, imageHeight: 720 };
   }
 }

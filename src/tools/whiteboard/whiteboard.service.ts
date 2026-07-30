@@ -111,7 +111,20 @@ export class WhiteboardService {
     return (await this.repository.save(draft)) as WhiteboardHistory;
   }
 
-  /** Persist the freshly detected scene so the reviewer can inspect it. */
+  /** Persist canvas size after upload — boxes are drawn manually on the FE. */
+  async savePreparedCanvas(id: string, imageWidth: number, imageHeight: number): Promise<void> {
+    await this.repository.update(
+      { id },
+      {
+        imageWidth,
+        imageHeight,
+        sceneJson: { imageWidth, imageHeight, objects: [] } as never,
+        analyzedAt: new Date(),
+      },
+    );
+  }
+
+  /** Persist a freshly detected / reviewed scene. */
   async saveAnalyzedScene(id: string, scene: WhiteboardSceneJson): Promise<void> {
     await this.repository.update(
       { id },
@@ -161,13 +174,8 @@ export class WhiteboardService {
     if (history.status === QueueJobStatus.RUNNING) {
       throw new BadRequestException("This analysis is already rendering");
     }
-    if (!readSceneObjects(history.sceneJson)) {
-      throw new BadRequestException("Analysis has no reviewed scene yet");
-    }
 
-    if (dto.objects !== undefined) {
-      await this.applyReviewedScene(history, dto.objects);
-    }
+    await this.applyReviewedScene(history, dto.objects);
 
     const patch: Partial<WhiteboardHistory> = {
       status: QueueJobStatus.PENDING,

@@ -86,16 +86,15 @@ export class RenderWhiteboardDto {
   @IsString()
   displayName?: string;
 
-  @ApiPropertyOptional({
-    description: "Reviewer-approved objects. Omit to render the scene exactly as analyzed.",
+  @ApiProperty({
+    description: "Manually drawn boxes in reading order",
     type: [WhiteboardObjectDto],
   })
-  @IsOptional()
   @IsArray()
   @ArrayMinSize(1)
   @ValidateNested({ each: true })
   @Type(() => WhiteboardObjectDto)
-  objects?: WhiteboardObjectDto[];
+  objects!: WhiteboardObjectDto[];
 
   @ApiPropertyOptional({ type: WhiteboardEngineConfigDto })
   @IsOptional()

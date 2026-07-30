@@ -4,7 +4,6 @@ import { Job, UnrecoverableError } from "bullmq";
 
 import { ToolsRealtimeGateway } from "../realtime/tools-realtime.gateway";
 import { WHITEBOARD_QUEUE_NAME, WhiteboardService } from "./whiteboard.service";
-import { WhiteboardVisionService } from "./whiteboard-vision.service";
 import { WhiteboardPathPlanner } from "./whiteboard-path-planner";
 import { WhiteboardRendererService } from "./whiteboard-renderer.service";
 import { readSceneObjects, WhiteboardObject, WhiteboardSceneJson } from "./whiteboard-scene";
@@ -21,7 +20,6 @@ export class WhiteboardProcessor extends WorkerHost {
   constructor(
     private readonly whiteboardService: WhiteboardService,
     private readonly realtimeGateway: ToolsRealtimeGateway,
-    private readonly visionService: WhiteboardVisionService,
     private readonly rendererService: WhiteboardRendererService,
   ) {
     super();
@@ -41,25 +39,18 @@ export class WhiteboardProcessor extends WorkerHost {
       await this.whiteboardService.processStarted(id);
 
       const sourceImagePath = this.whiteboardService.resolveSourceImagePath(history);
-
-      // The review flow stores an approved scene, so vision only runs as a fallback
-      // for jobs queued without a review pass.
       const reviewed = readSceneObjects(history.sceneJson);
-      let scene: WhiteboardSceneJson;
-      if (reviewed) {
-        await this.whiteboardService.updateRuntimeMessage(id, "[STEP 1/2] Using reviewed scene…");
-        this.logger.log(`[${id}] Reusing reviewed scene (${reviewed.length} objects)`);
-        scene = {
-          imageWidth: history.imageWidth ?? 0,
-          imageHeight: history.imageHeight ?? 0,
-          objects: reviewed as WhiteboardObject[],
-        };
-      } else {
-        await this.whiteboardService.updateRuntimeMessage(id, "[STEP 1/2] Vision analysis with Gemini…");
-        this.logger.log(`[${id}] Running vision analysis on ${sourceImagePath}`);
-        scene = (await this.visionService.analyze(sourceImagePath)).sceneJson;
-        await this.whiteboardService.saveAnalyzedScene(id, scene);
+      if (!reviewed) {
+        throw new UnrecoverableError("No reviewed boxes — draw boxes before rendering");
       }
+
+      await this.whiteboardService.updateRuntimeMessage(id, "[STEP 1/2] Using manually drawn scene…");
+      this.logger.log(`[${id}] Using reviewed scene (${reviewed.length} objects)`);
+      const scene: WhiteboardSceneJson = {
+        imageWidth: history.imageWidth ?? 0,
+        imageHeight: history.imageHeight ?? 0,
+        objects: reviewed as WhiteboardObject[],
+      };
 
       await this.whiteboardService.updateRuntimeMessage(id, "[STEP 2/2] Planning hand path + rendering…");
       const engineConfig = (history.engineConfig ?? {}) as Record<string, unknown>;
