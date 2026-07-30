@@ -87,6 +87,15 @@ export class WhiteboardObjectDto {
   @Min(0.1)
   @Max(60)
   durationSec?: number;
+
+  @ApiPropertyOptional({
+    description: "Sampled SVG paths as arrays of [x,y] points in source-image pixels",
+    type: "array",
+  })
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(128)
+  strokePaths?: unknown[];
 }
 
 export class RenderWhiteboardDto {

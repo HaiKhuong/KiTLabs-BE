@@ -24,6 +24,8 @@ export interface ObjectPath {
   drawDurationSec: number;
   /** Transit duration before drawing starts (hand moving from previous endpoint). */
   transitDurationSec: number;
+  /** Separate SVG strokes used by Remotion for stroke-then-fill rendering. */
+  strokePaths?: PathPoint[][];
 }
 
 export interface WhiteboardPathPlan {
@@ -84,6 +86,36 @@ export class WhiteboardPathPlanner {
         drawPoints = [{ x: Math.round(cx), y: Math.round(cy) }];
         drawDurationSec = WhiteboardPathPlanner.effectDurationSec(x2 - x1, y2 - y1);
         transitDurationSec = EFFECT_TRANSIT_SEC;
+      } else if (revealStyle === "svg_stroke_fill" && obj.strokePaths?.length) {
+        const strokePaths = obj.strokePaths.map((path) =>
+          path.map(([x, y]) => ({ x, y })),
+        );
+        drawPoints = strokePaths.flat();
+        const drawLength = strokePaths.reduce(
+          (sum, path) => sum + WhiteboardPathPlanner.pathLength(path),
+          0,
+        );
+        drawDurationSec =
+          Number.isFinite(obj.durationSec) && Number(obj.durationSec) > 0
+            ? Math.min(60, Math.max(0.1, Number(obj.durationSec)))
+            : Math.max(0.5, drawLength / brushSpeedPx);
+        const transitDist = WhiteboardPathPlanner.dist(
+          prevEndPoint,
+          drawPoints[0] ?? { x: x1, y: y1 },
+        );
+        transitDurationSec = Math.max(0, transitDist / TRANSIT_SPEED_PX);
+        prevEndPoint = drawPoints[drawPoints.length - 1] ?? { x: x2, y: y2 };
+        objectPaths.push({
+          objectId: obj.id,
+          type: obj.type,
+          bbox: obj.bbox,
+          revealStyle,
+          drawPoints,
+          drawDurationSec,
+          transitDurationSec,
+          strokePaths,
+        });
+        continue;
       } else {
         drawPoints = WhiteboardPathPlanner.buildDrawPoints(
           obj.type,

@@ -147,6 +147,33 @@ describe("WhiteboardPathPlanner.plan", () => {
     const plan = WhiteboardPathPlanner.plan(scene, 1280, 720, config);
     expect(plan.objectPaths[0].drawDurationSec).toBe(4.5);
   });
+
+  it("uses sampled SVG strokes for stroke-then-fill paths", () => {
+    const scene: WhiteboardSceneJson = {
+      imageWidth: 1280,
+      imageHeight: 720,
+      objects: [
+        {
+          id: "vector",
+          type: "image",
+          bbox: [100, 100, 500, 400],
+          order: 1,
+          revealStyle: "svg_stroke_fill",
+          durationSec: 3,
+          strokePaths: [
+            [[100, 100], [300, 200], [500, 100]],
+            [[200, 300], [400, 300]],
+          ],
+        },
+      ],
+    };
+
+    const op = WhiteboardPathPlanner.plan(scene, 1280, 720, config).objectPaths[0];
+    expect(op.revealStyle).toBe("svg_stroke_fill");
+    expect(op.strokePaths).toHaveLength(2);
+    expect(op.drawPoints).toHaveLength(5);
+    expect(op.drawDurationSec).toBe(3);
+  });
 });
 
 describe("WhiteboardPathPlanner.interpolate", () => {

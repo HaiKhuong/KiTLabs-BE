@@ -124,6 +124,45 @@ describe("normalizeSceneObjects", () => {
     expect(normalizeSceneObjects(null, W, H)).toEqual([]);
     expect(normalizeSceneObjects({ objects: [] }, W, H)).toEqual([]);
   });
+
+  it("keeps valid SVG stroke paths and clamps their points to the bbox", () => {
+    const [obj] = normalizeSceneObjects(
+      [
+        {
+          id: "vector",
+          type: "image",
+          bbox: [100, 100, 300, 300],
+          order: 1,
+          revealStyle: "svg_stroke_fill",
+          strokePaths: [[[50, 50], [200, 200], [500, 500]]],
+        },
+      ],
+      W,
+      H,
+    );
+
+    expect(obj.revealStyle).toBe("svg_stroke_fill");
+    expect(obj.strokePaths).toEqual([[[100, 100], [200, 200], [300, 300]]]);
+  });
+
+  it("falls back from SVG reveal when no usable paths are provided", () => {
+    const [obj] = normalizeSceneObjects(
+      [
+        {
+          id: "not-vector",
+          type: "image",
+          bbox: [100, 100, 300, 300],
+          order: 1,
+          revealStyle: "svg_stroke_fill",
+          strokePaths: [],
+        },
+      ],
+      W,
+      H,
+    );
+
+    expect(obj.revealStyle).toBe("zigzag");
+  });
 });
 
 describe("readSceneObjects", () => {

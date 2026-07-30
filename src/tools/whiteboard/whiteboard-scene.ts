@@ -14,6 +14,7 @@ export const WHITEBOARD_HAND_STYLES = [
   "left_right",
   "right_left",
   "top_bottom",
+  "svg_stroke_fill",
 ] as const;
 
 export const WHITEBOARD_EFFECT_STYLES = [
@@ -31,6 +32,8 @@ export const WHITEBOARD_REVEAL_STYLES = [
 export type WhiteboardHandStyle = (typeof WHITEBOARD_HAND_STYLES)[number];
 export type WhiteboardEffectStyle = (typeof WHITEBOARD_EFFECT_STYLES)[number];
 export type WhiteboardRevealStyle = (typeof WHITEBOARD_REVEAL_STYLES)[number];
+export type WhiteboardStrokePoint = [number, number];
+export type WhiteboardStrokePath = WhiteboardStrokePoint[];
 
 export interface WhiteboardObject {
   id: string;
@@ -42,6 +45,8 @@ export interface WhiteboardObject {
   revealStyle?: WhiteboardRevealStyle;
   /** Optional per-object drawing duration in seconds. */
   durationSec?: number;
+  /** Sampled SVG geometry in source-canvas pixels. */
+  strokePaths?: WhiteboardStrokePath[];
 }
 
 export interface WhiteboardSceneJson {
@@ -58,6 +63,8 @@ const ALLOWED_HAND_STYLES = new Set<string>(WHITEBOARD_HAND_STYLES);
 const MIN_BOX_SIDE_PX = 4;
 
 const MAX_ID_LENGTH = 64;
+const MAX_STROKE_PATHS = 128;
+const MAX_STROKE_POINTS = 4_000;
 
 /**
  * Turn untrusted object candidates into a deterministic scene object list.
@@ -107,9 +114,13 @@ export function normalizeSceneObjects(
     const rawRevealStyle = String(obj.revealStyle ?? obj.handStyle ?? "")
       .trim()
       .toLowerCase();
-    const revealStyle = ALLOWED_REVEAL_STYLES.has(rawRevealStyle)
+    let revealStyle = ALLOWED_REVEAL_STYLES.has(rawRevealStyle)
       ? (rawRevealStyle as WhiteboardRevealStyle)
       : undefined;
+    const strokePaths = normalizeStrokePaths(obj.strokePaths, bbox, imageWidth, imageHeight);
+    if (revealStyle === "svg_stroke_fill" && strokePaths.length === 0) {
+      revealStyle = "zigzag";
+    }
     const rawDurationSec = Number(obj.durationSec);
     const durationSec =
       Number.isFinite(rawDurationSec) && rawDurationSec > 0
@@ -123,11 +134,47 @@ export function normalizeSceneObjects(
       order,
       ...(revealStyle ? { revealStyle } : {}),
       ...(durationSec ? { durationSec } : {}),
+      ...(strokePaths.length ? { strokePaths } : {}),
     });
   });
 
   objects.sort((a, b) => a.order - b.order || a.bbox[1] - b.bbox[1] || a.bbox[0] - b.bbox[0]);
   return objects.map((obj, index) => ({ ...obj, order: index + 1 }));
+}
+
+function normalizeStrokePaths(
+  raw: unknown,
+  bbox: [number, number, number, number],
+  imageWidth: number,
+  imageHeight: number,
+): WhiteboardStrokePath[] {
+  if (!Array.isArray(raw)) return [];
+
+  const paths: WhiteboardStrokePath[] = [];
+  let totalPoints = 0;
+  const [x1, y1, x2, y2] = bbox;
+
+  for (const rawPath of raw.slice(0, MAX_STROKE_PATHS)) {
+    if (!Array.isArray(rawPath) || totalPoints >= MAX_STROKE_POINTS) continue;
+    const path: WhiteboardStrokePath = [];
+    for (const rawPoint of rawPath) {
+      if (totalPoints + path.length >= MAX_STROKE_POINTS) break;
+      if (!Array.isArray(rawPoint) || rawPoint.length < 2) continue;
+      const x = Number(rawPoint[0]);
+      const y = Number(rawPoint[1]);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+      path.push([
+        Math.round(Math.max(x1, Math.min(x2, Math.max(0, Math.min(imageWidth, x)))) * 10) / 10,
+        Math.round(Math.max(y1, Math.min(y2, Math.max(0, Math.min(imageHeight, y)))) * 10) / 10,
+      ]);
+    }
+    if (path.length >= 2) {
+      paths.push(path);
+      totalPoints += path.length;
+    }
+  }
+
+  return paths;
 }
 
 export function isHandRevealStyle(style: WhiteboardRevealStyle | undefined): boolean {

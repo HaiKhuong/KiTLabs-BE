@@ -16,8 +16,15 @@ const HAND_TIP_OFFSET_Y = 0.08;
 const HAND_DISPLAY_WIDTH = 120;
 const HAND_DISPLAY_HEIGHT = 120;
 
-const HAND_STYLES = new Set(["zigzag", "left_right", "right_left", "top_bottom"]);
+const HAND_STYLES = new Set([
+  "zigzag",
+  "left_right",
+  "right_left",
+  "top_bottom",
+  "svg_stroke_fill",
+]);
 const EFFECT_STYLES = new Set(["zoom_in", "fade_in", "slide_up", "pop"]);
+const SVG_STROKE_PORTION = 0.8;
 
 export interface PathPoint {
   x: number;
@@ -31,6 +38,7 @@ export interface ObjectPath {
   drawPoints: PathPoint[];
   drawDurationSec: number;
   transitDurationSec: number;
+  strokePaths?: PathPoint[][];
 }
 
 export interface WhiteboardPathPlan {
@@ -56,6 +64,7 @@ type ObjectFrameState = {
   phase: "pending" | "transit" | "drawing" | "done";
   handPos: PathPoint | null;
   partialPoints: PathPoint[];
+  partialStrokePaths: PathPoint[][];
 };
 
 function loadImage(src: string): Promise<HTMLImageElement> {
@@ -144,6 +153,63 @@ function buildPartialStroke(points: PathPoint[], drawT: number, partialPoint: Pa
   return partialPoints;
 }
 
+function strokePathsLength(paths: PathPoint[][]): number {
+  return paths.reduce((sum, path) => {
+    let length = 0;
+    for (let index = 1; index < path.length; index++) {
+      length += Math.hypot(path[index].x - path[index - 1].x, path[index].y - path[index - 1].y);
+    }
+    return sum + length;
+  }, 0);
+}
+
+function buildPartialStrokePaths(
+  paths: PathPoint[][],
+  progress: number,
+): { paths: PathPoint[][]; handPos: PathPoint | null } {
+  const totalLength = strokePathsLength(paths);
+  if (totalLength <= 0) return { paths: [], handPos: paths[0]?.[0] ?? null };
+
+  let remaining = totalLength * clamp01(progress);
+  const partial: PathPoint[][] = [];
+  let handPos: PathPoint | null = paths[0]?.[0] ?? null;
+
+  for (const path of paths) {
+    if (path.length < 2) continue;
+    const pathLength = strokePathsLength([path]);
+    if (remaining >= pathLength) {
+      partial.push(path);
+      handPos = path[path.length - 1];
+      remaining -= pathLength;
+      continue;
+    }
+
+    const points: PathPoint[] = [path[0]];
+    let consumed = 0;
+    for (let index = 1; index < path.length; index++) {
+      const previous = path[index - 1];
+      const current = path[index];
+      const segment = Math.hypot(current.x - previous.x, current.y - previous.y);
+      if (consumed + segment >= remaining) {
+        const segmentProgress = segment > 0 ? (remaining - consumed) / segment : 0;
+        handPos = {
+          x: previous.x + (current.x - previous.x) * segmentProgress,
+          y: previous.y + (current.y - previous.y) * segmentProgress,
+        };
+        points.push(handPos);
+        break;
+      }
+      points.push(current);
+      handPos = current;
+      consumed += segment;
+    }
+    partial.push(points);
+    break;
+  }
+
+  return { paths: partial, handPos };
+}
+
 function isHandStyle(style: string | undefined): boolean {
   return Boolean(style && HAND_STYLES.has(style));
 }
@@ -171,6 +237,7 @@ function computeObjectStates(plan: WhiteboardPathPlan, tSec: number): ObjectFram
         phase: "pending",
         handPos: null,
         partialPoints: [],
+        partialStrokePaths: [],
       });
     } else if (tSec >= drawEnd) {
       states.push({
@@ -179,16 +246,24 @@ function computeObjectStates(plan: WhiteboardPathPlan, tSec: number): ObjectFram
         phase: "done",
         handPos: op.drawPoints[op.drawPoints.length - 1] ?? center,
         partialPoints: op.drawPoints,
+        partialStrokePaths: op.strokePaths ?? [],
       });
     } else if (tSec >= transitEnd) {
       const drawT = op.drawDurationSec > 0 ? (tSec - transitEnd) / op.drawDurationSec : 1;
-      const partialPoint = interpolatePath(op.drawPoints, drawT);
+      const svgStrokeT =
+        op.revealStyle === "svg_stroke_fill" ? clamp01(drawT / SVG_STROKE_PORTION) : drawT;
+      const vectorState = op.strokePaths?.length
+        ? buildPartialStrokePaths(op.strokePaths, svgStrokeT)
+        : null;
+      const partialPoint =
+        vectorState?.handPos ?? interpolatePath(op.drawPoints, drawT);
       states.push({
         op,
         progress: clamp01(drawT),
         phase: "drawing",
         handPos: partialPoint,
         partialPoints: buildPartialStroke(op.drawPoints, drawT, partialPoint),
+        partialStrokePaths: vectorState?.paths ?? [],
       });
     } else {
       states.push({
@@ -197,6 +272,7 @@ function computeObjectStates(plan: WhiteboardPathPlan, tSec: number): ObjectFram
         phase: "transit",
         handPos: op.drawPoints[0] ?? center,
         partialPoints: [],
+        partialStrokePaths: [],
       });
     }
 
@@ -272,6 +348,47 @@ function drawHandReveal(
 
   tempCtx.drawImage(mask, 0, 0);
   ctx.drawImage(temp, x1, y1);
+}
+
+function drawSvgStrokeFill(
+  ctx: CanvasRenderingContext2D,
+  source: HTMLImageElement,
+  state: ObjectFrameState,
+) {
+  const [x1, y1, x2, y2] = state.op.bbox;
+  const w = Math.max(1, x2 - x1);
+  const h = Math.max(1, y2 - y1);
+
+  if (state.progress >= 1) {
+    ctx.drawImage(source, x1, y1, w, h, x1, y1, w, h);
+    return;
+  }
+
+  const fillProgress = easeOutCubic(
+    clamp01((state.progress - SVG_STROKE_PORTION) / (1 - SVG_STROKE_PORTION)),
+  );
+  if (fillProgress > 0) {
+    ctx.save();
+    ctx.globalAlpha = fillProgress;
+    ctx.drawImage(source, x1, y1, w, h, x1, y1, w, h);
+    ctx.restore();
+  }
+
+  ctx.save();
+  ctx.strokeStyle = "#171717";
+  ctx.lineWidth = Math.max(2, Math.min(8, Math.min(w, h) * 0.012));
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  for (const path of state.partialStrokePaths) {
+    if (path.length < 2) continue;
+    ctx.beginPath();
+    ctx.moveTo(path[0].x, path[0].y);
+    for (let index = 1; index < path.length; index++) {
+      ctx.lineTo(path[index].x, path[index].y);
+    }
+    ctx.stroke();
+  }
+  ctx.restore();
 }
 
 function drawEffectReveal(
@@ -388,7 +505,9 @@ export const WhiteboardComposition: React.FC<WhiteboardCompositionProps> = ({
       for (const state of states) {
         if (state.progress <= 0 && state.phase !== "drawing") continue;
         const style = state.op.revealStyle;
-        if (isEffectStyle(style)) {
+        if (style === "svg_stroke_fill" && state.op.strokePaths?.length) {
+          drawSvgStrokeFill(ctx, source, state);
+        } else if (isEffectStyle(style)) {
           drawEffectReveal(ctx, source, state);
         } else {
           // Hand styles (and legacy missing style) use brush reveal.
@@ -400,7 +519,10 @@ export const WhiteboardComposition: React.FC<WhiteboardCompositionProps> = ({
     const active = [...states].reverse().find(
       (state) =>
         (state.phase === "drawing" || state.phase === "transit") &&
-        isHandStyle(state.op.revealStyle ?? "zigzag"),
+        isHandStyle(state.op.revealStyle ?? "zigzag") &&
+        (state.op.revealStyle !== "svg_stroke_fill" ||
+          state.phase === "transit" ||
+          state.progress < SVG_STROKE_PORTION),
     );
 
     if (active?.handPos && handImgRef.current) {
