@@ -17,10 +17,8 @@ export type WhiteboardCameraPlan = {
 };
 
 const TRANSITION_SEC = 0.6;
-const PAD_RATIO = 0.08;
-const MIN_VIEW_W = 160;
-const MIN_VIEW_H = 90;
-const ASPECT = 16 / 9;
+/** Fixed camera zoom factor (2 = show half the canvas, 16:9). */
+const ZOOM_FACTOR = 2;
 
 type VoiceWindow = { index: number; startSec: number; durationSec: number };
 
@@ -63,7 +61,7 @@ export function buildWhiteboardCameraPlan(opts: {
     const union = unionBboxes(indices.flatMap((index) => objectsBySb.get(index) ?? []));
     if (!union) continue;
 
-    const target = fitAspectRect(union, W, H, ASPECT, PAD_RATIO);
+    const target = fixedZoomRect(union, W, H, ZOOM_FACTOR);
     shots.push({ startSec: window.startSec, endSec: window.endSec, target });
   }
 
@@ -221,28 +219,22 @@ function unionBboxes(objects: WhiteboardObject[]): [number, number, number, numb
   return [x1, y1, x2, y2];
 }
 
-/** Expand union with pad, force aspect, clamp inside canvas. */
-export function fitAspectRect(
+/**
+ * Fixed zoom (default ×2): view is W/zoom × H/zoom, centered on the union
+ * centroid and clamped to the canvas — top-left content → top-left shot, etc.
+ */
+export function fixedZoomRect(
   union: [number, number, number, number],
   imageWidth: number,
   imageHeight: number,
-  aspect: number,
-  padRatio: number,
+  zoomFactor: number,
 ): [number, number, number, number] {
+  const zoom = Math.max(1, zoomFactor);
+  const w = imageWidth / zoom;
+  const h = imageHeight / zoom;
   const [ux1, uy1, ux2, uy2] = union;
   const cx = (ux1 + ux2) / 2;
   const cy = (uy1 + uy2) / 2;
-  let w = Math.max(MIN_VIEW_W, (ux2 - ux1) * (1 + padRatio * 2));
-  let h = Math.max(MIN_VIEW_H, (uy2 - uy1) * (1 + padRatio * 2));
-
-  if (w / h < aspect) w = h * aspect;
-  else h = w / aspect;
-
-  if (w > imageWidth || h > imageHeight) {
-    const scale = Math.min(imageWidth / w, imageHeight / h);
-    w *= scale;
-    h *= scale;
-  }
 
   let x1 = cx - w / 2;
   let y1 = cy - h / 2;
