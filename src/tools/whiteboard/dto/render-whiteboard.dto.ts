@@ -67,6 +67,20 @@ export class WhiteboardEngineStoryboardDto {
   voice!: string;
 }
 
+export class WhiteboardCameraZoomGroupDto {
+  @ApiProperty({
+    description: "0-based storyboard indices sharing one zoom shot",
+    type: [Number],
+  })
+  @IsArray()
+  @ArrayMinSize(1)
+  @ArrayMaxSize(50)
+  @IsInt({ each: true })
+  @Min(0, { each: true })
+  @Max(200, { each: true })
+  storyboardIndices!: number[];
+}
+
 export class WhiteboardEngineConfigDto {
   @ApiPropertyOptional({ minimum: 1, maximum: 60 })
   @IsOptional()
@@ -122,6 +136,17 @@ export class WhiteboardEngineConfigDto {
   @IsOptional()
   @IsBoolean()
   useCustomHand?: boolean;
+
+  @ApiPropertyOptional({
+    description: "Camera zoom groups by storyboard indices (16:9 crop around bound layers)",
+    type: [WhiteboardCameraZoomGroupDto],
+  })
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(50)
+  @ValidateNested({ each: true })
+  @Type(() => WhiteboardCameraZoomGroupDto)
+  cameraZooms?: WhiteboardCameraZoomGroupDto[];
 }
 
 export class WhiteboardObjectStoryboardDto {

@@ -68,6 +68,15 @@ export interface WhiteboardAudioCue {
   durationSec: number;
 }
 
+export type WhiteboardCameraKeyframe = {
+  atSec: number;
+  bbox: [number, number, number, number];
+};
+
+export type WhiteboardCameraPlan = {
+  keyframes: WhiteboardCameraKeyframe[];
+};
+
 export interface WhiteboardCompositionProps {
   /** Base64-encoded composite image or data: URL. */
   sourceImageDataUrl: string;
@@ -77,6 +86,8 @@ export interface WhiteboardCompositionProps {
   audioCues?: WhiteboardAudioCue[];
   /** Optional custom hand image as data URL; falls back to bundled static hand. */
   handImageDataUrl?: string | null;
+  /** Optional camera zoom keyframes (view rect over time). */
+  cameraPlan?: WhiteboardCameraPlan | null;
 }
 
 type ObjectFrameState = {
@@ -105,6 +116,60 @@ function clamp01(value: number): number {
 function easeOutCubic(t: number): number {
   const x = clamp01(t);
   return 1 - Math.pow(1 - x, 3);
+}
+
+function easeInOutCubic(t: number): number {
+  const x = clamp01(t);
+  return x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2;
+}
+
+function lerp(a: number, b: number, t: number): number {
+  return a + (b - a) * t;
+}
+
+function interpolateCameraBbox(
+  plan: WhiteboardCameraPlan | null | undefined,
+  tSec: number,
+  imageWidth: number,
+  imageHeight: number,
+): [number, number, number, number] {
+  const full: [number, number, number, number] = [0, 0, imageWidth, imageHeight];
+  const keyframes = plan?.keyframes;
+  if (!keyframes || keyframes.length === 0) return full;
+
+  const sorted = [...keyframes].sort((a, b) => a.atSec - b.atSec);
+  if (tSec <= sorted[0].atSec) return [...sorted[0].bbox] as [number, number, number, number];
+  const last = sorted[sorted.length - 1];
+  if (tSec >= last.atSec) return [...last.bbox] as [number, number, number, number];
+
+  for (let i = 0; i < sorted.length - 1; i += 1) {
+    const a = sorted[i];
+    const b = sorted[i + 1];
+    if (tSec > b.atSec) continue;
+    const span = Math.max(1e-6, b.atSec - a.atSec);
+    const u = easeInOutCubic((tSec - a.atSec) / span);
+    return [
+      lerp(a.bbox[0], b.bbox[0], u),
+      lerp(a.bbox[1], b.bbox[1], u),
+      lerp(a.bbox[2], b.bbox[2], u),
+      lerp(a.bbox[3], b.bbox[3], u),
+    ];
+  }
+  return [...last.bbox] as [number, number, number, number];
+}
+
+function applyCameraTransform(
+  ctx: CanvasRenderingContext2D,
+  view: [number, number, number, number],
+  imageWidth: number,
+  imageHeight: number,
+): void {
+  const [x1, y1, x2, y2] = view;
+  const vw = Math.max(1, x2 - x1);
+  const vh = Math.max(1, y2 - y1);
+  const scaleX = imageWidth / vw;
+  const scaleY = imageHeight / vh;
+  ctx.setTransform(scaleX, 0, 0, scaleY, -x1 * scaleX, -y1 * scaleY);
 }
 
 /** Overshoot ease for pop. */
@@ -475,6 +540,7 @@ export const WhiteboardComposition: React.FC<WhiteboardCompositionProps> = ({
   pathPlan,
   audioCues = [],
   handImageDataUrl = null,
+  cameraPlan = null,
 }) => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
@@ -536,9 +602,12 @@ export const WhiteboardComposition: React.FC<WhiteboardCompositionProps> = ({
     const source = sourceImgRef.current;
     const tSec = frame / fps;
     const states = computeObjectStates(pathPlan, tSec);
+    const view = interpolateCameraBbox(cameraPlan, tSec, imageWidth, imageHeight);
 
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.fillStyle = "#ffffff";
     ctx.fillRect(0, 0, imageWidth, imageHeight);
+    applyCameraTransform(ctx, view, imageWidth, imageHeight);
 
     if (source) {
       for (const state of states) {
@@ -575,7 +644,9 @@ export const WhiteboardComposition: React.FC<WhiteboardCompositionProps> = ({
         HAND_DISPLAY_HEIGHT,
       );
     }
-  }, [frame, fps, pathPlan, imageWidth, imageHeight, assetsReady]);
+
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+  }, [frame, fps, pathPlan, imageWidth, imageHeight, assetsReady, cameraPlan]);
 
   useEffect(() => {
     renderFrame();

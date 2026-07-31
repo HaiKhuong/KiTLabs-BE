@@ -4,6 +4,7 @@ import { Job, UnrecoverableError } from "bullmq";
 
 import { ToolsRealtimeGateway } from "../realtime/tools-realtime.gateway";
 import { WHITEBOARD_QUEUE_NAME, WhiteboardService } from "./whiteboard.service";
+import { buildWhiteboardCameraPlan } from "./whiteboard-camera";
 import { WhiteboardPathPlanner } from "./whiteboard-path-planner";
 import { WhiteboardRendererService } from "./whiteboard-renderer.service";
 import {
@@ -112,6 +113,23 @@ export class WhiteboardProcessor extends WorkerHost {
           prepared.voiceSchedule,
         );
       }
+
+      const cameraZooms = Array.isArray(engineConfig.cameraZooms)
+        ? (engineConfig.cameraZooms as Array<{ storyboardIndices: number[] }>)
+        : null;
+      const cameraPlan = buildWhiteboardCameraPlan({
+        scene,
+        pathPlan,
+        voiceSchedule: prepared.voiceSchedule,
+        cameraZooms,
+        imageWidth: scene.imageWidth,
+        imageHeight: scene.imageHeight,
+      });
+      if (cameraPlan) {
+        engineConfig.cameraPlan = cameraPlan;
+        await this.whiteboardService.updateSceneAndEngineConfig(id, scene, engineConfig);
+      }
+
       await this.whiteboardService.updatePathPlan(id, pathPlan as unknown as Record<string, unknown>);
 
       this.logger.log(`[${id}] Starting Remotion render`);
@@ -126,6 +144,7 @@ export class WhiteboardProcessor extends WorkerHost {
         workDir,
         voiceAssets: prepared.voiceAssets,
         voiceSchedule: prepared.voiceSchedule,
+        cameraPlan,
       });
 
       await this.whiteboardService.processCompleted(id, resultPath);

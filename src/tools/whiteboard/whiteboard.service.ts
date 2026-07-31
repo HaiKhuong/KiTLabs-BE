@@ -37,6 +37,7 @@ export interface WhiteboardEngineConfig {
   brushSpeedPx?: number;
   /** When true, render uses the user's uploaded hand image if present. */
   useCustomHand?: boolean;
+  cameraZooms?: Array<{ storyboardIndices: number[] }>;
 }
 
 @Injectable()

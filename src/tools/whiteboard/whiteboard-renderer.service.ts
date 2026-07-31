@@ -1,6 +1,7 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { existsSync, readFileSync } from "fs";
 import { join, resolve } from "path";
+import type { WhiteboardCameraPlan } from "./whiteboard-camera";
 import type { WhiteboardSceneJson } from "./whiteboard-scene";
 import type { WhiteboardPathPlan } from "./whiteboard-path-planner";
 import type { WhiteboardVoiceAsset, WhiteboardVoiceScheduleEntry } from "./whiteboard-voice.service";
@@ -22,6 +23,7 @@ export interface WhiteboardRenderInput {
   workDir: string;
   voiceAssets?: WhiteboardVoiceAsset[];
   voiceSchedule?: WhiteboardVoiceScheduleEntry[];
+  cameraPlan?: WhiteboardCameraPlan | null;
 }
 
 @Injectable()
@@ -78,6 +80,7 @@ export class WhiteboardRendererService {
       },
       audioCues,
       handImageDataUrl,
+      cameraPlan: input.cameraPlan ?? null,
     };
 
     const outputPath = join(input.workDir, "output", "whiteboard.mp4");
