@@ -3,8 +3,10 @@ import { Processor, WorkerHost } from "@nestjs/bullmq";
 import { Job, UnrecoverableError } from "bullmq";
 
 import { ToolsRealtimeGateway } from "../realtime/tools-realtime.gateway";
+import type { WhiteboardHistory } from "./whiteboard-history.entity";
 import { WHITEBOARD_QUEUE_NAME, WhiteboardService } from "./whiteboard.service";
 import { buildWhiteboardCameraPlan } from "./whiteboard-camera";
+import { WhiteboardMergeService } from "./whiteboard-merge.service";
 import { WhiteboardPathPlanner } from "./whiteboard-path-planner";
 import { WhiteboardRendererService } from "./whiteboard-renderer.service";
 import {
@@ -28,6 +30,7 @@ export class WhiteboardProcessor extends WorkerHost {
     private readonly realtimeGateway: ToolsRealtimeGateway,
     private readonly rendererService: WhiteboardRendererService,
     private readonly voiceService: WhiteboardVoiceService,
+    private readonly mergeService: WhiteboardMergeService,
   ) {
     super();
   }
@@ -44,6 +47,11 @@ export class WhiteboardProcessor extends WorkerHost {
 
     try {
       await this.whiteboardService.processStarted(id);
+
+      if (this.whiteboardService.isMergeJob(history)) {
+        await this.processMergeJob(id, history, userId, nodeId);
+        return;
+      }
 
       const sourceImagePath = this.whiteboardService.resolveSourceImagePath(history);
       const reviewed = readSceneObjects(history.sceneJson);
@@ -175,5 +183,49 @@ export class WhiteboardProcessor extends WorkerHost {
       });
       throw error;
     }
+  }
+
+  private async processMergeJob(
+    id: string,
+    _history: WhiteboardHistory,
+    userId: string,
+    nodeId: string,
+  ): Promise<void> {
+    await this.whiteboardService.updateRuntimeMessage(id, "[MERGE] Ghép video bằng FFmpeg…");
+    const { sourceHistoryIds, transitions } = this.whiteboardService.getMergeJobConfig(_history);
+    const inputPaths: string[] = [];
+    for (const sourceId of sourceHistoryIds) {
+      const source = await this.whiteboardService.getById(sourceId);
+      if (!source?.resultPath) {
+        throw new UnrecoverableError(`Thiếu output nguồn: ${sourceId}`);
+      }
+      inputPaths.push(this.whiteboardService.resolveArtifactPath(source));
+    }
+
+    const workDir = this.whiteboardService.prepareWorkDir(id);
+    this.logger.log(`[${id}] Merging ${inputPaths.length} clips`);
+    const resultPath = await this.mergeService.mergeWithSlides({
+      workDir,
+      inputPaths,
+      transitions,
+    });
+
+    await this.whiteboardService.processCompleted(id, resultPath);
+    const completed = await this.whiteboardService.getById(id);
+    const mapped = completed ? this.whiteboardService.mapForClient(completed) : null;
+
+    this.realtimeGateway.notifyUser(userId, "workflow.job.completed", {
+      jobId: id,
+      nodeId,
+      type: "whiteboard",
+      result: {
+        whiteboardHistoryId: id,
+        resultPath,
+        resultFileName: mapped?.resultFileName ?? null,
+        playUrl: mapped?.playUrl ?? null,
+        downloadUrl: mapped?.downloadUrl ?? null,
+        kind: "merge",
+      },
+    });
   }
 }

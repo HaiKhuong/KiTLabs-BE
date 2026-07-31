@@ -10,8 +10,13 @@ import { Not, IsNull, Repository } from "typeorm";
 import { QueueJobStatus } from "../../common/enums/domain.enums";
 import { NotificationsService } from "../notifications/notifications.service";
 import { AnalyzeWhiteboardDto } from "./dto/analyze-whiteboard.dto";
+import { MergeWhiteboardDto } from "./dto/merge-whiteboard.dto";
 import { RenderWhiteboardDto } from "./dto/render-whiteboard.dto";
 import { WhiteboardHistory } from "./whiteboard-history.entity";
+import {
+  MERGE_SLIDE_TRANSITIONS,
+  type MergeSlideTransition,
+} from "./whiteboard-merge.service";
 import {
   normalizeSceneObjects,
   readSceneObjects,
@@ -284,6 +289,108 @@ export class WhiteboardService {
 
     const queued = await this.repository.findOne({ where: { id: analysisId } });
     return queued as WhiteboardHistory;
+  }
+
+  /** Queue an FFmpeg xfade merge of completed scene histories. */
+  async enqueueMerge(dto: MergeWhiteboardDto): Promise<WhiteboardHistory> {
+    const userId = dto.userId?.trim();
+    if (!userId) throw new BadRequestException("userId is required");
+
+    const historyIds = (dto.historyIds ?? [])
+      .map((id) => String(id ?? "").trim())
+      .filter(Boolean);
+    if (historyIds.length < 2) {
+      throw new BadRequestException("Cần ít nhất 2 video để gộp");
+    }
+    if (new Set(historyIds).size !== historyIds.length) {
+      throw new BadRequestException("historyIds không được trùng");
+    }
+
+    const transitions = (dto.transitions ?? []) as MergeSlideTransition[];
+    if (transitions.length !== historyIds.length - 1) {
+      throw new BadRequestException("Số transition phải bằng số mối nối (N-1)");
+    }
+    for (const transition of transitions) {
+      if (!(MERGE_SLIDE_TRANSITIONS as readonly string[]).includes(transition)) {
+        throw new BadRequestException(`Transition không hợp lệ: ${transition}`);
+      }
+    }
+
+    const sources: WhiteboardHistory[] = [];
+    for (const id of historyIds) {
+      const row = await this.repository.findOne({ where: { id, userId } });
+      if (!row) throw new NotFoundException(`Không tìm thấy video: ${id}`);
+      if (row.status !== QueueJobStatus.COMPLETED || !row.resultPath) {
+        throw new BadRequestException(`Video chưa render xong: ${row.displayName || id}`);
+      }
+      if (!existsSync(row.resultPath)) {
+        throw new BadRequestException(`Thiếu file output: ${row.displayName || id}`);
+      }
+      sources.push(row);
+    }
+
+    const displayName =
+      dto.displayName?.trim() ||
+      `Gộp · ${sources.map((row) => row.displayName).join(" + ").slice(0, 180)}`;
+
+    const draft = this.repository.create({
+      userId,
+      nodeId: null,
+      displayName,
+      assetsDir: null,
+      sourceImageFileName: null,
+      imageWidth: sources[0]?.imageWidth ?? 1920,
+      imageHeight: sources[0]?.imageHeight ?? 1080,
+      sceneJson: {
+        imageWidth: sources[0]?.imageWidth ?? 1920,
+        imageHeight: sources[0]?.imageHeight ?? 1080,
+        objects: [],
+      } as never,
+      analyzedAt: new Date(),
+      engineConfig: {
+        kind: "merge",
+        sourceHistoryIds: historyIds,
+        transitions,
+      } as never,
+      status: QueueJobStatus.PENDING,
+      resultPath: null,
+      resultFileName: null,
+      errorMessage: null,
+    } as Partial<WhiteboardHistory>);
+
+    const saved = (await this.repository.save(draft)) as WhiteboardHistory;
+
+    const queueJob = await this.queue.add(
+      WHITEBOARD_QUEUE_NAME,
+      { whiteboardHistoryId: saved.id },
+      { attempts: 1, removeOnComplete: true, removeOnFail: 50 },
+    );
+    await this.repository.update(
+      { id: saved.id },
+      { queueJobId: queueJob.id ? String(queueJob.id) : null },
+    );
+
+    const queued = await this.repository.findOne({ where: { id: saved.id } });
+    return queued as WhiteboardHistory;
+  }
+
+  isMergeJob(history: WhiteboardHistory): boolean {
+    const config = history.engineConfig as Record<string, unknown> | null;
+    return config?.kind === "merge" && Array.isArray(config.sourceHistoryIds);
+  }
+
+  getMergeJobConfig(history: WhiteboardHistory): {
+    sourceHistoryIds: string[];
+    transitions: MergeSlideTransition[];
+  } {
+    const config = (history.engineConfig ?? {}) as Record<string, unknown>;
+    const sourceHistoryIds = Array.isArray(config.sourceHistoryIds)
+      ? config.sourceHistoryIds.map((id) => String(id)).filter(Boolean)
+      : [];
+    const transitions = Array.isArray(config.transitions)
+      ? (config.transitions as MergeSlideTransition[])
+      : [];
+    return { sourceHistoryIds, transitions };
   }
 
   async getById(id: string): Promise<WhiteboardHistory | null> {

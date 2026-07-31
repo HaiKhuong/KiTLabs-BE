@@ -23,6 +23,7 @@ import { memoryStorage } from "multer";
 import { Public } from "../../common/decorators/public.decorator";
 import { AnalyzeWhiteboardDto } from "./dto/analyze-whiteboard.dto";
 import { GenerateWhiteboardIdeasDto } from "./dto/generate-whiteboard-ideas.dto";
+import { MergeWhiteboardDto } from "./dto/merge-whiteboard.dto";
 import { RenderWhiteboardDto } from "./dto/render-whiteboard.dto";
 import { readImageDimensionsFromPath } from "./whiteboard-image";
 import { WhiteboardIdeasService } from "./whiteboard-ideas.service";
@@ -165,6 +166,22 @@ export class WhiteboardController {
   @Post("render")
   async render(@Body() dto: RenderWhiteboardDto) {
     const queued = await this.whiteboardService.enqueueReviewed(dto);
+    return {
+      jobId: queued.id,
+      nodeId: queued.nodeId,
+      type: "whiteboard" as const,
+      status: "queued" as const,
+    };
+  }
+
+  @ApiOperation({
+    summary: "Queue merge of completed scene videos with slide transitions (xfade)",
+  })
+  @ApiBody({ type: MergeWhiteboardDto })
+  @Public()
+  @Post("merge")
+  async merge(@Body() dto: MergeWhiteboardDto) {
+    const queued = await this.whiteboardService.enqueueMerge(dto);
     return {
       jobId: queued.id,
       nodeId: queued.nodeId,

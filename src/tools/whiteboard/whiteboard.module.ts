@@ -9,6 +9,7 @@ import { WhiteboardController } from "./whiteboard.controller";
 import { WhiteboardHistory } from "./whiteboard-history.entity";
 import { WhiteboardIdeaHistory } from "./whiteboard-idea-history.entity";
 import { WhiteboardIdeasService } from "./whiteboard-ideas.service";
+import { WhiteboardMergeService } from "./whiteboard-merge.service";
 import { WhiteboardProcessor } from "./whiteboard.processor";
 import { WhiteboardRendererService } from "./whiteboard-renderer.service";
 import { WhiteboardSampleImage } from "./whiteboard-sample-image.entity";
@@ -32,6 +33,7 @@ import { WhiteboardVoiceService } from "./whiteboard-voice.service";
     WhiteboardService,
     WhiteboardIdeasService,
     WhiteboardSamplesService,
+    WhiteboardMergeService,
     WhiteboardProcessor,
     WhiteboardRendererService,
     WhiteboardVoiceService,
