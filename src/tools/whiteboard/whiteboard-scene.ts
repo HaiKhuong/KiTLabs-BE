@@ -10,6 +10,7 @@ export const WHITEBOARD_OBJECT_TYPES = [
 export type WhiteboardObjectType = (typeof WHITEBOARD_OBJECT_TYPES)[number];
 
 export const WHITEBOARD_HAND_STYLES = [
+  "hand_write",
   "zigzag",
   "left_right",
   "right_left",

@@ -20,6 +20,7 @@ const HAND_DISPLAY_WIDTH = 120;
 const HAND_DISPLAY_HEIGHT = 120;
 
 const HAND_STYLES = new Set([
+  "hand_write",
   "zigzag",
   "left_right",
   "right_left",
