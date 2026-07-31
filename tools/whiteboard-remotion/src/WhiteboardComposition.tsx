@@ -242,14 +242,19 @@ function computeObjectStates(plan: WhiteboardPathPlan, tSec: number): ObjectFram
   let elapsed = 0;
 
   for (const op of plan.objectPaths) {
-    const transitEnd = elapsed + op.transitDurationSec;
-    const drawEnd = transitEnd + op.drawDurationSec;
+    const hasAbsoluteStart = typeof op.drawStartSec === "number" && Number.isFinite(op.drawStartSec);
+    const drawStart = hasAbsoluteStart
+      ? Math.max(0, Number(op.drawStartSec))
+      : elapsed + op.transitDurationSec;
+    const transitStart = Math.max(0, drawStart - Math.max(0, op.transitDurationSec));
+    const transitEnd = drawStart;
+    const drawEnd = drawStart + op.drawDurationSec;
     const center = {
       x: Math.round((op.bbox[0] + op.bbox[2]) / 2),
       y: Math.round((op.bbox[1] + op.bbox[3]) / 2),
     };
 
-    if (tSec < elapsed) {
+    if (tSec < transitStart) {
       states.push({
         op,
         progress: 0,
@@ -297,7 +302,7 @@ function computeObjectStates(plan: WhiteboardPathPlan, tSec: number): ObjectFram
       });
     }
 
-    elapsed = drawEnd;
+    elapsed = Math.max(elapsed, drawEnd);
   }
 
   return states;

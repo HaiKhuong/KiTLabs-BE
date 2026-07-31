@@ -52,6 +52,20 @@ export class WhiteboardVoiceConfigDto {
   speed?: number;
 }
 
+export class WhiteboardEngineStoryboardDto {
+  @ApiProperty({ description: "0-based storyboard index within the scene", minimum: 0 })
+  @IsInt()
+  @Min(0)
+  @Max(200)
+  index!: number;
+
+  @ApiProperty({ description: "Narration text for TTS" })
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(8_000)
+  voice!: string;
+}
+
 export class WhiteboardEngineConfigDto {
   @ApiPropertyOptional({ minimum: 1, maximum: 60 })
   @IsOptional()
@@ -89,6 +103,17 @@ export class WhiteboardEngineConfigDto {
   @ValidateNested()
   @Type(() => WhiteboardVoiceConfigDto)
   voice?: WhiteboardVoiceConfigDto;
+
+  @ApiPropertyOptional({
+    description: "Full scene storyboard list for voice-led TTS (independent of layer bindings)",
+    type: [WhiteboardEngineStoryboardDto],
+  })
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(200)
+  @ValidateNested({ each: true })
+  @Type(() => WhiteboardEngineStoryboardDto)
+  storyboards?: WhiteboardEngineStoryboardDto[];
 }
 
 export class WhiteboardObjectStoryboardDto {

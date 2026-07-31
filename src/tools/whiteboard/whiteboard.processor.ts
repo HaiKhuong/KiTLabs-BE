@@ -6,7 +6,11 @@ import { ToolsRealtimeGateway } from "../realtime/tools-realtime.gateway";
 import { WHITEBOARD_QUEUE_NAME, WhiteboardService } from "./whiteboard.service";
 import { WhiteboardPathPlanner } from "./whiteboard-path-planner";
 import { WhiteboardRendererService } from "./whiteboard-renderer.service";
-import { WhiteboardVoiceService, type WhiteboardVoiceConfig } from "./whiteboard-voice.service";
+import {
+  WhiteboardVoiceService,
+  type WhiteboardEngineStoryboard,
+  type WhiteboardVoiceConfig,
+} from "./whiteboard-voice.service";
 import { readSceneObjects, WhiteboardObject, WhiteboardSceneJson } from "./whiteboard-scene";
 
 @Processor(WHITEBOARD_QUEUE_NAME, {
@@ -57,6 +61,7 @@ export class WhiteboardProcessor extends WorkerHost {
       const workDir = this.whiteboardService.prepareWorkDir(id);
       const engineConfig = { ...(history.engineConfig ?? {}) } as Record<string, unknown>;
       const voiceConfig = (engineConfig.voice ?? null) as WhiteboardVoiceConfig | null;
+      const storyboards = (engineConfig.storyboards ?? null) as WhiteboardEngineStoryboard[] | null;
 
       await this.whiteboardService.updateRuntimeMessage(id, "[STEP 2/3] Generating storyboard voices…");
       const prepared = await this.voiceService.prepareStoryboardVoices({
@@ -64,6 +69,7 @@ export class WhiteboardProcessor extends WorkerHost {
         scene,
         workDir,
         voice: voiceConfig,
+        storyboards,
       });
       scene = prepared.scene;
       if (prepared.voiceAssets.length > 0) {
@@ -72,17 +78,30 @@ export class WhiteboardProcessor extends WorkerHost {
           path: asset.path,
           durationSec: asset.durationSec,
         }));
+        engineConfig.voiceSchedule = prepared.voiceSchedule.map((entry) => ({
+          index: entry.index,
+          startSec: entry.startSec,
+          durationSec: entry.durationSec,
+          path: entry.path,
+        }));
         await this.whiteboardService.updateSceneAndEngineConfig(id, scene, engineConfig);
         this.logger.log(`[${id}] Prepared ${prepared.voiceAssets.length} storyboard voice(s)`);
       }
 
       await this.whiteboardService.updateRuntimeMessage(id, "[STEP 3/3] Planning hand path + rendering…");
-      const pathPlan = WhiteboardPathPlanner.plan(
+      let pathPlan = WhiteboardPathPlanner.plan(
         scene,
         scene.imageWidth,
         scene.imageHeight,
         engineConfig,
       );
+      if (prepared.voiceSchedule.length > 0) {
+        pathPlan = WhiteboardPathPlanner.alignToVoiceSchedule(
+          pathPlan,
+          scene,
+          prepared.voiceSchedule,
+        );
+      }
       await this.whiteboardService.updatePathPlan(id, pathPlan as unknown as Record<string, unknown>);
 
       this.logger.log(`[${id}] Starting Remotion render`);
@@ -96,6 +115,7 @@ export class WhiteboardProcessor extends WorkerHost {
         engineConfig,
         workDir,
         voiceAssets: prepared.voiceAssets,
+        voiceSchedule: prepared.voiceSchedule,
       });
 
       await this.whiteboardService.processCompleted(id, resultPath);

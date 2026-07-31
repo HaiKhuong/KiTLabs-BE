@@ -180,6 +180,92 @@ export class WhiteboardPathPlanner {
     return { totalDurationSec, fps, brushSize, brushSpeedPx, objectPaths };
   }
 
+  /**
+   * Align draw starts to voice windows: layers bound to SBi draw inside that voice's
+   * schedule; unbound layers follow after the last voice (+ gap).
+   */
+  static alignToVoiceSchedule(
+    pathPlan: WhiteboardPathPlan,
+    scene: WhiteboardSceneJson,
+    voiceSchedule: Array<{ index: number; startSec: number; durationSec: number }>,
+  ): WhiteboardPathPlan {
+    if (!voiceSchedule.length) return pathPlan;
+
+    const VOICE_GAP_SEC = 0.5;
+    const objectById = new Map(scene.objects.map((obj) => [obj.id, obj]));
+    const scheduleByIndex = new Map(voiceSchedule.map((entry) => [entry.index, entry]));
+
+    const lastVoice = voiceSchedule[voiceSchedule.length - 1];
+    const lastVoiceEnd = lastVoice.startSec + lastVoice.durationSec;
+
+    const grouped = new Map<number, typeof pathPlan.objectPaths>();
+    const unbound: typeof pathPlan.objectPaths = [];
+
+    for (const path of pathPlan.objectPaths) {
+      const obj = objectById.get(path.objectId);
+      const sbIndex = obj?.storyboard?.index;
+      if (typeof sbIndex === "number" && scheduleByIndex.has(sbIndex)) {
+        const list = grouped.get(sbIndex) ?? [];
+        list.push(path);
+        grouped.set(sbIndex, list);
+      } else {
+        unbound.push(path);
+      }
+    }
+
+    const nextPaths: typeof pathPlan.objectPaths = [];
+    let lastDrawEnd = 0;
+
+    for (const entry of voiceSchedule) {
+      const paths = grouped.get(entry.index) ?? [];
+      let cursor = entry.startSec;
+      for (const path of paths) {
+        const obj = objectById.get(path.objectId);
+        const fromVoice = obj?.durationSec;
+        const drawDurationSec =
+          typeof fromVoice === "number" && fromVoice > 0
+            ? Math.min(60, Math.max(0.1, fromVoice))
+            : Math.max(0.1, Number(path.drawDurationSec) || 0.1);
+        nextPaths.push({
+          ...path,
+          transitDurationSec: 0,
+          drawDurationSec,
+          drawStartSec: cursor,
+        });
+        cursor += drawDurationSec;
+        lastDrawEnd = Math.max(lastDrawEnd, cursor);
+      }
+      lastDrawEnd = Math.max(lastDrawEnd, entry.startSec + entry.durationSec);
+    }
+
+    // Any bound paths whose storyboard index is missing from schedule (shouldn't happen).
+    for (const [index, paths] of grouped.entries()) {
+      if (scheduleByIndex.has(index)) continue;
+      for (const path of paths) unbound.push(path);
+    }
+
+    let unboundCursor = lastVoiceEnd + VOICE_GAP_SEC;
+    for (const path of unbound) {
+      const transit = Math.max(0, Number(path.transitDurationSec) || 0);
+      const drawDurationSec = Math.max(0.1, Number(path.drawDurationSec) || 0.1);
+      const drawStartSec = unboundCursor + transit;
+      nextPaths.push({
+        ...path,
+        transitDurationSec: transit,
+        drawDurationSec,
+        drawStartSec,
+      });
+      unboundCursor = drawStartSec + drawDurationSec;
+      lastDrawEnd = Math.max(lastDrawEnd, unboundCursor);
+    }
+
+    return {
+      ...pathPlan,
+      objectPaths: nextPaths,
+      totalDurationSec: Math.max(pathPlan.totalDurationSec, lastDrawEnd, lastVoiceEnd),
+    };
+  }
+
   private static resolveRevealStyle(obj: WhiteboardObject): WhiteboardRevealStyle {
     if (obj.revealStyle) return obj.revealStyle;
     // Heuristic default for legacy objects without an explicit style.

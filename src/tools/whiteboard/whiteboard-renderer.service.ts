@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from "fs";
 import { join, resolve } from "path";
 import type { WhiteboardSceneJson } from "./whiteboard-scene";
 import type { WhiteboardPathPlan } from "./whiteboard-path-planner";
-import type { WhiteboardVoiceAsset } from "./whiteboard-voice.service";
+import type { WhiteboardVoiceAsset, WhiteboardVoiceScheduleEntry } from "./whiteboard-voice.service";
 
 export type WhiteboardAudioCue = {
   srcDataUrl: string;
@@ -21,6 +21,7 @@ export interface WhiteboardRenderInput {
   engineConfig: Record<string, unknown>;
   workDir: string;
   voiceAssets?: WhiteboardVoiceAsset[];
+  voiceSchedule?: WhiteboardVoiceScheduleEntry[];
 }
 
 @Injectable()
@@ -114,37 +115,34 @@ export class WhiteboardRendererService {
   }
 
   private buildAudioCues(input: WhiteboardRenderInput): WhiteboardAudioCue[] {
+    const schedule = input.voiceSchedule ?? [];
     const assets = input.voiceAssets ?? [];
-    if (assets.length === 0) return [];
+    if (schedule.length === 0 && assets.length === 0) return [];
 
     const fps = Math.max(1, Number(input.pathPlan.fps) || 30);
-    const objectById = new Map(input.sceneJson.objects.map((obj) => [obj.id, obj]));
-    const firstDrawStartBySb = new Map<number, number>();
-
-    for (const path of input.pathPlan.objectPaths) {
-      const obj = objectById.get(path.objectId);
-      const sbIndex = obj?.storyboard?.index;
-      if (typeof sbIndex !== "number") continue;
-      const existing = firstDrawStartBySb.get(sbIndex);
-      const start = Number(path.drawStartSec) || 0;
-      if (existing === undefined || start < existing) {
-        firstDrawStartBySb.set(sbIndex, start);
-      }
-    }
-
     const cues: WhiteboardAudioCue[] = [];
-    for (const asset of assets) {
-      if (!existsSync(asset.path)) {
-        this.logger.warn(`[${input.historyId}] Missing voice asset: ${asset.path}`);
+
+    const entries =
+      schedule.length > 0
+        ? schedule
+        : assets.map((asset) => ({
+            index: asset.index,
+            startSec: 0,
+            durationSec: asset.durationSec,
+            path: asset.path,
+          }));
+
+    for (const entry of entries) {
+      if (!existsSync(entry.path)) {
+        this.logger.warn(`[${input.historyId}] Missing voice asset: ${entry.path}`);
         continue;
       }
-      const wav = readFileSync(asset.path);
+      const wav = readFileSync(entry.path);
       const srcDataUrl = `data:audio/wav;base64,${wav.toString("base64")}`;
-      const startSec = firstDrawStartBySb.get(asset.index) ?? 0;
       cues.push({
         srcDataUrl,
-        startFrame: Math.max(0, Math.round(startSec * fps)),
-        durationSec: asset.durationSec,
+        startFrame: Math.max(0, Math.round(entry.startSec * fps)),
+        durationSec: entry.durationSec,
       });
     }
     return cues;
