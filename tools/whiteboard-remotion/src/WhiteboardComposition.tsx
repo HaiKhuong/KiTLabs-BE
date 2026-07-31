@@ -75,6 +75,8 @@ export interface WhiteboardCompositionProps {
   imageHeight: number;
   pathPlan: WhiteboardPathPlan;
   audioCues?: WhiteboardAudioCue[];
+  /** Optional custom hand image as data URL; falls back to bundled static hand. */
+  handImageDataUrl?: string | null;
 }
 
 type ObjectFrameState = {
@@ -472,6 +474,7 @@ export const WhiteboardComposition: React.FC<WhiteboardCompositionProps> = ({
   imageHeight,
   pathPlan,
   audioCues = [],
+  handImageDataUrl = null,
 }) => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
@@ -485,6 +488,13 @@ export const WhiteboardComposition: React.FC<WhiteboardCompositionProps> = ({
     let cancelled = false;
 
     const loadHand = async (): Promise<HTMLImageElement | null> => {
+      if (handImageDataUrl) {
+        try {
+          return await loadImage(handImageDataUrl);
+        } catch {
+          // fall through to bundled default
+        }
+      }
       for (const name of ["whiteboard-hand.png", "whiteboard-hand.svg"]) {
         try {
           return await loadImage(staticFile(name));
@@ -515,7 +525,7 @@ export const WhiteboardComposition: React.FC<WhiteboardCompositionProps> = ({
       cancelled = true;
       continueRender(handle);
     };
-  }, [sourceImageDataUrl, handle]);
+  }, [sourceImageDataUrl, handImageDataUrl, handle]);
 
   const renderFrame = useCallback(() => {
     const canvas = canvasRef.current;

@@ -18,6 +18,7 @@ import { ChunkUpload } from "../../tools/files/entities/chunk-upload.entity";
 import { WorkflowEntity } from "../../tools/workflow/workflow.entity";
 import { WhiteboardHistory } from "../../tools/whiteboard/whiteboard-history.entity";
 import { WhiteboardIdeaHistory } from "../../tools/whiteboard/whiteboard-idea-history.entity";
+import { WhiteboardSampleImage } from "../../tools/whiteboard/whiteboard-sample-image.entity";
 import {
   YouTubeChannel,
   YouTubeVideo,
@@ -56,4 +57,5 @@ export const TOOL_DB_ENTITIES = [
   WorkflowEntity,
   WhiteboardHistory,
   WhiteboardIdeaHistory,
+  WhiteboardSampleImage,
 ];

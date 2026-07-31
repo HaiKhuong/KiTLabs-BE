@@ -4,6 +4,7 @@ import {
   ArrayMaxSize,
   ArrayMinSize,
   IsArray,
+  IsBoolean,
   IsIn,
   IsInt,
   IsNotEmpty,
@@ -114,6 +115,13 @@ export class WhiteboardEngineConfigDto {
   @ValidateNested({ each: true })
   @Type(() => WhiteboardEngineStoryboardDto)
   storyboards?: WhiteboardEngineStoryboardDto[];
+
+  @ApiPropertyOptional({
+    description: "Use the user-uploaded custom hand image when available",
+  })
+  @IsOptional()
+  @IsBoolean()
+  useCustomHand?: boolean;
 }
 
 export class WhiteboardObjectStoryboardDto {

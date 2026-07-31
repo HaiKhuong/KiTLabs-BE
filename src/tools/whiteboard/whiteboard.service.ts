@@ -3,7 +3,7 @@ import { InjectQueue } from "@nestjs/bullmq";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Queue } from "bullmq";
 import { randomUUID } from "crypto";
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync, unlinkSync } from "fs";
 import { basename, extname, join, resolve } from "path";
 import { Not, IsNull, Repository } from "typeorm";
 
@@ -22,12 +22,21 @@ import {
 export const WHITEBOARD_QUEUE_NAME = "video-whiteboard";
 
 const IMAGE_MIME = new Set(["image/png", "image/jpeg", "image/jpg", "image/webp"]);
+const HAND_IMAGE_MIME = new Set([
+  "image/png",
+  "image/jpeg",
+  "image/jpg",
+  "image/webp",
+  "image/svg+xml",
+]);
 
 export interface WhiteboardEngineConfig {
   fps?: number;
   durationSec?: number;
   brushSize?: number;
   brushSpeedPx?: number;
+  /** When true, render uses the user's uploaded hand image if present. */
+  useCustomHand?: boolean;
 }
 
 @Injectable()
@@ -58,6 +67,76 @@ export class WhiteboardService {
     mkdirSync(workDir, { recursive: true });
     mkdirSync(join(workDir, "output"), { recursive: true });
     return workDir;
+  }
+
+  resolveHandsRoot(): string {
+    return join(this.resolveWorkRoot(), "_hands");
+  }
+
+  resolveUserHandDir(userId: string): string {
+    const safe = userId.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 80) || "anon";
+    return join(this.resolveHandsRoot(), safe);
+  }
+
+  /** Save/replace the custom hand image for a user. Returns stored fileName. */
+  saveHandImage(userId: string, file: Express.Multer.File): { fileName: string } {
+    const uid = userId?.trim();
+    if (!uid) throw new BadRequestException("userId is required");
+    if (!file?.buffer?.length) throw new BadRequestException("file is required");
+    if (!HAND_IMAGE_MIME.has(file.mimetype)) {
+      throw new BadRequestException(`Unsupported hand image type: ${file.mimetype}`);
+    }
+
+    const dir = this.resolveUserHandDir(uid);
+    mkdirSync(dir, { recursive: true });
+    for (const name of readdirSync(dir)) {
+      if (name.startsWith("hand.")) {
+        try {
+          unlinkSync(join(dir, name));
+        } catch {
+          // ignore
+        }
+      }
+    }
+
+    let ext = extname(file.originalname).toLowerCase();
+    if (!ext) {
+      if (file.mimetype === "image/svg+xml") ext = ".svg";
+      else if (file.mimetype === "image/webp") ext = ".webp";
+      else if (file.mimetype === "image/jpeg" || file.mimetype === "image/jpg") ext = ".jpg";
+      else ext = ".png";
+    }
+    const fileName = `hand${ext}`;
+    writeFileSync(join(dir, fileName), file.buffer);
+    return { fileName };
+  }
+
+  /** Absolute path to the user's custom hand image, or null. */
+  resolveHandImagePath(userId: string): string | null {
+    const uid = userId?.trim();
+    if (!uid) return null;
+    const dir = this.resolveUserHandDir(uid);
+    if (!existsSync(dir)) return null;
+    const match = readdirSync(dir).find((name) => /^hand\.(png|jpe?g|webp|svg)$/i.test(name));
+    if (!match) return null;
+    const full = join(dir, match);
+    return existsSync(full) ? full : null;
+  }
+
+  clearHandImage(userId: string): void {
+    const uid = userId?.trim();
+    if (!uid) throw new BadRequestException("userId is required");
+    const dir = this.resolveUserHandDir(uid);
+    if (!existsSync(dir)) return;
+    for (const name of readdirSync(dir)) {
+      if (name.startsWith("hand.")) {
+        try {
+          unlinkSync(join(dir, name));
+        } catch {
+          // ignore
+        }
+      }
+    }
   }
 
   parseEngineConfig(raw: string | undefined): WhiteboardEngineConfig {

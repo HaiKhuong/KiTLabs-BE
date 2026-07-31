@@ -26,6 +26,7 @@ import { GenerateWhiteboardIdeasDto } from "./dto/generate-whiteboard-ideas.dto"
 import { RenderWhiteboardDto } from "./dto/render-whiteboard.dto";
 import { readImageDimensionsFromPath } from "./whiteboard-image";
 import { WhiteboardIdeasService } from "./whiteboard-ideas.service";
+import { WhiteboardSamplesService } from "./whiteboard-samples.service";
 import { WhiteboardService } from "./whiteboard.service";
 
 const IMAGE_MIME = new Set(["image/png", "image/jpeg", "image/jpg", "image/webp"]);
@@ -35,6 +36,7 @@ const IMAGE_CONTENT_TYPE: Record<string, string> = {
   ".jpg": "image/jpeg",
   ".jpeg": "image/jpeg",
   ".webp": "image/webp",
+  ".svg": "image/svg+xml",
 };
 
 @ApiTags("Whiteboard")
@@ -44,6 +46,7 @@ export class WhiteboardController {
   constructor(
     private readonly whiteboardService: WhiteboardService,
     private readonly whiteboardIdeasService: WhiteboardIdeasService,
+    private readonly whiteboardSamplesService: WhiteboardSamplesService,
   ) {}
 
   @ApiOperation({
@@ -237,6 +240,121 @@ export class WhiteboardController {
   async deleteHistory(@Param("id") id: string, @Query("userId") userId: string) {
     if (!userId) throw new BadRequestException("userId is required");
     return this.whiteboardService.deleteHistory(id, userId);
+  }
+
+  @ApiOperation({ summary: "List sample images for a user" })
+  @ApiQuery({ name: "userId", required: true })
+  @Public()
+  @Get("samples")
+  async listSamples(@Query("userId") userId: string) {
+    if (!userId?.trim()) throw new BadRequestException("userId is required");
+    return this.whiteboardSamplesService.list(userId);
+  }
+
+  @ApiOperation({ summary: "Upload a sample image (stored in DB + disk)" })
+  @ApiConsumes("multipart/form-data")
+  @ApiQuery({ name: "userId", required: true })
+  @ApiBody({
+    schema: { type: "object", properties: { file: { type: "string", format: "binary" } }, required: ["file"] },
+  })
+  @Public()
+  @Post("samples")
+  @UseInterceptors(
+    FileInterceptor("file", {
+      storage: memoryStorage(),
+      limits: { fileSize: Number(process.env.WHITEBOARD_SAMPLE_MAX_BYTES ?? 12_000_000) },
+    }),
+  )
+  async uploadSample(
+    @UploadedFile() file: Express.Multer.File,
+    @Query("userId") userId: string,
+  ) {
+    if (!userId?.trim()) throw new BadRequestException("userId is required");
+    if (!file) throw new BadRequestException("file is required");
+    return this.whiteboardSamplesService.upload(userId, file);
+  }
+
+  @ApiOperation({ summary: "Stream a sample image" })
+  @ApiQuery({ name: "userId", required: true })
+  @Public()
+  @Get("samples/:id")
+  async getSample(
+    @Param("id") id: string,
+    @Query("userId") userId: string,
+    @Res() res: Response,
+  ) {
+    if (!userId?.trim()) throw new BadRequestException("userId is required");
+    const filePath = await this.whiteboardSamplesService.resolveOwnedPath(id, userId);
+    const ext = extname(filePath).toLowerCase();
+    const contentType =
+      ext === ".svg" ? "image/svg+xml" : IMAGE_CONTENT_TYPE[ext] ?? "application/octet-stream";
+    res.setHeader("Content-Type", contentType);
+    res.setHeader("Cache-Control", "private, max-age=3600");
+    return createReadStream(filePath).pipe(res);
+  }
+
+  @ApiOperation({ summary: "Delete a sample image" })
+  @ApiQuery({ name: "userId", required: true })
+  @Public()
+  @Delete("samples/:id")
+  async deleteSample(@Param("id") id: string, @Query("userId") userId: string) {
+    if (!userId?.trim()) throw new BadRequestException("userId is required");
+    return this.whiteboardSamplesService.delete(id, userId);
+  }
+
+  @ApiOperation({ summary: "Upload custom hand image for whiteboard render" })
+  @ApiConsumes("multipart/form-data")
+  @ApiQuery({ name: "userId", required: true })
+  @ApiBody({
+    schema: { type: "object", properties: { file: { type: "string", format: "binary" } }, required: ["file"] },
+  })
+  @Public()
+  @Post("hand-image")
+  @UseInterceptors(
+    FileInterceptor("file", {
+      storage: memoryStorage(),
+      limits: { fileSize: Number(process.env.WHITEBOARD_HAND_MAX_BYTES ?? 8_000_000) },
+    }),
+  )
+  async uploadHandImage(
+    @UploadedFile() file: Express.Multer.File,
+    @Query("userId") userId: string,
+  ) {
+    if (!userId?.trim()) throw new BadRequestException("userId is required");
+    if (!file) throw new BadRequestException("file is required");
+    const saved = this.whiteboardService.saveHandImage(userId, file);
+    return {
+      userId,
+      fileName: saved.fileName,
+      previewUrl: `/api/tools/whiteboard/hand-image?userId=${encodeURIComponent(userId)}&t=${Date.now()}`,
+    };
+  }
+
+  @ApiOperation({ summary: "Get the current custom hand image for a user" })
+  @ApiQuery({ name: "userId", required: true })
+  @Public()
+  @Get("hand-image")
+  async getHandImage(@Query("userId") userId: string, @Res() res: Response) {
+    if (!userId?.trim()) throw new BadRequestException("userId is required");
+    const filePath = this.whiteboardService.resolveHandImagePath(userId);
+    if (!filePath) throw new NotFoundException("Hand image not found");
+
+    const ext = extname(filePath).toLowerCase();
+    const contentType =
+      ext === ".svg" ? "image/svg+xml" : IMAGE_CONTENT_TYPE[ext] ?? "application/octet-stream";
+    res.setHeader("Content-Type", contentType);
+    res.setHeader("Cache-Control", "no-cache");
+    return createReadStream(filePath).pipe(res);
+  }
+
+  @ApiOperation({ summary: "Clear the custom hand image for a user" })
+  @ApiQuery({ name: "userId", required: true })
+  @Public()
+  @Delete("hand-image")
+  async clearHandImage(@Query("userId") userId: string) {
+    if (!userId?.trim()) throw new BadRequestException("userId is required");
+    this.whiteboardService.clearHandImage(userId);
+    return { ok: true };
   }
 
   @ApiOperation({ summary: "Stream rendered whiteboard MP4 (range requests supported)" })

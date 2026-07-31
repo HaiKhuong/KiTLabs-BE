@@ -63,6 +63,16 @@ export class WhiteboardProcessor extends WorkerHost {
       const voiceConfig = (engineConfig.voice ?? null) as WhiteboardVoiceConfig | null;
       const storyboards = (engineConfig.storyboards ?? null) as WhiteboardEngineStoryboard[] | null;
 
+      const useCustomHand = engineConfig.useCustomHand !== false;
+      if (useCustomHand) {
+        const handPath = this.whiteboardService.resolveHandImagePath(userId);
+        if (handPath) {
+          engineConfig.handImagePath = handPath;
+        }
+      } else {
+        delete engineConfig.handImagePath;
+      }
+
       await this.whiteboardService.updateRuntimeMessage(id, "[STEP 2/3] Generating storyboard voices…");
       const prepared = await this.voiceService.prepareStoryboardVoices({
         userId,

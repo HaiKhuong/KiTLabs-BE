@@ -57,6 +57,8 @@ export class WhiteboardRendererService {
     const mimeType = ext === "jpg" || ext === "jpeg" ? "image/jpeg" : ext === "webp" ? "image/webp" : "image/png";
     const sourceImageDataUrl = `data:${mimeType};base64,${imageBuffer.toString("base64")}`;
 
+    const handImageDataUrl = this.resolveHandImageDataUrl(input);
+
     const fps = input.pathPlan.fps;
     const audioCues = this.buildAudioCues(input);
     const lastAudioEndSec = audioCues.reduce(
@@ -75,6 +77,7 @@ export class WhiteboardRendererService {
         totalDurationSec,
       },
       audioCues,
+      handImageDataUrl,
     };
 
     const outputPath = join(input.workDir, "output", "whiteboard.mp4");
@@ -112,6 +115,33 @@ export class WhiteboardRendererService {
 
     this.logger.log(`[${input.historyId}] Render complete: ${outputPath}`);
     return outputPath;
+  }
+
+  private resolveHandImageDataUrl(input: WhiteboardRenderInput): string | null {
+    const configured = String(input.engineConfig.handImagePath ?? "").trim();
+    const candidates = [configured].filter(Boolean);
+    for (const candidate of candidates) {
+      if (!existsSync(candidate)) {
+        this.logger.warn(`[${input.historyId}] Missing hand image: ${candidate}`);
+        continue;
+      }
+      try {
+        const buf = readFileSync(candidate);
+        const ext = candidate.split(".").pop()?.toLowerCase() ?? "png";
+        const mime =
+          ext === "svg"
+            ? "image/svg+xml"
+            : ext === "jpg" || ext === "jpeg"
+              ? "image/jpeg"
+              : ext === "webp"
+                ? "image/webp"
+                : "image/png";
+        return `data:${mime};base64,${buf.toString("base64")}`;
+      } catch (error) {
+        this.logger.warn(`[${input.historyId}] Failed reading hand image: ${String(error)}`);
+      }
+    }
+    return null;
   }
 
   private buildAudioCues(input: WhiteboardRenderInput): WhiteboardAudioCue[] {
