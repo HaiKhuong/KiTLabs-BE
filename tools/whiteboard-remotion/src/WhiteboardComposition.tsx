@@ -16,8 +16,8 @@ const HAND_TIP_OFFSET_X = 0.18;
 const HAND_TIP_OFFSET_Y = 0.08;
 
 /** Hand image displayed size (px in output video). */
-const HAND_DISPLAY_WIDTH = 120;
-const HAND_DISPLAY_HEIGHT = 120;
+const HAND_DISPLAY_WIDTH = 480;
+const HAND_DISPLAY_HEIGHT = 480;
 
 const HAND_STYLES = new Set([
   "hand_write",
