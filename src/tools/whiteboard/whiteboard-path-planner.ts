@@ -47,6 +47,11 @@ const TRANSIT_SPEED_PX = 1800;
 const DEFAULT_BRUSH_SIZE = 60;
 const DEFAULT_FPS = 30;
 
+/** Match FE text box pads: more top room for VN diacritics / caps, less bottom. */
+const TEXT_DRAW_TOP_INSET = 0.18;
+const TEXT_DRAW_BOTTOM_INSET = 0.42;
+const TEXT_DRAW_EDGE_INSET = 0.45;
+
 /** Minimum zigzag row spacing relative to brush size. */
 const ZIGZAG_ROW_FACTOR = 0.7;
 
@@ -313,11 +318,18 @@ export class WhiteboardPathPlanner {
     const cx2 = Math.max(bx2, (x1 + x2) / 2);
     const cy2 = Math.max(by2, (y1 + y2) / 2);
 
+    const useHandWrite =
+      handStyle === "hand_write" ||
+      type === "text" ||
+      (handStyle === undefined && type === "text");
+
+    if (useHandWrite && handStyle !== "svg_stroke_fill") {
+      return WhiteboardPathPlanner.handWriteForText(x1, y1, x2, y2, brushSize);
+    }
+
     if (handStyle && isHandRevealStyle(handStyle)) {
       if (handStyle === "svg_stroke_fill") {
         // Stroke paths are handled separately; fall through to type heuristics if missing.
-      } else if (handStyle === "hand_write") {
-        return WhiteboardPathPlanner.handWrite(cx1, cy1, cx2, cy2, brushSize);
       } else {
         return WhiteboardPathPlanner.pointsForStyle(handStyle, cx1, cy1, cx2, cy2, brushSize);
       }
@@ -329,9 +341,6 @@ export class WhiteboardPathPlanner {
     }
     if (type === "icon" || (w < 100 && h < 100)) {
       return WhiteboardPathPlanner.horizontalSweep(cx1, cy1, cx2, cy2);
-    }
-    if (type === "text") {
-      return WhiteboardPathPlanner.handWrite(cx1, cy1, cx2, cy2, brushSize);
     }
     // Large image
     const aspect = w / h;
@@ -354,7 +363,7 @@ export class WhiteboardPathPlanner {
   ): PathPoint[] {
     switch (style) {
       case "hand_write":
-        return WhiteboardPathPlanner.handWrite(x1, y1, x2, y2, brushSize);
+        return WhiteboardPathPlanner.handWriteForText(x1, y1, x2, y2, brushSize);
       case "left_right":
         return WhiteboardPathPlanner.directionalRows(x1, y1, x2, y2, brushSize, "ltr");
       case "right_left":
@@ -368,7 +377,28 @@ export class WhiteboardPathPlanner {
   }
 
   /**
-   * Left→right reveal for text: vertical strokes advancing across the box.
+   * Text hand-writer: L→R vertical strokes with asymmetric vertical insets
+   * (tighter top for diacritics, looser bottom to skip empty pad).
+   */
+  private static handWriteForText(
+    x1: number,
+    y1: number,
+    x2: number,
+    y2: number,
+    brushSize: number,
+  ): PathPoint[] {
+    const edgeX = Math.max(1, brushSize * TEXT_DRAW_EDGE_INSET);
+    const topInset = Math.max(1, brushSize * TEXT_DRAW_TOP_INSET);
+    const botInset = Math.max(1, brushSize * TEXT_DRAW_BOTTOM_INSET);
+    const left = Math.min(x1 + edgeX, (x1 + x2) / 2);
+    const right = Math.max(x2 - edgeX, (x1 + x2) / 2);
+    const top = Math.min(y1 + topInset, (y1 + y2) / 2);
+    const bottom = Math.max(y2 - botInset, (y1 + y2) / 2);
+    return WhiteboardPathPlanner.handWrite(left, top, right, bottom, brushSize);
+  }
+
+  /**
+   * Left→right reveal: vertical strokes advancing across the box.
    */
   private static handWrite(
     x1: number,
@@ -377,7 +407,7 @@ export class WhiteboardPathPlanner {
     y2: number,
     brushSize: number,
   ): PathPoint[] {
-    const colSpacing = Math.max(4, brushSize * 0.4);
+    const colSpacing = Math.max(3, brushSize * 0.35);
     const points: PathPoint[] = [];
     let x = x1;
     let col = 0;
@@ -387,7 +417,6 @@ export class WhiteboardPathPlanner {
         points.push({ x: Math.round(clampedX), y: Math.round(y1) });
         points.push({ x: Math.round(clampedX), y: Math.round(y2) });
       } else {
-        // Continuous path: return upward so the hand doesn't jump.
         points.push({ x: Math.round(clampedX), y: Math.round(y2) });
         points.push({ x: Math.round(clampedX), y: Math.round(y1) });
       }

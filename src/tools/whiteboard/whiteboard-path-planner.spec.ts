@@ -16,15 +16,25 @@ function makeScene(
 describe("WhiteboardPathPlanner.plan", () => {
   const config = {};
 
-  it("produces drawPoints clamped inside bbox for text (horizontal sweep)", () => {
-    const scene = makeScene("title", "text", [100, 50, 900, 100]);
+  it("produces left-to-right hand_write columns for text", () => {
+    const scene = makeScene("title", "text", [100, 50, 900, 150]);
     const plan = WhiteboardPathPlanner.plan(scene, 1280, 720, config);
     expect(plan.objectPaths).toHaveLength(1);
-    for (const pt of plan.objectPaths[0].drawPoints) {
+    expect(plan.objectPaths[0].revealStyle).toBe("hand_write");
+    const points = plan.objectPaths[0].drawPoints;
+    expect(points.length).toBeGreaterThan(2);
+    // First column should start near the left of the bbox.
+    expect(points[0].x).toBeLessThan(100 + 80);
+    // Vertical inset: top closer to bbox top than bottom is to bbox bottom.
+    const ys = points.map((p) => p.y);
+    const minY = Math.min(...ys);
+    const maxY = Math.max(...ys);
+    expect(minY - 50).toBeLessThan(150 - maxY);
+    for (const pt of points) {
       expect(pt.x).toBeGreaterThanOrEqual(100 - 1);
       expect(pt.x).toBeLessThanOrEqual(900 + 1);
       expect(pt.y).toBeGreaterThanOrEqual(50 - 1);
-      expect(pt.y).toBeLessThanOrEqual(100 + 1);
+      expect(pt.y).toBeLessThanOrEqual(150 + 1);
     }
   });
 
