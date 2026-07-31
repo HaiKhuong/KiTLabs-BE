@@ -318,10 +318,7 @@ export class WhiteboardPathPlanner {
     const cx2 = Math.max(bx2, (x1 + x2) / 2);
     const cy2 = Math.max(by2, (y1 + y2) / 2);
 
-    const useHandWrite =
-      handStyle === "hand_write" ||
-      type === "text" ||
-      (handStyle === undefined && type === "text");
+    const useHandWrite = handStyle === "hand_write" || type === "text";
 
     if (useHandWrite && handStyle !== "svg_stroke_fill") {
       return WhiteboardPathPlanner.handWriteForText(x1, y1, x2, y2, brushSize);
