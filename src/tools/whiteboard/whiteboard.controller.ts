@@ -22,8 +22,10 @@ import { memoryStorage } from "multer";
 
 import { Public } from "../../common/decorators/public.decorator";
 import { AnalyzeWhiteboardDto } from "./dto/analyze-whiteboard.dto";
+import { GenerateWhiteboardIdeasDto } from "./dto/generate-whiteboard-ideas.dto";
 import { RenderWhiteboardDto } from "./dto/render-whiteboard.dto";
 import { readImageDimensionsFromPath } from "./whiteboard-image";
+import { WhiteboardIdeasService } from "./whiteboard-ideas.service";
 import { WhiteboardService } from "./whiteboard.service";
 
 const IMAGE_MIME = new Set(["image/png", "image/jpeg", "image/jpg", "image/webp"]);
@@ -39,7 +41,69 @@ const IMAGE_CONTENT_TYPE: Record<string, string> = {
 @ApiBearerAuth("bearer")
 @Controller("tools/whiteboard")
 export class WhiteboardController {
-  constructor(private readonly whiteboardService: WhiteboardService) {}
+  constructor(
+    private readonly whiteboardService: WhiteboardService,
+    private readonly whiteboardIdeasService: WhiteboardIdeasService,
+  ) {}
+
+  @ApiOperation({
+    summary: "Generate whiteboard scene ideas (narration + imgDescription) via Gemini",
+  })
+  @ApiBody({ type: GenerateWhiteboardIdeasDto })
+  @Public()
+  @Post("ideas/generate")
+  async generateIdeas(@Body() dto: GenerateWhiteboardIdeasDto) {
+    return this.whiteboardIdeasService.generateAndSave(dto.userId, dto.idea);
+  }
+
+  @ApiOperation({ summary: "List whiteboard idea history for a user" })
+  @ApiQuery({ name: "userId", required: true })
+  @ApiQuery({ name: "page", required: false })
+  @ApiQuery({ name: "limit", required: false })
+  @ApiQuery({ name: "search", required: false })
+  @Public()
+  @Get("ideas/history")
+  async ideasHistory(
+    @Query("userId") userId: string,
+    @Query("page") page?: string,
+    @Query("limit") limit?: string,
+    @Query("search") search?: string,
+  ) {
+    if (!userId) throw new BadRequestException("userId is required");
+    return this.whiteboardIdeasService.listHistory(
+      userId,
+      Number(page) || 1,
+      Number(limit) || 20,
+      search,
+    );
+  }
+
+  @ApiOperation({ summary: "Get one whiteboard idea history entry" })
+  @ApiQuery({ name: "userId", required: true })
+  @Public()
+  @Get("ideas/history/:id")
+  async getIdeaHistory(@Param("id") id: string, @Query("userId") userId: string) {
+    if (!userId) throw new BadRequestException("userId is required");
+    return this.whiteboardIdeasService.getOwnedById(id, userId);
+  }
+
+  @ApiOperation({ summary: "Delete all idea history for a user" })
+  @ApiQuery({ name: "userId", required: true })
+  @Public()
+  @Delete("ideas/history")
+  async deleteAllIdeaHistory(@Query("userId") userId: string) {
+    if (!userId) throw new BadRequestException("userId is required");
+    return this.whiteboardIdeasService.deleteAllHistory(userId);
+  }
+
+  @ApiOperation({ summary: "Delete a single idea history entry" })
+  @ApiQuery({ name: "userId", required: true })
+  @Public()
+  @Delete("ideas/history/:id")
+  async deleteIdeaHistory(@Param("id") id: string, @Query("userId") userId: string) {
+    if (!userId) throw new BadRequestException("userId is required");
+    return this.whiteboardIdeasService.deleteHistory(id, userId);
+  }
 
   @ApiOperation({
     summary: "Upload a composite image for manual box drawing — returns canvas size, no auto-detect",
