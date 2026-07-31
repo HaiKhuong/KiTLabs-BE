@@ -47,6 +47,14 @@ export interface WhiteboardObject {
   durationSec?: number;
   /** Sampled SVG geometry in source-canvas pixels. */
   strokePaths?: WhiteboardStrokePath[];
+  /** Optional storyboard binding from idea generation. */
+  storyboard?: WhiteboardObjectStoryboard;
+}
+
+export interface WhiteboardObjectStoryboard {
+  /** 0-based index within the scene. */
+  index: number;
+  voice: string;
 }
 
 export interface WhiteboardSceneJson {
@@ -126,6 +134,7 @@ export function normalizeSceneObjects(
       Number.isFinite(rawDurationSec) && rawDurationSec > 0
         ? Math.min(60, Math.max(0.1, rawDurationSec))
         : undefined;
+    const storyboard = normalizeStoryboard(obj.storyboard);
 
     objects.push({
       id: uniqueId,
@@ -135,11 +144,22 @@ export function normalizeSceneObjects(
       ...(revealStyle ? { revealStyle } : {}),
       ...(durationSec ? { durationSec } : {}),
       ...(strokePaths.length ? { strokePaths } : {}),
+      ...(storyboard ? { storyboard } : {}),
     });
   });
 
   objects.sort((a, b) => a.order - b.order || a.bbox[1] - b.bbox[1] || a.bbox[0] - b.bbox[0]);
   return objects.map((obj, index) => ({ ...obj, order: index + 1 }));
+}
+
+function normalizeStoryboard(raw: unknown): WhiteboardObjectStoryboard | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const row = raw as Record<string, unknown>;
+  const voice = String(row.voice ?? "").trim();
+  if (!voice) return undefined;
+  const indexRaw = Number(row.index);
+  const index = Number.isFinite(indexRaw) ? Math.max(0, Math.round(indexRaw)) : 0;
+  return { index, voice };
 }
 
 function normalizeStrokePaths(

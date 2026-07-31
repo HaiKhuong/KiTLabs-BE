@@ -24,6 +24,8 @@ export interface ObjectPath {
   drawDurationSec: number;
   /** Transit duration before drawing starts (hand moving from previous endpoint). */
   transitDurationSec: number;
+  /** Absolute timeline second when this object's draw phase begins. */
+  drawStartSec: number;
   /** Separate SVG strokes used by Remotion for stroke-then-fill rendering. */
   strokePaths?: PathPoint[][];
 }
@@ -71,6 +73,7 @@ export class WhiteboardPathPlanner {
 
     const objectPaths: ObjectPath[] = [];
     let prevEndPoint: PathPoint = { x: 0, y: 0 };
+    let cursorSec = 0;
 
     for (const obj of objects) {
       const [x1, y1, x2, y2] = obj.bbox;
@@ -105,6 +108,7 @@ export class WhiteboardPathPlanner {
         );
         transitDurationSec = Math.max(0, transitDist / TRANSIT_SPEED_PX);
         prevEndPoint = drawPoints[drawPoints.length - 1] ?? { x: x2, y: y2 };
+        const drawStartSec = cursorSec + transitDurationSec;
         objectPaths.push({
           objectId: obj.id,
           type: obj.type,
@@ -113,8 +117,10 @@ export class WhiteboardPathPlanner {
           drawPoints,
           drawDurationSec,
           transitDurationSec,
+          drawStartSec,
           strokePaths,
         });
+        cursorSec += transitDurationSec + drawDurationSec;
         continue;
       } else {
         drawPoints = WhiteboardPathPlanner.buildDrawPoints(
@@ -139,6 +145,7 @@ export class WhiteboardPathPlanner {
         prevEndPoint = drawPoints[drawPoints.length - 1] ?? { x: x2, y: y2 };
       }
 
+      const drawStartSec = cursorSec + transitDurationSec;
       objectPaths.push({
         objectId: obj.id,
         type: obj.type,
@@ -147,7 +154,9 @@ export class WhiteboardPathPlanner {
         drawPoints,
         drawDurationSec,
         transitDurationSec,
+        drawStartSec,
       });
+      cursorSec += transitDurationSec + drawDurationSec;
     }
 
     let totalDurationSec = objectPaths.reduce(
@@ -158,9 +167,12 @@ export class WhiteboardPathPlanner {
     // If user specified a duration, scale proportionally
     if (maxDurationSec > 0 && totalDurationSec > 0) {
       const scale = maxDurationSec / totalDurationSec;
+      let scaledCursor = 0;
       for (const p of objectPaths) {
         p.drawDurationSec *= scale;
         p.transitDurationSec *= scale;
+        p.drawStartSec = scaledCursor + p.transitDurationSec;
+        scaledCursor += p.transitDurationSec + p.drawDurationSec;
       }
       totalDurationSec = maxDurationSec;
     }

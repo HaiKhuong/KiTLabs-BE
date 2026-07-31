@@ -26,6 +26,7 @@ const defaultProps: WhiteboardCompositionProps = {
     brushSpeedPx: 600,
     objectPaths: [],
   },
+  audioCues: [],
 };
 
 export const RemotionRoot: React.FC = () => {
@@ -40,7 +41,13 @@ export const RemotionRoot: React.FC = () => {
       defaultProps={defaultProps}
       calculateMetadata={({ props }) => {
         const fps = Number(props.pathPlan?.fps) || FALLBACK_FPS;
-        const totalDurationSec = Number(props.pathPlan?.totalDurationSec) || FALLBACK_DURATION_SEC;
+        const visualSec = Number(props.pathPlan?.totalDurationSec) || FALLBACK_DURATION_SEC;
+        const audioEndSec = (props.audioCues ?? []).reduce((max, cue) => {
+          const startSec = Number(cue.startFrame) / fps;
+          const durationSec = Number(cue.durationSec) || 0;
+          return Math.max(max, startSec + durationSec);
+        }, 0);
+        const totalDurationSec = Math.max(visualSec, audioEndSec, FALLBACK_DURATION_SEC);
         const width = toEvenSize(props.imageWidth, FALLBACK_WIDTH);
         const height = toEvenSize(props.imageHeight, FALLBACK_HEIGHT);
 

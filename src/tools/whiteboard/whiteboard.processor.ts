@@ -6,6 +6,7 @@ import { ToolsRealtimeGateway } from "../realtime/tools-realtime.gateway";
 import { WHITEBOARD_QUEUE_NAME, WhiteboardService } from "./whiteboard.service";
 import { WhiteboardPathPlanner } from "./whiteboard-path-planner";
 import { WhiteboardRendererService } from "./whiteboard-renderer.service";
+import { WhiteboardVoiceService, type WhiteboardVoiceConfig } from "./whiteboard-voice.service";
 import { readSceneObjects, WhiteboardObject, WhiteboardSceneJson } from "./whiteboard-scene";
 
 @Processor(WHITEBOARD_QUEUE_NAME, {
@@ -21,6 +22,7 @@ export class WhiteboardProcessor extends WorkerHost {
     private readonly whiteboardService: WhiteboardService,
     private readonly realtimeGateway: ToolsRealtimeGateway,
     private readonly rendererService: WhiteboardRendererService,
+    private readonly voiceService: WhiteboardVoiceService,
   ) {
     super();
   }
@@ -44,16 +46,37 @@ export class WhiteboardProcessor extends WorkerHost {
         throw new UnrecoverableError("No reviewed boxes — draw boxes before rendering");
       }
 
-      await this.whiteboardService.updateRuntimeMessage(id, "[STEP 1/2] Using manually drawn scene…");
+      await this.whiteboardService.updateRuntimeMessage(id, "[STEP 1/3] Preparing scene…");
       this.logger.log(`[${id}] Using reviewed scene (${reviewed.length} objects)`);
-      const scene: WhiteboardSceneJson = {
+      let scene: WhiteboardSceneJson = {
         imageWidth: history.imageWidth ?? 0,
         imageHeight: history.imageHeight ?? 0,
         objects: reviewed as WhiteboardObject[],
       };
 
-      await this.whiteboardService.updateRuntimeMessage(id, "[STEP 2/2] Planning hand path + rendering…");
-      const engineConfig = (history.engineConfig ?? {}) as Record<string, unknown>;
+      const workDir = this.whiteboardService.prepareWorkDir(id);
+      const engineConfig = { ...(history.engineConfig ?? {}) } as Record<string, unknown>;
+      const voiceConfig = (engineConfig.voice ?? null) as WhiteboardVoiceConfig | null;
+
+      await this.whiteboardService.updateRuntimeMessage(id, "[STEP 2/3] Generating storyboard voices…");
+      const prepared = await this.voiceService.prepareStoryboardVoices({
+        userId,
+        scene,
+        workDir,
+        voice: voiceConfig,
+      });
+      scene = prepared.scene;
+      if (prepared.voiceAssets.length > 0) {
+        engineConfig.voiceAssets = prepared.voiceAssets.map((asset) => ({
+          index: asset.index,
+          path: asset.path,
+          durationSec: asset.durationSec,
+        }));
+        await this.whiteboardService.updateSceneAndEngineConfig(id, scene, engineConfig);
+        this.logger.log(`[${id}] Prepared ${prepared.voiceAssets.length} storyboard voice(s)`);
+      }
+
+      await this.whiteboardService.updateRuntimeMessage(id, "[STEP 3/3] Planning hand path + rendering…");
       const pathPlan = WhiteboardPathPlanner.plan(
         scene,
         scene.imageWidth,
@@ -63,7 +86,6 @@ export class WhiteboardProcessor extends WorkerHost {
       await this.whiteboardService.updatePathPlan(id, pathPlan as unknown as Record<string, unknown>);
 
       this.logger.log(`[${id}] Starting Remotion render`);
-      const workDir = this.whiteboardService.prepareWorkDir(id);
       const resultPath = await this.rendererService.render({
         historyId: id,
         sourceImagePath,
@@ -73,6 +95,7 @@ export class WhiteboardProcessor extends WorkerHost {
         pathPlan,
         engineConfig,
         workDir,
+        voiceAssets: prepared.voiceAssets,
       });
 
       await this.whiteboardService.processCompleted(id, resultPath);

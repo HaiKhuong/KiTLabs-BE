@@ -2,6 +2,7 @@ import { Module } from "@nestjs/common";
 import { BullModule } from "@nestjs/bullmq";
 import { TypeOrmModule } from "@nestjs/typeorm";
 
+import { AudioModule } from "../audio/audio.module";
 import { NotificationsModule } from "../notifications/notifications.module";
 import { ToolsRealtimeModule } from "../realtime/tools-realtime.module";
 import { WhiteboardController } from "./whiteboard.controller";
@@ -11,6 +12,7 @@ import { WhiteboardIdeasService } from "./whiteboard-ideas.service";
 import { WhiteboardProcessor } from "./whiteboard.processor";
 import { WhiteboardRendererService } from "./whiteboard-renderer.service";
 import { WHITEBOARD_QUEUE_NAME, WhiteboardService } from "./whiteboard.service";
+import { WhiteboardVoiceService } from "./whiteboard-voice.service";
 
 @Module({
   imports: [
@@ -18,6 +20,7 @@ import { WHITEBOARD_QUEUE_NAME, WhiteboardService } from "./whiteboard.service";
     TypeOrmModule.forFeature([WhiteboardHistory, WhiteboardIdeaHistory], "tool"),
     ToolsRealtimeModule,
     NotificationsModule,
+    AudioModule,
   ],
   controllers: [WhiteboardController],
   providers: [
@@ -25,6 +28,7 @@ import { WHITEBOARD_QUEUE_NAME, WhiteboardService } from "./whiteboard.service";
     WhiteboardIdeasService,
     WhiteboardProcessor,
     WhiteboardRendererService,
+    WhiteboardVoiceService,
   ],
   exports: [WhiteboardService],
 })

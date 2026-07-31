@@ -400,6 +400,19 @@ export class WhiteboardService {
     await this.repository.update({ id }, { pathPlan: pathPlan as never });
   }
 
+  async updateSceneAndEngineConfig(
+    id: string,
+    scene: WhiteboardSceneJson,
+    engineConfig: Record<string, unknown>,
+  ): Promise<void> {
+    await this.repository.update({
+      id,
+    }, {
+      sceneJson: scene as never,
+      engineConfig: engineConfig as never,
+    });
+  }
+
   async updateRuntimeMessage(id: string, message: string): Promise<void> {
     await this.repository.update({ id }, { errorMessage: message });
   }

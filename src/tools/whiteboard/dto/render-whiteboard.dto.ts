@@ -11,11 +11,46 @@ import {
   IsOptional,
   IsString,
   Max,
+  MaxLength,
   Min,
   ValidateNested,
 } from "class-validator";
 
 import { WHITEBOARD_OBJECT_TYPES, WHITEBOARD_REVEAL_STYLES, WhiteboardObjectType, WhiteboardRevealStyle } from "../whiteboard-scene";
+
+export class WhiteboardVoiceConfigDto {
+  @ApiProperty({ enum: ["preset", "clone"] })
+  @IsIn(["preset", "clone"])
+  voiceMode!: "preset" | "clone";
+
+  @ApiPropertyOptional({ description: "Preset voice id when voiceMode=preset" })
+  @IsOptional()
+  @IsString()
+  voiceId?: string;
+
+  @ApiPropertyOptional({ description: "Clone wav fileName when voiceMode=clone" })
+  @IsOptional()
+  @IsString()
+  pipelineRefWav?: string;
+
+  @ApiPropertyOptional({ description: "Clone reference text" })
+  @IsOptional()
+  @IsString()
+  @MaxLength(4_000)
+  cloneRefText?: string;
+
+  @ApiPropertyOptional({ enum: ["omnivoice"], default: "omnivoice" })
+  @IsOptional()
+  @IsIn(["omnivoice"])
+  ttsEngine?: "omnivoice";
+
+  @ApiPropertyOptional({ minimum: 0.5, maximum: 2 })
+  @IsOptional()
+  @IsNumber()
+  @Min(0.5)
+  @Max(2)
+  speed?: number;
+}
 
 export class WhiteboardEngineConfigDto {
   @ApiPropertyOptional({ minimum: 1, maximum: 60 })
@@ -45,6 +80,29 @@ export class WhiteboardEngineConfigDto {
   @Min(20)
   @Max(20_000)
   brushSpeedPx?: number;
+
+  @ApiPropertyOptional({
+    description: "OmniVoice config used when objects carry storyboard.voice",
+    type: WhiteboardVoiceConfigDto,
+  })
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => WhiteboardVoiceConfigDto)
+  voice?: WhiteboardVoiceConfigDto;
+}
+
+export class WhiteboardObjectStoryboardDto {
+  @ApiProperty({ description: "0-based storyboard index within the scene", minimum: 0 })
+  @IsInt()
+  @Min(0)
+  @Max(200)
+  index!: number;
+
+  @ApiProperty({ description: "Narration spoken during this storyboard" })
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(4_000)
+  voice!: string;
 }
 
 export class WhiteboardObjectDto {
@@ -96,6 +154,15 @@ export class WhiteboardObjectDto {
   @IsArray()
   @ArrayMaxSize(256)
   strokePaths?: unknown[];
+
+  @ApiPropertyOptional({
+    description: "Storyboard binding from idea generation (index + voice)",
+    type: WhiteboardObjectStoryboardDto,
+  })
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => WhiteboardObjectStoryboardDto)
+  storyboard?: WhiteboardObjectStoryboardDto;
 }
 
 export class RenderWhiteboardDto {

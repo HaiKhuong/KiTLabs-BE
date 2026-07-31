@@ -1,5 +1,8 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
+  AbsoluteFill,
+  Audio,
+  Sequence,
   cancelRender,
   continueRender,
   delayRender,
@@ -46,6 +49,7 @@ export interface ObjectPath {
   drawPoints: PathPoint[];
   drawDurationSec: number;
   transitDurationSec: number;
+  drawStartSec?: number;
   strokePaths?: PathPoint[][];
 }
 
@@ -57,12 +61,19 @@ export interface WhiteboardPathPlan {
   objectPaths: ObjectPath[];
 }
 
+export interface WhiteboardAudioCue {
+  srcDataUrl: string;
+  startFrame: number;
+  durationSec: number;
+}
+
 export interface WhiteboardCompositionProps {
   /** Base64-encoded composite image or data: URL. */
   sourceImageDataUrl: string;
   imageWidth: number;
   imageHeight: number;
   pathPlan: WhiteboardPathPlan;
+  audioCues?: WhiteboardAudioCue[];
 }
 
 type ObjectFrameState = {
@@ -454,6 +465,7 @@ export const WhiteboardComposition: React.FC<WhiteboardCompositionProps> = ({
   imageWidth,
   imageHeight,
   pathPlan,
+  audioCues = [],
 }) => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
@@ -554,11 +566,18 @@ export const WhiteboardComposition: React.FC<WhiteboardCompositionProps> = ({
   });
 
   return (
-    <canvas
-      ref={canvasRef}
-      width={imageWidth}
-      height={imageHeight}
-      style={{ display: "block", width: imageWidth, height: imageHeight }}
-    />
+    <AbsoluteFill>
+      <canvas
+        ref={canvasRef}
+        width={imageWidth}
+        height={imageHeight}
+        style={{ display: "block", width: imageWidth, height: imageHeight }}
+      />
+      {audioCues.map((cue, index) => (
+        <Sequence key={`audio-${index}-${cue.startFrame}`} from={cue.startFrame}>
+          <Audio src={cue.srcDataUrl} />
+        </Sequence>
+      ))}
+    </AbsoluteFill>
   );
 };
