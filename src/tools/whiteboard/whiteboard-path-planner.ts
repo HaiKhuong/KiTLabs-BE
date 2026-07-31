@@ -267,13 +267,14 @@ export class WhiteboardPathPlanner {
   }
 
   private static resolveRevealStyle(obj: WhiteboardObject): WhiteboardRevealStyle {
+    if (obj.type === "text") return "hand_write";
     if (obj.revealStyle) return obj.revealStyle;
     // Heuristic default for legacy objects without an explicit style.
     const [x1, y1, x2, y2] = obj.bbox;
     const w = x2 - x1;
     const h = y2 - y1;
-    if (obj.type === "arrow" || obj.type === "text" || obj.type === "icon" || (w < 100 && h < 100)) {
-      return obj.type === "text" ? "hand_write" : "left_right";
+    if (obj.type === "arrow" || obj.type === "icon" || (w < 100 && h < 100)) {
+      return "left_right";
     }
     const aspect = w / Math.max(1, h);
     if (aspect > 2) return "left_right";
@@ -367,7 +368,7 @@ export class WhiteboardPathPlanner {
   }
 
   /**
-   * Dense left→right writing strokes with light wobble — used for text hand-writer reveal.
+   * Left→right reveal for text: vertical strokes advancing across the box.
    */
   private static handWrite(
     x1: number,
@@ -376,26 +377,26 @@ export class WhiteboardPathPlanner {
     y2: number,
     brushSize: number,
   ): PathPoint[] {
-    const rowSpacing = Math.max(3, brushSize * 0.32);
+    const colSpacing = Math.max(4, brushSize * 0.4);
     const points: PathPoint[] = [];
-    let y = y1;
-    let row = 0;
-    const width = Math.max(1, x2 - x1);
-    while (y <= y2 + rowSpacing / 2) {
-      const clampedY = Math.min(y, y2);
-      const steps = Math.max(10, Math.round(width / Math.max(6, brushSize * 0.45)));
-      for (let s = 0; s <= steps; s++) {
-        const t = s / steps;
-        const x = x1 + width * t;
-        const wobble =
-          Math.sin(t * Math.PI * 5 + row * 1.3) * Math.min(2.5, brushSize * 0.07) +
-          Math.sin(t * Math.PI * 13) * Math.min(1.2, brushSize * 0.03);
-        points.push({ x: Math.round(x), y: Math.round(clampedY + wobble) });
+    let x = x1;
+    let col = 0;
+    while (x <= x2 + colSpacing / 2) {
+      const clampedX = Math.min(x, x2);
+      if (col % 2 === 0) {
+        points.push({ x: Math.round(clampedX), y: Math.round(y1) });
+        points.push({ x: Math.round(clampedX), y: Math.round(y2) });
+      } else {
+        // Continuous path: return upward so the hand doesn't jump.
+        points.push({ x: Math.round(clampedX), y: Math.round(y2) });
+        points.push({ x: Math.round(clampedX), y: Math.round(y1) });
       }
-      y += rowSpacing;
-      row += 1;
+      x += colSpacing;
+      col += 1;
     }
-    return points.length > 0 ? points : [{ x: Math.round((x1 + x2) / 2), y: Math.round((y1 + y2) / 2) }];
+    return points.length > 0
+      ? points
+      : [{ x: Math.round((x1 + x2) / 2), y: Math.round((y1 + y2) / 2) }];
   }
 
   /** Horizontal sweep: left→right at midpoint y. For multi-line text, adds rows. */
