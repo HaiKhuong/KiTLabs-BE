@@ -2,11 +2,14 @@ import { Column, Entity, Index, JoinColumn, ManyToOne } from "typeorm";
 import { BaseEntity } from "../../common/entities/base.entity";
 import { User } from "../users/user.entity";
 
+export type WhiteboardIdeaStoryboardRow = {
+  voice: string;
+  visuals: string[];
+};
+
 export type WhiteboardIdeaSceneRow = {
-  id: string;
-  order: number;
-  narration: string;
-  imgDescription: string;
+  title: string;
+  storyboards: WhiteboardIdeaStoryboardRow[];
 };
 
 @Entity("whiteboard_idea_histories")

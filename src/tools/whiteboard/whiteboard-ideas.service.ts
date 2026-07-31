@@ -14,8 +14,10 @@ import { geminiKeyPoolEnvHint, loadGeminiKeyPools } from "../../common/gemini/ge
 import {
   WhiteboardIdeaHistory,
   WhiteboardIdeaSceneRow,
+  WhiteboardIdeaStoryboardRow,
 } from "./whiteboard-idea-history.entity";
 
+export type WhiteboardIdeaStoryboard = WhiteboardIdeaStoryboardRow;
 export type WhiteboardIdeaScene = WhiteboardIdeaSceneRow;
 
 export type WhiteboardIdeasResult = {
@@ -190,157 +192,52 @@ export class WhiteboardIdeasService {
   }
 
   private buildPrompt(idea: string): string {
-    return `You are an expert researcher, fact-checker, and documentary script writer.
-
-Your primary objective is to produce highly accurate, comprehensive, and engaging Vietnamese educational content.
-
-The topic is:
-
-${idea}
-
-==================================================
-GOAL
-==================================================
-
-Generate a complete documentary-style script.
-
-Do NOT summarize.
-
-Cover the topic as comprehensively as possible.
-
-The response should contain enough detail that it can directly become a long-form YouTube narration.
-
-Return ONLY valid JSON.
-
-==================================================
-FACTUAL ACCURACY
-==================================================
-
-Accuracy is your highest priority.
-
-Every statement must be based on well-established knowledge.
-
-If multiple scientific theories or historical viewpoints exist:
-
-- Present every major viewpoint.
-- Explain the supporting evidence.
-- Clearly distinguish facts from hypotheses.
-- Never present speculation as fact.
-
-Do not invent information.
-
-Do not exaggerate.
-
-Do not fabricate statistics, dates, names, quotations, discoveries, or historical events.
-
-If a number is uncertain, describe it qualitatively instead of making one up.
-
-When evidence is incomplete or debated, explicitly state that experts have not reached a consensus.
-
-==================================================
-WRITING STYLE
-==================================================
-
-Write in natural Vietnamese.
-
-Sound like an experienced documentary narrator.
-
-Combine factual explanation with thoughtful commentary and interesting observations.
-
-The commentary should:
-
-- help viewers understand the importance of the information
-- connect ideas naturally
-- make the content more engaging
-
-Never add emotional drama that changes factual meaning.
-
-Do not use clickbait.
-
-Do not intentionally create controversy.
-
-==================================================
-CONTENT DEPTH
-==================================================
-
-Explain concepts thoroughly.
-
-Whenever appropriate include:
-
-- background
-- origin
-- history
-- scientific explanation
-- mechanisms
-- causes
-- consequences
-- examples
-- comparisons
-- interesting facts
-- misconceptions
-- current understanding
-- unanswered questions
-
-Do not skip important intermediate explanations.
-
-Assume the audience has no prior knowledge.
-
-==================================================
-IMAGE DESCRIPTION
-==================================================
-
-For every narration segment generate one image description.
-
-The image should clearly visualize the narration.
-
-Image descriptions should:
-
-- describe the main subject
-- describe important objects
-- describe the environment
-- describe important actions
-- describe mood if relevant
-
-Do NOT describe:
-
-- camera angle
-- animation
-- layout
-- screen position
-- text placement
-- transitions
-
-The description should be suitable for AI image generation.
-
-==================================================
-SEGMENTING
-==================================================
-
-Split the content naturally.
-
-Do NOT target a specific number of scenes.
-
-Create as many segments as necessary to explain the topic properly.
-
-Each segment should focus on only one idea.
-
-Narration length may vary depending on the complexity.
-
-==================================================
-OUTPUT FORMAT
-==================================================
-
-Return ONLY JSON.
-
-{
-  "title": "...",
-  "content": [
-    {
-      "narration": "...",
-      "imgDesc": "..."
-    }
-  ]
-}`;
+    return [
+      "You are an expert researcher, fact-checker, documentary writer, and educational storyboard designer.",
+      "Your task is to create a complete storyboard for a Hand Writer educational video.",
+      `Topic:\n${idea}`,
+      "PRIMARY GOAL",
+      "Create a comprehensive educational documentary. Do NOT summarize. Explain thoroughly and logically.",
+      "Generate as many scenes as necessary. Each Scene focuses on ONE major idea.",
+      "Within each Scene, split narration into multiple Storyboards.",
+      "Each Storyboard = ONE continuous voice narration synchronized with its visual elements.",
+      "FACTUAL ACCURACY",
+      "Accuracy is highest priority. Every statement must be well-established knowledge.",
+      "Never fabricate: facts, statistics, quotations, dates, historical events, scientific discoveries, names.",
+      "If multiple theories exist: explain major viewpoints; distinguish facts from hypotheses; never present speculation as fact.",
+      "If evidence is uncertain, say experts have not reached a consensus.",
+      "NARRATION",
+      "Write natural Vietnamese in documentary style. Explain clearly and progressively.",
+      "Include when useful: background, origin, mechanism, causes, consequences, comparisons, examples, misconceptions, interesting facts, current scientific understanding.",
+      "Commentary is ok but must not alter factual meaning. No clickbait. No artificial drama.",
+      "Split into logical Storyboards; each has one complete idea. Avoid overly long paragraphs.",
+      "STORYBOARD",
+      "Storyboard is NOT an image prompt. It is a visual plan for Hand Writer animation.",
+      "For every Storyboard, describe all visual elements that appear while that narration is spoken.",
+      "Think like a documentary director designing educational visuals.",
+      "Visual elements may include: Illustration, Realistic image, Historical image, Scientific diagram, Character, Object, Animal, Plant, Landmark, Building, Icon, Symbol, Title, Keyword, Important text, Number, Statistic, Timeline, Flowchart, Table, Comparison, Formula, Map, Arrow, Label, Callout, Highlight, Warning symbol, Question mark, Magnifying glass, Light bulb, Cross-section, Before/After comparison, or any educational visual that improves understanding.",
+      "Whenever narration introduces a new concept, add the appropriate visual element.",
+      "VISUAL RULES",
+      "Describe WHAT should appear.",
+      "Do NOT describe: camera movement, animation, transitions, screen coordinates, layout positions, timing.",
+      "Do NOT describe a complete finished image. Describe independent visual elements that can appear progressively.",
+      "Visuals should help viewers immediately understand the narration. Avoid unnecessary decoration.",
+      "A Storyboard should contain only enough narration to match one group of visuals.",
+      "If narration introduces a new concept, comparison, mechanism, object, timeline, or conclusion, start a new Storyboard.",
+      "Prefer more Storyboards with shorter narration over fewer with long narration.",
+      "GOOD EXAMPLE",
+      'Voice: "Kim cương là vật liệu tự nhiên cứng nhất trên Trái Đất."',
+      "Visuals:",
+      '- Large sparkling diamond illustration.',
+      '- Bold text: "Độ cứng vượt trội".',
+      '- Arrow pointing to "Cứng nhất trong các vật liệu tự nhiên".',
+      "- Hammer icon striking the diamond.",
+      "- Earth icon.",
+      "- Highlight around the diamond.",
+      "OUTPUT",
+      "Return ONLY valid JSON:",
+      '{"title":"Video title","scenes":[{"title":"Scene title","storyboards":[{"voice":"Narration spoken during this storyboard.","visuals":["Visual element 1","Visual element 2","Visual element 3"]}]}]}',
+    ].join("\n");
   }
 
   private parseAndValidate(raw: string): WhiteboardIdeaScene[] {
@@ -352,37 +249,48 @@ Return ONLY JSON.
     }
 
     const root = parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : null;
-    const list = Array.isArray(root?.content)
-      ? root!.content
-      : Array.isArray(root?.scenes)
-        ? root!.scenes
-        : null;
+    const list = Array.isArray(root?.scenes) ? root!.scenes : null;
     if (!list || list.length === 0) {
-      throw new BadGatewayException("Gemini JSON missing content[]");
+      throw new BadGatewayException("Gemini JSON missing scenes[]");
     }
 
     const scenes: WhiteboardIdeaScene[] = [];
-    list.forEach((entry, index) => {
-      if (!entry || typeof entry !== "object") return;
+    for (const entry of list) {
+      if (!entry || typeof entry !== "object") continue;
       const row = entry as Record<string, unknown>;
-      const narration = String(row.narration ?? "").trim();
-      const imgDescription = String(
-        row.imgDesc ?? row.imgDescription ?? row.imageDescription ?? "",
-      ).trim();
-      if (!narration || !imgDescription) return;
-      scenes.push({
-        id: `scene_${index + 1}`,
-        order: index + 1,
-        narration,
-        imgDescription,
-      });
-    });
+      const title = String(row.title ?? "").trim() || `Scene ${scenes.length + 1}`;
+      const storyboardRaw = Array.isArray(row.storyboards) ? row.storyboards : [];
+      const storyboards: WhiteboardIdeaStoryboard[] = [];
+
+      for (const sb of storyboardRaw) {
+        if (!sb || typeof sb !== "object") continue;
+        const board = sb as Record<string, unknown>;
+        const voice = String(board.voice ?? board.narration ?? "").trim();
+        const visuals = this.parseVisuals(board.visuals ?? board.imgDesc ?? board.imgDescription);
+        if (!voice || visuals.length === 0) continue;
+        storyboards.push({ voice, visuals });
+      }
+
+      if (storyboards.length === 0) continue;
+      scenes.push({ title, storyboards });
+    }
 
     if (scenes.length === 0) {
-      throw new BadGatewayException("Gemini content missing narration/imgDesc");
+      throw new BadGatewayException("Gemini scenes missing storyboards with voice/visuals");
     }
 
     return scenes;
+  }
+
+  private parseVisuals(raw: unknown): string[] {
+    if (Array.isArray(raw)) {
+      return raw.map((item) => String(item ?? "").trim()).filter(Boolean);
+    }
+    if (typeof raw === "string") {
+      const text = raw.trim();
+      return text ? [text] : [];
+    }
+    return [];
   }
 
   private readTitle(raw: string): string {
