@@ -12,8 +12,8 @@ import {
 } from "remotion";
 
 /** Hand pen-tip offset relative to hand PNG top-left corner (as fraction of hand image dimensions). */
-const HAND_TIP_OFFSET_X = 0.18;
-const HAND_TIP_OFFSET_Y = 0.08;
+const HAND_TIP_OFFSET_X = 0;
+const HAND_TIP_OFFSET_Y = 0.2;
 
 /** Hand image displayed size (px in output video). */
 const HAND_DISPLAY_WIDTH = 480;
