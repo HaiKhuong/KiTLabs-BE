@@ -482,27 +482,37 @@ export class WhiteboardIdeasService {
 
       "Every visual MUST begin with exactly ONE of these prefixes:",
 
-      "Illustration:",
-      "Icon:",
-      "Text:",
-      "Diagram:",
-      "Chart:",
-      "Map:",
-      "Arrow:",
-      "Comparison Table:",
-      "Highlight:",
+      "- Hình minh họa:",
+      "- Biểu tượng:",
+      "- Văn bản:",
+      "- Sơ đồ:",
+      "- Biểu đồ:",
+      "- Bản đồ:",
+      "- Mũi tên:",
+      "- Bảng so sánh:",
+      "- Hiệu ứng nhấn mạnh:",
+
+      "All visual descriptions should be written in Vietnamese for clarity and consistency.",
+
+      "The ONLY exception is:",
+
+      "- Every string starting with 'Văn bản:' MUST contain English text exactly as it should appear in the final video.",
 
       "Examples:",
 
-      "Illustration: Sparkling diamond.",
-      'Text: "Exceptional Hardness".',
-      'Arrow: Pointing to "Hardest Natural Material".',
-      "Diagram: Carbon atomic structure.",
-      "Icon: Earth.",
-      "Highlight: Glowing outline around the diamond.",
+      "- Hình minh họa: Viên kim cương lấp lánh.",
+      "- Biểu tượng: Trái Đất.",
+      "- Mũi tên: Chỉ tới viên kim cương.",
+      "- Sơ đồ: Cấu trúc tinh thể ba chiều.",
+      "- Văn bản: Hardest Natural Material.",
+      "- Văn bản: Carbon Atoms.",
+      "- Văn bản: Artificial Diamond.",
+
+      "- Only the content after the prefix 'Văn bản:' may be written in English.",
+      "- All other visual descriptions must remain in Vietnamese.",
+      "- Never mix Vietnamese and English in the same visual description unless the prefix is 'Văn bản:'.",
 
       "Avoid unnecessary words.",
-
       "Use internationally recognized scientific terms whenever appropriate.",
 
       "==================================================",
