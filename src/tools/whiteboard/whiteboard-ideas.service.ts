@@ -2,7 +2,7 @@ import { BadGatewayException, BadRequestException, Injectable, Logger, NotFoundE
 import { ConfigService } from "@nestjs/config";
 import { InjectRepository } from "@nestjs/typeorm";
 import { GoogleGenerativeAI } from "@google/generative-ai";
-import { Repository } from "typeorm";
+import { Not, Repository } from "typeorm";
 
 import { geminiKeyPoolEnvHint, loadGeminiKeyPools } from "../../common/gemini/gemini-key-pools";
 import {
@@ -449,6 +449,14 @@ export class WhiteboardIdeasService {
       "- Comparisons",
       "- Conclusions",
 
+      "Text is optional.",
+      "Only use 'Text:' when it significantly improves understanding or emphasizes an important concept.",
+      "Avoid creating text labels that merely repeat what is already obvious from the narration or illustration.",
+
+      "Prefer illustrations, diagrams, arrows, comparisons, and annotations over text.",
+      "- If an illustration alone can clearly communicate the idea, do not add any text.",
+      "- Do not create one text label for every Storyboard.",
+
       "Avoid adding text for every Storyboard.",
 
       "==================================================",
@@ -482,8 +490,13 @@ export class WhiteboardIdeasService {
       "- explanatory icons",
 
       "Every Storyboard MUST introduce at least ONE new visual element.",
-
       "A visual element should only be introduced once per Scene whenever possible.",
+
+      "For each Storyboard, choose only the visual elements that best communicate the narration.",
+      "- Not every Storyboard needs text.",
+      "- Not every Storyboard needs icons.",
+      "- Not every Storyboard needs new illustrations.",
+      "- Use the minimum number of visual elements required to clearly explain the idea.",
 
       "==================================================",
       "VISUAL LANGUAGE",
