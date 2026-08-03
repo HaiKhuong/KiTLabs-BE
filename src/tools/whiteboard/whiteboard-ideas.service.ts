@@ -372,14 +372,15 @@ export class WhiteboardIdeasService {
       "==================================================",
 
       "Storyboard is NOT an image prompt.",
-
       "Storyboard is a visual plan for a Hand Writer animation.",
-
       "For every Storyboard, describe all visual elements that should appear while the narration is spoken.",
-
       "Think like a documentary director designing educational visuals.",
-
       "Visual elements may include:",
+
+      "- Visual elements should only be added when they genuinely improve understanding.",
+      "- Do NOT add visual elements simply to fill the storyboard.",
+      "- Prefer clean, minimal educational visuals over crowded scenes.",
+      "- Every visual element must have a clear educational purpose.",
 
       "- Illustration",
       "- Realistic image",
@@ -433,12 +434,22 @@ export class WhiteboardIdeasService {
       "- layout positions",
 
       "Do NOT describe one finished picture.",
-
       "Describe independent visual elements that progressively appear during the Hand Writer animation.",
-
       "Avoid unnecessary decoration.",
-
       "Visuals must directly support the narration.",
+
+      "Text should only be used for:",
+
+      "- Important concepts",
+      "- Technical terms",
+      "- Keywords",
+      "- Numbers",
+      "- Statistics",
+      "- Names",
+      "- Comparisons",
+      "- Conclusions",
+
+      "Avoid adding text for every Storyboard.",
 
       "==================================================",
       "VISUAL CONTINUITY",
