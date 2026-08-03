@@ -540,6 +540,19 @@ export class WhiteboardIdeasService {
       "Use internationally recognized scientific terms whenever appropriate.",
 
       "==================================================",
+      "VISUAL DESIGN PHILOSOPHY",
+      "==================================================",
+
+      "Storyboard is NOT a slide.",
+      "Storyboard is a continuous drawing process for a Hand Writer animation.",
+      "Think of the canvas as one large whiteboard.",
+      "The canvas is NOT cleared between Storyboards within the same Scene.",
+      "Previously drawn visual elements remain visible unless they are intentionally replaced.",
+      "Every new Storyboard should build upon the existing canvas instead of recreating it.",
+      "Avoid treating every Storyboard as a brand-new illustration.",
+      "The goal is to progressively explain ideas by extending the current drawing.",
+
+      "==================================================",
       "GOOD EXAMPLE",
       "==================================================",
 
