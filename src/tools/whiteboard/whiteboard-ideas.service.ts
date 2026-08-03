@@ -552,6 +552,26 @@ export class WhiteboardIdeasService {
       "Use simple language without sacrificing scientific accuracy.",
 
       "==================================================",
+      "TERMINOLOGY",
+      "==================================================",
+
+      "Minimize the use of abbreviations and acronyms.",
+
+      "Whenever possible, write the full term instead of its abbreviation.",
+
+      "If an abbreviation or acronym is commonly used or unavoidable:",
+
+      "- Introduce the full name the first time it appears, followed by the abbreviation in parentheses.",
+      "- Example:",
+      "- Rapid Eye Movement",
+      "- Deoxyribonucleic Acid",
+      "- Artificial Intelligence",
+
+      "After the full term has been introduced once, the abbreviation may be used consistently throughout the rest of the video.",
+      "Do NOT introduce abbreviations unless they improve readability.",
+      "Always prefer clear explanations over technical shorthand.",
+
+      "==================================================",
       "OUTPUT",
       "==================================================",
 
