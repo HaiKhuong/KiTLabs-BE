@@ -17,6 +17,7 @@ import {
   MERGE_SLIDE_TRANSITIONS,
   type MergeSlideTransition,
 } from "./whiteboard-merge.service";
+import { WhiteboardRecentsService } from "./whiteboard-recents.service";
 import {
   normalizeSceneObjects,
   readSceneObjects,
@@ -43,6 +44,8 @@ export interface WhiteboardEngineConfig {
   /** When true, render uses the user's uploaded hand image if present. */
   useCustomHand?: boolean;
   cameraZooms?: Array<{ storyboardIndices: number[] }>;
+  /** Recent-image ids placed on this scene (copied under assetsDir/selected). */
+  selectedRecentIds?: string[];
 }
 
 @Injectable()
@@ -55,6 +58,7 @@ export class WhiteboardService {
     @InjectRepository(WhiteboardHistory, "tool")
     private readonly repository: Repository<WhiteboardHistory>,
     private readonly notificationsService: NotificationsService,
+    private readonly recentsService: WhiteboardRecentsService,
   ) {}
 
   static resolveQueueLockDurationMs(): number {
@@ -247,6 +251,52 @@ export class WhiteboardService {
     return scene;
   }
 
+  /** Persist per-layer PNGs from render payload so overlapping reveals keep correct z-order. */
+  persistObjectLayerSources(
+    historyId: string,
+    rawObjects: unknown,
+    normalizedObjects: WhiteboardObject[],
+  ): Record<string, string> {
+    if (!Array.isArray(rawObjects) || normalizedObjects.length === 0) return {};
+
+    const sourceById = new Map<string, string>();
+    for (const entry of rawObjects) {
+      if (!entry || typeof entry !== "object") continue;
+      const row = entry as Record<string, unknown>;
+      const id = String(row.id ?? "").trim();
+      const dataUrl = String(row.layerSourceDataUrl ?? "").trim();
+      if (!id || !dataUrl.startsWith("data:image/")) continue;
+      sourceById.set(id, dataUrl);
+    }
+    if (sourceById.size === 0) return {};
+
+    const workDir = this.prepareWorkDir(historyId);
+    const layerDir = join(workDir, "layers");
+    mkdirSync(layerDir, { recursive: true });
+
+    const paths: Record<string, string> = {};
+    for (const obj of normalizedObjects) {
+      const dataUrl = sourceById.get(obj.id);
+      if (!dataUrl) continue;
+      const filePath = join(layerDir, `${obj.id}.png`);
+      try {
+        this.writeDataUrlToFile(dataUrl, filePath);
+        paths[obj.id] = filePath;
+      } catch (error) {
+        this.logger.warn(
+          `[${historyId}] Failed to persist layer source for ${obj.id}: ${String(error)}`,
+        );
+      }
+    }
+    return paths;
+  }
+
+  private writeDataUrlToFile(dataUrl: string, filePath: string): void {
+    const match = /^data:([^;]+);base64,(.+)$/i.exec(dataUrl);
+    if (!match) throw new Error("Invalid data URL");
+    writeFileSync(filePath, Buffer.from(match[2], "base64"));
+  }
+
   /** Step 2 of the review flow: queue the render for an already-analyzed draft. */
   async enqueueReviewed(dto: RenderWhiteboardDto): Promise<WhiteboardHistory> {
     const userId = dto.userId?.trim();
@@ -260,7 +310,35 @@ export class WhiteboardService {
       throw new BadRequestException("This analysis is already rendering");
     }
 
-    await this.applyReviewedScene(history, dto.objects);
+    const scene = await this.applyReviewedScene(history, dto.objects);
+    const objectLayerSourcePaths = this.persistObjectLayerSources(
+      analysisId,
+      dto.objects,
+      scene.objects,
+    );
+
+    const selectedRecentIds = Array.isArray(dto.engineConfig?.selectedRecentIds)
+      ? dto.engineConfig.selectedRecentIds.map((id) => String(id ?? "").trim()).filter(Boolean)
+      : [];
+    let selectedAssets: Array<{ id: string; originalName: string; fileName: string }> = [];
+    if (selectedRecentIds.length > 0) {
+      const assetsDir =
+        history.assetsDir?.trim() ||
+        (() => {
+          const dir = join(this.resolveWorkRoot(), "_uploads", randomUUID());
+          mkdirSync(dir, { recursive: true });
+          return dir;
+        })();
+      if (!history.assetsDir) {
+        await this.repository.update({ id: analysisId }, { assetsDir });
+        history.assetsDir = assetsDir;
+      }
+      selectedAssets = await this.recentsService.copyOwnedToDir(
+        userId,
+        selectedRecentIds,
+        join(assetsDir, "selected"),
+      );
+    }
 
     const patch: Partial<WhiteboardHistory> = {
       status: QueueJobStatus.PENDING,
@@ -272,9 +350,17 @@ export class WhiteboardService {
       renderDurationMs: null,
     };
     if (dto.displayName?.trim()) patch.displayName = dto.displayName.trim();
-    if (dto.engineConfig) {
-      patch.engineConfig = dto.engineConfig as unknown as Record<string, unknown>;
-    }
+    const nextEngineConfig = {
+      ...(history.engineConfig ?? {}),
+      ...(dto.engineConfig ?? {}),
+      ...(Object.keys(objectLayerSourcePaths).length > 0 ? { objectLayerSourcePaths } : {}),
+      ...(selectedAssets.length > 0
+        ? { selectedRecentIds, selectedAssets }
+        : selectedRecentIds.length > 0
+          ? { selectedRecentIds }
+          : {}),
+    };
+    patch.engineConfig = nextEngineConfig as Record<string, unknown>;
     await this.repository.update({ id: analysisId }, patch as never);
 
     const queueJob = await this.queue.add(
@@ -333,6 +419,17 @@ export class WhiteboardService {
       dto.displayName?.trim() ||
       `Gộp · ${sources.map((row) => row.displayName).join(" + ").slice(0, 180)}`;
 
+    const summaryEnabled = Boolean(dto.summary?.enabled && dto.summary?.imageDataUrl?.startsWith("data:image/"));
+    const summaryDurationSec = Math.min(
+      30,
+      Math.max(0.5, Number(dto.summary?.durationSec) || 3),
+    );
+    const summaryTransition =
+      dto.summary?.transition &&
+      (MERGE_SLIDE_TRANSITIONS as readonly string[]).includes(dto.summary.transition)
+        ? dto.summary.transition
+        : ("slide_left" as MergeSlideTransition);
+
     const draft = this.repository.create({
       userId,
       nodeId: null,
@@ -351,6 +448,16 @@ export class WhiteboardService {
         kind: "merge",
         sourceHistoryIds: historyIds,
         transitions,
+        ...(summaryEnabled
+          ? {
+              summary: {
+                enabled: true,
+                durationSec: summaryDurationSec,
+                transition: summaryTransition,
+                frames: dto.summary?.frames ?? [],
+              },
+            }
+          : {}),
       } as never,
       status: QueueJobStatus.PENDING,
       resultPath: null,
@@ -359,6 +466,30 @@ export class WhiteboardService {
     } as Partial<WhiteboardHistory>);
 
     const saved = (await this.repository.save(draft)) as WhiteboardHistory;
+
+    if (summaryEnabled && dto.summary?.imageDataUrl) {
+      const workDir = this.prepareWorkDir(saved.id);
+      try {
+        this.writeDataUrlToFile(dto.summary.imageDataUrl, join(workDir, "summary.png"));
+        await this.repository.update(
+          { id: saved.id },
+          {
+            engineConfig: {
+              ...((saved.engineConfig ?? {}) as Record<string, unknown>),
+              summary: {
+                enabled: true,
+                durationSec: summaryDurationSec,
+                transition: summaryTransition,
+                frames: dto.summary?.frames ?? [],
+                imagePath: join(workDir, "summary.png"),
+              },
+            } as never,
+          },
+        );
+      } catch (error) {
+        this.logger.warn(`[${saved.id}] Failed to persist summary image: ${String(error)}`);
+      }
+    }
 
     const queueJob = await this.queue.add(
       WHITEBOARD_QUEUE_NAME,
@@ -382,6 +513,12 @@ export class WhiteboardService {
   getMergeJobConfig(history: WhiteboardHistory): {
     sourceHistoryIds: string[];
     transitions: MergeSlideTransition[];
+    summary: {
+      enabled: boolean;
+      durationSec: number;
+      transition: MergeSlideTransition;
+      imagePath: string | null;
+    } | null;
   } {
     const config = (history.engineConfig ?? {}) as Record<string, unknown>;
     const sourceHistoryIds = Array.isArray(config.sourceHistoryIds)
@@ -390,7 +527,29 @@ export class WhiteboardService {
     const transitions = Array.isArray(config.transitions)
       ? (config.transitions as MergeSlideTransition[])
       : [];
-    return { sourceHistoryIds, transitions };
+    const rawSummary = config.summary;
+    let summary: {
+      enabled: boolean;
+      durationSec: number;
+      transition: MergeSlideTransition;
+      imagePath: string | null;
+    } | null = null;
+    if (rawSummary && typeof rawSummary === "object") {
+      const row = rawSummary as Record<string, unknown>;
+      const imagePath = String(row.imagePath ?? "").trim() || null;
+      const transition =
+        typeof row.transition === "string" &&
+        (MERGE_SLIDE_TRANSITIONS as readonly string[]).includes(row.transition)
+          ? (row.transition as MergeSlideTransition)
+          : ("slide_left" as MergeSlideTransition);
+      summary = {
+        enabled: Boolean(row.enabled) && Boolean(imagePath),
+        durationSec: Math.min(30, Math.max(0.5, Number(row.durationSec) || 3)),
+        transition,
+        imagePath,
+      };
+    }
+    return { sourceHistoryIds, transitions, summary };
   }
 
   async getById(id: string): Promise<WhiteboardHistory | null> {

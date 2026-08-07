@@ -14,6 +14,8 @@ import { WhiteboardProcessor } from "./whiteboard.processor";
 import { WhiteboardRendererService } from "./whiteboard-renderer.service";
 import { WhiteboardSampleImage } from "./whiteboard-sample-image.entity";
 import { WhiteboardSamplesService } from "./whiteboard-samples.service";
+import { WhiteboardRecentImage } from "./whiteboard-recent-image.entity";
+import { WhiteboardRecentsService } from "./whiteboard-recents.service";
 import { WHITEBOARD_QUEUE_NAME, WhiteboardService } from "./whiteboard.service";
 import { WhiteboardVoiceService } from "./whiteboard-voice.service";
 
@@ -21,7 +23,12 @@ import { WhiteboardVoiceService } from "./whiteboard-voice.service";
   imports: [
     BullModule.registerQueue({ name: WHITEBOARD_QUEUE_NAME }),
     TypeOrmModule.forFeature(
-      [WhiteboardHistory, WhiteboardIdeaHistory, WhiteboardSampleImage],
+      [
+        WhiteboardHistory,
+        WhiteboardIdeaHistory,
+        WhiteboardSampleImage,
+        WhiteboardRecentImage,
+      ],
       "tool",
     ),
     ToolsRealtimeModule,
@@ -33,6 +40,7 @@ import { WhiteboardVoiceService } from "./whiteboard-voice.service";
     WhiteboardService,
     WhiteboardIdeasService,
     WhiteboardSamplesService,
+    WhiteboardRecentsService,
     WhiteboardMergeService,
     WhiteboardProcessor,
     WhiteboardRendererService,

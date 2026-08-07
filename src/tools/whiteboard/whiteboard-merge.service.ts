@@ -167,6 +167,63 @@ export class WhiteboardMergeService {
     return outputPath;
   }
 
+  /** Turn a still PNG into a silent H.264 clip for summary outro. */
+  async stillImageToVideo(opts: {
+    imagePath: string;
+    outputPath: string;
+    durationSec: number;
+    width?: number;
+    height?: number;
+  }): Promise<string> {
+    if (!existsSync(opts.imagePath)) {
+      throw new BadRequestException(`Thiếu ảnh summary: ${opts.imagePath}`);
+    }
+    const duration = Math.min(30, Math.max(0.5, Number(opts.durationSec) || 3));
+    const width = Math.max(16, Math.round(Number(opts.width) || 1920));
+    const height = Math.max(16, Math.round(Number(opts.height) || 1080));
+    // Even dimensions required by yuv420p.
+    const evenW = width % 2 === 0 ? width : width + 1;
+    const evenH = height % 2 === 0 ? height : height + 1;
+
+    const args = [
+      "-y",
+      "-loop",
+      "1",
+      "-i",
+      opts.imagePath,
+      "-f",
+      "lavfi",
+      "-i",
+      "anullsrc=channel_layout=stereo:sample_rate=44100",
+      "-t",
+      String(duration),
+      "-vf",
+      `scale=${evenW}:${evenH}:force_original_aspect_ratio=decrease,pad=${evenW}:${evenH}:(ow-iw)/2:(oh-ih)/2:color=white,fps=30`,
+      "-c:v",
+      "libx264",
+      "-pix_fmt",
+      "yuv420p",
+      "-preset",
+      "veryfast",
+      "-crf",
+      "18",
+      "-c:a",
+      "aac",
+      "-b:a",
+      "128k",
+      "-shortest",
+      "-movflags",
+      "+faststart",
+      opts.outputPath,
+    ];
+    this.logger.log(`Summary still → video (${duration}s) ${opts.outputPath}`);
+    await this.runCommand("ffmpeg", args, 180_000);
+    if (!existsSync(opts.outputPath)) {
+      throw new BadRequestException("FFmpeg không tạo được summary video");
+    }
+    return opts.outputPath;
+  }
+
   private runCommand(
     bin: string,
     args: string[],

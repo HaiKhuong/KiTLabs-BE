@@ -28,6 +28,7 @@ import { RenderWhiteboardDto } from "./dto/render-whiteboard.dto";
 import { readImageDimensionsFromPath } from "./whiteboard-image";
 import { WhiteboardIdeasService } from "./whiteboard-ideas.service";
 import { WhiteboardSamplesService } from "./whiteboard-samples.service";
+import { WhiteboardRecentsService } from "./whiteboard-recents.service";
 import { WhiteboardService } from "./whiteboard.service";
 
 const IMAGE_MIME = new Set(["image/png", "image/jpeg", "image/jpg", "image/webp"]);
@@ -48,6 +49,7 @@ export class WhiteboardController {
     private readonly whiteboardService: WhiteboardService,
     private readonly whiteboardIdeasService: WhiteboardIdeasService,
     private readonly whiteboardSamplesService: WhiteboardSamplesService,
+    private readonly whiteboardRecentsService: WhiteboardRecentsService,
   ) {}
 
   @ApiOperation({
@@ -317,6 +319,85 @@ export class WhiteboardController {
   async deleteSample(@Param("id") id: string, @Query("userId") userId: string) {
     if (!userId?.trim()) throw new BadRequestException("userId is required");
     return this.whiteboardSamplesService.delete(id, userId);
+  }
+
+  @ApiOperation({ summary: "List recently used whiteboard images (newest first, max 50)" })
+  @ApiQuery({ name: "userId", required: true })
+  @ApiQuery({ name: "limit", required: false })
+  @Public()
+  @Get("recents")
+  async listRecents(@Query("userId") userId: string, @Query("limit") limit?: string) {
+    if (!userId?.trim()) throw new BadRequestException("userId is required");
+    return this.whiteboardRecentsService.list(userId, Number(limit) || 50);
+  }
+
+  @ApiOperation({ summary: "Upload an image into recents (stored on BE disk + DB)" })
+  @ApiConsumes("multipart/form-data")
+  @ApiQuery({ name: "userId", required: true })
+  @ApiBody({
+    schema: { type: "object", properties: { file: { type: "string", format: "binary" } }, required: ["file"] },
+  })
+  @Public()
+  @Post("recents")
+  @UseInterceptors(
+    FileInterceptor("file", {
+      storage: memoryStorage(),
+      limits: { fileSize: Number(process.env.WHITEBOARD_RECENT_MAX_BYTES ?? 12_000_000) },
+    }),
+  )
+  async uploadRecent(
+    @UploadedFile() file: Express.Multer.File,
+    @Query("userId") userId: string,
+  ) {
+    if (!userId?.trim()) throw new BadRequestException("userId is required");
+    if (!file) throw new BadRequestException("file is required");
+    return this.whiteboardRecentsService.upload(userId, file);
+  }
+
+  @ApiOperation({ summary: "Bump last-used timestamp for a recent image" })
+  @ApiQuery({ name: "userId", required: true })
+  @Public()
+  @Post("recents/:id/touch")
+  async touchRecent(@Param("id") id: string, @Query("userId") userId: string) {
+    if (!userId?.trim()) throw new BadRequestException("userId is required");
+    return this.whiteboardRecentsService.touch(id, userId);
+  }
+
+  @ApiOperation({ summary: "Stream a recent image" })
+  @ApiQuery({ name: "userId", required: true })
+  @Public()
+  @Get("recents/:id")
+  async getRecent(
+    @Param("id") id: string,
+    @Query("userId") userId: string,
+    @Res() res: Response,
+  ) {
+    if (!userId?.trim()) throw new BadRequestException("userId is required");
+    const filePath = await this.whiteboardRecentsService.resolveOwnedPath(id, userId);
+    const ext = extname(filePath).toLowerCase();
+    const contentType =
+      ext === ".svg" ? "image/svg+xml" : IMAGE_CONTENT_TYPE[ext] ?? "application/octet-stream";
+    res.setHeader("Content-Type", contentType);
+    res.setHeader("Cache-Control", "private, max-age=3600");
+    return createReadStream(filePath).pipe(res);
+  }
+
+  @ApiOperation({ summary: "Delete one recent image" })
+  @ApiQuery({ name: "userId", required: true })
+  @Public()
+  @Delete("recents/:id")
+  async deleteRecent(@Param("id") id: string, @Query("userId") userId: string) {
+    if (!userId?.trim()) throw new BadRequestException("userId is required");
+    return this.whiteboardRecentsService.delete(id, userId);
+  }
+
+  @ApiOperation({ summary: "Clear all recent images for a user (DB + disk)" })
+  @ApiQuery({ name: "userId", required: true })
+  @Public()
+  @Delete("recents")
+  async clearRecents(@Query("userId") userId: string) {
+    if (!userId?.trim()) throw new BadRequestException("userId is required");
+    return this.whiteboardRecentsService.clearAll(userId);
   }
 
   @ApiOperation({ summary: "Upload custom hand image for whiteboard render" })

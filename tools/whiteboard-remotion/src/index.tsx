@@ -27,8 +27,9 @@ const defaultProps: WhiteboardCompositionProps = {
     objectPaths: [],
   },
   audioCues: [],
-  handImageDataUrl: null,
-  cameraPlan: null,
+    handImageDataUrl: null,
+    objectLayerSourceDataUrls: {},
+    cameraPlan: null,
 };
 
 export const RemotionRoot: React.FC = () => {

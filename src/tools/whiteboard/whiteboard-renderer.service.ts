@@ -60,6 +60,7 @@ export class WhiteboardRendererService {
     const sourceImageDataUrl = `data:${mimeType};base64,${imageBuffer.toString("base64")}`;
 
     const handImageDataUrl = this.resolveHandImageDataUrl(input);
+    const objectLayerSourceDataUrls = this.resolveObjectLayerSourceDataUrls(input);
 
     const fps = input.pathPlan.fps;
     const audioCues = this.buildAudioCues(input);
@@ -80,6 +81,7 @@ export class WhiteboardRendererService {
       },
       audioCues,
       handImageDataUrl,
+      objectLayerSourceDataUrls,
       cameraPlan: input.cameraPlan ?? null,
     };
 
@@ -145,6 +147,28 @@ export class WhiteboardRendererService {
       }
     }
     return null;
+  }
+
+  private resolveObjectLayerSourceDataUrls(
+    input: WhiteboardRenderInput,
+  ): Record<string, string> {
+    const raw = input.engineConfig.objectLayerSourcePaths;
+    if (!raw || typeof raw !== "object") return {};
+
+    const out: Record<string, string> = {};
+    for (const [objectId, filePath] of Object.entries(raw as Record<string, unknown>)) {
+      const path = String(filePath ?? "").trim();
+      if (!objectId || !path || !existsSync(path)) continue;
+      try {
+        const buf = readFileSync(path);
+        out[objectId] = `data:image/png;base64,${buf.toString("base64")}`;
+      } catch (error) {
+        this.logger.warn(
+          `[${input.historyId}] Failed reading layer source ${objectId}: ${String(error)}`,
+        );
+      }
+    }
+    return out;
   }
 
   private buildAudioCues(input: WhiteboardRenderInput): WhiteboardAudioCue[] {

@@ -11,7 +11,7 @@ export type WhiteboardVoiceConfig = {
   voiceId?: string;
   pipelineRefWav?: string;
   cloneRefText?: string;
-  ttsEngine?: "omnivoice";
+  ttsEngine?: "omnivoice" | "voxcpm2";
   speed?: number;
 };
 
@@ -110,7 +110,7 @@ export class WhiteboardVoiceService {
         userId: opts.userId,
         text,
         outWav,
-        ttsEngine: "omnivoice",
+        ttsEngine: voice.ttsEngine === "voxcpm2" ? "voxcpm2" : "omnivoice",
         voiceMode: voice.voiceMode,
         voiceId: voice.voiceId,
         pipelineRefWav: voice.pipelineRefWav,

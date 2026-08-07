@@ -46,6 +46,7 @@ export interface PathPoint {
 export interface ObjectPath {
   objectId: string;
   bbox: [number, number, number, number];
+  order?: number;
   revealStyle?: string;
   drawPoints: PathPoint[];
   drawDurationSec: number;
@@ -86,6 +87,8 @@ export interface WhiteboardCompositionProps {
   audioCues?: WhiteboardAudioCue[];
   /** Optional custom hand image as data URL; falls back to bundled static hand. */
   handImageDataUrl?: string | null;
+  /** Per-object isolated layer PNGs for correct overlap z-order. */
+  objectLayerSourceDataUrls?: Record<string, string>;
   /** Optional camera zoom keyframes (view rect over time). */
   cameraPlan?: WhiteboardCameraPlan | null;
 }
@@ -540,12 +543,14 @@ export const WhiteboardComposition: React.FC<WhiteboardCompositionProps> = ({
   pathPlan,
   audioCues = [],
   handImageDataUrl = null,
+  objectLayerSourceDataUrls = {},
   cameraPlan = null,
 }) => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const sourceImgRef = useRef<HTMLImageElement | null>(null);
+  const layerImgRef = useRef<Map<string, HTMLImageElement>>(new Map());
   const handImgRef = useRef<HTMLImageElement | null>(null);
   const [assetsReady, setAssetsReady] = useState(false);
   const [handle] = useState(() => delayRender("Loading whiteboard assets"));
@@ -575,11 +580,27 @@ export const WhiteboardComposition: React.FC<WhiteboardCompositionProps> = ({
       ? loadImage(sourceImageDataUrl)
       : Promise.resolve(null);
 
-    Promise.all([loadSource, loadHand()])
-      .then(([source, hand]) => {
+    const loadLayerSources = async (): Promise<Map<string, HTMLImageElement>> => {
+      const entries = Object.entries(objectLayerSourceDataUrls ?? {});
+      const loaded = await Promise.all(
+        entries.map(async ([objectId, src]) => {
+          try {
+            const img = await loadImage(src);
+            return [objectId, img] as const;
+          } catch {
+            return null;
+          }
+        }),
+      );
+      return new Map(loaded.filter(Boolean) as Array<readonly [string, HTMLImageElement]>);
+    };
+
+    Promise.all([loadSource, loadHand(), loadLayerSources()])
+      .then(([source, hand, layerSources]) => {
         if (cancelled) return;
         sourceImgRef.current = source;
         handImgRef.current = hand;
+        layerImgRef.current = layerSources;
         setAssetsReady(true);
         continueRender(handle);
       })
@@ -591,7 +612,7 @@ export const WhiteboardComposition: React.FC<WhiteboardCompositionProps> = ({
       cancelled = true;
       continueRender(handle);
     };
-  }, [sourceImageDataUrl, handImageDataUrl, handle]);
+  }, [sourceImageDataUrl, handImageDataUrl, objectLayerSourceDataUrls, handle]);
 
   const renderFrame = useCallback(() => {
     const canvas = canvasRef.current;
@@ -599,28 +620,37 @@ export const WhiteboardComposition: React.FC<WhiteboardCompositionProps> = ({
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    const source = sourceImgRef.current;
+    const compositeSource = sourceImgRef.current;
     const tSec = frame / fps;
     const states = computeObjectStates(pathPlan, tSec);
     const view = interpolateCameraBbox(cameraPlan, tSec, imageWidth, imageHeight);
+
+    const resolveSource = (state: ObjectFrameState): HTMLImageElement | null => {
+      const layerSource = layerImgRef.current.get(state.op.objectId);
+      return layerSource ?? compositeSource;
+    };
+
+    const drawOrder = [...states].sort(
+      (a, b) => (a.op.order ?? 0) - (b.op.order ?? 0),
+    );
 
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.fillStyle = "#ffffff";
     ctx.fillRect(0, 0, imageWidth, imageHeight);
     applyCameraTransform(ctx, view, imageWidth, imageHeight);
 
-    if (source) {
-      for (const state of states) {
-        if (state.progress <= 0 && state.phase !== "drawing") continue;
-        const style = state.op.revealStyle;
-        if (style === "svg_stroke_fill" && state.op.strokePaths?.length) {
-          drawSvgStrokeFill(ctx, source, state);
-        } else if (isEffectStyle(style)) {
-          drawEffectReveal(ctx, source, state);
-        } else {
-          // Hand styles (and legacy missing style) use brush reveal.
-          drawHandReveal(ctx, source, state, pathPlan.brushSize);
-        }
+    for (const state of drawOrder) {
+      if (state.progress <= 0 && state.phase !== "drawing") continue;
+      const source = resolveSource(state);
+      if (!source) continue;
+      const style = state.op.revealStyle;
+      if (style === "svg_stroke_fill" && state.op.strokePaths?.length) {
+        drawSvgStrokeFill(ctx, source, state);
+      } else if (isEffectStyle(style)) {
+        drawEffectReveal(ctx, source, state);
+      } else {
+        // Hand styles (and legacy missing style) use brush reveal.
+        drawHandReveal(ctx, source, state, pathPlan.brushSize);
       }
     }
 
@@ -646,7 +676,7 @@ export const WhiteboardComposition: React.FC<WhiteboardCompositionProps> = ({
     }
 
     ctx.setTransform(1, 0, 0, 1, 0, 0);
-  }, [frame, fps, pathPlan, imageWidth, imageHeight, assetsReady, cameraPlan]);
+  }, [frame, fps, pathPlan, imageWidth, imageHeight, assetsReady, cameraPlan, objectLayerSourceDataUrls]);
 
   useEffect(() => {
     renderFrame();

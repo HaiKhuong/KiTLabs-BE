@@ -1,6 +1,7 @@
 import { Logger } from "@nestjs/common";
 import { Processor, WorkerHost } from "@nestjs/bullmq";
 import { Job, UnrecoverableError } from "bullmq";
+import { join } from "path";
 
 import { ToolsRealtimeGateway } from "../realtime/tools-realtime.gateway";
 import type { WhiteboardHistory } from "./whiteboard-history.entity";
@@ -192,7 +193,8 @@ export class WhiteboardProcessor extends WorkerHost {
     nodeId: string,
   ): Promise<void> {
     await this.whiteboardService.updateRuntimeMessage(id, "[MERGE] Ghép video bằng FFmpeg…");
-    const { sourceHistoryIds, transitions } = this.whiteboardService.getMergeJobConfig(_history);
+    const { sourceHistoryIds, transitions, summary } =
+      this.whiteboardService.getMergeJobConfig(_history);
     const inputPaths: string[] = [];
     for (const sourceId of sourceHistoryIds) {
       const source = await this.whiteboardService.getById(sourceId);
@@ -203,11 +205,27 @@ export class WhiteboardProcessor extends WorkerHost {
     }
 
     const workDir = this.whiteboardService.prepareWorkDir(id);
+    const mergeTransitions = [...transitions];
+
+    if (summary?.enabled && summary.imagePath) {
+      const summaryVideoPath = join(workDir, "summary.mp4");
+      await this.mergeService.stillImageToVideo({
+        imagePath: summary.imagePath,
+        outputPath: summaryVideoPath,
+        durationSec: summary.durationSec,
+        width: _history.imageWidth ?? 1920,
+        height: _history.imageHeight ?? 1080,
+      });
+      inputPaths.push(summaryVideoPath);
+      mergeTransitions.push(summary.transition);
+      this.logger.log(`[${id}] Appended summary outro (${summary.durationSec}s)`);
+    }
+
     this.logger.log(`[${id}] Merging ${inputPaths.length} clips`);
     const resultPath = await this.mergeService.mergeWithSlides({
       workDir,
       inputPaths,
-      transitions,
+      transitions: mergeTransitions,
     });
 
     await this.whiteboardService.processCompleted(id, resultPath);

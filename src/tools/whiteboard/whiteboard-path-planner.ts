@@ -16,6 +16,8 @@ export interface ObjectPath {
   objectId: string;
   type: WhiteboardObject["type"];
   bbox: [number, number, number, number];
+  /** Layer stack order — lower values are drawn first (behind). */
+  order: number;
   /** Reveal style used by Remotion (hand path or effect). */
   revealStyle: WhiteboardRevealStyle;
   /** Points that the brush travels along while erasing the mask (draw phase). Empty for effects. */
@@ -118,6 +120,7 @@ export class WhiteboardPathPlanner {
           objectId: obj.id,
           type: obj.type,
           bbox: obj.bbox,
+          order: obj.order,
           revealStyle,
           drawPoints,
           drawDurationSec,
@@ -155,6 +158,7 @@ export class WhiteboardPathPlanner {
         objectId: obj.id,
         type: obj.type,
         bbox: obj.bbox,
+        order: obj.order,
         revealStyle,
         drawPoints,
         drawDurationSec,

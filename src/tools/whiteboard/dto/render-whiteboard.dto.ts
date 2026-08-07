@@ -40,10 +40,10 @@ export class WhiteboardVoiceConfigDto {
   @MaxLength(4_000)
   cloneRefText?: string;
 
-  @ApiPropertyOptional({ enum: ["omnivoice"], default: "omnivoice" })
+  @ApiPropertyOptional({ enum: ["omnivoice", "voxcpm2"], default: "omnivoice" })
   @IsOptional()
-  @IsIn(["omnivoice"])
-  ttsEngine?: "omnivoice";
+  @IsIn(["omnivoice", "voxcpm2"])
+  ttsEngine?: "omnivoice" | "voxcpm2";
 
   @ApiPropertyOptional({ minimum: 0.5, maximum: 2 })
   @IsOptional()
@@ -147,6 +147,16 @@ export class WhiteboardEngineConfigDto {
   @ValidateNested({ each: true })
   @Type(() => WhiteboardCameraZoomGroupDto)
   cameraZooms?: WhiteboardCameraZoomGroupDto[];
+
+  @ApiPropertyOptional({
+    description: "Recent-image ids used on this scene (copied into history for audit)",
+    type: [String],
+  })
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(40)
+  @IsString({ each: true })
+  selectedRecentIds?: string[];
 }
 
 export class WhiteboardObjectStoryboardDto {
