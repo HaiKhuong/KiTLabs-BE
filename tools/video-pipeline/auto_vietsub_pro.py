@@ -81,8 +81,11 @@ OMNIVOICE_REF_TEXT = "Chào bạn, tôi đang thực hiện một thử nghiệm
 OMNIVOICE_DEVICE_MAP = ""  # rỗng = tự chọn cuda:0 hoặc cpu
 OMNIVOICE_DTYPE = "float16"  # float16 | float32 | bfloat16
 OMNIVOICE_LANGUAGE = "vietnamese"
-OMNIVOICE_NUM_STEP = 8
+OMNIVOICE_NUM_STEP = 32
 OMNIVOICE_GUIDANCE_SCALE = 2.0
+OMNIVOICE_DENOISE = True
+OMNIVOICE_PREPROCESS_PROMPT = True
+OMNIVOICE_POSTPROCESS_OUTPUT = True
 OMNIVOICE_SEED = 42  # None = random, số nguyên = deterministic (giúp reproducible + ổn định tone giọng)
 OMNIVOICE_NORMALIZE_TEXT = False
 OMNIVOICE_TRIM_TRAILING_SILENCE = True
@@ -98,6 +101,22 @@ VOXCPM2_NORMALIZE_TEXT = False
 VOXCPM2_LOAD_DENOISER = False
 VOXCPM2_OPTIMIZE = False
 VOXCPM2_TRIM_TRAILING_SILENCE = True
+
+
+def _resolve_omnivoice_ref_wav_arg(raw: str) -> str:
+    """Resolve ref audio: absolute path, or relative under voice/ (incl. {userId}/file)."""
+    name = str(raw or "").strip()
+    if not name:
+        return str(Path(str(OMNIVOICE_REF_WAV)).expanduser())
+    p = Path(name).expanduser()
+    if not p.is_absolute():
+        p = SCRIPT_DIR / "voice" / name
+    p = p.resolve()
+    if not p.is_file():
+        raise FileNotFoundError(f"OmniVoice ref wav not found: {p}")
+    return str(p)
+
+
 STEP3_AUTO_RATE_ENABLED = True
 TRANSLATION_CONTEXT = ""  # Custom translation context for Gemini prompt
 STEP3_AUTO_RATE_TRIGGER_CHARS_PER_SEC = 14.0
@@ -2206,6 +2225,9 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
                     or "vietnamese",
                     num_step=ns if ns > 0 else None,
                     guidance_scale=gs if ns > 0 else None,
+                    denoise=bool(OMNIVOICE_DENOISE),
+                    preprocess_prompt=bool(OMNIVOICE_PREPROCESS_PROMPT),
+                    postprocess_output=bool(OMNIVOICE_POSTPROCESS_OUTPUT),
                     seed=OMNIVOICE_SEED if OMNIVOICE_SEED is not None else None,
                 )
             elif use_voxcpm2:
@@ -3437,14 +3459,22 @@ def parse_cli_args():
         "--omnivoice-ref-wav",
         default="",
         help=(
-            "Tên file giọng mẫu đặt trong thư mục voice/ (vd: sample.wav). "
-            "Dùng chung cho OmniVoice và VoxCPM2 (OMNIVOICE_REF_WAV)."
+            "Giọng mẫu OmniVoice/VoxCPM2: absolute path, hoặc đường dẫn tương đối "
+            "dưới voice/ (vd: sample.wav hoặc {userId}/clone.wav)."
         ),
     )
     parser.add_argument(
         "--omnivoice-ref-text",
         default="",
         help="Transcript khớp file giọng mẫu (OmniVoice / VoxCPM2 Ultimate Cloning).",
+    )
+    parser.add_argument(
+        "--omnivoice-language",
+        default="",
+        help=(
+            "Ngôn ngữ TTS cho OmniVoice/VoxCPM2: "
+            "vietnamese | english | korean | japanese."
+        ),
     )
     parser.add_argument(
         "--auto-speed",
@@ -3593,6 +3623,8 @@ def apply_cli_config(args):
     global EDGE_TTS_PITCH
     global OMNIVOICE_REF_WAV
     global OMNIVOICE_REF_TEXT
+    global OMNIVOICE_LANGUAGE
+    global VOXCPM2_LANGUAGE
     global STEP1_MIN_SILENCE_MS
     global STEP1_MIN_SPEECH_MS
     global STEP1_SPEECH_PAD_MS
@@ -3703,10 +3735,14 @@ def apply_cli_config(args):
     STEP3_TTS_ENGINE = str(args.step3_tts_engine or "edge").strip().lower() or "edge"
     omnivoice_ref_wav_name = str(getattr(args, "omnivoice_ref_wav", "") or "").strip()
     if omnivoice_ref_wav_name:
-        OMNIVOICE_REF_WAV = str(SCRIPT_DIR / "voice" / omnivoice_ref_wav_name)
+        OMNIVOICE_REF_WAV = _resolve_omnivoice_ref_wav_arg(omnivoice_ref_wav_name)
     omnivoice_ref_text = str(getattr(args, "omnivoice_ref_text", "") or "").strip()
     if omnivoice_ref_text:
         OMNIVOICE_REF_TEXT = omnivoice_ref_text
+    omnivoice_language = str(getattr(args, "omnivoice_language", "") or "").strip()
+    if omnivoice_language:
+        OMNIVOICE_LANGUAGE = omnivoice_language
+        VOXCPM2_LANGUAGE = omnivoice_language
     STEP3_AUTO_RATE_ENABLED = args.auto_speed == "on"
     STEP3_AUTO_RATE_TRIGGER_CHARS_PER_SEC = float(args.step3_auto_rate_trigger_cps)
     STEP3_AUTO_RATE_BONUS_PERCENT = int(args.step3_auto_rate_bonus_percent)

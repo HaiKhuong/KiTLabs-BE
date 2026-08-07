@@ -271,6 +271,24 @@ def run_srt_timeline(payload: dict[str, Any]) -> dict[str, Any]:
         num_step = payload.get("num_step")
         guidance_scale = payload.get("guidance_scale")
 
+        def _env_flag(name: str, default: bool = True) -> bool:
+            raw = os.getenv(name)
+            if raw is None or str(raw).strip() == "":
+                return default
+            return str(raw).strip().lower() in ("1", "true", "yes", "on")
+
+        def _flag(key: str, env_name: str, default: bool = True) -> bool:
+            if key in payload and payload.get(key) is not None and str(payload.get(key)).strip() != "":
+                val = payload.get(key)
+                if isinstance(val, bool):
+                    return val
+                return str(val).strip().lower() in ("1", "true", "yes", "on")
+            return _env_flag(env_name, default)
+
+        denoise = _flag("denoise", "OMNIVOICE_DENOISE", True)
+        preprocess_prompt = _flag("preprocess_prompt", "OMNIVOICE_PREPROCESS_PROMPT", True)
+        postprocess_output = _flag("postprocess_output", "OMNIVOICE_POSTPROCESS_OUTPUT", True)
+
         def _prepare_text(raw: str) -> str:
             return prepare_omnivoice_input_text(raw)
 
@@ -286,6 +304,9 @@ def run_srt_timeline(payload: dict[str, Any]) -> dict[str, Any]:
                 language=language,
                 num_step=int(num_step) if num_step not in (None, "") else None,
                 guidance_scale=float(guidance_scale) if guidance_scale not in (None, "") else None,
+                denoise=denoise,
+                preprocess_prompt=preprocess_prompt,
+                postprocess_output=postprocess_output,
                 seed=int(seed) if seed not in (None, "") else None,
             )
 

@@ -1,8 +1,8 @@
 """
-OmniVoice Vietnamese TTS (splendor1811/omnivoice-vietnamese) — dùng cho Step3 trong auto_vietsub_pro.
+OmniVoice TTS (k2-fsa/OmniVoice, package omnivoice>=0.2.1) — dùng cho Step3 trong auto_vietsub_pro.
 
-Cài: pip install omnivoice
-Tham khảo: https://huggingface.co/splendor1811/omnivoice-vietnamese
+Cài: pip install "omnivoice>=0.2.1"
+Tham khảo: https://huggingface.co/k2-fsa/OmniVoice
 
 ⚠️ QUAN TRỌNG - VOICE CONSISTENCY:
 - Module này sử dụng CACHING để đảm bảo tone giọng ổn định giữa các câu
@@ -34,9 +34,16 @@ import pipeline_cache  # noqa: F401 — HF cache → tools/video-pipeline/cache
 # Cache theo (model_id, device_map, dtype_str)
 _session_model: Optional[Any] = None
 _session_model_key: Optional[Tuple[str, str, str]] = None
-# Cache prompt theo (resolved ref_audio, ref_text)
+# Cache prompt theo (resolved ref_audio, ref_text, preprocess_prompt)
 _session_prompt: Optional[Any] = None
-_session_prompt_key: Optional[Tuple[str, str]] = None
+_session_prompt_key: Optional[Tuple[str, str, bool]] = None
+
+# Defaults khớp OmniVoice demo / OmniVoiceGenerationConfig upstream (0.2.x)
+DEFAULT_OMNIVOICE_NUM_STEP = 32
+DEFAULT_OMNIVOICE_GUIDANCE_SCALE = 2.0
+DEFAULT_OMNIVOICE_DENOISE = True
+DEFAULT_OMNIVOICE_PREPROCESS_PROMPT = True
+DEFAULT_OMNIVOICE_POSTPROCESS_OUTPUT = True
 
 SUPPORTED_OMNIVOICE_LANGUAGES = ("vietnamese", "english", "korean", "japanese")
 
@@ -218,8 +225,8 @@ def _get_model(*, model_id: str, device_map: str, dtype_str: str):
         from omnivoice import OmniVoice
     except ImportError as e:
         raise RuntimeError(
-            "OmniVoice: cần gói omnivoice (pip install omnivoice). "
-            "Xem https://huggingface.co/splendor1811/omnivoice-vietnamese"
+            "OmniVoice: cần gói omnivoice>=0.2.1 (pip install 'omnivoice>=0.2.1'). "
+            "Xem https://huggingface.co/k2-fsa/OmniVoice"
         ) from e
 
     mid = str(model_id or "").strip()
@@ -280,6 +287,7 @@ def ensure_voice_clone_prompt(
     model_id: str,
     device_map: str,
     dtype_str: str,
+    preprocess_prompt: bool = DEFAULT_OMNIVOICE_PREPROCESS_PROMPT,
 ) -> Any:
     """
     Tạo / cache voice_clone_prompt từ file giọng mẫu + transcript.
@@ -295,9 +303,9 @@ def ensure_voice_clone_prompt(
     - Neural network có tính stochastic → embedding hơi khác mỗi lần
     - Dẫn đến tone giọng "nhảy" giữa các câu
     
-    Cache key: (resolved ref_audio path, ref_text)
-    - Chỉ tạo lại khi đổi file audio mẫu hoặc transcript
-    - Cùng file audio + transcript → tái sử dụng prompt đã cache
+    Cache key: (resolved ref_audio path, ref_text, preprocess_prompt)
+    - Chỉ tạo lại khi đổi file audio mẫu, transcript hoặc preprocess flag
+    - Cùng file audio + transcript + preprocess → tái sử dụng prompt đã cache
     
     Args:
         ref_audio: Đường dẫn file audio mẫu (nên là transcript khớp với audio)
@@ -305,6 +313,7 @@ def ensure_voice_clone_prompt(
         model_id: HuggingFace model ID
         device_map: Device để chạy model
         dtype_str: Data type của model
+        preprocess_prompt: Trim silence / punctuation trên ref (default True)
         
     Returns:
         Cached voice clone prompt object (dùng cho model.generate())
@@ -314,12 +323,21 @@ def ensure_voice_clone_prompt(
     if not Path(ra).is_file():
         raise FileNotFoundError(f"OmniVoice: không tìm thấy ref_audio: {ra}")
     rt = str(ref_text or "")
-    pk = (ra, rt)
+    pp = bool(preprocess_prompt)
+    pk = (ra, rt, pp)
     if _session_prompt is not None and _session_prompt_key == pk:
         return _session_prompt
 
     model = _get_model(model_id=model_id, device_map=device_map, dtype_str=dtype_str)
-    _session_prompt = model.create_voice_clone_prompt(ref_audio=ra, ref_text=rt)
+    try:
+        _session_prompt = model.create_voice_clone_prompt(
+            ref_audio=ra,
+            ref_text=rt,
+            preprocess_prompt=pp,
+        )
+    except TypeError:
+        # Version cũ không nhận preprocess_prompt
+        _session_prompt = model.create_voice_clone_prompt(ref_audio=ra, ref_text=rt)
     _session_prompt_key = pk
     return _session_prompt
 
@@ -334,8 +352,11 @@ def synthesize_to_wav(
     device_map: str,
     dtype_str: str = "float16",
     language: str | None = None,
-    num_step: Optional[int] = 8,
-    guidance_scale: Optional[float] = 2.0,
+    num_step: Optional[int] = DEFAULT_OMNIVOICE_NUM_STEP,
+    guidance_scale: Optional[float] = DEFAULT_OMNIVOICE_GUIDANCE_SCALE,
+    denoise: bool = DEFAULT_OMNIVOICE_DENOISE,
+    preprocess_prompt: bool = DEFAULT_OMNIVOICE_PREPROCESS_PROMPT,
+    postprocess_output: bool = DEFAULT_OMNIVOICE_POSTPROCESS_OUTPUT,
     seed: Optional[int] = None,
 ) -> None:
     """
@@ -353,8 +374,11 @@ def synthesize_to_wav(
         device_map: Device để chạy model (cuda:0, cpu, etc.)
         dtype_str: Data type (float16, bfloat16, float32)
         language: Ngôn ngữ bắt buộc — vietnamese | english | korean | japanese
-        num_step: Số bước generation (càng cao càng chất lượng nhưng chậm hơn)
-        guidance_scale: Độ mạnh của guidance (càng cao càng sát prompt nhưng ít tự nhiên)
+        num_step: Inference steps (upstream default 32)
+        guidance_scale: CFG scale (upstream default 2.0)
+        denoise: Bật token ``<|denoise|>`` (upstream default True)
+        preprocess_prompt: Preprocess ref audio/text khi tạo clone prompt
+        postprocess_output: Trim silence / fade / pad output
         seed: Random seed để tạo output deterministic (giúp tái tạo chính xác cùng output)
     """
     try:
@@ -381,6 +405,7 @@ def synthesize_to_wav(
         raise ValueError("OmniVoice: text rỗng.")
 
     rt = str(ref_text or "").strip()
+    pp = bool(preprocess_prompt)
     
     # 🔧 FIX: Sử dụng cached voice clone prompt để đảm bảo tone giọng nhất quán
     # Thay vì truyền trực tiếp ref_audio/ref_text vào mỗi lần generate,
@@ -391,6 +416,7 @@ def synthesize_to_wav(
         model_id=model_id,
         device_map=device_map,
         dtype_str=dtype_str,
+        preprocess_prompt=pp,
     )
 
     # 🎲 Set seed cho deterministic output (nếu được chỉ định)
@@ -403,46 +429,62 @@ def synthesize_to_wav(
         text=t,
         voice_clone_prompt=voice_prompt,
         language=resolved_language,
+        denoise=bool(denoise),
+        preprocess_prompt=pp,
+        postprocess_output=bool(postprocess_output),
     )
 
+    # 0.2.x: num_step / guidance_scale nhận trực tiếp trên generate();
+    # OmniVoiceGenerationConfig vẫn hỗ trợ nếu version cũ hơn.
     if (
         num_step is not None
         and guidance_scale is not None
         and int(num_step) > 0
     ):
-        try:
-            from omnivoice import OmniVoiceGenerationConfig
-
-            gen_kw["generation_config"] = OmniVoiceGenerationConfig(
-                num_step=int(num_step),
-                guidance_scale=float(guidance_scale),
-            )
-        except Exception:
-            pass
+        gen_kw["num_step"] = int(num_step)
+        gen_kw["guidance_scale"] = float(guidance_scale)
 
     try:
         audio = model.generate(**gen_kw)
     except TypeError:
-        # Fallback nếu version không hỗ trợ voice_clone_prompt parameter
-        # hoặc không nhận language/generation_config
+        # Fallback: bỏ kwargs mới / dùng generation_config / slim prompt
         try:
-            # Thử với voice_clone_prompt đơn giản hơn
-            slim_kw = {"text": t, "voice_clone_prompt": voice_prompt}
-            audio = model.generate(**slim_kw)
+            cfg_kw = {
+                "text": t,
+                "voice_clone_prompt": voice_prompt,
+                "language": resolved_language,
+            }
+            if "num_step" in gen_kw:
+                try:
+                    from omnivoice import OmniVoiceGenerationConfig
+
+                    cfg_kw["generation_config"] = OmniVoiceGenerationConfig(
+                        num_step=int(gen_kw["num_step"]),
+                        guidance_scale=float(gen_kw["guidance_scale"]),
+                        denoise=bool(denoise),
+                        preprocess_prompt=pp,
+                        postprocess_output=bool(postprocess_output),
+                    )
+                except Exception:
+                    pass
+            audio = model.generate(**cfg_kw)
         except TypeError:
-            # Fallback cuối cùng: dùng ref_audio/ref_text trực tiếp (cách cũ, không ổn định)
-            # ⚠️ WARNING: Cách này có thể gây tone giọng không nhất quán giữa các câu
-            import warnings
-            warnings.warn(
-                "OmniVoice: Version này không hỗ trợ voice_clone_prompt. "
-                "Đang sử dụng ref_audio trực tiếp - có thể gây tone giọng không ổn định. "
-                "Nên update lên version mới hơn.",
-                UserWarning,
-            )
-            slim_kw = {"text": t, "ref_audio": ref_audio_path}
-            if rt:
-                slim_kw["ref_text"] = rt
-            audio = model.generate(**slim_kw)
+            try:
+                slim_kw = {"text": t, "voice_clone_prompt": voice_prompt}
+                audio = model.generate(**slim_kw)
+            except TypeError:
+                # Fallback cuối: ref_audio trực tiếp (tone có thể kém ổn định)
+                import warnings
+
+                warnings.warn(
+                    "OmniVoice: Version này không hỗ trợ voice_clone_prompt. "
+                    "Đang dùng ref_audio trực tiếp — nên nâng lên omnivoice>=0.2.1.",
+                    UserWarning,
+                )
+                slim_kw = {"text": t, "ref_audio": ref_audio_path}
+                if rt:
+                    slim_kw["ref_text"] = rt
+                audio = model.generate(**slim_kw)
 
     # Theo mẫu official: audio là list[np.ndarray] shape (T,) at 24kHz.
     if isinstance(audio, (list, tuple)) and len(audio) > 0:

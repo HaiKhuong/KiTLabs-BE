@@ -7,6 +7,7 @@ import { basename, dirname, extname, isAbsolute, join, resolve, sep } from "path
 import { Repository } from "typeorm";
 
 import { CreditHistory } from "../credits/credit-history.entity";
+import { resolveOmnivoiceLanguageValue } from "../audio/audio.constants";
 import { AudioService } from "../audio/audio.service";
 import { LogsService } from "../logs/logs.service";
 import { NotificationsService } from "../notifications/notifications.service";
@@ -358,6 +359,12 @@ export class TranslateService {
     return normalized;
   }
 
+  /**
+   * Validate giọng mẫu OmniVoice/VoxCPM2 và rewrite engineConfig:
+   * - omnivoiceRefWav → absolute path (clone nằm dưới voice/{userId}/)
+   * - omnivoiceRefText → bổ sung từ DB/sidecar nếu thiếu
+   * - omnivoiceLanguage → từ FE, hoặc DB clone, hoặc mặc định vietnamese (preset)
+   */
   private async validateOmnivoiceConfigForTranslate(
     steps: number[],
     engineConfig: TranslateEngineConfigDto | null | undefined,
@@ -382,7 +389,44 @@ export class TranslateService {
       this.pickConfigValue(config, ["omnivoiceRefText", "omnivoice_ref_text"]) ?? "",
     ).trim();
 
-    await this.audioService.assertPipelineVoiceReady(refWav, refText || undefined, userId);
+    const verified = await this.audioService.assertPipelineVoiceReady(
+      refWav,
+      refText || undefined,
+      userId,
+    );
+
+    const absolutePath = verified.absolutePath.replace(/\\/g, "/");
+    config.omnivoiceRefWav = absolutePath;
+    if ("omnivoice_ref_wav" in config) {
+      config.omnivoice_ref_wav = absolutePath;
+    }
+
+    if (!refText && verified.refText) {
+      config.omnivoiceRefText = verified.refText;
+      if ("omnivoice_ref_text" in config) {
+        config.omnivoice_ref_text = verified.refText;
+      }
+    }
+
+    const fromConfig = String(
+      this.pickConfigValue(config, ["omnivoiceLanguage", "omnivoice_language"]) ?? "",
+    ).trim();
+    let language: string;
+    try {
+      if (fromConfig) {
+        language = resolveOmnivoiceLanguageValue(fromConfig);
+      } else if (verified.omnivoiceLanguage?.trim()) {
+        language = resolveOmnivoiceLanguageValue(verified.omnivoiceLanguage);
+      } else {
+        language = "vietnamese";
+      }
+    } catch (err) {
+      throw new BadRequestException(err instanceof Error ? err.message : "Invalid omnivoice language");
+    }
+    config.omnivoiceLanguage = language;
+    if ("omnivoice_language" in config) {
+      config.omnivoice_language = language;
+    }
   }
 
   private pickConfigValue(engineConfig: Record<string, unknown>, keys: string[]): unknown {

@@ -134,6 +134,11 @@ const OPTION_MAPPINGS: Array<{
     keys: ["omnivoiceRefText", "omnivoice_ref_text"],
     allowedTypes: ["string"],
   },
+  {
+    cliFlag: "--omnivoice-language",
+    keys: ["omnivoiceLanguage", "omnivoice_language"],
+    allowedTypes: ["string"],
+  },
   { cliFlag: "--auto-speed", keys: ["autoSpeed", "auto_speed"], allowedTypes: ["string"] },
   {
     cliFlag: "--step3-auto-rate-trigger-cps",

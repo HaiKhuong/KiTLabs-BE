@@ -126,6 +126,29 @@ export class AudioService {
     return key === "voxcpm2" ? "voxcpm2" : "omnivoice";
   }
 
+  private resolveEnvFlag(name: string, defaultValue = true): boolean {
+    const raw = (process.env[name] ?? "").trim().toLowerCase();
+    if (!raw) return defaultValue;
+    return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
+  }
+
+  /** OmniVoice generate() knobs — khớp demo: steps=32, denoise/preprocess/postprocess on, CFG=2. */
+  private resolveOmnivoiceGenerateOpts(): {
+    num_step: number;
+    guidance_scale: number;
+    denoise: boolean;
+    preprocess_prompt: boolean;
+    postprocess_output: boolean;
+  } {
+    return {
+      num_step: Number(process.env.OMNIVOICE_NUM_STEP ?? 32),
+      guidance_scale: Number(process.env.OMNIVOICE_GUIDANCE_SCALE ?? 2),
+      denoise: this.resolveEnvFlag("OMNIVOICE_DENOISE", true),
+      preprocess_prompt: this.resolveEnvFlag("OMNIVOICE_PREPROCESS_PROMPT", true),
+      postprocess_output: this.resolveEnvFlag("OMNIVOICE_POSTPROCESS_OUTPUT", true),
+    };
+  }
+
   private resolveCmdTimeoutMs(): number {
     return Number(process.env.AUDIO_CMD_TIMEOUT_MS ?? process.env.TRANSLATE_CMD_TIMEOUT_MS ?? 600_000);
   }
@@ -226,8 +249,7 @@ export class AudioService {
             device_map: (process.env.OMNIVOICE_DEVICE_MAP ?? "").trim() || "cuda:0",
             dtype_str: (process.env.OMNIVOICE_DTYPE ?? "float16").trim(),
             language,
-            num_step: Number(process.env.OMNIVOICE_NUM_STEP ?? 8),
-            guidance_scale: Number(process.env.OMNIVOICE_GUIDANCE_SCALE ?? 2),
+            ...this.resolveOmnivoiceGenerateOpts(),
             ...(seed != null ? { seed } : {}),
             ...(opts.pauseSettings ? { pause_settings: opts.pauseSettings } : {}),
             ...(opts.playbackSpeed != null && Math.abs(opts.playbackSpeed - 1) > 1e-6
@@ -351,8 +373,7 @@ export class AudioService {
             device_map: (process.env.OMNIVOICE_DEVICE_MAP ?? "").trim() || "cuda:0",
             dtype_str: (process.env.OMNIVOICE_DTYPE ?? "float16").trim(),
             language,
-            num_step: Number(process.env.OMNIVOICE_NUM_STEP ?? 8),
-            guidance_scale: Number(process.env.OMNIVOICE_GUIDANCE_SCALE ?? 2),
+            ...this.resolveOmnivoiceGenerateOpts(),
             ...(seed != null ? { seed } : {}),
             playback_speed: opts.playbackSpeed ?? 1,
             fit_to_cue: opts.fitToCue !== false,
@@ -1294,8 +1315,7 @@ export class AudioService {
             model_id: (process.env.OMNIVOICE_MODEL_ID ?? "k2-fsa/OmniVoice").trim(),
             device_map: (process.env.OMNIVOICE_DEVICE_MAP ?? "").trim() || "cuda:0",
             dtype_str: (process.env.OMNIVOICE_DTYPE ?? "float16").trim(),
-            num_step: Number(process.env.OMNIVOICE_NUM_STEP ?? 8),
-            guidance_scale: Number(process.env.OMNIVOICE_GUIDANCE_SCALE ?? 2),
+            ...this.resolveOmnivoiceGenerateOpts(),
           };
 
     const pythonBin = this.resolvePythonBin();

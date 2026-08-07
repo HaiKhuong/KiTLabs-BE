@@ -9,6 +9,14 @@ from typing import Any, Optional
 
 import pipeline_cache  # noqa: F401 — HF cache → tools/video-pipeline/cache
 
+from omnivoice_tts import (
+    DEFAULT_OMNIVOICE_DENOISE,
+    DEFAULT_OMNIVOICE_GUIDANCE_SCALE,
+    DEFAULT_OMNIVOICE_NUM_STEP,
+    DEFAULT_OMNIVOICE_POSTPROCESS_OUTPUT,
+    DEFAULT_OMNIVOICE_PREPROCESS_PROMPT,
+)
+
 
 def resolve_device_map(raw: str) -> str:
     s = str(raw or "").strip()
@@ -22,6 +30,22 @@ def resolve_device_map(raw: str) -> str:
         return "cpu"
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None or str(raw).strip() == "":
+        return default
+    return str(raw).strip().lower() in ("1", "true", "yes", "on")
+
+
+def _payload_bool(payload: dict[str, Any], key: str, default: bool) -> bool:
+    if key not in payload or payload.get(key) is None or str(payload.get(key)).strip() == "":
+        return default
+    val = payload.get(key)
+    if isinstance(val, bool):
+        return val
+    return str(val).strip().lower() in ("1", "true", "yes", "on")
+
+
 def run_synthesis(
     *,
     text: str,
@@ -32,8 +56,11 @@ def run_synthesis(
     device_map: str = "",
     dtype: str = "float16",
     language: str | None = None,
-    num_step: int = 8,
-    guidance_scale: float = 2.0,
+    num_step: int = DEFAULT_OMNIVOICE_NUM_STEP,
+    guidance_scale: float = DEFAULT_OMNIVOICE_GUIDANCE_SCALE,
+    denoise: bool = DEFAULT_OMNIVOICE_DENOISE,
+    preprocess_prompt: bool = DEFAULT_OMNIVOICE_PREPROCESS_PROMPT,
+    postprocess_output: bool = DEFAULT_OMNIVOICE_POSTPROCESS_OUTPUT,
     seed: Optional[int] = None,
 ) -> str:
     from omnivoice_tts import resolve_omnivoice_language, synthesize_to_wav
@@ -59,8 +86,15 @@ def run_synthesis(
         device_map=dev,
         dtype_str=str(dtype or "float16"),
         language=resolve_omnivoice_language(language),
-        num_step=int(num_step) if num_step is not None else 8,
-        guidance_scale=float(guidance_scale) if guidance_scale is not None else 2.0,
+        num_step=int(num_step) if num_step is not None else DEFAULT_OMNIVOICE_NUM_STEP,
+        guidance_scale=(
+            float(guidance_scale)
+            if guidance_scale is not None
+            else DEFAULT_OMNIVOICE_GUIDANCE_SCALE
+        ),
+        denoise=bool(denoise),
+        preprocess_prompt=bool(preprocess_prompt),
+        postprocess_output=bool(postprocess_output),
         seed=int(seed) if seed is not None else None,
     )
     return str(out_path.resolve())
@@ -78,7 +112,30 @@ def run_synthesis_from_payload(payload: dict[str, Any]) -> str:
         device_map=str(payload.get("device_map") or ""),
         dtype=str(payload.get("dtype") or "float16"),
         language=payload.get("language"),
-        num_step=int(payload.get("num_step") or 8),
-        guidance_scale=float(payload.get("guidance_scale") or 2.0),
+        num_step=int(
+            payload.get("num_step")
+            or os.getenv("OMNIVOICE_NUM_STEP")
+            or DEFAULT_OMNIVOICE_NUM_STEP
+        ),
+        guidance_scale=float(
+            payload.get("guidance_scale")
+            or os.getenv("OMNIVOICE_GUIDANCE_SCALE")
+            or DEFAULT_OMNIVOICE_GUIDANCE_SCALE
+        ),
+        denoise=_payload_bool(
+            payload,
+            "denoise",
+            _env_bool("OMNIVOICE_DENOISE", DEFAULT_OMNIVOICE_DENOISE),
+        ),
+        preprocess_prompt=_payload_bool(
+            payload,
+            "preprocess_prompt",
+            _env_bool("OMNIVOICE_PREPROCESS_PROMPT", DEFAULT_OMNIVOICE_PREPROCESS_PROMPT),
+        ),
+        postprocess_output=_payload_bool(
+            payload,
+            "postprocess_output",
+            _env_bool("OMNIVOICE_POSTPROCESS_OUTPUT", DEFAULT_OMNIVOICE_POSTPROCESS_OUTPUT),
+        ),
         seed=seed,
     )

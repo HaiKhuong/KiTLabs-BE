@@ -34,6 +34,13 @@ def format_edge_rate(raw: Any, default: str = "+0%") -> str:
         return default
 
 
+def _env_flag(name: str, default: bool = True) -> bool:
+    raw = os.getenv(name)
+    if raw is None or str(raw).strip() == "":
+        return default
+    return str(raw).strip().lower() in ("1", "true", "yes", "on")
+
+
 def _resolve_voice_dir() -> Path:
     raw = (os.getenv("PIPELINE_VOICE_DIR") or os.getenv("AUDIO_PIPELINE_VOICE_DIR") or "").strip()
     if raw:
@@ -155,8 +162,11 @@ def _omnivoice_tts(
         device_map=(os.getenv("OMNIVOICE_DEVICE_MAP") or "").strip() or "cuda:0",
         dtype_str=(os.getenv("OMNIVOICE_DTYPE") or "float16").strip() or "float16",
         language=resolve_omnivoice_language(language),
-        num_step=int(os.getenv("OMNIVOICE_NUM_STEP") or 8),
+        num_step=int(os.getenv("OMNIVOICE_NUM_STEP") or 32),
         guidance_scale=float(os.getenv("OMNIVOICE_GUIDANCE_SCALE") or 2),
+        denoise=_env_flag("OMNIVOICE_DENOISE", True),
+        preprocess_prompt=_env_flag("OMNIVOICE_PREPROCESS_PROMPT", True),
+        postprocess_output=_env_flag("OMNIVOICE_POSTPROCESS_OUTPUT", True),
         seed=_resolve_seed("OMNIVOICE_SEED"),
     )
 

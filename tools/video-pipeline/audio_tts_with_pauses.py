@@ -377,8 +377,11 @@ def synthesize_with_pause_settings(
     device_map: str = "cuda:0",
     dtype_str: str = "float16",
     language: str | None = None,
-    num_step: Optional[int] = 8,
+    num_step: Optional[int] = 32,
     guidance_scale: Optional[float] = 2.0,
+    denoise: Optional[bool] = True,
+    preprocess_prompt: Optional[bool] = True,
+    postprocess_output: Optional[bool] = True,
     cfg_value: Optional[float] = 2.0,
     inference_timesteps: Optional[int] = 10,
     seed: Optional[int] = None,
@@ -419,6 +422,9 @@ def synthesize_with_pause_settings(
             language=resolved_language,
             num_step=num_step,
             guidance_scale=guidance_scale,
+            denoise=True if denoise is None else bool(denoise),
+            preprocess_prompt=True if preprocess_prompt is None else bool(preprocess_prompt),
+            postprocess_output=True if postprocess_output is None else bool(postprocess_output),
             seed=resolved_seed,
         )
 

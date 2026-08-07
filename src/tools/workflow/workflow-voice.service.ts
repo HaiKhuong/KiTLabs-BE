@@ -380,8 +380,20 @@ export class WorkflowVoiceService {
         device_map: (process.env.OMNIVOICE_DEVICE_MAP ?? "").trim() || "cuda:0",
         dtype_str: (process.env.OMNIVOICE_DTYPE ?? "float16").trim(),
         language: voiceRef.language,
-        num_step: Number(process.env.OMNIVOICE_NUM_STEP ?? 8),
+        num_step: Number(process.env.OMNIVOICE_NUM_STEP ?? 32),
         guidance_scale: Number(process.env.OMNIVOICE_GUIDANCE_SCALE ?? 2),
+        denoise: (() => {
+          const raw = (process.env.OMNIVOICE_DENOISE ?? "true").trim().toLowerCase();
+          return raw === "" || raw === "1" || raw === "true" || raw === "yes" || raw === "on";
+        })(),
+        preprocess_prompt: (() => {
+          const raw = (process.env.OMNIVOICE_PREPROCESS_PROMPT ?? "true").trim().toLowerCase();
+          return raw === "" || raw === "1" || raw === "true" || raw === "yes" || raw === "on";
+        })(),
+        postprocess_output: (() => {
+          const raw = (process.env.OMNIVOICE_POSTPROCESS_OUTPUT ?? "true").trim().toLowerCase();
+          return raw === "" || raw === "1" || raw === "true" || raw === "yes" || raw === "on";
+        })(),
         scenes: sceneJobs.map((item) => ({
           sceneNumber: item.scene.sceneNumber,
           text: item.scene.voiceOver,

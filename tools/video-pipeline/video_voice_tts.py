@@ -19,7 +19,31 @@ from typing import Any
 
 from audio_tts_worker import resolve_device_map
 import pipeline_cache  # noqa: F401 — HF cache → tools/video-pipeline/cache
-from omnivoice_tts import resolve_omnivoice_language, synthesize_to_wav
+from omnivoice_tts import (
+    DEFAULT_OMNIVOICE_DENOISE,
+    DEFAULT_OMNIVOICE_GUIDANCE_SCALE,
+    DEFAULT_OMNIVOICE_NUM_STEP,
+    DEFAULT_OMNIVOICE_POSTPROCESS_OUTPUT,
+    DEFAULT_OMNIVOICE_PREPROCESS_PROMPT,
+    resolve_omnivoice_language,
+    synthesize_to_wav,
+)
+
+
+def _env_flag(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None or str(raw).strip() == "":
+        return default
+    return str(raw).strip().lower() in ("1", "true", "yes", "on")
+
+
+def _payload_flag(payload: dict[str, Any], key: str, default: bool) -> bool:
+    if key not in payload or payload.get(key) is None or str(payload.get(key)).strip() == "":
+        return default
+    val = payload.get(key)
+    if isinstance(val, bool):
+        return val
+    return str(val).strip().lower() in ("1", "true", "yes", "on")
 
 
 def _resolve_seed(raw: Any) -> int | None:
@@ -49,8 +73,27 @@ def main() -> None:
     dtype_str = str(payload.get("dtype_str") or os.getenv("OMNIVOICE_DTYPE") or "float16").strip() or "float16"
     language_raw = payload.get("language") or os.getenv("OMNIVOICE_LANGUAGE")
     language = resolve_omnivoice_language(str(language_raw) if language_raw else None)
-    num_step = int(payload.get("num_step") or os.getenv("OMNIVOICE_NUM_STEP") or 8)
-    guidance_scale = float(payload.get("guidance_scale") or os.getenv("OMNIVOICE_GUIDANCE_SCALE") or 2)
+    num_step = int(
+        payload.get("num_step") or os.getenv("OMNIVOICE_NUM_STEP") or DEFAULT_OMNIVOICE_NUM_STEP
+    )
+    guidance_scale = float(
+        payload.get("guidance_scale")
+        or os.getenv("OMNIVOICE_GUIDANCE_SCALE")
+        or DEFAULT_OMNIVOICE_GUIDANCE_SCALE
+    )
+    denoise = _payload_flag(
+        payload, "denoise", _env_flag("OMNIVOICE_DENOISE", DEFAULT_OMNIVOICE_DENOISE)
+    )
+    preprocess_prompt = _payload_flag(
+        payload,
+        "preprocess_prompt",
+        _env_flag("OMNIVOICE_PREPROCESS_PROMPT", DEFAULT_OMNIVOICE_PREPROCESS_PROMPT),
+    )
+    postprocess_output = _payload_flag(
+        payload,
+        "postprocess_output",
+        _env_flag("OMNIVOICE_POSTPROCESS_OUTPUT", DEFAULT_OMNIVOICE_POSTPROCESS_OUTPUT),
+    )
     seed = _resolve_seed(payload.get("seed"))
 
     scenes = payload.get("scenes")
@@ -66,6 +109,9 @@ def main() -> None:
         language=language,
         num_step=num_step if num_step > 0 else None,
         guidance_scale=guidance_scale if num_step > 0 else None,
+        denoise=denoise,
+        preprocess_prompt=preprocess_prompt,
+        postprocess_output=postprocess_output,
         seed=seed,
     )
 
