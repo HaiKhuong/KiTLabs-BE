@@ -428,6 +428,30 @@ function isBlockedByEarlierOverlap(
   return false;
 }
 
+/**
+ * Blit a per-layer source into a destination rect.
+ * Cropped sources are ~bbox-sized; legacy full-canvas sources are sampled by bbox.
+ */
+function drawLayerPatch(
+  ctx: CanvasRenderingContext2D,
+  source: HTMLImageElement,
+  bbox: [number, number, number, number],
+  dx: number,
+  dy: number,
+  dw: number,
+  dh: number,
+) {
+  const [x1, y1, x2, y2] = bbox;
+  const bw = Math.max(1, x2 - x1);
+  const bh = Math.max(1, y2 - y1);
+  const looksFullCanvas = source.width > bw * 1.25 || source.height > bh * 1.25;
+  if (looksFullCanvas) {
+    ctx.drawImage(source, x1, y1, bw, bh, dx, dy, dw, dh);
+  } else {
+    ctx.drawImage(source, 0, 0, source.width, source.height, dx, dy, dw, dh);
+  }
+}
+
 function drawHandReveal(
   ctx: CanvasRenderingContext2D,
   source: HTMLImageElement,
@@ -439,7 +463,7 @@ function drawHandReveal(
   const h = Math.max(1, y2 - y1);
 
   if (state.progress >= 1) {
-    ctx.drawImage(source, x1, y1, w, h, x1, y1, w, h);
+    drawLayerPatch(ctx, source, state.op.bbox, x1, y1, w, h);
     return;
   }
   if (state.partialPoints.length === 0) return;
@@ -451,7 +475,7 @@ function drawHandReveal(
   if (!tempCtx) return;
 
   // Keep PNG alpha — unrevealed stays transparent (not white).
-  tempCtx.drawImage(source, x1, y1, w, h, 0, 0, w, h);
+  drawLayerPatch(tempCtx, source, state.op.bbox, 0, 0, w, h);
 
   const mask = document.createElement("canvas");
   mask.width = w;
@@ -480,7 +504,7 @@ function drawSvgStrokeFill(
   const h = Math.max(1, y2 - y1);
 
   if (state.progress >= 1) {
-    ctx.drawImage(source, x1, y1, w, h, x1, y1, w, h);
+    drawLayerPatch(ctx, source, state.op.bbox, x1, y1, w, h);
     return;
   }
 
@@ -491,7 +515,7 @@ function drawSvgStrokeFill(
   if (fillProgress > 0) {
     ctx.save();
     ctx.globalAlpha = fillProgress;
-    ctx.drawImage(source, x1, y1, w, h, x1, y1, w, h);
+    drawLayerPatch(ctx, source, state.op.bbox, x1, y1, w, h);
     ctx.restore();
   }
 
@@ -531,7 +555,7 @@ function drawEffectReveal(
 
   if (style === "fade_in") {
     ctx.globalAlpha = easeOutCubic(t);
-    ctx.drawImage(source, x1, y1, w, h, x1, y1, w, h);
+    drawLayerPatch(ctx, source, state.op.bbox, x1, y1, w, h);
   } else if (style === "slide_up") {
     const eased = easeOutCubic(t);
     const offsetY = (1 - eased) * h * 0.45;
@@ -539,13 +563,13 @@ function drawEffectReveal(
     ctx.rect(x1, y1, w, h);
     ctx.clip();
     ctx.globalAlpha = Math.min(1, eased * 1.2);
-    ctx.drawImage(source, x1, y1, w, h, x1, y1 + offsetY, w, h);
+    drawLayerPatch(ctx, source, state.op.bbox, x1, y1 + offsetY, w, h);
   } else if (style === "pop") {
     const scale = 0.2 + 0.8 * easeOutBack(t);
     ctx.translate(cx, cy);
     ctx.scale(scale, scale);
     ctx.translate(-cx, -cy);
-    ctx.drawImage(source, x1, y1, w, h, x1, y1, w, h);
+    drawLayerPatch(ctx, source, state.op.bbox, x1, y1, w, h);
   } else {
     // zoom_in (default effect)
     const scale = 0.12 + 0.88 * easeOutCubic(t);
@@ -553,7 +577,7 @@ function drawEffectReveal(
     ctx.scale(scale, scale);
     ctx.translate(-cx, -cy);
     ctx.globalAlpha = Math.min(1, 0.35 + t * 0.9);
-    ctx.drawImage(source, x1, y1, w, h, x1, y1, w, h);
+    drawLayerPatch(ctx, source, state.op.bbox, x1, y1, w, h);
   }
 
   ctx.restore();
@@ -648,9 +672,14 @@ export const WhiteboardComposition: React.FC<WhiteboardCompositionProps> = ({
     const states = computeObjectStates(pathPlan, tSec);
     const view = interpolateCameraBbox(cameraPlan, tSec, imageWidth, imageHeight);
 
+    const hasIsolatedLayers = layerImgRef.current.size > 0;
     const resolveSource = (state: ObjectFrameState): HTMLImageElement | null => {
       const layerSource = layerImgRef.current.get(state.op.objectId);
-      return layerSource ?? compositeSource;
+      if (layerSource) return layerSource;
+      // Never fall back to the flattened composite when isolated layers exist —
+      // composite bakes overlapping siblings into each bbox crop.
+      if (hasIsolatedLayers) return null;
+      return compositeSource;
     };
 
     const drawOrder = [...states].sort(

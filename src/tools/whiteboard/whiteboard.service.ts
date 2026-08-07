@@ -316,6 +316,15 @@ export class WhiteboardService {
       dto.objects,
       scene.objects,
     );
+    if (Object.keys(objectLayerSourcePaths).length === 0) {
+      this.logger.warn(
+        `[${analysisId}] No per-layer sources persisted — overlap reveals may leak sibling pixels`,
+      );
+    } else {
+      this.logger.log(
+        `[${analysisId}] Persisted ${Object.keys(objectLayerSourcePaths).length} isolated layer source(s)`,
+      );
+    }
 
     const selectedRecentIds = Array.isArray(dto.engineConfig?.selectedRecentIds)
       ? dto.engineConfig.selectedRecentIds.map((id) => String(id ?? "").trim()).filter(Boolean)

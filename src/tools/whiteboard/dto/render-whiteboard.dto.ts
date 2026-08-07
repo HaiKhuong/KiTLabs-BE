@@ -231,6 +231,15 @@ export class WhiteboardObjectDto {
   @ValidateNested()
   @Type(() => WhiteboardObjectStoryboardDto)
   storyboard?: WhiteboardObjectStoryboardDto;
+
+  @ApiPropertyOptional({
+    description:
+      "Isolated PNG data URL for this layer only (transparent bg, bbox-cropped). Required for correct overlap reveals.",
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(12_000_000)
+  layerSourceDataUrl?: string;
 }
 
 export class RenderWhiteboardDto {
