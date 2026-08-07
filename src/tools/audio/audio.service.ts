@@ -1421,12 +1421,14 @@ export class AudioService {
   }
 
   async completeVideoVoiceHistory(audioHistoryId: string, resultPath: string): Promise<void> {
+    const normalized = resultPath.replaceAll("\\", "/");
     await this.audioRepository.update(
       { id: audioHistoryId },
       {
         status: QueueJobStatus.COMPLETED,
-        resultPath: resultPath.replaceAll("\\", "/"),
+        resultPath: normalized,
         resultFileName: basename(resultPath),
+        durationSec: this.probeWavDurationSec(resultPath),
         errorMessage: null,
       },
     );
@@ -1566,6 +1568,10 @@ export class AudioService {
   mapHistoryForClient(row: AudioHistory) {
     const config = (row.engineConfig ?? {}) as Record<string, unknown>;
     const isSrt = String(config.jobKind ?? "") === AUDIO_JOB_KIND_SRT_TIMELINE;
+    const durationSec =
+      row.durationSec != null && Number.isFinite(Number(row.durationSec)) && Number(row.durationSec) > 0
+        ? Math.round(Number(row.durationSec) * 10) / 10
+        : null;
     return {
       id: row.id,
       name: row.displayName,
@@ -1583,6 +1589,7 @@ export class AudioService {
       sourceType: this.resolveHistorySourceType(row),
       jobKind: isSrt ? AUDIO_JOB_KIND_SRT_TIMELINE : "text",
       resultFileName: row.resultFileName,
+      durationSec,
       errorMessage: row.errorMessage,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
@@ -1603,6 +1610,7 @@ export class AudioService {
     history.status = QueueJobStatus.COMPLETED;
     history.resultPath = resultPath;
     history.resultFileName = basename(resultPath);
+    history.durationSec = this.probeWavDurationSec(resultPath);
     history.errorMessage = null;
     await this.audioRepository.save(history);
 
@@ -1671,6 +1679,44 @@ export class AudioService {
       throw new NotFoundException("Audio file not found on server");
     }
     return abs;
+  }
+
+  /** Đọc duration từ WAV PCM (OmniVoice / VoxCPM2 / SRT timeline). */
+  private probeWavDurationSec(filePath: string): number | null {
+    try {
+      if (!existsSync(filePath)) return null;
+      const buf = readFileSync(filePath);
+      if (buf.length < 44 || buf.toString("ascii", 0, 4) !== "RIFF") return null;
+
+      let offset = 12;
+      let byteRate = 0;
+      let dataSize = 0;
+      while (offset + 8 <= buf.length) {
+        const id = buf.toString("ascii", offset, offset + 4);
+        const size = buf.readUInt32LE(offset + 4);
+        const payload = offset + 8;
+        if (id === "fmt " && size >= 16 && payload + 16 <= buf.length) {
+          byteRate = buf.readUInt32LE(payload + 8);
+        } else if (id === "data") {
+          dataSize = size;
+          break;
+        }
+        offset = payload + size + (size % 2);
+      }
+
+      if (byteRate > 0 && dataSize > 0) {
+        const sec = dataSize / byteRate;
+        return Number.isFinite(sec) && sec > 0 ? sec : null;
+      }
+      return null;
+    } catch (error) {
+      this.logger.warn(
+        `probeWavDurationSec failed for ${filePath}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      return null;
+    }
   }
 
   buildOutputPath(userId: string, audioHistoryId: string): string {

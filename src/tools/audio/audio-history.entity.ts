@@ -42,6 +42,10 @@ export class AudioHistory extends BaseEntity {
   @Column({ type: "varchar", name: "result_file_name", nullable: true })
   resultFileName!: string | null;
 
+  /** Độ dài WAV kết quả (giây), set khi job completed. */
+  @Column({ type: "double precision", name: "duration_sec", nullable: true })
+  durationSec!: number | null;
+
   @Column({ name: "error_message", type: "text", nullable: true })
   errorMessage!: string | null;
 

@@ -53,6 +53,7 @@ export class AudioProcessor extends WorkerHost {
         resultFileName: mapped?.resultFileName ?? null,
         playUrl: mapped?.playUrl ?? null,
         downloadUrl: mapped?.downloadUrl ?? null,
+        durationSec: mapped?.durationSec ?? null,
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
