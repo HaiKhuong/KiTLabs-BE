@@ -98,6 +98,37 @@ describe("WhiteboardPathPlanner.plan", () => {
     expect(plan.objectPaths[1].objectId).toBe("b");
   });
 
+  it("delays overlapping later layer until earlier layer finishes", () => {
+    const scene: WhiteboardSceneJson = {
+      imageWidth: 1280,
+      imageHeight: 720,
+      objects: [
+        {
+          id: "bottom",
+          type: "image",
+          bbox: [100, 100, 500, 400],
+          order: 1,
+          revealStyle: "fade_in",
+          durationSec: 2,
+        },
+        {
+          id: "top",
+          type: "image",
+          bbox: [200, 150, 600, 450],
+          order: 2,
+          revealStyle: "fade_in",
+          durationSec: 2,
+        },
+      ],
+    };
+    const plan = WhiteboardPathPlanner.plan(scene, 1280, 720, config);
+    const bottom = plan.objectPaths.find((p) => p.objectId === "bottom")!;
+    const top = plan.objectPaths.find((p) => p.objectId === "top")!;
+    expect(top.drawStartSec).toBeGreaterThanOrEqual(
+      bottom.drawStartSec + bottom.drawDurationSec - 1e-6,
+    );
+  });
+
   it("respects explicit revealStyle left_right", () => {
     const scene: WhiteboardSceneJson = {
       imageWidth: 1280,

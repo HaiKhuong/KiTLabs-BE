@@ -379,7 +379,7 @@ function computeObjectStates(plan: WhiteboardPathPlan, tSec: number): ObjectFram
   return states;
 }
 
-function eraseStroke(
+function paintStroke(
   ctx: CanvasRenderingContext2D,
   points: PathPoint[],
   brushSize: number,
@@ -407,6 +407,27 @@ function eraseStroke(
   ctx.stroke();
 }
 
+function bboxOverlap(
+  a: [number, number, number, number],
+  b: [number, number, number, number],
+): boolean {
+  return a[0] < b[2] && a[2] > b[0] && a[1] < b[3] && a[3] > b[1];
+}
+
+/** Later overlapping layers stay hidden until earlier ones finish. */
+function isBlockedByEarlierOverlap(
+  state: ObjectFrameState,
+  all: ObjectFrameState[],
+): boolean {
+  const order = state.op.order ?? 0;
+  for (const other of all) {
+    if ((other.op.order ?? 0) >= order) continue;
+    if (!bboxOverlap(state.op.bbox, other.op.bbox)) continue;
+    if (other.progress < 1) return true;
+  }
+  return false;
+}
+
 function drawHandReveal(
   ctx: CanvasRenderingContext2D,
   source: HTMLImageElement,
@@ -429,6 +450,7 @@ function drawHandReveal(
   const tempCtx = temp.getContext("2d");
   if (!tempCtx) return;
 
+  // Keep PNG alpha — unrevealed stays transparent (not white).
   tempCtx.drawImage(source, x1, y1, w, h, 0, 0, w, h);
 
   const mask = document.createElement("canvas");
@@ -438,12 +460,13 @@ function drawHandReveal(
   if (!maskCtx) return;
 
   maskCtx.fillStyle = "#ffffff";
-  maskCtx.fillRect(0, 0, w, h);
-  maskCtx.globalCompositeOperation = "destination-out";
-  eraseStroke(maskCtx, state.partialPoints, brushSize, x1, y1);
-  maskCtx.globalCompositeOperation = "source-over";
+  maskCtx.strokeStyle = "#ffffff";
+  paintStroke(maskCtx, state.partialPoints, brushSize, x1, y1);
 
+  tempCtx.globalCompositeOperation = "destination-in";
   tempCtx.drawImage(mask, 0, 0);
+  tempCtx.globalCompositeOperation = "source-over";
+
   ctx.drawImage(temp, x1, y1);
 }
 
@@ -641,6 +664,8 @@ export const WhiteboardComposition: React.FC<WhiteboardCompositionProps> = ({
 
     for (const state of drawOrder) {
       if (state.progress <= 0 && state.phase !== "drawing") continue;
+      // Hide later overlapping layers until earlier ones finish revealing.
+      if (isBlockedByEarlierOverlap(state, states)) continue;
       const source = resolveSource(state);
       if (!source) continue;
       const style = state.op.revealStyle;
@@ -657,6 +682,7 @@ export const WhiteboardComposition: React.FC<WhiteboardCompositionProps> = ({
     const active = [...states].reverse().find(
       (state) =>
         (state.phase === "drawing" || state.phase === "transit") &&
+        !isBlockedByEarlierOverlap(state, states) &&
         isHandStyle(state.op.revealStyle ?? "zigzag") &&
         (state.op.revealStyle !== "svg_stroke_fill" ||
           state.phase === "transit" ||

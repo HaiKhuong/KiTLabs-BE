@@ -186,7 +186,13 @@ export class WhiteboardPathPlanner {
       totalDurationSec = maxDurationSec;
     }
 
-    return { totalDurationSec, fps, brushSize, brushSpeedPx, objectPaths };
+    return WhiteboardPathPlanner.enforceOverlapSequentialOrder({
+      totalDurationSec,
+      fps,
+      brushSize,
+      brushSpeedPx,
+      objectPaths,
+    });
   }
 
   /**
@@ -268,10 +274,55 @@ export class WhiteboardPathPlanner {
       lastDrawEnd = Math.max(lastDrawEnd, unboundCursor);
     }
 
-    return {
+    return WhiteboardPathPlanner.enforceOverlapSequentialOrder({
       ...pathPlan,
       objectPaths: nextPaths,
       totalDurationSec: Math.max(pathPlan.totalDurationSec, lastDrawEnd, lastVoiceEnd),
+    });
+  }
+
+  /**
+   * When layer A overlaps layer B and A.order < B.order, B must not start until A finishes.
+   * Keeps earlier image fully drawn before the later overlapping image appears.
+   */
+  static enforceOverlapSequentialOrder(pathPlan: WhiteboardPathPlan): WhiteboardPathPlan {
+    if (pathPlan.objectPaths.length < 2) return pathPlan;
+
+    const paths = pathPlan.objectPaths.map((path) => ({ ...path }));
+    const byOrder = [...paths].sort(
+      (a, b) => (a.order ?? 0) - (b.order ?? 0) || a.drawStartSec - b.drawStartSec,
+    );
+
+    for (let i = 0; i < byOrder.length; i += 1) {
+      const current = byOrder[i];
+      let minStart = Math.max(0, Number(current.drawStartSec) || 0);
+      for (let j = 0; j < i; j += 1) {
+        const earlier = byOrder[j];
+        if (!bboxOverlap(current.bbox, earlier.bbox)) continue;
+        const earlierEnd =
+          Math.max(0, Number(earlier.drawStartSec) || 0) +
+          Math.max(0.1, Number(earlier.drawDurationSec) || 0.1);
+        minStart = Math.max(minStart, earlierEnd);
+      }
+      current.drawStartSec = minStart;
+    }
+
+    let lastEnd = 0;
+    for (const path of byOrder) {
+      lastEnd = Math.max(
+        lastEnd,
+        path.drawStartSec + Math.max(0.1, Number(path.drawDurationSec) || 0.1),
+      );
+    }
+
+    // Preserve original array identity order but with updated timings from byOrder.
+    const updated = new Map(byOrder.map((path) => [path.objectId, path]));
+    const objectPaths = paths.map((path) => updated.get(path.objectId) ?? path);
+
+    return {
+      ...pathPlan,
+      objectPaths,
+      totalDurationSec: Math.max(pathPlan.totalDurationSec, lastEnd),
     };
   }
 
@@ -617,4 +668,11 @@ export class WhiteboardPathPlanner {
     }
     return points[points.length - 1];
   }
+}
+
+function bboxOverlap(
+  a: [number, number, number, number],
+  b: [number, number, number, number],
+): boolean {
+  return a[0] < b[2] && a[2] > b[0] && a[1] < b[3] && a[3] > b[1];
 }
