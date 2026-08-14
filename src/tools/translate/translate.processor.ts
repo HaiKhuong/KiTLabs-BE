@@ -6,6 +6,7 @@ import { basename, dirname, extname, isAbsolute, join, resolve } from "path";
 
 import { TRANSLATE_QUEUE_NAME, TranslateService } from "./translate.service";
 import { ToolsRealtimeGateway } from "../realtime/tools-realtime.gateway";
+import { deleteUploadedSourceVideo } from "../files/files.service";
 
 const MAX_PYTHON_LOG_BUFFER = 10 * 1024 * 1024;
 const PYTHON_INT_CLI_FLAGS = new Set(["--subtitle-margin-v", "--subtitle-alignment"]);
@@ -101,6 +102,11 @@ const OPTION_MAPPINGS: Array<{
   {
     cliFlag: "--skip-voice-step",
     keys: ["skipVoiceStep", "skip_voice_step"],
+    allowedTypes: ["string"],
+  },
+  {
+    cliFlag: "--remove-cached-voice",
+    keys: ["removeCachedVoice", "remove_cached_voice"],
     allowedTypes: ["string"],
   },
   { cliFlag: "--original-volume", keys: ["originalVolume", "original_volume"], allowedTypes: ["number", "string"] },
@@ -403,6 +409,7 @@ export class TranslateProcessor extends WorkerHost {
       });
 
       await this.translateService.processCompleted(translateHistoryId, resultPath);
+      this.deleteSourceVideoAfterFinalize(history.stepNbr, history.engineConfig);
       const completedHistory = await this.translateService.getById(translateHistoryId);
       this.realtimeGateway.notifyUser(completedHistory?.userId ?? "all", "translate.completed", {
         translateHistoryId,
@@ -669,6 +676,28 @@ export class TranslateProcessor extends WorkerHost {
     }
 
     return join(workspaceDir, "videos", `${workName}_vs_tm.mp4`);
+  }
+
+  /** Step 6 trên API chạy Step7 Python (finalize). Xóa video nguồn trong uploads để tiết kiệm ổ. */
+  private deleteSourceVideoAfterFinalize(
+    stepNbr: number[] | null | undefined,
+    engineConfig: Record<string, unknown> | null,
+  ): void {
+    const lastStep = Array.isArray(stepNbr) && stepNbr.length > 0 ? Math.max(...stepNbr) : 0;
+    if (lastStep < 6) {
+      return;
+    }
+    const localPath = this.pickConfigValue(engineConfig ?? {}, ["localVideoPath", "local_video_path"]);
+    if (typeof localPath !== "string" || !localPath.trim()) {
+      return;
+    }
+    try {
+      deleteUploadedSourceVideo(localPath);
+    } catch (error) {
+      this.logger.warn(
+        `Could not delete uploaded source video: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
   }
 
   private pickConfigValue(engineConfig: Record<string, unknown>, keys: string[]): unknown {

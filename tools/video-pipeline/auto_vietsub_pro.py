@@ -130,6 +130,8 @@ STEP3_TTS_API_TIMEOUT_SEC = 120.0
 STEP3_TTS_MAX_RETRY_ACTION = "stop"
 # Ghi/đọc checkpoint segment TTS trong logs/tts_chunks: rerender chỉ gọi edge-tts cho segment chưa xong (tiết kiệm rate).
 STEP3_VOICE_RESUME = True
+# Debug: xóa _voice.wav + tts_chunks trước Step3 (không chạy ở Step7).
+REMOVE_CACHED_VOICE = False
 # Hiển thị tqdm progress bar ra stdout/stderr khi chạy qua BE.
 # off: giữ log sạch (không có blob/progress control chars), on: show progress bar.
 PROCESSBAR_LOG_ENABLED = False
@@ -2963,6 +2965,20 @@ def get_or_run(path, step_name, step_func, *args):
     return result
 
 
+def _remove_cached_voice_before_step3():
+    """Chỉ gọi khi Step3 sắp chạy — không xóa voice trong Step7 finalize."""
+    if not REMOVE_CACHED_VOICE:
+        return
+    voice_path = VIDEO_DIR / f"{WORK_NAME}_voice.wav"
+    chunk_dir = LOG_DIR / "tts_chunks"
+    if voice_path.is_file():
+        voice_path.unlink()
+        log(f"Step3: removed cached voice ({voice_path.name}).")
+    if chunk_dir.exists():
+        shutil.rmtree(chunk_dir, ignore_errors=True)
+        log("Step3: removed tts_chunks checkpoint.")
+
+
 def parse_cli_args():
     parser = argparse.ArgumentParser(
         description="Auto translate + TTS narration + subtitle render pipeline."
@@ -3519,6 +3535,12 @@ def parse_cli_args():
         help="on=đọc/ghi checkpoint trong logs/tts_chunks; chỉ gọi TTS cho segment chưa trong list + chưa có part_XXXX.wav (tiết kiệm rate).",
     )
     parser.add_argument(
+        "--remove-cached-voice",
+        choices=["on", "off"],
+        default="on" if REMOVE_CACHED_VOICE else "off",
+        help="on=xóa voice.wav + tts_chunks trước Step3 để TTS tạo lại (không chạy khi chỉ Step7).",
+    )
+    parser.add_argument(
         "--translation-context",
         default=TRANSLATION_CONTEXT,
         help="Custom context/instructions for Gemini translation. Overrides default Han-Viet prompt.",
@@ -3584,6 +3606,7 @@ def apply_cli_config(args):
     global LOGO_OPACITY
     global LOGO_ENABLED
     global SKIP_VOICE_STEP
+    global REMOVE_CACHED_VOICE
     global STEP6_VISUAL_TRANSFORM_ENABLED
     global STEP6_HFLIP
     global STEP6_ZOOM_PERCENT
@@ -3704,6 +3727,7 @@ def apply_cli_config(args):
     LOGO_OPACITY = args.logo_opacity
     LOGO_ENABLED = args.logo_enabled == "on"
     SKIP_VOICE_STEP = args.skip_voice_step == "on"
+    REMOVE_CACHED_VOICE = getattr(args, "remove_cached_voice", "off") == "on"
     MERGE_OUTRO_ENABLED = args.merge_outro == "on"
     OUTRO_FILE = str(args.outro_file or "").strip()
 
@@ -4142,6 +4166,7 @@ def run_pipeline(video, step_arg=None):
             log("Skip voice steps enabled: Step3/Step4 are skipped.")
     else:
         if step_enabled(3):
+            _remove_cached_voice_before_step3()
             voice = run_step(
                 3,
                 "Step3",

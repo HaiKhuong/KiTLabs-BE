@@ -250,6 +250,15 @@ export class TranslateEngineConfigDto {
   @IsString()
   skip_voice_step?: string;
 
+  /** on = xóa voice.wav + tts_chunks trước Step3 (tránh cache). Không chạy ở Step7. */
+  @IsOptional()
+  @IsIn(["on", "off"])
+  removeCachedVoice?: string;
+
+  @IsOptional()
+  @IsIn(["on", "off"])
+  remove_cached_voice?: string;
+
   @IsOptional()
   @Type(() => Number)
   @IsNumber()

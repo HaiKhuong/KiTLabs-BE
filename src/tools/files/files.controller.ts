@@ -17,12 +17,12 @@ import { FileInterceptor } from "@nestjs/platform-express";
 import { Request } from "express";
 import { existsSync, mkdirSync } from "fs";
 import { diskStorage } from "multer";
-import { basename, extname, join } from "path";
+import { basename, extname, join, resolve } from "path";
 
 import { Public } from "../../common/decorators/public.decorator";
 import { ChunkUploadService } from "./chunk-upload.service";
 import { CancelUploadDto, CompleteUploadDto, InitUploadDto } from "./dto/chunk-upload.dto";
-import { FilesService } from "./files.service";
+import { FilesService, resolveUploadDestination } from "./files.service";
 
 type UploadRequest = {
   query: Record<string, unknown>;
@@ -38,16 +38,11 @@ const LOGO_ALLOWED_MIME_TYPES = new Set([
   "image/svg+xml",
 ]);
 
-const resolveUploadDestination = (req: UploadRequest): string => {
+const resolveRequestUploadDestination = (req: UploadRequest): string => {
   const folderQuery = String(req.query.folder ?? "videos");
   const folder = folderQuery.length > 0 ? folderQuery : "videos";
   const userIdRaw = typeof req.query.userId === "string" ? req.query.userId : "";
-  const userId = userIdRaw.replace(/[^a-zA-Z0-9-_]/g, "");
-  const targetFolder = userId ? join(folder, userId) : folder;
-
-  return process.env.UPLOAD_DIR && process.env.UPLOAD_DIR.length > 0
-    ? join(process.env.UPLOAD_DIR, targetFolder)
-    : join("uploads", targetFolder);
+  return resolveUploadDestination(folder, userIdRaw);
 };
 
 /** Project-relative base for video pipeline logos (see tools/video-pipeline/). */
@@ -123,7 +118,7 @@ export class FilesController {
       storage: diskStorage({
         destination: (req, _file, cb) => {
           const uploadRequest = req as UploadRequest;
-          const destination = resolveUploadDestination(uploadRequest);
+          const destination = resolveRequestUploadDestination(uploadRequest);
 
           if (!existsSync(destination)) {
             mkdirSync(destination, { recursive: true });
@@ -133,7 +128,7 @@ export class FilesController {
         },
         filename: (req, file, cb) => {
           const uploadRequest = req as UploadRequest;
-          const destination = uploadRequest.uploadDestination ?? resolveUploadDestination(uploadRequest);
+          const destination = uploadRequest.uploadDestination ?? resolveRequestUploadDestination(uploadRequest);
           cb(null, buildStoredFileName(destination, file.originalname, hasValidUserId(uploadRequest)));
         },
       }),
@@ -145,7 +140,7 @@ export class FilesController {
     @Query("folder") folder?: string,
     @Query("userId") userId?: string,
   ) {
-    this.filesService.ensureUploadFolder(userId ? `${folder ?? "videos"}_${userId}` : (folder ?? "videos"));
+    this.filesService.ensureUploadFolder(folder ?? "videos", userId);
     if (!file) {
       throw new BadRequestException("file is required");
     }
@@ -154,7 +149,7 @@ export class FilesController {
       userId: userId ?? null,
       originalName: file.originalname,
       fileName: file.filename,
-      filePath: file.path.replaceAll("\\", "/"),
+      filePath: resolve(file.path).replaceAll("\\", "/"),
       mimeType: file.mimetype,
       size: file.size,
     };

@@ -8,13 +8,14 @@ import { InjectRepository } from "@nestjs/typeorm";
 import { createHash, randomUUID } from "crypto";
 import { createWriteStream, existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "fs";
 import { open } from "fs/promises";
-import { join } from "path";
+import { isAbsolute, join, resolve } from "path";
 import { pipeline } from "stream/promises";
 import { Readable } from "stream";
 import { Repository } from "typeorm";
 
 import { ChunkUpload, ChunkUploadStatus } from "./entities/chunk-upload.entity";
 import { InitUploadDto } from "./dto/chunk-upload.dto";
+import { resolveUploadDestination, resolveUploadRoot } from "./files.service";
 
 const DEFAULT_CHUNK_SIZE = 20 * 1024 * 1024; // 20 MB
 const MAX_FILE_SIZE = Number(process.env.CHUNK_UPLOAD_MAX_FILE_BYTES ?? 10 * 1024 * 1024 * 1024); // 10 GB
@@ -30,7 +31,11 @@ export class ChunkUploadService {
   ) {}
 
   private getUploadBaseDir(): string {
-    return process.env.CHUNK_UPLOAD_DIR ?? process.env.UPLOAD_DIR ?? "uploads";
+    const raw = (process.env.CHUNK_UPLOAD_DIR ?? process.env.UPLOAD_DIR ?? "uploads").trim();
+    if (!raw || raw === (process.env.UPLOAD_DIR ?? "uploads").trim()) {
+      return resolveUploadRoot();
+    }
+    return isAbsolute(raw) ? resolve(raw) : resolve(process.cwd(), raw);
   }
 
   private getChunkDir(uploadId: string): string {
@@ -38,10 +43,14 @@ export class ChunkUploadService {
   }
 
   private resolveFinalDestination(folder?: string | null, userId?: string | null): string {
+    if (!process.env.CHUNK_UPLOAD_DIR || process.env.CHUNK_UPLOAD_DIR === process.env.UPLOAD_DIR) {
+      return resolveUploadDestination(folder, userId);
+    }
     const folderName = folder && folder.length > 0 ? folder : "videos";
     const safeUserId = userId ? userId.replace(/[^a-zA-Z0-9-_]/g, "") : "";
-    const targetFolder = safeUserId ? join(folderName, safeUserId) : folderName;
-    return join(this.getUploadBaseDir(), targetFolder);
+    return safeUserId
+      ? join(this.getUploadBaseDir(), folderName, safeUserId)
+      : join(this.getUploadBaseDir(), folderName);
   }
 
   async initUpload(dto: InitUploadDto): Promise<{ uploadId: string; totalChunks: number }> {
