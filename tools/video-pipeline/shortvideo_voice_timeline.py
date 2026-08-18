@@ -40,7 +40,11 @@ SAMPLE_RATE = 24000
 DEFAULT_GAP_SEC = 0.12
 
 
-def _build_engine(payload: dict[str, Any]) -> tuple[Callable[[str], str], Callable[[str, Path], None]]:
+def _build_engine(payload: dict[str, Any]) -> tuple[
+    Callable[[str], str],
+    Callable[[str, Path], None],
+    dict[str, Any] | None,
+]:
     ref_audio = Path(str(payload["ref_audio"])).expanduser()
     if not ref_audio.is_file():
         raise FileNotFoundError(f"ref_audio not found: {ref_audio}")
@@ -82,10 +86,11 @@ def _build_engine(payload: dict[str, Any]) -> tuple[Callable[[str], str], Callab
                 seed=int(seed) if seed not in (None, "") else None,
             )
 
-        return prepare, synthesize
+        return prepare, synthesize, None
 
     from omnivoice_tts import (
         prepare_omnivoice_input_text,
+        resolve_omnivoice_batch_size,
         resolve_omnivoice_language,
         synthesize_to_wav as synth,
     )
@@ -114,6 +119,24 @@ def _build_engine(payload: dict[str, Any]) -> tuple[Callable[[str], str], Callab
     denoise = _flag("denoise", "OMNIVOICE_DENOISE", True)
     preprocess_prompt = _flag("preprocess_prompt", "OMNIVOICE_PREPROCESS_PROMPT", True)
     postprocess_output = _flag("postprocess_output", "OMNIVOICE_POSTPROCESS_OUTPUT", True)
+    normalize_text = _flag("normalize_text", "OMNIVOICE_NORMALIZE_TEXT", False)
+    batch_size = resolve_omnivoice_batch_size(payload.get("batch_size"))
+
+    batch_kw = dict(
+        ref_audio=str(ref_audio),
+        ref_text=ref_text,
+        model_id=model_id,
+        device_map=device_map,
+        dtype_str=dtype_str,
+        language=language,
+        num_step=int(num_step) if num_step not in (None, "") else None,
+        guidance_scale=float(guidance_scale) if guidance_scale not in (None, "") else None,
+        denoise=denoise,
+        preprocess_prompt=preprocess_prompt,
+        postprocess_output=postprocess_output,
+        normalize_text=normalize_text,
+        seed=int(seed) if seed not in (None, "") else None,
+    )
 
     def prepare(raw: str) -> str:
         return prepare_omnivoice_input_text(raw)
@@ -133,10 +156,11 @@ def _build_engine(payload: dict[str, Any]) -> tuple[Callable[[str], str], Callab
             denoise=denoise,
             preprocess_prompt=preprocess_prompt,
             postprocess_output=postprocess_output,
+            normalize_text=normalize_text,
             seed=int(seed) if seed not in (None, "") else None,
         )
 
-    return prepare, synthesize
+    return prepare, synthesize, batch_kw
 
 
 def _extract_texts(payload: dict[str, Any]) -> list[str]:
@@ -169,7 +193,7 @@ def run(payload: dict[str, Any]) -> dict[str, Any]:
     if not texts:
         raise ValueError("captions must contain at least one non-empty text")
 
-    prepare, synthesize = _build_engine(payload)
+    prepare, synthesize, batch_kw = _build_engine(payload)
 
     segments: list[dict[str, Any]] = []
     timeline_parts: list[Path] = []
@@ -177,10 +201,28 @@ def run(payload: dict[str, Any]) -> dict[str, Any]:
 
     with tempfile.TemporaryDirectory(prefix="sv_voice_") as tmp:
         tmp_dir = Path(tmp)
+
+        if batch_kw and len(texts) > 1:
+            from omnivoice_tts import synthesize_many_to_wavs
+
+            batch_jobs = [
+                {
+                    "text": prepare(raw_text),
+                    "out_wav": tmp_dir / f"raw_{i:04d}.wav",
+                }
+                for i, raw_text in enumerate(texts)
+            ]
+            synthesize_many_to_wavs(
+                batch_jobs,
+                batch_size=batch_size,
+                **batch_kw,
+            )
+
         for i, raw_text in enumerate(texts):
             text = prepare(raw_text)
             raw_path = tmp_dir / f"raw_{i:04d}.wav"
-            synthesize(text, raw_path)
+            if not raw_path.is_file():
+                synthesize(text, raw_path)
 
             seg_path = tmp_dir / f"seg_{i:04d}.wav"
             _apply_speed(raw_path, seg_path, playback_speed)

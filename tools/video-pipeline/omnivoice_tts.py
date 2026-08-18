@@ -25,11 +25,12 @@ Tham khảo: https://huggingface.co/k2-fsa/OmniVoice
 from __future__ import annotations
 
 import os
-import re
 from pathlib import Path
-from typing import Any, Optional, Tuple
+from typing import Any, Optional, Sequence, Tuple, Union
 
 import pipeline_cache  # noqa: F401 — HF cache → tools/video-pipeline/cache
+
+from tts_text_normalize import prepare_tts_input_text
 
 # Cache theo (model_id, device_map, dtype_str)
 _session_model: Optional[Any] = None
@@ -44,6 +45,7 @@ DEFAULT_OMNIVOICE_GUIDANCE_SCALE = 2.0
 DEFAULT_OMNIVOICE_DENOISE = True
 DEFAULT_OMNIVOICE_PREPROCESS_PROMPT = True
 DEFAULT_OMNIVOICE_POSTPROCESS_OUTPUT = True
+DEFAULT_OMNIVOICE_BATCH_SIZE = 8
 
 SUPPORTED_OMNIVOICE_LANGUAGES = ("vietnamese", "english", "korean", "japanese")
 
@@ -76,6 +78,20 @@ def resolve_omnivoice_language(raw: str | None) -> str:
     return resolved
 
 
+def resolve_omnivoice_batch_size(raw: Union[str, int, None] = None) -> int:
+    """Chuẩn hóa batch size OmniVoice (>= 1). Env ``OMNIVOICE_BATCH_SIZE`` khi raw None."""
+    if raw is None or str(raw).strip() == "":
+        env = os.getenv("OMNIVOICE_BATCH_SIZE")
+        if env is None or str(env).strip() == "":
+            return int(DEFAULT_OMNIVOICE_BATCH_SIZE)
+        raw = env
+    try:
+        n = int(raw)
+    except (TypeError, ValueError):
+        raise ValueError(f"omnivoice: batch_size không hợp lệ: {raw!r}")
+    return max(1, n)
+
+
 def _resolve_hf_token() -> str:
     # Ưu tiên HF_TOKEN; fallback các tên env phổ biến.
     token = (
@@ -101,108 +117,15 @@ def reset_omnivoice_session() -> None:
     _session_prompt_key = None
 
 
-def ensure_tts_trailing_period(text: str) -> str:
-    """Đảm bảo mọi câu TTS kết thúc bằng đúng một dấu chấm."""
-    t = str(text or "").strip()
-    if not t:
-        return t
-    t = re.sub(r"[,，、;；:：!?！？…\-–—]+$", "", t).rstrip()
-    if not t:
-        return t
-    t = re.sub(r"\.+$", ".", t)
-    if not t.endswith("."):
-        t = f"{t}."
-    return t
-
-
-def _normalize_tts_text_for_audio(text: str) -> str:
-    """
-    Chuẩn hóa text trước khi TTS:
-    - Bỏ dấu ngoặc kép (ASCII và typographic thường gặp).
-    - Thay : ; ? ! trong câu bằng dấu chấm để model ngắt nhịp / ngắt câu ổn định hơn.
-    - Gộp nhiều chấm liên tiếp; cuối đoạn gom các dấu câu lặp về một dấu chấm.
-    - Luôn kết thúc bằng một dấu chấm.
-    """
-    t = str(text or "").strip()
-    if not t:
-        return t
-    for q in ('"', "\u201c", "\u201d", "\u2018", "\u2019", "\u00ab", "\u00bb"):
-        t = t.replace(q, "")
-    for p in (":", ";", "?", "!"):
-        t = t.replace(p, ".")
-    t = re.sub(r"\.(?:\s*\.)+", ".", t)
-    t = re.sub(r"[!?.,:;…\-–—]+$", ".", t)
-    return ensure_tts_trailing_period(t)
-
-
-def apply_omnivoice_lexical_replacements(text: str) -> str:
-    """
-    Thay token OmniVoice đọc kém — luôn gọi **trước** ``.lower()``.
-
-    Rule đã chốt:
-    1. ``%`` → phần trăm
-    2. ``AI`` (uppercase, từ riêng) → ây ai
-    2b. ``NPC`` / ``npc`` (từ riêng) → Nờ Bi Xi
-    3. ``&`` → và
-    4. ``$`` → đô
-    6. ``km/h`` → ki lô mét trên giờ; ``km`` (còn lại) → ki lô mét
-    9. ``OK`` / ``ok`` → ô kê
-    10. Wi‑Fi / WiFi → wai fai; ``4G`` → 4 gờ; ``5G`` → 5 gờ
-    14. ``AM`` / ``PM`` (chỉ chữ hoa) → sáng / chiều
-    15. ``24/7`` → 24 trên 7
-    """
-    t = str(text or "")
-    if not t.strip():
-        return t
-
-    # 15 — trước các pattern có dấu /
-    t = re.sub(r"\b24\s*/\s*7\b", "24 trên 7", t)
-
-    # 10 — Wi‑Fi (gạch thường / non-breaking hyphen)
-    t = re.sub(r"\bWi\s*[-\u2011]?\s*Fi\b", "wai fai", t, flags=re.IGNORECASE)
-    t = re.sub(r"\b4G\b", "4 gờ", t)
-    t = re.sub(r"\b5G\b", "5 gờ", t)
-
-    # 14 — AM/PM chỉ chữ HOA (9 AM, 9AM, 9 A.M.)
-    t = re.sub(r"(?<=\d)\s*AM\b", " sáng", t)
-    t = re.sub(r"(?<=\d)\s*PM\b", " chiều", t)
-    t = re.sub(r"\bA\.?\s*M\.?\b", "sáng", t)
-    t = re.sub(r"\bP\.?\s*M\.?\b", "chiều", t)
-
-    # 9, 2 — từ viết tắt
-    t = re.sub(r"\b[oO][kK]\b", "ô kê", t)
-    t = re.sub(r"\bAI\b", "ây ai", t)
-    t = re.sub(r"\bNPC\b", "Nờ Bi Xi", t, flags=re.IGNORECASE)
-
-    # 6 — km/h trước km đơn
-    t = re.sub(
-        r"(?<=\d)\s*km\s*/\s*h\b",
-        " ki lô mét trên giờ",
-        t,
-        flags=re.IGNORECASE,
-    )
-    t = re.sub(r"\bkm\s*/\s*h\b", "ki lô mét trên giờ", t, flags=re.IGNORECASE)
-    t = re.sub(r"(?<=\d)\s*km\b", " ki lô mét", t, flags=re.IGNORECASE)
-    t = re.sub(r"\bkm\b", "ki lô mét", t, flags=re.IGNORECASE)
-
-    # 1, 3, 4
-    t = t.replace("%", " phần trăm ")
-    t = t.replace("&", " và ")
-    t = t.replace("$", " đô ")
-
-    t = re.sub(r"\s+", " ", t).strip()
-    return t
-
-
-def prepare_omnivoice_input_text(text: str, language: str | None = None) -> str:
-    """Replace lexical (vi) → lowercase (vi/en) → chuẩn hóa dấu câu."""
+def prepare_omnivoice_input_text(
+    text: str,
+    language: str | None = None,
+    *,
+    vinorm_enabled: bool = False,
+) -> str:
+    """Chuẩn hóa text OmniVoice — dùng pipeline chung ``tts_text_normalize``."""
     lang = resolve_omnivoice_language(language) if language else None
-    if lang == "vietnamese":
-        t = apply_omnivoice_lexical_replacements(text)
-        t = t.lower()
-    else:
-        t = str(text or "").strip()
-    return _normalize_tts_text_for_audio(t)
+    return prepare_tts_input_text(text, lang, vinorm_enabled=vinorm_enabled)
 
 
 def _resolve_dtype(dtype_str: str):
@@ -342,6 +265,331 @@ def ensure_voice_clone_prompt(
     return _session_prompt
 
 
+def _wave_to_numpy(wave: Any) -> Any:
+    """Chuyển tensor / ndarray → float32 mono 1-D."""
+    import numpy as np
+    import torch
+
+    if isinstance(wave, torch.Tensor):
+        wave_np = wave.detach().to(dtype=torch.float32).cpu().numpy()
+    else:
+        wave_np = np.asarray(wave, dtype=np.float32)
+    if wave_np.ndim == 0:
+        raise RuntimeError("OmniVoice: audio output rỗng/không hợp lệ (scalar).")
+    if wave_np.ndim > 1:
+        wave_np = wave_np.reshape(-1)
+    return wave_np
+
+
+def _normalize_generate_audios(audio: Any) -> list[Any]:
+    """``generate()`` trả list hoặc single — luôn ra list waves."""
+    if isinstance(audio, (list, tuple)):
+        if not audio:
+            raise RuntimeError("OmniVoice: audio output rỗng (empty list).")
+        return list(audio)
+    return [audio]
+
+
+def _run_omnivoice_generate(
+    model: Any,
+    texts: Sequence[str],
+    *,
+    voice_prompt: Any,
+    language: str,
+    ref_audio_path: str,
+    ref_text: str,
+    denoise: bool,
+    preprocess_prompt: bool,
+    postprocess_output: bool,
+    num_step: Optional[int],
+    guidance_scale: Optional[float],
+) -> list[Any]:
+    """Gọi ``model.generate`` cho 1 hoặc nhiều text; trả list wave (pre-numpy)."""
+    pp = bool(preprocess_prompt)
+    langs = [language] * len(texts)
+    gen_kw: dict = dict(
+        text=list(texts),
+        voice_clone_prompt=voice_prompt,
+        language=langs,
+        denoise=bool(denoise),
+        preprocess_prompt=pp,
+        postprocess_output=bool(postprocess_output),
+    )
+    if (
+        num_step is not None
+        and guidance_scale is not None
+        and int(num_step) > 0
+    ):
+        gen_kw["num_step"] = int(num_step)
+        gen_kw["guidance_scale"] = float(guidance_scale)
+
+    try:
+        audio = model.generate(**gen_kw)
+    except TypeError:
+        try:
+            cfg_kw = {
+                "text": list(texts),
+                "voice_clone_prompt": voice_prompt,
+                "language": langs,
+            }
+            if "num_step" in gen_kw:
+                try:
+                    from omnivoice import OmniVoiceGenerationConfig
+
+                    cfg_kw["generation_config"] = OmniVoiceGenerationConfig(
+                        num_step=int(gen_kw["num_step"]),
+                        guidance_scale=float(gen_kw["guidance_scale"]),
+                        denoise=bool(denoise),
+                        preprocess_prompt=pp,
+                        postprocess_output=bool(postprocess_output),
+                    )
+                except Exception:
+                    pass
+            audio = model.generate(**cfg_kw)
+        except TypeError:
+            try:
+                slim_kw = {"text": list(texts), "voice_clone_prompt": voice_prompt}
+                audio = model.generate(**slim_kw)
+            except TypeError:
+                import warnings
+
+                warnings.warn(
+                    "OmniVoice: Version này không hỗ trợ voice_clone_prompt. "
+                    "Đang dùng ref_audio trực tiếp — nên nâng lên omnivoice>=0.2.1.",
+                    UserWarning,
+                )
+                slim_kw = {"text": list(texts), "ref_audio": ref_audio_path}
+                if ref_text:
+                    slim_kw["ref_text"] = ref_text
+                audio = model.generate(**slim_kw)
+
+    waves = _normalize_generate_audios(audio)
+    if len(waves) != len(texts):
+        raise RuntimeError(
+            f"OmniVoice: batch output count {len(waves)} != input {len(texts)}"
+        )
+    return waves
+
+
+def _write_waves_to_files(waves: Sequence[Any], out_wavs: Sequence[str | Path]) -> None:
+    import soundfile as sf
+
+    if len(waves) != len(out_wavs):
+        raise ValueError("OmniVoice: waves/out_wavs length mismatch")
+    for wave, out_wav in zip(waves, out_wavs):
+        out = Path(out_wav)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        wave_np = _wave_to_numpy(wave)
+        sf.write(str(out), wave_np, 24000)
+
+
+def _prepare_synthesis_context(
+    *,
+    texts: Sequence[str],
+    ref_audio: str | Path,
+    ref_text: str,
+    model_id: str,
+    device_map: str,
+    dtype_str: str,
+    language: str | None,
+    preprocess_prompt: bool,
+    normalize_text: bool,
+    seed: Optional[int],
+) -> tuple[Any, str, str, list[str], Any]:
+    import torch
+
+    if not texts:
+        raise ValueError("OmniVoice: texts rỗng.")
+
+    model = _get_model(model_id=model_id, device_map=device_map, dtype_str=dtype_str)
+    ref_audio_path = str(Path(ref_audio).resolve())
+    if not Path(ref_audio_path).is_file():
+        raise FileNotFoundError(f"OmniVoice: không tìm thấy ref_audio: {ref_audio_path}")
+
+    resolved_language = resolve_omnivoice_language(language)
+    vinorm = bool(normalize_text)
+    prepared: list[str] = []
+    for text in texts:
+        t = prepare_omnivoice_input_text(
+            text,
+            resolved_language,
+            vinorm_enabled=vinorm,
+        )
+        if not t:
+            raise ValueError("OmniVoice: text rỗng sau chuẩn hóa.")
+        prepared.append(t)
+
+    rt = str(ref_text or "").strip()
+    pp = bool(preprocess_prompt)
+    voice_prompt = ensure_voice_clone_prompt(
+        ref_audio=ref_audio_path,
+        ref_text=rt,
+        model_id=model_id,
+        device_map=device_map,
+        dtype_str=dtype_str,
+        preprocess_prompt=pp,
+    )
+
+    if seed is not None:
+        torch.manual_seed(int(seed))
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(int(seed))
+
+    return model, ref_audio_path, rt, prepared, voice_prompt
+
+
+def synthesize_batch_to_wavs(
+    *,
+    texts: Sequence[str],
+    out_wavs: Sequence[str | Path],
+    ref_audio: str | Path,
+    ref_text: str,
+    model_id: str,
+    device_map: str,
+    dtype_str: str = "float16",
+    language: str | None = None,
+    num_step: Optional[int] = DEFAULT_OMNIVOICE_NUM_STEP,
+    guidance_scale: Optional[float] = DEFAULT_OMNIVOICE_GUIDANCE_SCALE,
+    denoise: bool = DEFAULT_OMNIVOICE_DENOISE,
+    preprocess_prompt: bool = DEFAULT_OMNIVOICE_PREPROCESS_PROMPT,
+    postprocess_output: bool = DEFAULT_OMNIVOICE_POSTPROCESS_OUTPUT,
+    normalize_text: bool = False,
+    seed: Optional[int] = None,
+) -> None:
+    """
+    Sinh nhiều đoạn thoại trong một ``model.generate()`` (batch inference).
+    Dùng cached model + voice_clone_prompt (cùng ref cho mọi item).
+    """
+    try:
+        import soundfile as sf  # noqa: F401 — dependency check
+    except ImportError as e:
+        raise RuntimeError(
+            "OmniVoice: cần torch + soundfile để lưu WAV (pip install soundfile)."
+        ) from e
+
+    text_list = [str(t or "") for t in texts]
+    out_list = list(out_wavs)
+    if not text_list:
+        return
+    if len(text_list) != len(out_list):
+        raise ValueError("OmniVoice: texts và out_wavs phải cùng độ dài.")
+
+    resolved_language = resolve_omnivoice_language(language)
+    model, ref_audio_path, rt, prepared, voice_prompt = _prepare_synthesis_context(
+        texts=text_list,
+        ref_audio=ref_audio,
+        ref_text=ref_text,
+        model_id=model_id,
+        device_map=device_map,
+        dtype_str=dtype_str,
+        language=resolved_language,
+        preprocess_prompt=preprocess_prompt,
+        normalize_text=normalize_text,
+        seed=seed,
+    )
+
+    waves = _run_omnivoice_generate(
+        model,
+        prepared,
+        voice_prompt=voice_prompt,
+        language=resolved_language,
+        ref_audio_path=ref_audio_path,
+        ref_text=rt,
+        denoise=denoise,
+        preprocess_prompt=preprocess_prompt,
+        postprocess_output=postprocess_output,
+        num_step=num_step,
+        guidance_scale=guidance_scale,
+    )
+    _write_waves_to_files(waves, out_list)
+
+
+def synthesize_many_to_wavs(
+    items: Sequence[dict[str, Any]],
+    *,
+    batch_size: Optional[int] = None,
+    ref_audio: str | Path,
+    ref_text: str,
+    model_id: str,
+    device_map: str,
+    dtype_str: str = "float16",
+    language: str | None = None,
+    num_step: Optional[int] = DEFAULT_OMNIVOICE_NUM_STEP,
+    guidance_scale: Optional[float] = DEFAULT_OMNIVOICE_GUIDANCE_SCALE,
+    denoise: bool = DEFAULT_OMNIVOICE_DENOISE,
+    preprocess_prompt: bool = DEFAULT_OMNIVOICE_PREPROCESS_PROMPT,
+    postprocess_output: bool = DEFAULT_OMNIVOICE_POSTPROCESS_OUTPUT,
+    normalize_text: bool = False,
+    seed: Optional[int] = None,
+    fallback_sequential: bool = True,
+) -> None:
+    """
+    Chia ``items`` (mỗi phần tử có ``text``, ``out_wav``) thành batch và gọi
+    ``synthesize_batch_to_wavs``. Batch lỗi → fallback tuần tự nếu ``fallback_sequential``.
+    """
+    if not items:
+        return
+
+    bs = resolve_omnivoice_batch_size(batch_size)
+    shared_kw = dict(
+        ref_audio=ref_audio,
+        ref_text=ref_text,
+        model_id=model_id,
+        device_map=device_map,
+        dtype_str=dtype_str,
+        language=language,
+        num_step=num_step,
+        guidance_scale=guidance_scale,
+        denoise=denoise,
+        preprocess_prompt=preprocess_prompt,
+        postprocess_output=postprocess_output,
+        normalize_text=normalize_text,
+        seed=seed,
+    )
+
+    chunk: list[dict[str, Any]] = []
+    for item in items:
+        chunk.append(item)
+        if len(chunk) >= bs:
+            _synthesize_many_chunk(chunk, shared_kw=shared_kw, fallback_sequential=fallback_sequential)
+            chunk = []
+    if chunk:
+        _synthesize_many_chunk(chunk, shared_kw=shared_kw, fallback_sequential=fallback_sequential)
+
+
+def _synthesize_many_chunk(
+    chunk: list[dict[str, Any]],
+    *,
+    shared_kw: dict[str, Any],
+    fallback_sequential: bool,
+) -> None:
+    texts = [str(item.get("text") or "") for item in chunk]
+    out_wavs = [item.get("out_wav") for item in chunk]
+    if any(not str(t).strip() for t in texts):
+        raise ValueError("OmniVoice: item thiếu text trong batch.")
+    if any(not out_wavs):
+        raise ValueError("OmniVoice: item thiếu out_wav trong batch.")
+
+    try:
+        synthesize_batch_to_wavs(
+            texts=texts,
+            out_wavs=out_wavs,
+            **shared_kw,
+        )
+    except Exception as batch_exc:
+        if not fallback_sequential or len(chunk) <= 1:
+            raise
+        for item in chunk:
+            try:
+                synthesize_to_wav(
+                    text=str(item.get("text") or ""),
+                    out_wav=item.get("out_wav"),
+                    **shared_kw,
+                )
+            except Exception:
+                raise batch_exc
+
+
 def synthesize_to_wav(
     *,
     text: str,
@@ -357,6 +605,7 @@ def synthesize_to_wav(
     denoise: bool = DEFAULT_OMNIVOICE_DENOISE,
     preprocess_prompt: bool = DEFAULT_OMNIVOICE_PREPROCESS_PROMPT,
     postprocess_output: bool = DEFAULT_OMNIVOICE_POSTPROCESS_OUTPUT,
+    normalize_text: bool = False,
     seed: Optional[int] = None,
 ) -> None:
     """
@@ -379,128 +628,23 @@ def synthesize_to_wav(
         denoise: Bật token ``<|denoise|>`` (upstream default True)
         preprocess_prompt: Preprocess ref audio/text khi tạo clone prompt
         postprocess_output: Trim silence / fade / pad output
+        normalize_text: Bật vinorm + acronym rules (``OMNIVOICE_NORMALIZE_TEXT``)
         seed: Random seed để tạo output deterministic (giúp tái tạo chính xác cùng output)
     """
-    try:
-        import numpy as np
-        import soundfile as sf
-        import torch
-    except ImportError as e:
-        raise RuntimeError(
-            "OmniVoice: cần torch + soundfile để lưu WAV (pip install soundfile)."
-        ) from e
-
-    out = Path(out_wav)
-    out.parent.mkdir(parents=True, exist_ok=True)
-
-    model = _get_model(model_id=model_id, device_map=device_map, dtype_str=dtype_str)
-    ref_audio_path = str(Path(ref_audio).resolve())
-    if not Path(ref_audio_path).is_file():
-        raise FileNotFoundError(f"OmniVoice: không tìm thấy ref_audio: {ref_audio_path}")
-
-    resolved_language = resolve_omnivoice_language(language)
-
-    t = prepare_omnivoice_input_text(text, resolved_language)
-    if not t:
-        raise ValueError("OmniVoice: text rỗng.")
-
-    rt = str(ref_text or "").strip()
-    pp = bool(preprocess_prompt)
-    
-    # 🔧 FIX: Sử dụng cached voice clone prompt để đảm bảo tone giọng nhất quán
-    # Thay vì truyền trực tiếp ref_audio/ref_text vào mỗi lần generate,
-    # ta tạo và cache voice prompt một lần, sau đó tái sử dụng.
-    voice_prompt = ensure_voice_clone_prompt(
-        ref_audio=ref_audio_path,
-        ref_text=rt,
+    synthesize_batch_to_wavs(
+        texts=[text],
+        out_wavs=[out_wav],
+        ref_audio=ref_audio,
+        ref_text=ref_text,
         model_id=model_id,
         device_map=device_map,
         dtype_str=dtype_str,
-        preprocess_prompt=pp,
+        language=language,
+        num_step=num_step,
+        guidance_scale=guidance_scale,
+        denoise=denoise,
+        preprocess_prompt=preprocess_prompt,
+        postprocess_output=postprocess_output,
+        normalize_text=normalize_text,
+        seed=seed,
     )
-
-    # 🎲 Set seed cho deterministic output (nếu được chỉ định)
-    if seed is not None:
-        torch.manual_seed(seed)
-        if torch.cuda.is_available():
-            torch.cuda.manual_seed_all(seed)
-
-    gen_kw: dict = dict(
-        text=t,
-        voice_clone_prompt=voice_prompt,
-        language=resolved_language,
-        denoise=bool(denoise),
-        preprocess_prompt=pp,
-        postprocess_output=bool(postprocess_output),
-    )
-
-    # 0.2.x: num_step / guidance_scale nhận trực tiếp trên generate();
-    # OmniVoiceGenerationConfig vẫn hỗ trợ nếu version cũ hơn.
-    if (
-        num_step is not None
-        and guidance_scale is not None
-        and int(num_step) > 0
-    ):
-        gen_kw["num_step"] = int(num_step)
-        gen_kw["guidance_scale"] = float(guidance_scale)
-
-    try:
-        audio = model.generate(**gen_kw)
-    except TypeError:
-        # Fallback: bỏ kwargs mới / dùng generation_config / slim prompt
-        try:
-            cfg_kw = {
-                "text": t,
-                "voice_clone_prompt": voice_prompt,
-                "language": resolved_language,
-            }
-            if "num_step" in gen_kw:
-                try:
-                    from omnivoice import OmniVoiceGenerationConfig
-
-                    cfg_kw["generation_config"] = OmniVoiceGenerationConfig(
-                        num_step=int(gen_kw["num_step"]),
-                        guidance_scale=float(gen_kw["guidance_scale"]),
-                        denoise=bool(denoise),
-                        preprocess_prompt=pp,
-                        postprocess_output=bool(postprocess_output),
-                    )
-                except Exception:
-                    pass
-            audio = model.generate(**cfg_kw)
-        except TypeError:
-            try:
-                slim_kw = {"text": t, "voice_clone_prompt": voice_prompt}
-                audio = model.generate(**slim_kw)
-            except TypeError:
-                # Fallback cuối: ref_audio trực tiếp (tone có thể kém ổn định)
-                import warnings
-
-                warnings.warn(
-                    "OmniVoice: Version này không hỗ trợ voice_clone_prompt. "
-                    "Đang dùng ref_audio trực tiếp — nên nâng lên omnivoice>=0.2.1.",
-                    UserWarning,
-                )
-                slim_kw = {"text": t, "ref_audio": ref_audio_path}
-                if rt:
-                    slim_kw["ref_text"] = rt
-                audio = model.generate(**slim_kw)
-
-    # Theo mẫu official: audio là list[np.ndarray] shape (T,) at 24kHz.
-    if isinstance(audio, (list, tuple)) and len(audio) > 0:
-        wave = audio[0]
-    else:
-        wave = audio
-
-    if isinstance(wave, torch.Tensor):
-        wave_np = wave.detach().to(dtype=torch.float32).cpu().numpy()
-    else:
-        wave_np = np.asarray(wave, dtype=np.float32)
-
-    if wave_np.ndim == 0:
-        raise RuntimeError("OmniVoice: audio output rỗng/không hợp lệ (scalar).")
-    if wave_np.ndim > 1:
-        # Giữ theo mẫu out mono: [T]. Nếu có batch/channel thì dẹt về 1 chiều.
-        wave_np = wave_np.reshape(-1)
-
-    sf.write(str(out), wave_np, 24000)

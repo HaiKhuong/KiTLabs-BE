@@ -288,6 +288,26 @@ def run_srt_timeline(payload: dict[str, Any]) -> dict[str, Any]:
         denoise = _flag("denoise", "OMNIVOICE_DENOISE", True)
         preprocess_prompt = _flag("preprocess_prompt", "OMNIVOICE_PREPROCESS_PROMPT", True)
         postprocess_output = _flag("postprocess_output", "OMNIVOICE_POSTPROCESS_OUTPUT", True)
+        normalize_text = _flag("normalize_text", "OMNIVOICE_NORMALIZE_TEXT", False)
+
+        from omnivoice_tts import resolve_omnivoice_batch_size, synthesize_many_to_wavs
+
+        batch_size = resolve_omnivoice_batch_size(payload.get("batch_size"))
+        omni_synth_kw = dict(
+            ref_audio=str(ref_audio),
+            ref_text=ref_text,
+            model_id=model_id,
+            device_map=device_map,
+            dtype_str=dtype_str,
+            language=language,
+            num_step=int(num_step) if num_step not in (None, "") else None,
+            guidance_scale=float(guidance_scale) if guidance_scale not in (None, "") else None,
+            denoise=denoise,
+            preprocess_prompt=preprocess_prompt,
+            postprocess_output=postprocess_output,
+            normalize_text=normalize_text,
+            seed=int(seed) if seed not in (None, "") else None,
+        )
 
         def _prepare_text(raw: str) -> str:
             return prepare_omnivoice_input_text(raw)
@@ -296,18 +316,7 @@ def run_srt_timeline(payload: dict[str, Any]) -> dict[str, Any]:
             synthesize_omnivoice_to_wav(
                 text=text,
                 out_wav=out_wav,
-                ref_audio=str(ref_audio),
-                ref_text=ref_text,
-                model_id=model_id,
-                device_map=device_map,
-                dtype_str=dtype_str,
-                language=language,
-                num_step=int(num_step) if num_step not in (None, "") else None,
-                guidance_scale=float(guidance_scale) if guidance_scale not in (None, "") else None,
-                denoise=denoise,
-                preprocess_prompt=preprocess_prompt,
-                postprocess_output=postprocess_output,
-                seed=int(seed) if seed not in (None, "") else None,
+                **omni_synth_kw,
             )
 
     gap_count = 0
@@ -317,6 +326,21 @@ def run_srt_timeline(payload: dict[str, Any]) -> dict[str, Any]:
 
     with tempfile.TemporaryDirectory(prefix="srt_tts_") as tmp:
         tmp_dir = Path(tmp)
+
+        if not use_voxcpm2:
+            batch_jobs = []
+            for i, cue in enumerate(cues):
+                prepared = _prepare_text(str(cue.get("text") or ""))
+                if prepared:
+                    batch_jobs.append(
+                        {"text": prepared, "out_wav": tmp_dir / f"raw_{i:04d}.wav"}
+                    )
+            if batch_jobs:
+                synthesize_many_to_wavs(
+                    batch_jobs,
+                    batch_size=batch_size,
+                    **omni_synth_kw,
+                )
 
         for i, cue in enumerate(cues):
             start_ms = int(cue["start_ms"])
@@ -340,7 +364,8 @@ def run_srt_timeline(payload: dict[str, Any]) -> dict[str, Any]:
                 continue
 
             raw_path = tmp_dir / f"raw_{i:04d}.wav"
-            _synthesize(text, raw_path)
+            if not raw_path.is_file():
+                _synthesize(text, raw_path)
 
             sped = tmp_dir / f"sped_{i:04d}.wav"
             _apply_speed(raw_path, sped, playback_speed)

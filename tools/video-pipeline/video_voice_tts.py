@@ -3,7 +3,7 @@ Video workflow — TTS từng scene bằng omnivoice_tts (giống auto_vietsub S
 
 Stdin JSON:
   ref_audio, ref_text, model_id?, device_map?, dtype_str?, language?, num_step?, guidance_scale?, seed?,
-  scenes: [{ sceneNumber, text, out_wav }]
+  batch_size?, scenes: [{ sceneNumber, text, out_wav }]
 
 Stdout JSON:
   { segments: [{ sceneNumber, ok, error? }] }
@@ -25,8 +25,9 @@ from omnivoice_tts import (
     DEFAULT_OMNIVOICE_NUM_STEP,
     DEFAULT_OMNIVOICE_POSTPROCESS_OUTPUT,
     DEFAULT_OMNIVOICE_PREPROCESS_PROMPT,
+    resolve_omnivoice_batch_size,
     resolve_omnivoice_language,
-    synthesize_to_wav,
+    synthesize_many_to_wavs,
 )
 
 
@@ -94,7 +95,13 @@ def main() -> None:
         "postprocess_output",
         _env_flag("OMNIVOICE_POSTPROCESS_OUTPUT", DEFAULT_OMNIVOICE_POSTPROCESS_OUTPUT),
     )
+    normalize_text = _payload_flag(
+        payload,
+        "normalize_text",
+        _env_flag("OMNIVOICE_NORMALIZE_TEXT", False),
+    )
     seed = _resolve_seed(payload.get("seed"))
+    batch_size = resolve_omnivoice_batch_size(payload.get("batch_size"))
 
     scenes = payload.get("scenes")
     if not isinstance(scenes, list) or not scenes:
@@ -112,10 +119,14 @@ def main() -> None:
         denoise=denoise,
         preprocess_prompt=preprocess_prompt,
         postprocess_output=postprocess_output,
+        normalize_text=normalize_text,
         seed=seed,
     )
 
     results: list[dict[str, Any]] = []
+    jobs: list[dict[str, Any]] = []
+    job_scene_numbers: list[int] = []
+
     for item in scenes:
         if not isinstance(item, dict):
             continue
@@ -133,13 +144,42 @@ def main() -> None:
             continue
         out_path = Path(out_wav)
         out_path.parent.mkdir(parents=True, exist_ok=True)
+        jobs.append({"text": text, "out_wav": str(out_path)})
+        job_scene_numbers.append(scene_number)
+
+    if jobs:
         try:
-            synthesize_to_wav(text=text, out_wav=str(out_path), **omnivoice_kw)
-            if not out_path.is_file() or out_path.stat().st_size <= 0:
-                raise RuntimeError(f"empty output: {out_path}")
-            results.append({"sceneNumber": scene_number, "ok": True})
+            synthesize_many_to_wavs(
+                jobs,
+                batch_size=batch_size,
+                **omnivoice_kw,
+            )
         except Exception as exc:
-            results.append({"sceneNumber": scene_number, "ok": False, "error": str(exc) or exc.__class__.__name__})
+            for scene_number in job_scene_numbers:
+                results.append(
+                    {
+                        "sceneNumber": scene_number,
+                        "ok": False,
+                        "error": str(exc) or exc.__class__.__name__,
+                    }
+                )
+            json.dump({"segments": results}, sys.stdout, ensure_ascii=False)
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+            return
+
+        for scene_number, job in zip(job_scene_numbers, jobs):
+            out_path = Path(job["out_wav"])
+            if out_path.is_file() and out_path.stat().st_size > 0:
+                results.append({"sceneNumber": scene_number, "ok": True})
+            else:
+                results.append(
+                    {
+                        "sceneNumber": scene_number,
+                        "ok": False,
+                        "error": f"empty output: {out_path}",
+                    }
+                )
 
     json.dump({"segments": results}, sys.stdout, ensure_ascii=False)
     sys.stdout.write("\n")

@@ -7,7 +7,6 @@ Gọi configure_step3_edge(...) trước khi dùng run_edge_tts_mp3_save / prepa
 from __future__ import annotations
 
 import asyncio
-import re
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -36,51 +35,9 @@ def configure_step3_edge(
     )
 
 
-def _apply_tts_acronym_rules(t: str) -> str:
-    """Thay viết tắt chữ cái → cách đọc tiếng Việt. Thứ tự: dài / có khoảng trắng trước."""
-    t = re.sub(r"\bS\s+S\s+S\b", "Ba Ét", t, flags=re.IGNORECASE)
-    t = re.sub(r"\bSSS\b", "Ba Ét", t, flags=re.IGNORECASE)
-    t = re.sub(r"\bS\s+S\b", "Hai Ét", t, flags=re.IGNORECASE)
-    t = re.sub(r"\bSS\b", "Hai Ét", t, flags=re.IGNORECASE)
-    t = re.sub(r"\bS\b", "Ét", t, flags=re.IGNORECASE)
-    t = re.sub(r"\bHACK\b", "Hách", t, flags=re.IGNORECASE)
-    t = re.sub(r"\bMecha\b", "Mê cha", t, flags=re.IGNORECASE)
-    t = re.sub(r"\bHaiz+\b", "Hài", t, flags=re.IGNORECASE)
-    t = t.replace("A.I", "Ây Ai").replace("AI", "Ây Ai")
-    # Lặp: "Đi thôi, đi thôi" / "Đi thôi. đi thôi" → "ĐI thôi"
-    t = re.sub(
-        r"\bđi\s+thôi\s*[,.]\s*đi\s+thôi\b",
-        "Đi thôi",
-        t,
-        flags=re.IGNORECASE,
-    )
-    return t
-
-
 def tts_normalize_vi(text, enabled: bool):
-    if not enabled:
-        return text
-    try:
-        from vinorm import TTSnorm
-    except ImportError:
-        return text
-    s = _apply_tts_acronym_rules(str(text or ""))
-    t = (
-        TTSnorm(s, unknown=False, lower=False, rule=True)
-        .replace("..", "")
-        .replace("...", "")
-        .replace("!.", "")
-        .replace("?.", "")
-        .replace(" .", "")
-        .replace(" ,", "")
-        .replace('"', "")
-        .replace("'", "")
-        .replace("/", " phần ")
-        .replace("+", " Cộng ")
-    )
-    # vinorm đôi khi tách SS → "S S"; chạy lại sau normalize
-    t = _apply_tts_acronym_rules(t)
-    return t
+    """Alias — dùng pipeline chung ``tts_text_normalize``."""
+    return prepare_tts_vi_text(str(text or ""), vinorm_enabled=bool(enabled))
 
 
 def prepare_speaker_reference(speaker_in: Path, cache_dir: Path) -> Path:

@@ -49,7 +49,6 @@ from step3_edge import (
     configure_step3_edge,
     prepare_speaker_reference,
     run_edge_tts_mp3_save,
-    tts_normalize_vi,
 )
 
 # ==============================
@@ -88,6 +87,7 @@ OMNIVOICE_PREPROCESS_PROMPT = True
 OMNIVOICE_POSTPROCESS_OUTPUT = True
 OMNIVOICE_SEED = 42  # None = random, số nguyên = deterministic (giúp reproducible + ổn định tone giọng)
 OMNIVOICE_NORMALIZE_TEXT = False
+OMNIVOICE_BATCH_SIZE = 8  # số câu mỗi model.generate(); 1 = tuần tự (cũ)
 OMNIVOICE_TRIM_TRAILING_SILENCE = True
 OMNIVOICE_TRAILING_SILENCE_MIN_MS = 120
 OMNIVOICE_TRAILING_SILENCE_THRESHOLD_DB = -42
@@ -130,6 +130,8 @@ STEP3_TTS_API_TIMEOUT_SEC = 120.0
 STEP3_TTS_MAX_RETRY_ACTION = "stop"
 # Ghi/đọc checkpoint segment TTS trong logs/tts_chunks: rerender chỉ gọi edge-tts cho segment chưa xong (tiết kiệm rate).
 STEP3_VOICE_RESUME = True
+# Step3 log: False = chỉ lỗi / resume / batch summary / done; True = chi tiết + progress bar.
+STEP3_VERBOSE_LOG = False
 # Debug: xóa _voice.wav + tts_chunks trước Step3 (không chạy ở Step7).
 REMOVE_CACHED_VOICE = False
 # Hiển thị tqdm progress bar ra stdout/stderr khi chạy qua BE.
@@ -141,6 +143,13 @@ STEP3_TTS_BORROW_GAP = False
 FFMPEG_PATH = ""
 
 _DEFAULT_WORK_OUTPUT_ROOT = "/mnt/c/Users/haikh/Videos/VideoVietsub/videos"
+
+
+def _env_flag(var_name: str, default: bool) -> bool:
+    raw = os.getenv(var_name)
+    if raw is None or str(raw).strip() == "":
+        return default
+    return str(raw).strip().lower() in ("1", "true", "yes", "on")
 
 
 def _resolve_work_root_env(var_name: str, fallback: str) -> Path:
@@ -442,6 +451,17 @@ def _load_env_files():
 
 _load_env_files()
 
+# Env override (sau _load_env_files để đọc .env khi chạy script trực tiếp).
+OMNIVOICE_NORMALIZE_TEXT = _env_flag("OMNIVOICE_NORMALIZE_TEXT", OMNIVOICE_NORMALIZE_TEXT)
+VOXCPM2_NORMALIZE_TEXT = _env_flag("VOXCPM2_NORMALIZE_TEXT", VOXCPM2_NORMALIZE_TEXT)
+STEP3_VERBOSE_LOG = _env_flag("STEP3_VERBOSE_LOG", STEP3_VERBOSE_LOG)
+_omni_batch_env = (os.getenv("OMNIVOICE_BATCH_SIZE") or "").strip()
+if _omni_batch_env:
+    try:
+        OMNIVOICE_BATCH_SIZE = max(1, int(_omni_batch_env))
+    except ValueError:
+        pass
+
 
 def parse_api_keys(raw_value):
     if not raw_value:
@@ -493,6 +513,12 @@ def log(message, *, write_file=True):
             print(str(message).encode("ascii", errors="replace").decode("ascii"))
 
 
+def log_step3(message, *, important=True, write_file=True):
+    """Step3 log — mặc định chỉ ``important=True`` (lỗi, resume, batch, done)."""
+    if important or STEP3_VERBOSE_LOG:
+        log(message, write_file=write_file)
+
+
 def progressbar(iterable, **kwargs):
     kwargs.setdefault("disable", not PROCESSBAR_LOG_ENABLED)
     return tqdm(iterable, **kwargs)
@@ -527,9 +553,9 @@ def step3_tts_retry(
             return True
         except Exception as e:
             if attempt == max_retry:
-                log(f"Step3 TTS: failed after {max_retry} attempts: {e}")
+                log_step3(f"Step3 TTS: failed after {max_retry} attempts: {e}", important=True)
                 if STEP3_TTS_MAX_RETRY_ACTION == "skip":
-                    log("Step3 TTS: skip segment (exhausted retries, action=skip).")
+                    log_step3("Step3 TTS: skip segment (exhausted retries, action=skip).", important=True)
                     return False
                 raise RuntimeError(
                     f"{label} failed after {max_retry} attempts: {e}"
@@ -1241,7 +1267,7 @@ def _step3_save_voice_checkpoint(srt_path, chunk_dir, blocks, done_indices):
         sp = str(Path(srt_path).resolve())
         mtime = Path(srt_path).stat().st_mtime
     except OSError as e:
-        log(f"Step3: không ghi checkpoint voice (stat SRT): {e}")
+        log_step3(f"Step3: không ghi checkpoint voice (stat SRT): {e}", important=True)
         return
     payload = {
         "version": 1,
@@ -1257,14 +1283,14 @@ def _step3_save_voice_checkpoint(srt_path, chunk_dir, blocks, done_indices):
             json.dump(payload, f, ensure_ascii=False, indent=2)
         tmp.replace(json_path)
     except Exception as e:
-        log(f"Step3: không ghi checkpoint voice json: {e}")
+        log_step3(f"Step3: không ghi checkpoint voice json: {e}", important=True)
     try:
         srt_ok = sorted(
             blocks[i]["index"] for i in sorted(done_indices) if i < len(blocks)
         )
         write_text(txt_path, " ".join(str(x) for x in srt_ok))
     except Exception as e:
-        log(f"Step3: không ghi voice_ok_srt.txt: {e}")
+        log_step3(f"Step3: không ghi voice_ok_srt.txt: {e}", important=True)
 
 
 def get_zh_srt_path():
@@ -2082,6 +2108,94 @@ def _omnivoice_resolve_device_map(raw: str) -> str:
     return "cuda:0" if torch.cuda.is_available() else "cpu"
 
 
+def _step3_omnivoice_synth_kwargs(omni_ref_prepared, omni_device):
+    """Shared kwargs cho synthesize_to_wav / synthesize_many_to_wavs."""
+    ns = int(OMNIVOICE_NUM_STEP)
+    gs = float(OMNIVOICE_GUIDANCE_SCALE)
+    return {
+        "ref_audio": omni_ref_prepared,
+        "ref_text": str(OMNIVOICE_REF_TEXT or ""),
+        "model_id": str(OMNIVOICE_MODEL_ID or "").strip(),
+        "device_map": omni_device,
+        "dtype_str": str(OMNIVOICE_DTYPE or "float16").strip() or "float16",
+        "language": str(OMNIVOICE_LANGUAGE or "vietnamese").strip() or "vietnamese",
+        "num_step": ns if ns > 0 else None,
+        "guidance_scale": gs if ns > 0 else None,
+        "denoise": bool(OMNIVOICE_DENOISE),
+        "preprocess_prompt": bool(OMNIVOICE_PREPROCESS_PROMPT),
+        "postprocess_output": bool(OMNIVOICE_POSTPROCESS_OUTPUT),
+        "normalize_text": bool(OMNIVOICE_NORMALIZE_TEXT),
+        "seed": OMNIVOICE_SEED if OMNIVOICE_SEED is not None else None,
+    }
+
+
+def _step3_prefetch_omnivoice_batches(
+    blocks,
+    chunk_dir,
+    done_block_indices,
+    omni_ref_prepared,
+    omni_device,
+):
+    """Phase A: batch generate raw_*.wav trước timeline loop (khi batch_size > 1)."""
+    batch_size = max(1, int(OMNIVOICE_BATCH_SIZE))
+    if batch_size <= 1:
+        return
+
+    jobs = []
+    for i, block in enumerate(blocks):
+        start_ms, end_ms = parse_srt_time_range(block["time"])
+        if end_ms <= start_ms:
+            continue
+        subtitle_text = sanitize_tts_text(block["text"])
+        if not subtitle_text:
+            continue
+        final_seg_path = chunk_dir / f"part_{i:04d}.wav"
+        if (
+            STEP3_VOICE_RESUME
+            and i in done_block_indices
+            and file_ready(final_seg_path)
+        ):
+            continue
+        raw_audio_path = chunk_dir / f"raw_{i:04d}.wav"
+        if file_ready(raw_audio_path):
+            continue
+        jobs.append({"text": subtitle_text, "out_wav": raw_audio_path})
+
+    if not jobs:
+        return
+
+    log_step3(
+        f"Step3 OmniVoice: batch prefetch {len(jobs)} segment(s), batch_size={batch_size}",
+        important=True,
+    )
+
+    def run_batch():
+        sleep_ms = max(0, int(STEP3_TTS_REQUEST_SLEEP_MS))
+        if sleep_ms > 0:
+            time.sleep(sleep_ms / 1000.0)
+        batch_kw = _step3_omnivoice_synth_kwargs(omni_ref_prepared, omni_device)
+        bs = batch_size
+        for start in range(0, len(jobs), bs):
+            chunk = jobs[start : start + bs]
+            if STEP3_VERBOSE_LOG:
+                log_step3(
+                    f"Step3 OmniVoice: batch {start // bs + 1} "
+                    f"({len(chunk)} segment(s))",
+                    important=False,
+                )
+            from omnivoice_tts import synthesize_batch_to_wavs
+
+            texts = [str(j["text"]) for j in chunk]
+            out_wavs = [j["out_wav"] for j in chunk]
+            synthesize_batch_to_wavs(texts=texts, out_wavs=out_wavs, **batch_kw)
+
+    step3_tts_retry(
+        run_batch,
+        "Step3 OmniVoice batch prefetch",
+        max_retry=TTS_RETRY_MAX,
+    )
+
+
 def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
     eng = str(STEP3_TTS_ENGINE or "edge").strip().lower()
     if eng not in ("edge", "omnivoice", "voxcpm2"):
@@ -2104,7 +2218,6 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
 
     if use_voice_clone:
         engine_label = "VoxCPM2" if use_voxcpm2 else "OmniVoice"
-        log(f"Step3: {engine_label} voice clone (timeline SRT)…")
         if use_omnivoice:
             _omni_mid = str(OMNIVOICE_MODEL_ID or "").strip()
             if not _omni_mid:
@@ -2126,13 +2239,23 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
                 f"{engine_label}: cần OMNIVOICE_REF_TEXT (transcript của giọng mẫu) trong auto_vietsub_pro.py. "
                 "Để trống sẽ kích hoạt auto ASR và có thể kéo TorchCodec/FFmpeg runtime."
             )
-        log(
-            f"{engine_label}: đã chuẩn bị giọng mẫu "
-            f"{spk.name} → {Path(omni_ref_prepared).name}"
-            + (f" (device={omni_device})" if use_omnivoice else "")
+        batch_hint = (
+            f"batch={int(OMNIVOICE_BATCH_SIZE)}"
+            if use_omnivoice
+            else "batch=-"
         )
+        dev_hint = f"device={omni_device}" if use_omnivoice else "device=-"
+        log_step3(
+            f"Step3: {engine_label} | ref={spk.name} | {batch_hint} | {dev_hint}",
+            important=True,
+        )
+        if STEP3_VERBOSE_LOG:
+            log_step3(
+                f"Step3: ref prepared → {Path(omni_ref_prepared).name}",
+                important=False,
+            )
     else:
-        log("Step3: edge-tts (timeline SRT)…")
+        log_step3("Step3: edge-tts (timeline SRT)", important=True)
 
     with open(srt_path, encoding="utf8") as f:
         blocks = parse_srt(f.read())
@@ -2154,12 +2277,26 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
         _step3_prune_voice_checkpoint_missing_wavs(
             done_block_indices, srt_path, chunk_dir, blocks
         )
-    if STEP3_VOICE_RESUME and done_block_indices:
-        log(f"Step3: resume {len(done_block_indices)} segments (checkpoint).")
+
+    if use_omnivoice and int(OMNIVOICE_BATCH_SIZE) > 1:
+        _step3_prefetch_omnivoice_batches(
+            blocks,
+            chunk_dir,
+            done_block_indices,
+            omni_ref_prepared,
+            omni_device,
+        )
+
     timeline_paths = []
     current_time_ms = 0
 
-    for i, block in enumerate(progressbar(blocks, desc="TTS timeline")):
+    for i, block in enumerate(
+        progressbar(
+            blocks,
+            desc="TTS timeline",
+            disable=not STEP3_VERBOSE_LOG and not PROCESSBAR_LOG_ENABLED,
+        )
+    ):
         start_ms, end_ms = parse_srt_time_range(block["time"])
         if end_ms <= start_ms:
             continue
@@ -2248,32 +2385,21 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
             if use_omnivoice:
                 from omnivoice_tts import synthesize_to_wav
 
-                tts_omni = tts_normalize_vi(subtitle_text, OMNIVOICE_NORMALIZE_TEXT)
-                ns = int(OMNIVOICE_NUM_STEP)
-                gs = float(OMNIVOICE_GUIDANCE_SCALE)
+                omni_kw = _step3_omnivoice_synth_kwargs(
+                    omni_ref_prepared, omni_device
+                )
+                if int(OMNIVOICE_BATCH_SIZE) > 1 and file_ready(raw_audio_path):
+                    return
                 synthesize_to_wav(
-                    text=tts_omni,
+                    text=subtitle_text,
                     out_wav=raw_audio_path,
-                    ref_audio=omni_ref_prepared,
-                    ref_text=str(OMNIVOICE_REF_TEXT or ""),
-                    model_id=str(OMNIVOICE_MODEL_ID or "").strip(),
-                    device_map=omni_device,
-                    dtype_str=str(OMNIVOICE_DTYPE or "float16").strip() or "float16",
-                    language=str(OMNIVOICE_LANGUAGE or "vietnamese").strip()
-                    or "vietnamese",
-                    num_step=ns if ns > 0 else None,
-                    guidance_scale=gs if ns > 0 else None,
-                    denoise=bool(OMNIVOICE_DENOISE),
-                    preprocess_prompt=bool(OMNIVOICE_PREPROCESS_PROMPT),
-                    postprocess_output=bool(OMNIVOICE_POSTPROCESS_OUTPUT),
-                    seed=OMNIVOICE_SEED if OMNIVOICE_SEED is not None else None,
+                    **omni_kw,
                 )
             elif use_voxcpm2:
                 from voxcpm2_tts import synthesize_to_wav as synthesize_voxcpm2_to_wav
 
-                tts_vox = tts_normalize_vi(subtitle_text, VOXCPM2_NORMALIZE_TEXT)
                 synthesize_voxcpm2_to_wav(
-                    text=tts_vox,
+                    text=subtitle_text,
                     out_wav=raw_audio_path,
                     ref_audio=omni_ref_prepared,
                     ref_text=str(OMNIVOICE_REF_TEXT or ""),
@@ -2304,7 +2430,7 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
             _write_step3_silent_wav(
                 final_seg_path,
                 subtitle_duration_ms,
-                f"Step3 TTS skip: silent track slot {start_ms}-{end_ms}ms ({subtitle_duration_ms}ms) idx={i}",
+                f"Step3 TTS skip silent idx={i}",
             )
             timeline_paths.append(final_seg_path.resolve())
             current_time_ms = end_ms
@@ -3326,10 +3452,10 @@ def _remove_cached_voice_before_step3():
     chunk_dir = LOG_DIR / "tts_chunks"
     if voice_path.is_file():
         voice_path.unlink()
-        log(f"Step3: removed cached voice ({voice_path.name}).")
+        log_step3(f"Step3: removed cached voice ({voice_path.name})", important=True)
     if chunk_dir.exists():
         shutil.rmtree(chunk_dir, ignore_errors=True)
-        log("Step3: removed tts_chunks checkpoint.")
+        log_step3("Step3: removed tts_chunks checkpoint", important=True)
 
 
 def parse_cli_args():
@@ -3862,6 +3988,12 @@ def parse_cli_args():
         ),
     )
     parser.add_argument(
+        "--omnivoice-batch-size",
+        type=int,
+        default=OMNIVOICE_BATCH_SIZE,
+        help="OmniVoice batch inference: số câu mỗi generate() (mặc định 8; 1=tuần tự).",
+    )
+    parser.add_argument(
         "--auto-speed",
         choices=["on", "off"],
         default="on" if STEP3_AUTO_RATE_ENABLED else "off",
@@ -3902,6 +4034,12 @@ def parse_cli_args():
         choices=["on", "off"],
         default="on" if STEP3_VOICE_RESUME else "off",
         help="on=đọc/ghi checkpoint trong logs/tts_chunks; chỉ gọi TTS cho segment chưa trong list + chưa có part_XXXX.wav (tiết kiệm rate).",
+    )
+    parser.add_argument(
+        "--step3-verbose-log",
+        choices=["on", "off"],
+        default="on" if STEP3_VERBOSE_LOG else "off",
+        help="on=log chi tiết Step3 + progress bar; off=chỉ lỗi/resume/batch/done.",
     )
     parser.add_argument(
         "--remove-cached-voice",
@@ -4003,6 +4141,7 @@ def apply_cli_config(args):
     global STEP3_TTS_API_TIMEOUT_SEC
     global STEP3_TTS_MAX_RETRY_ACTION
     global STEP3_VOICE_RESUME
+    global STEP3_VERBOSE_LOG
     global TRANSLATION_CONTEXT
     global GEMINI_KEY_TIER
     global STEP2_VI_SKIP_TEXTS_ENABLED
@@ -4016,6 +4155,7 @@ def apply_cli_config(args):
     global OMNIVOICE_REF_WAV
     global OMNIVOICE_REF_TEXT
     global OMNIVOICE_LANGUAGE
+    global OMNIVOICE_BATCH_SIZE
     global VOXCPM2_LANGUAGE
     global STEP1_MIN_SILENCE_MS
     global STEP1_MIN_SPEECH_MS
@@ -4139,6 +4279,7 @@ def apply_cli_config(args):
     if omnivoice_language:
         OMNIVOICE_LANGUAGE = omnivoice_language
         VOXCPM2_LANGUAGE = omnivoice_language
+    OMNIVOICE_BATCH_SIZE = max(1, int(getattr(args, "omnivoice_batch_size", OMNIVOICE_BATCH_SIZE)))
     STEP3_AUTO_RATE_ENABLED = args.auto_speed == "on"
     STEP3_AUTO_RATE_TRIGGER_CHARS_PER_SEC = float(args.step3_auto_rate_trigger_cps)
     STEP3_AUTO_RATE_BONUS_PERCENT = int(args.step3_auto_rate_bonus_percent)
@@ -4148,6 +4289,7 @@ def apply_cli_config(args):
         str(args.step3_tts_max_retry_action or "stop").strip().lower()
     )
     STEP3_VOICE_RESUME = args.step3_voice_resume == "on"
+    STEP3_VERBOSE_LOG = args.step3_verbose_log == "on"
     TRANSLATION_CONTEXT = args.translation_context or ""
     GEMINI_KEY_TIER = str(args.gemini_key_tier or "standard").strip().lower()
     if GEMINI_KEY_TIER not in {"standard", "vip"}:

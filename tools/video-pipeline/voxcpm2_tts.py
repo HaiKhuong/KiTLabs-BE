@@ -28,11 +28,12 @@ Clone mode mặc định: Ultimate Cloning
 from __future__ import annotations
 
 import os
-import re
 from pathlib import Path
 from typing import Any, Optional, Tuple
 
 import pipeline_cache  # noqa: F401 — HF cache → tools/video-pipeline/cache
+
+from tts_text_normalize import prepare_tts_input_text
 
 # Cache theo (model_id, load_denoiser, optimize)
 _session_model: Optional[Any] = None
@@ -95,45 +96,15 @@ def reset_voxcpm2_session() -> None:
     _session_prompt_key = None
 
 
-def ensure_tts_trailing_period(text: str) -> str:
-    """Đảm bảo mọi câu TTS kết thúc bằng đúng một dấu chấm."""
-    t = str(text or "").strip()
-    if not t:
-        return t
-    t = re.sub(r"[,，、;；:：!?！？…\-–—]+$", "", t).rstrip()
-    if not t:
-        return t
-    t = re.sub(r"\.+$", ".", t)
-    if not t.endswith("."):
-        t = f"{t}."
-    return t
-
-
-def _normalize_tts_text_for_audio(text: str) -> str:
-    t = str(text or "").strip()
-    if not t:
-        return t
-    for q in ('"', "\u201c", "\u201d", "\u2018", "\u2019", "\u00ab", "\u00bb"):
-        t = t.replace(q, "")
-    for p in (":", ";", "?", "!"):
-        t = t.replace(p, ".")
-    t = re.sub(r"\.(?:\s*\.)+", ".", t)
-    t = re.sub(r"[!?.,:;…\-–—]+$", ".", t)
-    return ensure_tts_trailing_period(t)
-
-
-def prepare_voxcpm2_input_text(text: str, language: str | None = None) -> str:
-    """Lexical (vi) → lowercase (vi) → chuẩn hóa dấu câu. VoxCPM2 tự nhận ngôn ngữ từ text."""
+def prepare_voxcpm2_input_text(
+    text: str,
+    language: str | None = None,
+    *,
+    vinorm_enabled: bool = False,
+) -> str:
+    """Chuẩn hóa text VoxCPM2 — dùng pipeline chung ``tts_text_normalize``."""
     lang = resolve_voxcpm2_language(language) if language else None
-    if lang == "vietnamese":
-        # Tái sử dụng rule lexical đã chốt với OmniVoice (vi).
-        from omnivoice_tts import apply_omnivoice_lexical_replacements
-
-        t = apply_omnivoice_lexical_replacements(text)
-        t = t.lower()
-    else:
-        t = str(text or "").strip()
-    return _normalize_tts_text_for_audio(t)
+    return prepare_tts_input_text(text, lang, vinorm_enabled=vinorm_enabled)
 
 
 def _get_model(
@@ -266,7 +237,11 @@ def synthesize_to_wav(
 
     resolved_language = resolve_voxcpm2_language(language)
 
-    t = prepare_voxcpm2_input_text(text, resolved_language)
+    t = prepare_voxcpm2_input_text(
+        text,
+        resolved_language,
+        vinorm_enabled=bool(normalize),
+    )
     if not t:
         raise ValueError("VoxCPM2: text rỗng.")
 

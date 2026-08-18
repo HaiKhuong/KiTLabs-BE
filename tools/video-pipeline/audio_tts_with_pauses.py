@@ -18,6 +18,8 @@ from omnivoice_tts import (
     prepare_omnivoice_input_text,
     resolve_omnivoice_language,
     synthesize_to_wav as synthesize_omnivoice_to_wav,
+    synthesize_many_to_wavs,
+    resolve_omnivoice_batch_size,
 )
 
 FFMPEG_BIN = (os.getenv("FFMPEG_BIN") or "ffmpeg").strip() or "ffmpeg"
@@ -325,7 +327,8 @@ def _append_tts_segment(
     synth_kw: Dict[str, Any],
 ) -> None:
     seg_path = tmp_dir / f"seg_{index:04d}.wav"
-    synthesize_fn(text=piece, out_wav=seg_path, **synth_kw)
+    if not seg_path.is_file():
+        synthesize_fn(text=piece, out_wav=seg_path, **synth_kw)
     timeline.append(seg_path)
 
     # Luôn đệm đuôi sau mỗi đoạn nói — tránh cảm giác bị cắt trước khi chèn pause.
@@ -470,6 +473,22 @@ def synthesize_with_pause_settings(
     timeline = []
     with tempfile.TemporaryDirectory(prefix="audio_pause_") as tmp:
         tmp_dir = Path(tmp)
+
+        if tts_engine != "voxcpm2" and len(speakable) > 1:
+            batch_jobs = []
+            for i, chunk in enumerate(chunks):
+                piece = str(chunk.get("text") or "").strip()
+                if piece and _is_speakable_piece(piece, tts_engine, resolved_language):
+                    batch_jobs.append(
+                        {"text": piece, "out_wav": tmp_dir / f"seg_{i:04d}.wav"}
+                    )
+            if batch_jobs:
+                synthesize_many_to_wavs(
+                    batch_jobs,
+                    batch_size=resolve_omnivoice_batch_size(),
+                    **synth_kw,
+                )
+
         for i, chunk in enumerate(chunks):
             piece = str(chunk.get("text") or "").strip()
             pause_key = chunk.get("pause_after")
