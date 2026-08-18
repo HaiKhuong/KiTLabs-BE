@@ -351,16 +351,18 @@ PADDLEOCR_CROP_PROBE_FRAMES = 12    # số frame mẫu để auto-detect crop ba
 PADDLEOCR_CROP_PROBE_H_TRIM_LEFT_FRAC = 0.15   # bỏ mé trái trước khi OCR
 PADDLEOCR_CROP_PROBE_H_TRIM_RIGHT_FRAC = 0.15  # bỏ mé phải trước khi OCR
 PADDLEOCR_MAX_STRIP_HEIGHT_RATIO = 0.05  # giới hạn độ cao dải OCR (0 = không chặn)
-PADDLEOCR_MIN_DURATION_MS = 500     # thời gian hiển thị tối thiểu mỗi cue SRT
+PADDLEOCR_MIN_DURATION_MS = 0      # 0 = không pad; nhiễu ngắn dùng noise filter drop
 PADDLEOCR_MERGE_GAP_MS = 200        # merge các block gần nhau trong ngưỡng này (ms)
 PADDLEOCR_FUZZY_THRESHOLD = 55      # % similarity để gộp / dedup block
 PADDLEOCR_BRIDGE_FRAMES = 8         # số frame lân cận để vote rescue cluster
 PADDLEOCR_BRIDGE_MIN_MATCH = 3      # số frame tương đồng tối thiểu để rescue
-# FPS extract frames (giống EasyOCR) — lưu frames/frame_XXXXX.png rồi OCR từng ảnh
-PADDLEOCR_SCAN_FPS = 2
-# Legacy framediff flags (không còn dùng trong step1_paddleocr; giữ CLI tương thích)
+# Target extract FPS (clamp theo native FPS runtime); 10 ≈ Δt 0.1s — bắt cue ~0.4s
+PADDLEOCR_SCAN_FPS = 10
+# OpenCV text-change gate (mask MAD 0–255); PaddleOCR chỉ khi appear/change
 PADDLEOCR_FRAMEDIFF_THRESHOLD = 8.0
 PADDLEOCR_FRAMEDIFF_SKIP_BLANK = True
+# Noise filter: drop cue có text nhưng duration < ngưỡng (ms)
+PADDLEOCR_NOISE_MIN_DURATION_MS = 150
 # Preprocessing frame (giống EasyOCR nhưng config độc lập để tuning riêng)
 PADDLEOCR_GRAY_CONTRAST = 2.0       # eq contrast
 PADDLEOCR_GRAY_BRIGHTNESS = -0.15   # eq brightness (âm = làm tối; giúp giảm logo sáng)
@@ -1994,6 +1996,9 @@ def _step1_ocr_with_paddleocr(video_path):
         fuzzy_threshold=PADDLEOCR_FUZZY_THRESHOLD,
         merge_gap_ms=PADDLEOCR_MERGE_GAP_MS,
         min_duration_ms=PADDLEOCR_MIN_DURATION_MS,
+        framediff_threshold=PADDLEOCR_FRAMEDIFF_THRESHOLD,
+        framediff_skip_blank=PADDLEOCR_FRAMEDIFF_SKIP_BLANK,
+        noise_min_duration_ms=PADDLEOCR_NOISE_MIN_DURATION_MS,
         gray_contrast=PADDLEOCR_GRAY_CONTRAST,
         gray_brightness=PADDLEOCR_GRAY_BRIGHTNESS,
         gray_gamma=PADDLEOCR_GRAY_GAMMA,
@@ -3528,7 +3533,7 @@ def parse_cli_args():
             "Step1 subtitle source: whisper=ASR from audio, "
             "embedded=extract subtitle stream with ffmpeg, "
             "easyocr=visual OCR on subtitle region (fixed FPS), "
-            "paddleocr=visual OCR with Frame Difference frame selection (PP-OCRv6), "
+            "paddleocr=visual OCR gated by OpenCV text-change (PP-OCRv6), "
             "vse=VideoSubFinder frame detect + PaddleOCR."
         ),
     )
@@ -3605,13 +3610,13 @@ def parse_cli_args():
         "--paddleocr-scan-fps",
         type=float,
         default=PADDLEOCR_SCAN_FPS,
-        help="PaddleOCR frame extract FPS (same as EasyOCR fps); writes frames/frame_XXXXX.png (default 2).",
+        help="PaddleOCR target extract FPS (clamped to native FPS; default 10 ≈ 0.1s).",
     )
     parser.add_argument(
         "--paddleocr-framediff-threshold",
         type=float,
         default=PADDLEOCR_FRAMEDIFF_THRESHOLD,
-        help="Deprecated (ignored): former Frame Difference MAD threshold.",
+        help="OpenCV text-mask change threshold (MAD 0–255; default 8). OCR only on appear/change.",
     )
     parser.add_argument(
         "--paddleocr-batch-size",
@@ -3623,7 +3628,13 @@ def parse_cli_args():
         "--paddleocr-min-duration-ms",
         type=int,
         default=PADDLEOCR_MIN_DURATION_MS,
-        help="PaddleOCR minimum SRT cue duration ms (default 500).",
+        help="Optional pad floor for cue duration ms after noise filter (0=off, default 0).",
+    )
+    parser.add_argument(
+        "--paddleocr-noise-min-duration-ms",
+        type=int,
+        default=PADDLEOCR_NOISE_MIN_DURATION_MS,
+        help="Drop cues shorter than this many ms (noise filter; default 150).",
     )
     parser.add_argument(
         "--paddleocr-fuzzy-threshold",
@@ -4030,6 +4041,7 @@ def apply_cli_config(args):
     global PADDLEOCR_FRAMEDIFF_THRESHOLD
     global PADDLEOCR_BATCH_SIZE
     global PADDLEOCR_MIN_DURATION_MS
+    global PADDLEOCR_NOISE_MIN_DURATION_MS
     global PADDLEOCR_FUZZY_THRESHOLD
     global PADDLEOCR_MAX_STRIP_HEIGHT_RATIO
     global PADDLEOCR_CLEANUP_DEBUG_AFTER_STEP7
@@ -4210,7 +4222,8 @@ def apply_cli_config(args):
     PADDLEOCR_SCAN_FPS = max(0.1, float(getattr(args, "paddleocr_scan_fps", PADDLEOCR_SCAN_FPS)))
     PADDLEOCR_FRAMEDIFF_THRESHOLD = float(getattr(args, "paddleocr_framediff_threshold", PADDLEOCR_FRAMEDIFF_THRESHOLD))
     PADDLEOCR_BATCH_SIZE = max(1, int(getattr(args, "paddleocr_batch_size", PADDLEOCR_BATCH_SIZE)))
-    PADDLEOCR_MIN_DURATION_MS = max(1, int(getattr(args, "paddleocr_min_duration_ms", PADDLEOCR_MIN_DURATION_MS)))
+    PADDLEOCR_MIN_DURATION_MS = max(0, int(getattr(args, "paddleocr_min_duration_ms", PADDLEOCR_MIN_DURATION_MS)))
+    PADDLEOCR_NOISE_MIN_DURATION_MS = max(0, int(getattr(args, "paddleocr_noise_min_duration_ms", PADDLEOCR_NOISE_MIN_DURATION_MS)))
     PADDLEOCR_FUZZY_THRESHOLD = float(getattr(args, "paddleocr_fuzzy_threshold", PADDLEOCR_FUZZY_THRESHOLD))
     _pstrip = float(getattr(args, "paddleocr_max_strip_height_ratio", PADDLEOCR_MAX_STRIP_HEIGHT_RATIO) or 0)
     if _pstrip > 1.0 and _pstrip <= 100.0:

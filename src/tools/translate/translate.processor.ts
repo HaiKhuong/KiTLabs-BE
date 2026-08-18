@@ -285,6 +285,11 @@ const OPTION_MAPPINGS: Array<{
     allowedTypes: ["number", "string"],
   },
   {
+    cliFlag: "--paddleocr-noise-min-duration-ms",
+    keys: ["paddleOcrNoiseMinDurationMs", "paddleocr_noise_min_duration_ms"],
+    allowedTypes: ["number", "string"],
+  },
+  {
     cliFlag: "--paddleocr-fuzzy-threshold",
     keys: ["paddleOcrFuzzyThreshold", "paddleocr_fuzzy_threshold"],
     allowedTypes: ["number", "string"],

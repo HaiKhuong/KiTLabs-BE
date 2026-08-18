@@ -891,6 +891,16 @@ export class TranslateEngineConfigDto {
   @IsOptional()
   @Type(() => Number)
   @IsNumber()
+  paddleOcrNoiseMinDurationMs?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  paddleocr_noise_min_duration_ms?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
   paddleOcrFuzzyThreshold?: number;
 
   @IsOptional()
