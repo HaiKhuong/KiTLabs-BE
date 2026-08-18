@@ -3332,9 +3332,6 @@ def step_render_unified(video_path, ass_path, voice_path):
             f"Use --speed-video (currently SPEED_VIDEO={SPEED_VIDEO}) for playback speed control."
         )
 
-    out = VIDEO_DIR / f"{WORK_NAME}_vs_tm.mp4"
-    part = VIDEO_DIR / f"{WORK_NAME}_vs_tm.mp4.part"
-
     has_video_audio = media_has_audio_stream(video_path)
     probe_wh = get_ffprobe_video_dimensions(video_path)
 
@@ -3360,6 +3357,12 @@ def step_render_unified(video_path, ass_path, voice_path):
             raise FileNotFoundError(f"Outro file not ready: {resolved_outro}")
         outro_path = resolved_outro
         outro_has_audio = media_has_audio_stream(outro_path)
+
+    # Output filename: append _outro suffix when outro is embedded so the caller
+    # can distinguish between a plain subtitle render and one that includes outro.
+    out_stem = f"{WORK_NAME}_vs_tm_outro" if outro_path else f"{WORK_NAME}_vs_tm"
+    out = VIDEO_DIR / f"{out_stem}.mp4"
+    part = VIDEO_DIR / f"{out_stem}.mp4.part"
 
     # Guard: voice_path may be a pre-allocated Path that doesn't exist yet
     # (e.g. Step3 was skipped or not run in this session).
