@@ -220,11 +220,15 @@ STEP6_EQ_CONTRAST = 1.00
 STEP6_UNSHARP = "5:5:0.8:3:3:0.0"
 ORIGINAL_AUDIO_VOLUME = 0.1
 NARRATION_AUDIO_VOLUME = 1
-# Step4: tốc độ trước khi merge (1.0 = copy video, không setpts). Đổi tốc 0.97 nên dùng --speed-video ở Step7.
+# Step4 standalone: tốc độ audio merge riêng (1.0 = giữ nguyên).
+# DEPRECATED trong unified render: Step4 không còn chạy khi Step6 có trong range.
+# Dùng --speed-video (SPEED_VIDEO) để điều chỉnh tốc độ — áp vào unified pass duy nhất.
+# Giá trị khác 1.0 sẽ bị bỏ qua và in warning khi unified render chạy.
 STEP4_MERGE_SPEED = 1.0
 # Step0: tốc độ video gốc trước Step1 (1.0 = dùng file input, không tạo *_pre.mp4).
 PREPROCESS_SPEED = 1.0
-# Step7: sau render phụ đề (_vs_tm), áp dụng setpts + atempo lên file cuối (vd 0.97 = chậm ~3%).
+# Speed áp vào unified render (Step6): setpts video + atempo audio trong 1 lệnh FFmpeg.
+# Áp đồng thời với subtitle burn, logo, resize, outro nếu bật.
 SPEED_VIDEO = 0.97
 # Step7: độ phân giải xuất — 1080p | 2k | 4k | source.
 # Landscape (16:9) và portrait (9:16) chọn theo hướng WxH nguồn.
@@ -1676,7 +1680,7 @@ def update_ass_default_style(ass_path):
     with open(ass_path, "r", encoding="utf8") as f:
         lines = f.readlines()
 
-    updated = False
+    style_updated = False
     for idx, line in enumerate(lines):
         if line.startswith("Style: Default,"):
             parts = line.strip().split(",")
@@ -1690,14 +1694,35 @@ def update_ass_default_style(ass_path):
                 parts[18] = str(int(SUBTITLE_ALIGNMENT))
                 parts[21] = str(int(SUBTITLE_MARGIN_V))
                 lines[idx] = ",".join(parts) + "\n"
-                updated = True
+                style_updated = True
             break
 
-    if updated:
-        with open(ass_path, "w", encoding="utf8") as f:
-            f.writelines(lines)
-    else:
+    if not style_updated:
         log("Warning: could not update ASS style (Style: Default not found).")
+
+    # Strip residual ASS override tags ({\\an8}, {\\pos(x,y)}, etc.) and HTML tags
+    # from event Text fields. These may survive from the source subtitle even after
+    # the SRT clean step, and cause individual subtitles to override Default alignment.
+    in_events = False
+    for idx, line in enumerate(lines):
+        if line.strip() == "[Events]":
+            in_events = True
+            continue
+        if in_events and line.startswith("Dialogue:"):
+            # ASS Dialogue format: Dialogue: Layer,Start,End,Style,Name,ML,MR,MV,Effect,Text
+            # Text is everything after the 9th comma
+            comma_pos = [i for i, c in enumerate(line) if c == ","]
+            if len(comma_pos) >= 9:
+                text_start = comma_pos[8] + 1
+                raw_text = line[text_start:]
+                # Strip {override} blocks and <html> tags from event text
+                clean_text = re.sub(r"\{[^}]*\}", "", raw_text)
+                clean_text = re.sub(r"<[^>]+>", "", clean_text)
+                if clean_text != raw_text:
+                    lines[idx] = line[:text_start] + clean_text
+
+    with open(ass_path, "w", encoding="utf8") as f:
+        f.writelines(lines)
 
 
 # ==============================
@@ -2874,38 +2899,355 @@ def step7_merge_outro(main_video_path):
 
 
 # ==============================
+# UNIFIED SINGLE-PASS RENDER
+# Step 4 + Step 6 + Step 7a + Step 7b in one FFmpeg call
+# ==============================
+
+
+class _InputSlot:
+    """Sequential 0-based FFmpeg -i input index allocator."""
+
+    def __init__(self):
+        self._n = 0
+
+    def claim(self):
+        i = self._n
+        self._n += 1
+        return i
+
+
+def build_unified_render_command(
+    video_path,
+    out_path,
+    ass_path,
+    voice_path,
+    use_gpu,
+    logo_path,
+    outro_path,
+    probe_wh,
+    has_video_audio,
+    outro_has_audio,
+):
+    """Build a single FFmpeg command that covers audio mix + visual transform +
+    subtitle burn + logo overlay + speed + resize + outro concat in one pass.
+
+    voice_path   – None when SKIP_VOICE_STEP or no voice available.
+    logo_path    – None when logo disabled or file missing.
+    outro_path   – None when outro disabled.
+    probe_wh     – (w, h) from ffprobe on source video, or None.
+    has_video_audio  – True if source video has an audio stream.
+    outro_has_audio  – True if outro clip has an audio stream (only used when outro_path given).
+    """
+    speed = float(SPEED_VIDEO)
+    apply_speed = abs(speed - 1.0) > 1e-6
+
+    source_wh = probe_wh
+    target_wh = _resolve_export_target_wh(source_wh)
+    apply_resize = _video_wh_needs_resize(source_wh, target_wh)
+
+    # ── Input slots ──────────────────────────────────────────────
+    slot = _InputSlot()
+    video_slot = slot.claim()  # always 0
+    voice_slot = slot.claim() if voice_path else None
+    logo_slot = slot.claim() if logo_path else None
+    outro_slot = slot.claim() if outro_path else None
+
+    input_args = ["-i", str(video_path)]
+    if voice_path:
+        input_args += ["-i", str(voice_path)]
+    if logo_path:
+        input_args += ["-i", str(logo_path)]
+    if outro_path:
+        input_args += ["-i", str(outro_path)]
+
+    # ── filter_complex segments ───────────────────────────────────
+    fc = []
+    cur_v = f"[{video_slot}:v]"
+
+    # Speed: scale video PTS
+    if apply_speed:
+        fc.append(f"{cur_v}setpts=PTS/{speed:.6f}[vspeed]")
+        cur_v = "[vspeed]"
+
+    # Visual transforms: hflip → zoom (scale+crop) → eq → unsharp
+    vt = build_visual_transform_filters(probe_wh)
+    if vt:
+        fc.append(f"{cur_v}{vt}[vtransform]")
+        cur_v = "[vtransform]"
+
+    # Subtitle blur strips + ASS burn
+    # build_subtitle_filter_tail returns either:
+    #   simple: "ass='path'"           (no [vsub] label)
+    #   complex: "split[m0]...;[vN]ass='path'[vsub]"  (has [vsub] label)
+    sub_tail = build_subtitle_filter_tail(ass_path)
+    if "[vsub]" in sub_tail:
+        fc.append(f"{cur_v}{sub_tail}")
+    else:
+        fc.append(f"{cur_v}{sub_tail}[vsub]")
+    cur_v = "[vsub]"
+
+    # Resolution resize (scale + letterbox pad)
+    if apply_resize and target_wh:
+        resize_f = _step7_scale_pad_filter(int(target_wh[0]), int(target_wh[1]))
+        fc.append(f"{cur_v}{resize_f}[vresized]")
+        cur_v = "[vresized]"
+
+    # Logo overlay
+    if logo_path:
+        if LOGO_WIDTH_RATIO > 0:
+            ref_w = source_wh[0] if source_wh else 1920
+            logo_w = max(16, int(ref_w * LOGO_WIDTH_RATIO))
+        else:
+            logo_w = int(LOGO_WIDTH)
+        fc.append(
+            f"[{logo_slot}:v]format=rgba,scale={logo_w}:-1,"
+            f"colorchannelmixer=aa={float(LOGO_OPACITY):.4f}[logo]"
+        )
+        fc.append(
+            f"{cur_v}[logo]overlay={int(LOGO_MARGIN_X)}:{int(LOGO_MARGIN_Y)}[vout]"
+        )
+        cur_v = "[vout]"
+
+    final_v_label = cur_v
+
+    # ── Audio chain ───────────────────────────────────────────────
+    final_a_label = None
+    audio_copy = False  # True → map source audio directly (-c:a copy)
+
+    atempo = build_atempo_filter(speed) if apply_speed else None
+
+    if voice_path and has_video_audio:
+        # Original audio (attenuated) + TTS narration mixed together
+        orig_chain = f"volume={float(ORIGINAL_AUDIO_VOLUME):.6f}"
+        if atempo:
+            orig_chain = f"{atempo},{orig_chain}"
+        fc.append(f"[{video_slot}:a]{orig_chain}[orig]")
+        fc.append(f"[{voice_slot}:a]volume={float(NARRATION_AUDIO_VOLUME):.6f}[voice_a]")
+        fc.append("[orig][voice_a]amix=inputs=2:duration=first:dropout_transition=0[amain]")
+        final_a_label = "[amain]"
+    elif voice_path and not has_video_audio:
+        # Only TTS (source video has no audio track)
+        fc.append(f"[{voice_slot}:a]volume={float(NARRATION_AUDIO_VOLUME):.6f}[amain]")
+        final_a_label = "[amain]"
+    elif has_video_audio and (apply_speed or outro_path):
+        # No TTS: apply speed or normalize for outro concat
+        if atempo:
+            fc.append(f"[{video_slot}:a]{atempo}[amain]")
+        else:
+            # outro concat needs a named audio label; resample for compatibility
+            a_fmt = "aresample=44100,aformat=sample_fmts=fltp:channel_layouts=stereo"
+            fc.append(f"[{video_slot}:a]{a_fmt}[amain]")
+        final_a_label = "[amain]"
+    elif has_video_audio:
+        # No TTS, no speed change, no outro → pass audio through unchanged
+        audio_copy = True
+
+    # ── Outro concat ──────────────────────────────────────────────
+    if outro_path:
+        ow = int(target_wh[0]) if (apply_resize and target_wh) else (source_wh[0] if source_wh else 1920)
+        oh = int(target_wh[1]) if (apply_resize and target_wh) else (source_wh[1] if source_wh else 1080)
+        ow, oh = (int(ow) & ~1), (int(oh) & ~1)
+        scale = _step7_scale_pad_filter(ow, oh)
+        a_fmt = "aresample=44100,aformat=sample_fmts=fltp:channel_layouts=stereo"
+
+        fc.append(f"[{outro_slot}:v]{scale}[outro_v]")
+
+        if final_a_label and outro_has_audio:
+            fc.append(f"[{outro_slot}:a]{a_fmt}[outro_a]")
+            fc.append(f"{final_a_label}{a_fmt}[amain_fmt]")
+            fc.append(
+                f"{final_v_label}[amain_fmt][outro_v][outro_a]"
+                f"concat=n=2:v=1:a=1[finalv][finala]"
+            )
+            final_v_label, final_a_label = "[finalv]", "[finala]"
+        elif final_a_label and not outro_has_audio:
+            outro_dur = get_media_duration_ms(outro_path)
+            dur_s = max(0.1, (outro_dur or 1000) / 1000.0)
+            fc.append(f"anullsrc=r=44100:cl=stereo:d={dur_s:.3f}[outro_a]")
+            fc.append(f"{final_a_label}{a_fmt}[amain_fmt]")
+            fc.append(
+                f"{final_v_label}[amain_fmt][outro_v][outro_a]"
+                f"concat=n=2:v=1:a=1[finalv][finala]"
+            )
+            final_v_label, final_a_label = "[finalv]", "[finala]"
+        elif not final_a_label and outro_has_audio:
+            main_dur = get_media_duration_ms(video_path)
+            dur_s = max(0.1, (main_dur or 1000) / 1000.0)
+            fc.append(f"anullsrc=r=44100:cl=stereo:d={dur_s:.3f}[main_a]")
+            fc.append(f"[{outro_slot}:a]{a_fmt}[outro_a]")
+            fc.append(
+                f"{final_v_label}[main_a][outro_v][outro_a]"
+                f"concat=n=2:v=1:a=1[finalv][finala]"
+            )
+            final_v_label, final_a_label = "[finalv]", "[finala]"
+        else:
+            # No audio on either side
+            fc.append(f"{final_v_label}[outro_v]concat=n=2:v=1:a=0[finalv]")
+            final_v_label = "[finalv]"
+
+    # ── Assemble command ──────────────────────────────────────────
+    filter_complex = ";".join(fc)
+    v_enc = ffmpeg_video_encode_args(use_gpu)
+    meta = ffmpeg_output_metadata_args(out_path)
+
+    map_args = ["-map", final_v_label]
+    a_codec_args = []
+    if final_a_label:
+        map_args += ["-map", final_a_label]
+        a_codec_args = ["-c:a", "aac"]
+    elif audio_copy:
+        map_args += ["-map", f"{video_slot}:a"]
+        a_codec_args = ["-c:a", "copy"]
+    else:
+        map_args += ["-an"]
+
+    return [
+        FFMPEG_BIN,
+        "-y",
+        *input_args,
+        "-filter_complex",
+        filter_complex,
+        *map_args,
+        *v_enc,
+        *a_codec_args,
+        *meta,
+        "-f",
+        "mp4",
+        str(out_path),
+    ]
+
+
+def step_render_unified(video_path, ass_path, voice_path):
+    """Single FFmpeg pass: audio mix + subtitle + visual transforms + logo +
+    speed + resize + outro concat.  GPU first; on failure, CPU fallback.
+
+    voice_path – path to TTS .wav, or None if SKIP_VOICE_STEP.
+    """
+    if abs(float(STEP4_MERGE_SPEED) - 1.0) > 1e-6:
+        log(
+            f"Warning: STEP4_MERGE_SPEED={STEP4_MERGE_SPEED} is not applied in unified render. "
+            f"Use --speed-video (currently SPEED_VIDEO={SPEED_VIDEO}) for playback speed control."
+        )
+
+    out = VIDEO_DIR / f"{WORK_NAME}_vs_tm.mp4"
+    part = VIDEO_DIR / f"{WORK_NAME}_vs_tm.mp4.part"
+
+    has_video_audio = media_has_audio_stream(video_path)
+    probe_wh = get_ffprobe_video_dimensions(video_path)
+
+    # Resolve logo path
+    logo_path = None
+    if LOGO_ENABLED and LOGO_FILE:
+        configured_logo = Path(LOGO_FILE)
+        resolved = (
+            configured_logo if configured_logo.is_absolute() else (SCRIPT_DIR / configured_logo)
+        ).resolve()
+        if file_ready(resolved):
+            logo_path = resolved
+
+    # Resolve outro path and probe its audio
+    outro_path = None
+    outro_has_audio = False
+    if MERGE_OUTRO_ENABLED and OUTRO_FILE:
+        configured_outro = Path(OUTRO_FILE)
+        resolved_outro = (
+            configured_outro if configured_outro.is_absolute() else (SCRIPT_DIR / configured_outro)
+        ).resolve()
+        if not file_ready(resolved_outro):
+            raise FileNotFoundError(f"Outro file not ready: {resolved_outro}")
+        outro_path = resolved_outro
+        outro_has_audio = media_has_audio_stream(outro_path)
+
+    # Guard: voice_path may be a pre-allocated Path that doesn't exist yet
+    # (e.g. Step3 was skipped or not run in this session).
+    effective_voice_path = voice_path if (voice_path and file_ready(Path(voice_path))) else None
+
+    common_kwargs = dict(
+        video_path=video_path,
+        out_path=part,
+        ass_path=ass_path,
+        voice_path=effective_voice_path,
+        logo_path=logo_path,
+        outro_path=outro_path,
+        probe_wh=probe_wh,
+        has_video_audio=has_video_audio,
+        outro_has_audio=outro_has_audio,
+    )
+
+    gpu_cmd = build_unified_render_command(**common_kwargs, use_gpu=True)
+    try:
+        run_command(gpu_cmd, "Unified render (GPU)")
+    except Exception as e:
+        log(f"Unified render: GPU failed → CPU fallback: {e}")
+        cpu_cmd = build_unified_render_command(**common_kwargs, use_gpu=False)
+        run_command(cpu_cmd, "Unified render (CPU fallback)")
+
+    try:
+        os.replace(part, out)
+    except OSError:
+        if part.is_file():
+            part.unlink(missing_ok=True)
+        raise
+
+    if not file_ready(out):
+        raise RuntimeError("Unified render output is missing or empty.")
+
+    log(f"Unified render complete: {out}")
+    return out
+
+
+# ==============================
 # STEP 5
 # convert srt -> ass
 # ==============================
 
 
+def strip_subtitle_format_tags(text):
+    """Xóa ASS override tags {\\...} và HTML tags <...> khỏi text phụ đề.
+
+    Các tag như {\\an8}, {\\pos(x,y)}, {\\move(...)}, <i>, <b>, <font color=...>
+    từ subtitle nguồn gây ra vị trí bất thường khi render ASS vì chúng override
+    alignment/position đã được cấu hình trong style Default.
+    """
+    # Strip ASS override tags: {anything}
+    cleaned = re.sub(r"\{[^}]*\}", "", text)
+    # Strip HTML/SRT formatting tags: <i>, </i>, <b>, <font color=...>, etc.
+    cleaned = re.sub(r"<[^>]+>", "", cleaned)
+    return cleaned.strip()
+
+
 def step5_convert_ass(srt_path):
     log("Step5: SRT → ASS…")
     ass = SUBTITLE_DIR / "sub.ass"
-    srt_for_ass = Path(srt_path)
-    temp_upper_srt = None
-    if SUBTITLE_UPPERCASE:
-        with open(srt_path, encoding="utf8") as f:
-            blocks = parse_srt(f.read())
-        temp_upper_srt = SUBTITLE_DIR / "__step5_uppercase_tmp.srt"
-        write_srt(
-            [
-                {
-                    "index": b["index"],
-                    "time": b["time"],
-                    "text": str(b["text"]).upper(),
-                }
-                for b in blocks
-            ],
-            temp_upper_srt,
-        )
-        srt_for_ass = temp_upper_srt
+
+    # Always parse and rewrite to strip ASS/HTML override tags that survive from
+    # the source subtitle (e.g. {\an8}, {\pos(x,y)}, <i>). These tags override
+    # the configured Default style alignment/position and cause some subtitles to
+    # appear at unexpected positions (top of screen, wrong Y) regardless of text length.
+    with open(srt_path, encoding="utf8") as f:
+        blocks = parse_srt(f.read())
+
+    cleaned_blocks = [
+        {
+            "index": b["index"],
+            "time": b["time"],
+            "text": (
+                strip_subtitle_format_tags(str(b["text"])).upper()
+                if SUBTITLE_UPPERCASE
+                else strip_subtitle_format_tags(str(b["text"]))
+            ),
+        }
+        for b in blocks
+    ]
+
+    temp_srt = SUBTITLE_DIR / "__step5_clean_tmp.srt"
+    write_srt(cleaned_blocks, temp_srt)
 
     run_command(
-        [FFMPEG_BIN, "-y", "-i", str(srt_for_ass), str(ass)], "Convert SRT to ASS"
+        [FFMPEG_BIN, "-y", "-i", str(temp_srt), str(ass)], "Convert SRT to ASS"
     )
-    if temp_upper_srt and temp_upper_srt.exists():
-        temp_upper_srt.unlink()
+    if temp_srt.exists():
+        temp_srt.unlink()
     update_ass_default_style(ass)
     return ass
 
@@ -3975,25 +4317,24 @@ def _cleanup_vse_artifacts_after_step7():
         log(f"Step7 cleanup: đã xóa step1_vse ({path}).")
 
 
-def _run_step6_and_finalize(ass, tm_video, video_path, skip_voice_step):
-    require_ready(ass, "Step6 input sub.ass")
-    if skip_voice_step:
-        video_for_render = video_path
-    else:
-        video_for_render = require_ready(tm_video, "Step6 input merged video (_tm.mp4)")
+def _run_step6_and_finalize(ass, tm_video, video_path, skip_voice_step, voice_path=None):
+    """Unified single-pass render: audio mix + subtitle + logo + speed + resize + outro.
+
+    voice_path – path to TTS .wav produced by Step3, or None.
+    tm_video   – kept for signature compat; no longer used as encode source.
+    """
+    require_ready(ass, "Unified render input sub.ass")
     # Re-apply subtitle style even when ASS is reused from cache.
     update_ass_default_style(ass)
-    final = step6_render(video_for_render, ass)
-    final = step7_finalize(final)
+
+    effective_voice = None if skip_voice_step else voice_path
+
+    final = step_render_unified(video_path, ass, effective_voice)
     if not file_ready(final):
-        raise RuntimeError("Final video render failed.")
-    if MERGE_OUTRO_ENABLED and OUTRO_FILE:
-        final = step7_merge_outro(final)
+        raise RuntimeError("Unified render output is missing or empty.")
     _cleanup_easyocr_artifacts_after_step7()
     _cleanup_paddleocr_artifacts_after_step7()
     _cleanup_vse_artifacts_after_step7()
-    if not skip_voice_step and tm_video.is_file():
-        tm_video.unlink()
     if ass.is_file():
         ass.unlink()
     done_path = publish_deliverables(preferred=final) or final
@@ -4182,7 +4523,11 @@ def run_pipeline(video, step_arg=None):
                 )[1],
             )
             last_output = voice
-        if step_enabled(4):
+        # Step4 (standalone audio merge → *_tm.mp4) only runs when Step6 is NOT
+        # in the requested range. When Step6 is included, audio is merged inside
+        # the unified single-pass render at Step6, so Step4 is skipped to avoid
+        # a redundant encode.
+        if step_enabled(4) and not step_enabled(6):
             tm_video = run_step(
                 4,
                 "Step4",
@@ -4192,6 +4537,8 @@ def run_pipeline(video, step_arg=None):
                 )[1],
             )
             last_output = tm_video
+        elif step_enabled(4):
+            log("Step4: audio merge integrated into unified render (Step6). Skipping standalone pass.")
 
     if step_enabled(5):
         ass = run_step(
@@ -4213,6 +4560,7 @@ def run_pipeline(video, step_arg=None):
                 tm_video=tm_video,
                 video_path=pipeline_video_path,
                 skip_voice_step=SKIP_VOICE_STEP,
+                voice_path=voice,
             ),
         )
         last_output = final
