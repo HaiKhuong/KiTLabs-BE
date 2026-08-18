@@ -50,6 +50,11 @@ from step3_edge import (
     prepare_speaker_reference,
     run_edge_tts_mp3_save,
 )
+from subtitle.voice_sync import (
+    append_tail_pad_wav,
+    optimize_subtitle_timings,
+    resolve_effective_tail_pad_ms,
+)
 
 # ==============================
 # CONFIG
@@ -139,6 +144,15 @@ REMOVE_CACHED_VOICE = False
 PROCESSBAR_LOG_ENABLED = False
 # Cho TTS tràn vào khoảng lặng trước câu phụ đề kế (tới next_start) để tránh cắt cụt giữa câu.
 STEP3_TTS_BORROW_GAP = False
+# Đồng Bộ Voice: tối ưu timing vi.srt sau Step 2, trước Step 3.
+VOICE_SYNC_ENABLED = True
+VOICE_SYNC_TARGET_CPS = 14.0
+VOICE_SYNC_MIN_GAP_MS = 10
+VOICE_SYNC_MIN_BORROW_GAP_MS = 20
+VOICE_SYNC_TTS_HEAD_MS = 50
+VOICE_SYNC_TTS_TAIL_MS = 120
+VOICE_SYNC_SHORT_TEXT_MAX_CHARS = 14
+VOICE_SYNC_SHORT_TIMELINE_MAX_MS = 1500
 # Optional: set absolute ffmpeg.exe path here if needed.
 FFMPEG_PATH = ""
 
@@ -2196,6 +2210,39 @@ def _step3_prefetch_omnivoice_batches(
     )
 
 
+def step2b_voice_sync_srt(vi_srt_path, video_duration_ms=None):
+    """Subtitle Timing Optimizer — mở rộng end cue thiếu thời gian từ gap phía sau."""
+    vi_path = Path(vi_srt_path)
+    with open(vi_path, encoding="utf8") as f:
+        blocks = parse_srt(f.read())
+    if not blocks:
+        log("VoiceSync: vi.srt rỗng, bỏ qua.")
+        return vi_path
+
+    optimized, report = optimize_subtitle_timings(
+        blocks,
+        target_cps=float(VOICE_SYNC_TARGET_CPS),
+        min_gap_ms=int(VOICE_SYNC_MIN_GAP_MS),
+        min_borrow_gap_ms=int(VOICE_SYNC_MIN_BORROW_GAP_MS),
+        tts_head_ms=int(VOICE_SYNC_TTS_HEAD_MS),
+        tts_tail_ms=int(VOICE_SYNC_TTS_TAIL_MS),
+        short_text_max_chars=int(VOICE_SYNC_SHORT_TEXT_MAX_CHARS),
+        short_timeline_max_ms=int(VOICE_SYNC_SHORT_TIMELINE_MAX_MS),
+        video_duration_ms=video_duration_ms,
+    )
+    write_srt(optimized, vi_path)
+    log(
+        "VoiceSync: "
+        f"extended={report.extended}, overlaps_fixed={report.overlaps_fixed}, "
+        f"unchanged={report.unchanged}, target_cps={VOICE_SYNC_TARGET_CPS}"
+    )
+    if VOICE_SYNC_ENABLED and STEP3_TTS_BORROW_GAP:
+        log(
+            "VoiceSync: STEP3_TTS_BORROW_GAP đang bật — khuyến nghị tắt khi dùng Voice Sync."
+        )
+    return vi_path
+
+
 def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
     eng = str(STEP3_TTS_ENGINE or "edge").strip().lower()
     if eng not in ("edge", "omnivoice", "voxcpm2"):
@@ -2475,6 +2522,25 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
                             pass
                     raw_segment_ms = get_media_duration_ms(raw_audio_path)
 
+        fit_audio_path = raw_audio_path
+        tail_pad_ms = resolve_effective_tail_pad_ms(
+            subtitle_text,
+            subtitle_duration_ms,
+            short_text_max_chars=VOICE_SYNC_SHORT_TEXT_MAX_CHARS,
+            short_timeline_max_ms=VOICE_SYNC_SHORT_TIMELINE_MAX_MS,
+        )
+        if tail_pad_ms > 0:
+            padded_path = chunk_dir / f"raw_{i:04d}_tailpad.wav"
+            append_tail_pad_wav(
+                str(raw_audio_path),
+                str(padded_path),
+                tail_pad_ms,
+                run_command=run_command,
+                ffmpeg_bin=FFMPEG_BIN,
+            )
+            fit_audio_path = padded_path
+            raw_segment_ms = get_media_duration_ms(fit_audio_path)
+
         # Latest instant we may end this speech without overlapping the next cue (when borrow-gap on).
         if i + 1 < len(blocks):
             next_start_ms, _ = parse_srt_time_range(blocks[i + 1]["time"])
@@ -2526,7 +2592,7 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
                 FFMPEG_BIN,
                 "-y",
                 "-i",
-                str(raw_audio_path),
+                str(fit_audio_path),
                 "-af",
                 ",".join(fit_filters),
                 "-ac",
@@ -4065,6 +4131,54 @@ def parse_cli_args():
         help="on=lọc cụm noise (HAHA, Hừ, …) khỏi vi.srt sau dịch; off=giữ nguyên bản dịch.",
     )
     parser.add_argument(
+        "--voice-sync",
+        choices=["on", "off"],
+        default="on" if VOICE_SYNC_ENABLED else "off",
+        help="Đồng Bộ Voice: tối ưu timing vi.srt sau Step 2 (mở rộng end vào gap phía sau).",
+    )
+    parser.add_argument(
+        "--voice-sync-target-cps",
+        type=float,
+        default=VOICE_SYNC_TARGET_CPS,
+        help="Target chars/sec để ước lượng duration cần thiết cho Voice Sync.",
+    )
+    parser.add_argument(
+        "--voice-sync-min-gap-ms",
+        type=int,
+        default=VOICE_SYNC_MIN_GAP_MS,
+        help="Gap tối thiểu giữa hai cue sau khi Voice Sync xử lý overlap.",
+    )
+    parser.add_argument(
+        "--voice-sync-min-borrow-gap-ms",
+        type=int,
+        default=VOICE_SYNC_MIN_BORROW_GAP_MS,
+        help="Gap nhỏ hơn ngưỡng này sẽ không bị mượn để extend cue.",
+    )
+    parser.add_argument(
+        "--voice-sync-tts-head-ms",
+        type=int,
+        default=VOICE_SYNC_TTS_HEAD_MS,
+        help="Ước lượng silence đầu segment TTS (ms) khi tính required duration.",
+    )
+    parser.add_argument(
+        "--voice-sync-tts-tail-ms",
+        type=int,
+        default=VOICE_SYNC_TTS_TAIL_MS,
+        help="Ước lượng silence cuối segment TTS sau trim (ms).",
+    )
+    parser.add_argument(
+        "--voice-sync-short-text-max-chars",
+        type=int,
+        default=VOICE_SYNC_SHORT_TEXT_MAX_CHARS,
+        help="Text ngắn (compact chars) để dùng tail pad 1/2.",
+    )
+    parser.add_argument(
+        "--voice-sync-short-timeline-max-ms",
+        type=int,
+        default=VOICE_SYNC_SHORT_TIMELINE_MAX_MS,
+        help="Slot ngắn (ms) để dùng tail pad 1/2 cùng với text ngắn.",
+    )
+    parser.add_argument(
         "--step",
         default=None,
         help="Run only selected steps: N or A,B (inclusive). Example: --step 3 or --step 1,5",
@@ -4145,6 +4259,14 @@ def apply_cli_config(args):
     global TRANSLATION_CONTEXT
     global GEMINI_KEY_TIER
     global STEP2_VI_SKIP_TEXTS_ENABLED
+    global VOICE_SYNC_ENABLED
+    global VOICE_SYNC_TARGET_CPS
+    global VOICE_SYNC_MIN_GAP_MS
+    global VOICE_SYNC_MIN_BORROW_GAP_MS
+    global VOICE_SYNC_TTS_HEAD_MS
+    global VOICE_SYNC_TTS_TAIL_MS
+    global VOICE_SYNC_SHORT_TEXT_MAX_CHARS
+    global VOICE_SYNC_SHORT_TIMELINE_MAX_MS
     WHISPER_LANGUAGE = str(args.whisper_language).strip() or None
     STEP1_SUBTITLE_SOURCE = (
         str(args.step1_subtitle_source or STEP1_SUBTITLE_SOURCE).strip().lower()
@@ -4295,6 +4417,20 @@ def apply_cli_config(args):
     if GEMINI_KEY_TIER not in {"standard", "vip"}:
         GEMINI_KEY_TIER = "standard"
     STEP2_VI_SKIP_TEXTS_ENABLED = str(args.step2_vi_skip_texts or "off").strip().lower() == "on"
+    VOICE_SYNC_ENABLED = str(getattr(args, "voice_sync", "on") or "on").strip().lower() == "on"
+    VOICE_SYNC_TARGET_CPS = float(getattr(args, "voice_sync_target_cps", VOICE_SYNC_TARGET_CPS))
+    VOICE_SYNC_MIN_GAP_MS = int(getattr(args, "voice_sync_min_gap_ms", VOICE_SYNC_MIN_GAP_MS))
+    VOICE_SYNC_MIN_BORROW_GAP_MS = int(
+        getattr(args, "voice_sync_min_borrow_gap_ms", VOICE_SYNC_MIN_BORROW_GAP_MS)
+    )
+    VOICE_SYNC_TTS_HEAD_MS = int(getattr(args, "voice_sync_tts_head_ms", VOICE_SYNC_TTS_HEAD_MS))
+    VOICE_SYNC_TTS_TAIL_MS = int(getattr(args, "voice_sync_tts_tail_ms", VOICE_SYNC_TTS_TAIL_MS))
+    VOICE_SYNC_SHORT_TEXT_MAX_CHARS = int(
+        getattr(args, "voice_sync_short_text_max_chars", VOICE_SYNC_SHORT_TEXT_MAX_CHARS)
+    )
+    VOICE_SYNC_SHORT_TIMELINE_MAX_MS = int(
+        getattr(args, "voice_sync_short_timeline_max_ms", VOICE_SYNC_SHORT_TIMELINE_MAX_MS)
+    )
 
     prof = STEP1_PROFILES[args.mode]
     STEP1_VAD_THRESHOLD = prof["vad_threshold"]
@@ -4677,6 +4813,14 @@ def run_pipeline(video, step_arg=None):
                 require_ready(zh_srt, "Step2 input zh subtitle"),
                 get_or_run(vi_srt, "Step2", step2_translate_srt, zh_srt),
             )[1],
+        )
+        last_output = vi_srt
+
+    if VOICE_SYNC_ENABLED and file_ready(vi_srt) and (step_enabled(3) or step_enabled(5)):
+        vi_srt = run_step(
+            2,
+            "VoiceSync",
+            lambda: step2b_voice_sync_srt(vi_srt, video_duration_ms),
         )
         last_output = vi_srt
 
