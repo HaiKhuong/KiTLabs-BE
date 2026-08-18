@@ -604,6 +604,36 @@ export class TranslateEngineConfigDto {
   @IsNumber()
   easy_ocr_min_duration_ms?: number;
 
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  easyOcrFps?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  easyocr_fps?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  easyOcrFramediffThreshold?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  easyocr_framediff_threshold?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  easyOcrNoiseMinDurationMs?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  easyocr_noise_min_duration_ms?: number;
+
   /** Sau Step7: xóa step1_ocr + easyocr_crop_probe; CLI: on | off */
   @IsOptional()
   @IsString()

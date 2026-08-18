@@ -302,16 +302,19 @@ EASYOCR_CROP_PROBE_FRAMES = 12
 # Crop ngang (probe + cropped.mp4 Step1): bỏ mé trái/phải trước khi OCR.
 EASYOCR_CROP_PROBE_H_TRIM_LEFT_FRAC = 0.15
 EASYOCR_CROP_PROBE_H_TRIM_RIGHT_FRAC = 0.15
-# Khi không override --easyocr-fps: FPS = 1000 / EASYOCR_MIN_DURATION_MS (lưới thời gian trùng bước min cue).
-EASYOCR_FPS = 2  # mặc định đồng bộ với EASYOCR_MIN_DURATION_MS = 500
+# Khi không override --easyocr-fps: target extract FPS (clamp theo native runtime).
+EASYOCR_FPS = 10
 EASYOCR_WORKERS = 4  # parallel OCR threads
 EASYOCR_MIN_CONFIDENCE = 0.5  # discard OCR results below this confidence
 EASYOCR_LOW_CONF_FLOOR = 0.003  # ngưỡng tối thiểu để xem xét rescue (dưới mức này bỏ hoàn toàn)
 EASYOCR_BRIDGE_FRAMES = 8  # số frame lân cận để vote trong rescue cluster
 EASYOCR_BRIDGE_MIN_MATCH = 3  # số frame tương đồng tối thiểu để rescue 1 frame low-conf
 EASYOCR_FUZZY_THRESHOLD = 55  # % similarity threshold for dedup/merge
-EASYOCR_MIN_DURATION_MS = 500  # minimum SRT cue (ms); đồng thời quyết định bước lấy mẫu OCR nếu không truyền --easyocr-fps
+EASYOCR_MIN_DURATION_MS = 0  # optional pad floor sau noise filter (0=off)
 EASYOCR_MERGE_GAP_MS = 200  # merge adjacent similar blocks within this gap (ms)
+EASYOCR_FRAMEDIFF_THRESHOLD = 8.0  # OpenCV mask change gate
+EASYOCR_FRAMEDIFF_SKIP_BLANK = True
+EASYOCR_NOISE_MIN_DURATION_MS = 150  # drop cue ngắn (nhiễu) trước SRT thành phẩm
 EASYOCR_GPU = True
 # Sau crop dải đáy: grayscale + ffmpeg eq (cùng tham số cho probe-score OpenCV).
 # brightness âm (vd -0.06 … -0.12) làm tối, thường giúp giảm dính watermark/logo sáng; gamma>1 tối midtone.
@@ -1964,6 +1967,9 @@ def _step1_ocr_with_easyocr(video_path):
         unsharp=EASYOCR_UNSHARP,
         text_skip_defaults_on=EASYOCR_TEXT_SKIP_DEFAULTS_ON,
         text_skip_regexes_json=EASYOCR_TEXT_SKIP_REGEXES_JSON,
+        framediff_threshold=EASYOCR_FRAMEDIFF_THRESHOLD,
+        framediff_skip_blank=EASYOCR_FRAMEDIFF_SKIP_BLANK,
+        noise_min_duration_ms=EASYOCR_NOISE_MIN_DURATION_MS,
     )
     return _step1_easyocr_run(video_path)
 
@@ -3532,7 +3538,7 @@ def parse_cli_args():
         help=(
             "Step1 subtitle source: whisper=ASR from audio, "
             "embedded=extract subtitle stream with ffmpeg, "
-            "easyocr=visual OCR on subtitle region (fixed FPS), "
+            "easyocr=visual OCR gated by OpenCV text-change on subtitle region, "
             "paddleocr=visual OCR gated by OpenCV text-change (PP-OCRv6), "
             "vse=VideoSubFinder frame detect + PaddleOCR."
         ),
@@ -3746,10 +3752,21 @@ def parse_cli_args():
         type=float,
         default=None,
         help=(
-            "Override EasyOCR ffmpeg fps filter (frames/sec). When omitted, uses "
-            "1000 / --easyocr-min-duration-ms so the OCR timeline step matches the min cue length "
-            "(e.g. 500 ms → 2 FPS, 100 ms → 10 FPS)."
+            "Override EasyOCR target extract FPS (clamped to native FPS at runtime). "
+            f"When omitted, uses EASYOCR_FPS default ({EASYOCR_FPS})."
         ),
+    )
+    parser.add_argument(
+        "--easyocr-framediff-threshold",
+        type=float,
+        default=EASYOCR_FRAMEDIFF_THRESHOLD,
+        help="OpenCV text-mask change threshold (MAD 0–255; default 8). OCR only on appear/change.",
+    )
+    parser.add_argument(
+        "--easyocr-noise-min-duration-ms",
+        type=int,
+        default=EASYOCR_NOISE_MIN_DURATION_MS,
+        help="Drop EasyOCR cues shorter than this many ms (noise filter; default 150).",
     )
     parser.add_argument(
         "--easyocr-workers",
@@ -3768,8 +3785,7 @@ def parse_cli_args():
         type=int,
         default=EASYOCR_MIN_DURATION_MS,
         help=(
-            "EasyOCR: minimum SRT cue duration (ms) after merge; also sets extract FPS to "
-            "1000/this (unless --easyocr-fps is set). Shorter value = denser frame sampling."
+            "EasyOCR: optional pad floor for cue duration ms after noise filter (0=off, default 0)."
         ),
     )
     parser.add_argument(
@@ -4013,6 +4029,8 @@ def apply_cli_config(args):
     global EASYOCR_WORKERS
     global EASYOCR_MIN_CONFIDENCE
     global EASYOCR_MIN_DURATION_MS
+    global EASYOCR_NOISE_MIN_DURATION_MS
+    global EASYOCR_FRAMEDIFF_THRESHOLD
     global EASYOCR_FUZZY_THRESHOLD
     global EASYOCR_GPU
     global EASYOCR_LOW_CONF_FLOOR
@@ -4173,11 +4191,15 @@ def apply_cli_config(args):
     )
     EASYOCR_WORKERS = int(args.easyocr_workers)
     EASYOCR_MIN_CONFIDENCE = float(args.easyocr_min_confidence)
-    EASYOCR_MIN_DURATION_MS = max(1, int(args.easyocr_min_duration_ms))
+    EASYOCR_MIN_DURATION_MS = max(0, int(args.easyocr_min_duration_ms))
     if args.easyocr_fps is not None:
-        EASYOCR_FPS = max(0.01, float(args.easyocr_fps))
-    else:
-        EASYOCR_FPS = 1000.0 / float(EASYOCR_MIN_DURATION_MS)
+        EASYOCR_FPS = max(0.1, float(args.easyocr_fps))
+    EASYOCR_FRAMEDIFF_THRESHOLD = float(
+        getattr(args, "easyocr_framediff_threshold", EASYOCR_FRAMEDIFF_THRESHOLD)
+    )
+    EASYOCR_NOISE_MIN_DURATION_MS = max(
+        0, int(getattr(args, "easyocr_noise_min_duration_ms", EASYOCR_NOISE_MIN_DURATION_MS))
+    )
     EASYOCR_FUZZY_THRESHOLD = float(args.easyocr_fuzzy_threshold)
     EASYOCR_LOW_CONF_FLOOR = max(
         0.0, float(getattr(args, "easyocr_low_conf_floor", EASYOCR_LOW_CONF_FLOOR))
@@ -4201,10 +4223,11 @@ def apply_cli_config(args):
         )
     log(
         "Step1 OCR config: "
-        f"easyocr_min_duration_ms={EASYOCR_MIN_DURATION_MS} "
         f"easyocr_fps={EASYOCR_FPS:.4g} "
+        f"easyocr_framediff={EASYOCR_FRAMEDIFF_THRESHOLD} "
+        f"easyocr_noise_min_ms={EASYOCR_NOISE_MIN_DURATION_MS} "
         f"{_mode_str} "
-        f"({'override' if args.easyocr_fps is not None else '1000/min-duration'})"
+        f"({'fps override' if args.easyocr_fps is not None else 'default'})"
     )
 
     # PaddleOCR CLI config

@@ -1,16 +1,11 @@
 """
-Step 1 – EasyOCR engine: visual subtitle extraction from the cropped subtitle region.
+Step 1 – EasyOCR engine: visual subtitle extraction.
 
-Usage:
-    from step1_easyocr import configure_step1_easyocr, run as easyocr_run
-
-    configure_step1_easyocr(
-        log=log, run_command=run_command, ffmpeg_bin=FFMPEG_BIN,
-        progressbar=progressbar, get_media_duration_ms=get_media_duration_ms,
-        fmt_time=fmt_time, get_zh_srt_path=get_zh_srt_path, log_dir=LOG_DIR,
-        lang=EASYOCR_LANG, gpu=EASYOCR_GPU, fps=EASYOCR_FPS, ...
-    )
-    srt_path = easyocr_run(video_path)
+Flow (shared with PaddleOCR via subtitle.visual_ocr_gate):
+  1) probe PNG → auto-detect crop band
+  2) probe native FPS → extract @ min(scan_fps, native)
+  3) OpenCV text-change gate → start/end có ngắt
+  4) EasyOCR chỉ khi appear/change → clean / merge → noise filter → .zh.srt
 """
 
 from __future__ import annotations
@@ -18,10 +13,20 @@ from __future__ import annotations
 import json
 import re
 import shutil
+import time
 from pathlib import Path
 from typing import Any, Callable, List
 
-from subtitle.normalize import clean_text, same_subtitle_line
+from subtitle.visual_ocr_gate import (
+    annotate_opencv_debug,
+    build_cues_from_opencv,
+    cues_from_shells_and_ocr,
+    finalize_gated_cues,
+    rescue_low_conf_gated,
+    resolve_extract_fps,
+    write_gated_debug_jsonl,
+    write_srt_cues,
+)
 from subtitle.watermark import build_skip_regexes, should_skip_text
 
 _cfg: dict[str, Any] = {}
@@ -61,7 +66,7 @@ def configure_step1_easyocr(
     crop_probe_h_trim_left_frac: float,
     crop_probe_h_trim_right_frac: float,
     max_strip_height_ratio: float,
-    # Sampling
+    # Sampling — target max; runtime clamp to native FPS
     fps: float,
     min_duration_ms: int,
     # Confidence / rescue
@@ -84,6 +89,10 @@ def configure_step1_easyocr(
     # Skip regex
     text_skip_defaults_on: bool,
     text_skip_regexes_json: str,
+    # OpenCV text-change gate
+    framediff_threshold: float = 8.0,
+    framediff_skip_blank: bool = True,
+    noise_min_duration_ms: int = 150,
 ) -> None:
     """Populate module config and rebuild skip-regex list. Call before run()."""
     _cfg.clear()
@@ -104,8 +113,8 @@ def configure_step1_easyocr(
         crop_probe_h_trim_left_frac=max(0.0, min(0.49, float(crop_probe_h_trim_left_frac))),
         crop_probe_h_trim_right_frac=max(0.0, min(0.49, float(crop_probe_h_trim_right_frac))),
         max_strip_height_ratio=float(max_strip_height_ratio),
-        fps=float(fps),
-        min_duration_ms=max(1, int(min_duration_ms)),
+        fps=max(0.1, float(fps)),
+        min_duration_ms=max(0, int(min_duration_ms)),
         min_confidence=float(min_confidence),
         low_conf_floor=float(low_conf_floor),
         bridge_frames=max(0, int(bridge_frames)),
@@ -122,6 +131,9 @@ def configure_step1_easyocr(
         unsharp=str(unsharp or ""),
         text_skip_defaults_on=bool(text_skip_defaults_on),
         text_skip_regexes_json=str(text_skip_regexes_json or "[]"),
+        framediff_threshold=max(0.0, float(framediff_threshold)),
+        framediff_skip_blank=bool(framediff_skip_blank),
+        noise_min_duration_ms=max(0, int(noise_min_duration_ms)),
     )
     _rebuild_skip_regexes()
 
@@ -473,10 +485,11 @@ def _readtext_sort_for_join(results):
 # ──────────────────────────────────────────────
 
 def _ocr_with_easyocr(video_path: Path) -> Path:
-    """Step1: extract subtitles via EasyOCR on the cropped subtitle region."""
+    """Step1: OpenCV gate + EasyOCR on change; cues with gaps; noise filter."""
     import concurrent.futures
 
     log = _cfg["log"]
+    label = "Step1 EasyOCR"
     log("Step1: OCR (EasyOCR)…")
 
     try:
@@ -491,59 +504,92 @@ def _ocr_with_easyocr(video_path: Path) -> Path:
 
     reader = easyocr.Reader(_cfg["lang"], gpu=_cfg["gpu"])
     log(
-        f"Step1 EasyOCR: gray eq contrast={_cfg['gray_contrast']:.3f} "
+        f"{label}: gray eq contrast={_cfg['gray_contrast']:.3f} "
         f"brightness={_cfg['gray_brightness']:.3f} gamma={_cfg['gray_gamma']:.3f}"
     )
 
     band_lo, band_hi = _detect_crop_band(video_path, reader, ocr_dir)
     if band_hi <= band_lo + 1e-9:
-        raise RuntimeError(f"Step1 EasyOCR: invalid crop band lo={band_lo} hi={band_hi}")
+        raise RuntimeError(f"{label}: invalid crop band lo={band_lo} hi={band_hi}")
 
-    log(f"Step1 EasyOCR: crop apply lo={band_lo:.3f} hi={band_hi:.3f} strip_pct={(band_hi - band_lo) * 100:.1f}")
+    log(f"{label}: crop apply lo={band_lo:.3f} hi={band_hi:.3f} strip_pct={(band_hi - band_lo) * 100:.1f}")
+
+    extract_fps, native_fps = resolve_extract_fps(
+        video_path,
+        float(_cfg["fps"]),
+        ffmpeg_bin=str(_cfg["ffmpeg_bin"]),
+        log=log,
+        label=label,
+    )
+    if native_fps is not None:
+        log(
+            f"{label}: native_fps={native_fps:.3f} target={float(_cfg['fps']):.3f} "
+            f"→ extract_fps={extract_fps:.3f}"
+        )
+    else:
+        log(f"{label}: native_fps=unknown → extract_fps={extract_fps:.3f}")
 
     frames_dir.mkdir(parents=True, exist_ok=True)
-
-    # 1. Crop + preprocess subtitle region → cropped.mp4
-    crop_video = ocr_dir / "cropped.mp4"
+    vf = f"{_crop_ffmpeg_vf(band_lo, band_hi)},fps={extract_fps}"
+    log(f"{label}: ffmpeg extract cropped frames @ {extract_fps} fps (1 pass)…")
+    t_ff = time.time()
     _cfg["run_command"](
-        [_cfg["ffmpeg_bin"], "-y", "-i", str(video_path),
-         "-vf", _crop_ffmpeg_vf(band_lo, band_hi),
-         "-an", "-c:v", "libx264", "-crf", "23", "-preset", "ultrafast", str(crop_video)],
-        "EasyOCR: crop subtitle region",
+        [
+            _cfg["ffmpeg_bin"], "-y", "-i", str(video_path),
+            "-vf", vf, "-an",
+            str(frames_dir / "frame_%05d.png"),
+        ],
+        "EasyOCR: extract cropped frames",
     )
-
-    # 2. Extract frames at target FPS
-    _cfg["run_command"](
-        [_cfg["ffmpeg_bin"], "-y", "-i", str(crop_video),
-         "-vf", f"fps={_cfg['fps']}", str(frames_dir / "frame_%05d.png")],
-        "EasyOCR: extract frames",
-    )
-
     frame_files = sorted(frames_dir.glob("frame_*.png"))
     if not frame_files:
-        raise RuntimeError("Step1 EasyOCR: no frames extracted.")
+        raise RuntimeError(f"{label}: no frames extracted.")
+    log(f"{label}: extracted {len(frame_files)} frames in {time.time() - t_ff:.0f}s")
 
-    # 3. OCR (parallel ThreadPoolExecutor)
-    frame_interval_sec = 1.0 / _cfg["fps"]
-    min_conf = _cfg["min_confidence"]
-    low_floor = _cfg["low_conf_floor"]
+    frame_interval_sec = 1.0 / extract_fps
+    cue_shells, opencv_debug = build_cues_from_opencv(
+        frame_files,
+        frame_interval_sec,
+        framediff_threshold=float(_cfg["framediff_threshold"]),
+        white_thresh=int(_cfg.get("white_thresh") or 0),
+        progressbar=_cfg["progressbar"],
+        log=log,
+        label=label,
+    )
+    if not cue_shells:
+        raise RuntimeError(f"{label}: OpenCV found no subtitle cues.")
+
+    annotate_opencv_debug(
+        opencv_debug, cue_shells, native_fps=native_fps, extract_fps=extract_fps
+    )
+
+    min_conf = float(_cfg["min_confidence"])
+    low_floor = float(_cfg["low_conf_floor"])
+    fuzzy_thr = float(_cfg["fuzzy_threshold"])
 
     def _serialize_boxes(results):
         return [
-            {"bbox": [[float(p[0]), float(p[1])] for p in item[0]] if item[0] else [],
-             "text": item[1], "confidence": float(item[2])}
+            {
+                "bbox": [[float(p[0]), float(p[1])] for p in item[0]] if item[0] else [],
+                "text": item[1],
+                "confidence": float(item[2]),
+            }
             for item in (results or [])
         ]
 
-    def ocr_frame(idx_path):
-        idx, fpath = idx_path
+    def ocr_frame(item: tuple) -> tuple:
+        idx, fpath_str = item
+        fpath = Path(fpath_str)
         timestamp_sec = idx * frame_interval_sec
         debug_row = {
-            "frame_index": idx, "frame_png": fpath.name,
+            "frame_index": idx,
+            "frame_png": fpath.name,
             "timestamp_sec": timestamp_sec,
             "easyocr_min_confidence": min_conf,
-            "raw_readtext_order": [], "sorted_reading_order": [],
-            "joined_after_filter": "", "error": None,
+            "raw_readtext_order": [],
+            "sorted_reading_order": [],
+            "joined_after_filter": "",
+            "error": None,
         }
         try:
             results = reader.readtext(str(fpath), detail=1)
@@ -553,102 +599,96 @@ def _ocr_with_easyocr(video_path: Path) -> Path:
             texts = [t.strip() for _b, t, conf in sorted_results if conf >= min_conf and t.strip()]
             joined = " ".join(texts)
             debug_row["joined_after_filter"] = joined
-            low_texts = [t.strip() for _b, t, conf in sorted_results if low_floor <= conf < min_conf and t.strip()]
+            low_texts = [
+                t.strip() for _b, t, conf in sorted_results
+                if low_floor <= conf < min_conf and t.strip()
+            ]
             return timestamp_sec, joined, " ".join(low_texts), debug_row
         except Exception as exc:
             debug_row["error"] = str(exc)
             return timestamp_sec, "", "", debug_row
 
-    raw_results: list = []
-    low_conf_candidates: list = []
-    debug_rows: list = []
+    jobs = [(c["ocr_idx"], c["ocr_path"]) for c in cue_shells]
+    total = len(jobs)
+    log_every = max(1, total // 20)
+    log(
+        f"{label}: OCR {total}/{len(frame_files)} change frames "
+        f"({total * 100 / max(1, len(frame_files)):.1f}%) with {_cfg['workers']} worker(s)…"
+    )
+
+    ocr_by_idx: dict[int, tuple[float, str]] = {}
+    low_conf_by_idx: dict[int, str] = {}
+    ocr_debug_rows: list = []
+    t0 = time.time()
+    done = 0
+
     with concurrent.futures.ThreadPoolExecutor(max_workers=_cfg["workers"]) as pool:
-        indexed = list(enumerate(frame_files))
-        futures = {pool.submit(ocr_frame, item): item[0] for item in indexed}
+        futures = {pool.submit(ocr_frame, item): item[0] for item in jobs}
         for fut in _cfg["progressbar"](
-            concurrent.futures.as_completed(futures), total=len(futures), desc="EasyOCR frames"
+            concurrent.futures.as_completed(futures), total=total, desc="EasyOCR frames"
         ):
+            idx = futures[fut]
             ts, text, low_text, dbg = fut.result()
-            debug_rows.append(dbg)
+            done += 1
+            dbg["opencv_gated"] = True
+            ocr_debug_rows.append(dbg)
             if text:
-                raw_results.append((ts, text))
+                ocr_by_idx[idx] = (ts, text)
             elif low_text:
-                low_conf_candidates.append((ts, low_text))
+                low_conf_by_idx[idx] = low_text
+            if done == 1 or done % log_every == 0 or done == total:
+                log(
+                    f"{label}: OCR progress {done}/{total} "
+                    f"({done * 100 / total:.0f}%) high={len(ocr_by_idx)} "
+                    f"elapsed={time.time() - t0:.0f}s"
+                )
 
-    # Low-confidence rescue (cluster voting)
-    bridge_frames = _cfg["bridge_frames"]
-    bridge_min = _cfg["bridge_min_match"]
-    fuzzy_thr = _cfg["fuzzy_threshold"]
-    if low_conf_candidates and bridge_min > 0:
-        all_cands = sorted(raw_results + low_conf_candidates, key=lambda x: x[0])
-        rescued = 0
-        for ts, text in low_conf_candidates:
-            window = bridge_frames * frame_interval_sec
-            neighbors = [tx for t, tx in all_cands if abs(t - ts) <= window and t != ts]
-            matches = sum(1 for tx in neighbors if same_subtitle_line(text, tx, fuzzy_thr))
-            if matches >= bridge_min:
-                raw_results.append((ts, text))
-                rescued += 1
-        if rescued:
-            log(f"Step1 EasyOCR: rescued {rescued} low-confidence frame(s) via cluster voting.")
+    log(
+        f"{label}: OCR done — {done} frames, {len(ocr_by_idx)} high-conf, "
+        f"{len(low_conf_by_idx)} low-conf, elapsed={time.time() - t0:.0f}s"
+    )
 
-    raw_results.sort(key=lambda x: x[0])
-    debug_rows.sort(key=lambda r: r["frame_index"])
-    ocr_debug_path = ocr_dir / "frame_ocr_raw.jsonl"
-    with open(ocr_debug_path, "w", encoding="utf8") as _df:
-        for row in debug_rows:
-            _df.write(json.dumps(row, ensure_ascii=False) + "\n")
-    log(f"Step1 EasyOCR: debug log → {ocr_debug_path} ({len(debug_rows)} frames)")
+    rescued = rescue_low_conf_gated(
+        ocr_by_idx,
+        low_conf_by_idx,
+        frame_interval_sec=frame_interval_sec,
+        bridge_frames=int(_cfg["bridge_frames"]),
+        bridge_min_match=int(_cfg["bridge_min_match"]),
+        fuzzy_threshold=fuzzy_thr,
+    )
+    if rescued:
+        log(f"{label}: rescued {rescued} low-confidence frame(s) via cluster voting.")
 
-    # 4. Text cleaning (uses shared normalize module)
-    cleaned = [(ts, clean_text(t)) for ts, t in raw_results]
-    cleaned = [(ts, t) for ts, t in cleaned if t]
-    if not cleaned:
-        raise RuntimeError("Step1 EasyOCR: no text survived cleaning.")
+    raw_cues = cues_from_shells_and_ocr(cue_shells, ocr_by_idx)
+    write_gated_debug_jsonl(
+        ocr_dir / "frame_ocr_raw.jsonl",
+        opencv_debug,
+        ocr_debug_rows,
+        ocr_kind="easyocr",
+    )
+    log(f"{label}: debug log → {ocr_dir / 'frame_ocr_raw.jsonl'}")
 
-    # 5. Group + dedup
-    merge_gap_ms = _cfg["merge_gap_ms"]
-    groups: list = []
-    for ts, text in cleaned:
-        if groups and same_subtitle_line(groups[-1][2], text, fuzzy_thr):
-            groups[-1][1] = ts + frame_interval_sec
-            if len(text) > len(groups[-1][2]):
-                groups[-1][2] = text
-        else:
-            groups.append([ts, ts + frame_interval_sec, text])
+    if not raw_cues:
+        raise RuntimeError(f"{label}: no text survived cleaning.")
 
-    merged: list = []
-    for block in groups:
-        if merged and same_subtitle_line(merged[-1][2], block[2], fuzzy_thr) and (block[0] - merged[-1][1]) * 1000 <= merge_gap_ms:
-            merged[-1][1] = block[1]
-            if len(block[2]) > len(merged[-1][2]):
-                merged[-1][2] = block[2]
-        else:
-            merged.append(list(block))
-
-    if not merged:
-        raise RuntimeError("Step1 EasyOCR: no subtitle groups after dedup.")
-
-    kept = []
-    skipped = 0
-    for start, end, text in merged:
-        if should_skip_text(text, _SKIP_COMPILED):
-            skipped += 1
-        else:
-            kept.append((start, end, text))
-    if skipped:
-        log(f"Step1 EasyOCR: skipped {skipped} block(s) (regex skip filter)")
+    kept = finalize_gated_cues(
+        raw_cues,
+        merge_gap_ms=int(_cfg["merge_gap_ms"]),
+        fuzzy_threshold=fuzzy_thr,
+        skip_compiled=_SKIP_COMPILED,
+        noise_min_duration_ms=int(_cfg.get("noise_min_duration_ms") or 0),
+        log=log,
+        label=label,
+    )
     if not kept:
-        raise RuntimeError("Step1 EasyOCR: all subtitle blocks removed by regex skip filter.")
+        raise RuntimeError(f"{label}: all cues removed by filters.")
 
-    # 6. Export SRT
-    min_dur = _cfg["min_duration_ms"]
-    fmt_time = _cfg["fmt_time"]
     srt_path = _cfg["get_zh_srt_path"]()
-    with open(srt_path, "w", encoding="utf8") as f:
-        for i, (start, end, text) in enumerate(kept, 1):
-            if (end - start) * 1000 < min_dur:
-                end = start + min_dur / 1000.0
-            f.write(f"{i}\n{fmt_time(start)} --> {fmt_time(end)}\n{text}\n\n")
-    log(f"Step1 EasyOCR: done — {len(kept)} blocks → {srt_path}")
+    write_srt_cues(
+        kept,
+        srt_path,
+        fmt_time=_cfg["fmt_time"],
+        min_duration_ms=int(_cfg.get("min_duration_ms") or 0),
+    )
+    log(f"{label}: done — {len(kept)} blocks → {srt_path}")
     return srt_path

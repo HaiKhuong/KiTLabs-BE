@@ -238,6 +238,21 @@ const OPTION_MAPPINGS: Array<{
     keys: ["easyOcrBridgeMinMatch", "easy_ocr_bridge_min_match"],
     allowedTypes: ["number", "string"],
   },
+  {
+    cliFlag: "--easyocr-fps",
+    keys: ["easyOcrFps", "easyocr_fps"],
+    allowedTypes: ["number", "string"],
+  },
+  {
+    cliFlag: "--easyocr-framediff-threshold",
+    keys: ["easyOcrFramediffThreshold", "easyocr_framediff_threshold"],
+    allowedTypes: ["number", "string"],
+  },
+  {
+    cliFlag: "--easyocr-noise-min-duration-ms",
+    keys: ["easyOcrNoiseMinDurationMs", "easyocr_noise_min_duration_ms"],
+    allowedTypes: ["number", "string"],
+  },
   // ── PaddleOCR ──
   {
     cliFlag: "--paddleocr-crop-band-hi",
