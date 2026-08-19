@@ -1438,15 +1438,17 @@ def parse_subtitle_extra_blurs(raw):
                 continue
             if height_ratio <= 0 or x_ratio < 0 or y_ratio < 0:
                 continue
-            regions.append(
-                {
-                    "width_ratio": max(0.05, min(1.0, width_ratio)),
-                    "height_ratio": max(0.01, min(1.0, height_ratio)),
-                    "x_ratio": max(0.0, min(1.0, x_ratio)),
-                    "y_ratio": max(0.0, min(1.0, y_ratio)),
-                    "use_xy": True,
-                }
-            )
+            region_row = {
+                "width_ratio": max(0.05, min(1.0, width_ratio)),
+                "height_ratio": max(0.01, min(1.0, height_ratio)),
+                "x_ratio": max(0.0, min(1.0, x_ratio)),
+                "y_ratio": max(0.0, min(1.0, y_ratio)),
+                "use_xy": True,
+            }
+            color = str(item.get("color") or item.get("fillColor") or item.get("fill_color") or "").strip()
+            if color:
+                region_row["color"] = color
+            regions.append(region_row)
             continue
 
         # Legacy bottom-offset ratio
@@ -1460,14 +1462,16 @@ def parse_subtitle_extra_blurs(raw):
                 continue
             if height_ratio <= 0 or bottom_offset_ratio < 0:
                 continue
-            regions.append(
-                {
-                    "width_ratio": max(0.05, min(1.0, width_ratio)),
-                    "height_ratio": max(0.01, min(1.0, height_ratio)),
-                    "bottom_offset_ratio": max(0.0, min(1.0, bottom_offset_ratio)),
-                    "use_ratio": True,
-                }
-            )
+            region_row = {
+                "width_ratio": max(0.05, min(1.0, width_ratio)),
+                "height_ratio": max(0.01, min(1.0, height_ratio)),
+                "bottom_offset_ratio": max(0.0, min(1.0, bottom_offset_ratio)),
+                "use_ratio": True,
+            }
+            color = str(item.get("color") or item.get("fillColor") or item.get("fill_color") or "").strip()
+            if color:
+                region_row["color"] = color
+            regions.append(region_row)
             continue
 
         # Legacy pixel format (height/bottomOffset từ FE cũ)
@@ -1478,14 +1482,16 @@ def parse_subtitle_extra_blurs(raw):
             continue
         if height <= 0 or bottom_offset < 0:
             continue
-        regions.append(
-            {
-                "width_ratio": max(0.05, min(1.0, width_ratio)),
-                "height": max(8, height),
-                "bottom_offset": bottom_offset,
-                "use_ratio": False,
-            }
-        )
+        region_row = {
+            "width_ratio": max(0.05, min(1.0, width_ratio)),
+            "height": max(8, height),
+            "bottom_offset": bottom_offset,
+            "use_ratio": False,
+        }
+        color = str(item.get("color") or item.get("fillColor") or item.get("fill_color") or "").strip()
+        if color:
+            region_row["color"] = color
+        regions.append(region_row)
     return regions
 
 
@@ -1520,6 +1526,84 @@ def _blur_strip_filter_ratio(width_ratio, height_ratio, bottom_offset_ratio):
     )
 
 
+def _parse_hex_color_to_geq(color):
+    """#RGB / #RRGGBB → ffmpeg geq fill."""
+    text = str(color or "").strip()
+    if not text.startswith("#"):
+        return None
+    hex_digits = text[1:]
+    if len(hex_digits) == 3:
+        hex_digits = "".join(ch * 2 for ch in hex_digits)
+    if len(hex_digits) != 6:
+        return None
+    try:
+        r = int(hex_digits[0:2], 16)
+        g = int(hex_digits[2:4], 16)
+        b = int(hex_digits[4:6], 16)
+    except ValueError:
+        return None
+    return f"geq=r='{r}':g='{g}':b='{b}'"
+
+
+def _color_strip_filter_xy(width_ratio, height_ratio, x_ratio, y_ratio, color):
+    geq = _parse_hex_color_to_geq(color)
+    if not geq:
+        return _blur_strip_filter_xy(width_ratio, height_ratio, x_ratio, y_ratio)
+    return (
+        f"crop=iw*{width_ratio}:ih*{height_ratio}:"
+        f"iw*{x_ratio}:ih*{y_ratio},"
+        f"{geq}"
+    )
+
+
+def _color_strip_filter_ratio(width_ratio, height_ratio, bottom_offset_ratio, color):
+    geq = _parse_hex_color_to_geq(color)
+    if not geq:
+        return _blur_strip_filter_ratio(width_ratio, height_ratio, bottom_offset_ratio)
+    return (
+        f"crop=iw*{width_ratio}:ih*{height_ratio}:"
+        f"(iw-iw*{width_ratio})/2:ih-ih*{bottom_offset_ratio},"
+        f"{geq}"
+    )
+
+
+def _color_strip_filter(width_ratio, height_px, bottom_offset_px, color):
+    geq = _parse_hex_color_to_geq(color)
+    if not geq:
+        return _blur_strip_filter(width_ratio, height_px, bottom_offset_px)
+    return (
+        f"crop=iw*{width_ratio}:{height_px}:"
+        f"(iw-iw*{width_ratio})/2:ih-{bottom_offset_px},"
+        f"{geq}"
+    )
+
+
+def _strip_filter_for_region(region, width_ratio, height_px=None, bottom_offset_px=None):
+    """Chọn blur hoặc fill màu theo region['color']."""
+    fill_color = region.get("color")
+    if region.get("use_xy"):
+        return _color_strip_filter_xy(
+            width_ratio,
+            region["height_ratio"],
+            region["x_ratio"],
+            region["y_ratio"],
+            fill_color,
+        )
+    if region.get("use_ratio"):
+        return _color_strip_filter_ratio(
+            width_ratio,
+            region["height_ratio"],
+            region["bottom_offset_ratio"],
+            fill_color,
+        )
+    return _color_strip_filter(
+        width_ratio,
+        region["height"],
+        region["bottom_offset"],
+        fill_color,
+    )
+
+
 def build_subtitle_filter_tail(ass_path):
     """split → blur strip(s) → overlay → ass, output [vsub]. Dùng sau [0:v] hoặc sau chuỗi biến đổi.
 
@@ -1549,28 +1633,28 @@ def build_subtitle_filter_tail(ass_path):
             hr = region["height_ratio"]
             xr = region["x_ratio"]
             yr = region["y_ratio"]
-            blur_filter = _blur_strip_filter_xy(wr, hr, xr, yr)
+            strip_filter = _strip_filter_for_region(region, wr)
             overlay_pos = f"W*{xr}:H*{yr}"
         elif region.get("use_ratio"):
             hr = region["height_ratio"]
             bo = region["bottom_offset_ratio"]
-            blur_filter = _blur_strip_filter_ratio(wr, hr, bo)
+            strip_filter = _strip_filter_for_region(region, wr)
             overlay_pos = f"(W-w)/2:H-H*{bo}"
         else:
             h = region["height"]
             bo = region["bottom_offset"]
-            blur_filter = _blur_strip_filter(wr, h, bo)
+            strip_filter = _strip_filter_for_region(region, wr)
             overlay_pos = f"(W-w)/2:H-{bo}"
         if prev is None:
             parts.append(
                 f"split[main{idx}][blur{idx}];"
-                f"[blur{idx}]{blur_filter}[blurred{idx}];"
+                f"[blur{idx}]{strip_filter}[blurred{idx}];"
                 f"[main{idx}][blurred{idx}]overlay={overlay_pos}[vblur{idx}]"
             )
         else:
             parts.append(
                 f";[{prev}]split[main{idx}][blur{idx}];"
-                f"[blur{idx}]{blur_filter}[blurred{idx}];"
+                f"[blur{idx}]{strip_filter}[blurred{idx}];"
                 f"[main{idx}][blurred{idx}]overlay={overlay_pos}[vblur{idx}]"
             )
         prev = f"vblur{idx}"
