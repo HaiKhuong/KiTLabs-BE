@@ -7,6 +7,9 @@ from typing import Any
 
 LOG = logging.getLogger("recap.render")
 
+# Must match timeline.MAX_ADAPTIVE_CLIP_SPEED
+_MAX_CLIP_SPEED = 4.0
+
 
 def render_timeline(
     video: Path,
@@ -34,8 +37,9 @@ def render_timeline(
             dur = max(0.05, float(vc["t1"]) - float(vc["t0"]))
             src_in = float(vc["srcIn"])
             src_span = max(0.05, float(vc["srcOut"]) - float(vc["srcIn"]))
+            clip_speed = max(0.5, min(_MAX_CLIP_SPEED, float(vc.get("speed") or speed)))
             clip_path = clips_dir / f"clip_{idx:05d}.mp4"
-            _cut_clip(video, src_in, src_span, dur, speed, clip_path)
+            _cut_clip(video, src_in, src_span, dur, clip_speed, clip_path)
             video_parts.append(clip_path)
             idx += 1
 

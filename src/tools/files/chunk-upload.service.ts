@@ -6,7 +6,7 @@ import {
 } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { createHash, randomUUID } from "crypto";
-import { createWriteStream, existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "fs";
+import { createWriteStream, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { open } from "fs/promises";
 import { isAbsolute, join, resolve } from "path";
 import { pipeline } from "stream/promises";
@@ -42,11 +42,26 @@ export class ChunkUploadService {
     return join(this.getUploadBaseDir(), "_chunks", uploadId);
   }
 
-  private resolveFinalDestination(folder?: string | null, userId?: string | null): string {
+  private resolveFinalDestination(
+    folder?: string | null,
+    userId?: string | null,
+    subfolder?: string | null,
+  ): string {
     if (!process.env.CHUNK_UPLOAD_DIR || process.env.CHUNK_UPLOAD_DIR === process.env.UPLOAD_DIR) {
-      return resolveUploadDestination(folder, userId);
+      return resolveUploadDestination(folder, userId, subfolder);
     }
     const folderName = folder && folder.length > 0 ? folder : "videos";
+    const safeSubfolder = subfolder
+      ? subfolder
+          .trim()
+          .toLowerCase()
+          .replace(/[^a-z0-9_]+/g, "_")
+          .replace(/^_+|_+$/g, "")
+          .replace(/_+/g, "_")
+      : "";
+    if (safeSubfolder) {
+      return join(this.getUploadBaseDir(), folderName, safeSubfolder);
+    }
     const safeUserId = userId ? userId.replace(/[^a-zA-Z0-9-_]/g, "") : "";
     return safeUserId
       ? join(this.getUploadBaseDir(), folderName, safeUserId)
@@ -72,6 +87,7 @@ export class ChunkUploadService {
         size: dto.size,
         chunkSize,
         totalChunks,
+        subfolder: dto.subfolder?.trim() || null,
       }),
     );
 
@@ -207,7 +223,18 @@ export class ChunkUploadService {
     await this.uploadRepo.update({ uploadId }, { status: ChunkUploadStatus.MERGING });
 
     try {
-      const finalDir = this.resolveFinalDestination(record.folder, record.userId);
+      let subfolder: string | null = null;
+      const metadataPath = join(chunkDir, "metadata.json");
+      if (existsSync(metadataPath)) {
+        try {
+          const metadata = JSON.parse(readFileSync(metadataPath, "utf-8")) as { subfolder?: string | null };
+          subfolder = metadata.subfolder?.trim() || null;
+        } catch {
+          /* ignore */
+        }
+      }
+
+      const finalDir = this.resolveFinalDestination(record.folder, record.userId, subfolder);
       if (!existsSync(finalDir)) {
         mkdirSync(finalDir, { recursive: true });
       }

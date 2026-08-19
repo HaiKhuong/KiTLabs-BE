@@ -13,6 +13,7 @@ import { NotificationsService } from "../notifications/notifications.service";
 import { User } from "../users/user.entity";
 import { CreateRecapJobDto } from "./dto/create-recap-job.dto";
 import { RecapHistory } from "./recap-history.entity";
+import { normalizeWorkDirSlug, slugFromVideoPath, toVideoSnakeCaseSlug } from "./recap-slug.util";
 
 export const RECAP_QUEUE_NAME = "video-recap";
 
@@ -75,9 +76,13 @@ export class RecapService {
       basename(videoPath).replace(/\.[^.]+$/, "") ||
       "Movie Recap";
 
+    const workDirSlug =
+      normalizeWorkDirSlug(String(dto.engineConfig.workDirSlug ?? "")) || slugFromVideoPath(videoPath);
+
     const engineConfig: Record<string, unknown> = {
       ...dto.engineConfig,
       localVideoPath: videoPath,
+      workDirSlug,
       durationMinSec: dto.engineConfig.durationMinSec ?? 900,
       durationMaxSec: dto.engineConfig.durationMaxSec ?? 1200,
       wordsPerMinute: dto.engineConfig.wordsPerMinute ?? 140,
@@ -94,12 +99,15 @@ export class RecapService {
       keepDebugArtifacts: dto.engineConfig.keepDebugArtifacts ?? true,
     };
 
+    const workDir = join(this.resolveWorkRoot(), workDirSlug);
+    const existingScript = this.readJsonIfExists(join(workDir, "script.json"));
+
     const history = this.recapRepository.create({
       userId: dto.userId,
       displayName: title,
       movieId: dto.movieId ?? null,
       engineConfig,
-      scriptPayload: null,
+      scriptPayload: existingScript,
       timelinePayload: null,
       status: QueueJobStatus.PENDING,
       cost: estimatedCost.toFixed(2),
@@ -168,6 +176,7 @@ export class RecapService {
       updatedAt: row.updatedAt,
       playUrl,
       downloadUrl: playUrl,
+      workDirSlug: this.resolveWorkDirSlug(row),
     };
   }
 
@@ -248,11 +257,64 @@ export class RecapService {
     const history = await this.recapRepository.findOne({ where: { id: recapHistoryId } });
     if (!history) throw new NotFoundException("Recap job not found");
     history.scriptPayload = scriptPayload;
-    return this.recapRepository.save(history);
+    const saved = await this.recapRepository.save(history);
+    this.syncScriptToWorkDir(saved);
+    return saved;
   }
 
-  prepareWorkDir(recapHistoryId: string): string {
-    const workDir = join(this.resolveWorkRoot(), recapHistoryId);
+  /** Write DB script payload to work-dir script.json (invalidates stale TTS via mtime). */
+  syncScriptToWorkDir(history: RecapHistory): boolean {
+    const payload = history.scriptPayload;
+    const narrations = (payload?.narrations ?? payload?.n) as unknown;
+    if (!Array.isArray(narrations) || narrations.length === 0) {
+      return false;
+    }
+
+    const workDir = this.resolveWorkDir(history);
+    mkdirSync(workDir, { recursive: true });
+    const script = {
+      title:
+        (typeof payload?.title === "string" ? payload.title : null) ??
+        (typeof payload?.t === "string" ? payload.t : null) ??
+        history.displayName,
+      durationSec: payload?.durationSec ?? payload?.d ?? null,
+      narrations,
+      recapTimelineRanges: payload?.recapTimelineRanges ?? payload?.r ?? [],
+      movieSourceWindows: payload?.movieSourceWindows ?? payload?.m ?? [],
+    };
+    writeFileSync(join(workDir, "script.json"), JSON.stringify(script, null, 2), "utf-8");
+    return true;
+  }
+
+  resolveWorkDirSlug(history: RecapHistory): string {
+    const fromConfig = normalizeWorkDirSlug(String(history.engineConfig?.workDirSlug ?? ""));
+    if (fromConfig) return fromConfig;
+
+    const videoPath = String(history.engineConfig?.localVideoPath ?? "").trim();
+    if (videoPath) {
+      const fromVideo = slugFromVideoPath(videoPath);
+      if (fromVideo) return fromVideo;
+    }
+
+    const fromTitle = toVideoSnakeCaseSlug(history.displayName || "");
+    if (fromTitle !== "recap") return fromTitle;
+
+    return history.id;
+  }
+
+  resolveWorkDir(history: RecapHistory): string {
+    return join(this.resolveWorkRoot(), this.resolveWorkDirSlug(history));
+  }
+
+  /** Primary snake_case dir, then legacy UUID dir for jobs created before slug folders. */
+  private resolveWorkDirCandidates(history: RecapHistory): string[] {
+    const primary = this.resolveWorkDir(history);
+    const legacy = join(this.resolveWorkRoot(), history.id);
+    return primary === legacy ? [primary] : [primary, legacy];
+  }
+
+  prepareWorkDir(history: RecapHistory): string {
+    const workDir = this.resolveWorkDir(history);
     mkdirSync(workDir, { recursive: true });
     mkdirSync(join(workDir, "logs"), { recursive: true });
     return workDir;
@@ -280,27 +342,36 @@ export class RecapService {
     }
   }
 
-  getRuntimeLog(recapHistoryId: string): string {
-    const logPath = join(this.resolveWorkRoot(), recapHistoryId, "logs", "pipeline.log");
-    if (!existsSync(logPath)) return "";
-    return readFileSync(logPath, "utf-8");
+  getRuntimeLog(history: RecapHistory): string {
+    for (const workDir of this.resolveWorkDirCandidates(history)) {
+      const logPath = join(workDir, "logs", "pipeline.log");
+      if (existsSync(logPath)) return readFileSync(logPath, "utf-8");
+    }
+    return "";
   }
 
   resolveArtifactPath(history: RecapHistory, type: "video" | "script" | "timeline"): string {
-    const workDir = join(this.resolveWorkRoot(), history.id);
-    if (type === "script") {
-      const p = join(workDir, "script.json");
-      if (!existsSync(p)) throw new NotFoundException("script.json not found");
-      return p;
+    if (type === "video" && history.resultPath && existsSync(history.resultPath)) {
+      return history.resultPath;
     }
-    if (type === "timeline") {
-      const p = join(workDir, "timeline.json");
-      if (!existsSync(p)) throw new NotFoundException("timeline.json not found");
-      return p;
+
+    for (const workDir of this.resolveWorkDirCandidates(history)) {
+      if (type === "script") {
+        const p = join(workDir, "script.json");
+        if (existsSync(p)) return p;
+        continue;
+      }
+      if (type === "timeline") {
+        const p = join(workDir, "timeline.json");
+        if (existsSync(p)) return p;
+        continue;
+      }
+      const fallback = join(workDir, "output", "recap.mp4");
+      if (existsSync(fallback)) return fallback;
     }
-    if (history.resultPath && existsSync(history.resultPath)) return history.resultPath;
-    const fallback = join(workDir, "output", "recap.mp4");
-    if (existsSync(fallback)) return fallback;
+
+    if (type === "script") throw new NotFoundException("script.json not found");
+    if (type === "timeline") throw new NotFoundException("timeline.json not found");
     throw new NotFoundException("Recap video not found");
   }
 

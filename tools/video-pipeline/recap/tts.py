@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import re
@@ -61,6 +62,50 @@ def _resolve_ref_audio(ref_wav: str | None) -> Path:
     return p
 
 
+def _probe_duration(path: Path) -> float:
+    cmd = [
+        "ffmpeg",
+        "-v",
+        "error",
+        "-show_entries",
+        "format=duration",
+        "-of",
+        "default=noprint_wrappers=1:nokey=1",
+        str(path),
+    ]
+    return float(subprocess.check_output(cmd, text=True).strip())
+
+
+def _tts_row(i: int, text: str, wav: Path, dur: float, engine: str, signature: str) -> dict[str, Any]:
+    return {
+        "i": i,
+        "file": str(wav),
+        "audioDur": dur,
+        "durationSec": dur,
+        "text": text,
+        "engine": engine,
+        "signature": signature,
+    }
+
+
+def _try_reuse_segment(
+    i: int,
+    text: str,
+    wav: Path,
+    signature: str,
+) -> dict[str, Any] | None:
+    if not wav.is_file() or wav.stat().st_size <= 0:
+        return None
+    try:
+        dur = _probe_duration(wav)
+    except (subprocess.CalledProcessError, ValueError, OSError):
+        return None
+    if dur <= 0:
+        return None
+    LOG.info("TTS seg %d cache hit dur=%.2fs", i, dur)
+    return _tts_row(i, text, wav, dur, signature.split("|", 1)[0], signature)
+
+
 def synthesize_segments(
     narrations: list[str],
     out_dir: Path,
@@ -70,10 +115,45 @@ def synthesize_segments(
     ref_audio: str | None = None,
     ref_text: str | None = None,
     language: str | None = None,
+    *,
+    skip_existing: bool = True,
 ) -> list[dict[str, Any]]:
     out_dir.mkdir(parents=True, exist_ok=True)
     eng = str(engine or "omnivoice").strip().lower()
+    signature = "|".join(
+        [
+            eng,
+            str(voice or "").strip(),
+            str(rate or "").strip(),
+            str(ref_audio or "").strip(),
+            str(ref_text or "").strip(),
+            str(language or "vietnamese").strip(),
+        ]
+    )
+    prior_meta: list[dict[str, Any]] = []
+    prior_path = out_dir.parent / "tts.json"
+    if prior_path.is_file():
+        try:
+            raw = json.loads(prior_path.read_text(encoding="utf-8"))
+            if isinstance(raw, list):
+                prior_meta = [row for row in raw if isinstance(row, dict)]
+        except (json.JSONDecodeError, OSError):
+            prior_meta = []
+
     meta: list[dict[str, Any]] = []
+
+    def _maybe_reuse(i: int, text: str, wav: Path) -> dict[str, Any] | None:
+        if not skip_existing:
+            return None
+        prev = prior_meta[i] if i < len(prior_meta) else None
+        if prev is None:
+            return None
+        if prev.get("text") != text:
+            return None
+        prev_sig = str(prev.get("signature") or "")
+        if prev_sig and prev_sig != signature:
+            return None
+        return _try_reuse_segment(i, text, wav, signature)
 
     if eng in ("omnivoice", "voxcpm2"):
         ref_path = _resolve_ref_audio(ref_audio)
@@ -84,22 +164,30 @@ def synthesize_segments(
 
         for i, text in enumerate(narrations):
             wav = out_dir / f"seg_{i:03d}.wav"
+            cached = _maybe_reuse(i, text, wav)
+            if cached:
+                meta.append(cached)
+                continue
             if eng == "voxcpm2":
                 _voxcpm2_tts(text, wav, ref_path=ref_path, ref_text=rt, language=lang)
             else:
                 _omnivoice_tts(text, wav, ref_path=ref_path, ref_text=rt, language=lang)
             dur = _probe_duration(wav)
-            meta.append({"i": i, "file": str(wav), "audioDur": dur, "text": text, "engine": eng})
+            meta.append(_tts_row(i, text, wav, dur, eng, signature))
             LOG.info("TTS seg %d engine=%s dur=%.2fs", i, eng, dur)
         return meta
 
     for i, text in enumerate(narrations):
         wav = out_dir / f"seg_{i:03d}.wav"
         mp3 = out_dir / f"seg_{i:03d}.mp3"
+        cached = _maybe_reuse(i, text, wav)
+        if cached:
+            meta.append(cached)
+            continue
         _edge_tts(text, mp3, voice=voice, rate=rate)
         _to_wav(mp3, wav)
         dur = _probe_duration(wav)
-        meta.append({"i": i, "file": str(wav), "audioDur": dur, "text": text, "engine": "edge"})
+        meta.append(_tts_row(i, text, wav, dur, "edge", signature))
         LOG.info("TTS seg %d engine=edge dur=%.2fs rate=%s", i, dur, rate)
     return meta
 
@@ -207,17 +295,3 @@ def _to_wav(src: Path, dst: Path) -> None:
         str(dst),
     ]
     subprocess.check_call(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
-
-def _probe_duration(path: Path) -> float:
-    cmd = [
-        "ffprobe",
-        "-v",
-        "error",
-        "-show_entries",
-        "format=duration",
-        "-of",
-        "default=noprint_wrappers=1:nokey=1",
-        str(path),
-    ]
-    return float(subprocess.check_output(cmd, text=True).strip())

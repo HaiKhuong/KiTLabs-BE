@@ -37,6 +37,14 @@ from gemini_recap import (
     canonicalize_script,
     validate_script,
 )
+from pipeline_cache import (
+    artifact_fresh,
+    knowledge_has_candidates,
+    load_json,
+    try_load_timeline_cache,
+    try_load_tts_cache,
+    tts_signature,
+)
 from render import render_timeline
 from scenes import detect_shots
 from timeline import pack_voice_master_timeline
@@ -271,9 +279,9 @@ def main() -> int:
         # 4) CallA-1 — story knowledge
         step_start(4, "CallA-1", "story analyst")
         knowledge_path = work_dir / "story_knowledge.json"
-        if knowledge_path.exists() and cfg.get("reuseScript"):
-            knowledge = json.loads(knowledge_path.read_text(encoding="utf-8"))
-            step_done(4, "CallA-1", "reuse story_knowledge.json")
+        if knowledge_path.exists():
+            knowledge = load_json(knowledge_path)
+            step_done(4, "CallA-1", f"cache hit ({len(knowledge.get('events', []))} events)")
         else:
             payload_a1 = build_a1_payload(
                 movie_title=title,
@@ -301,26 +309,33 @@ def main() -> int:
 
         # 5) Attach candidate shots per event
         step_start(5, "Candidates", "attach shots per event window")
-        knowledge = attach_candidate_shots(
-            knowledge,
-            shots=shots,
-            semantic=semantic,
-            transcript_segments=transcript_segments,
-        )
-        write_json(knowledge_path, knowledge)
-        n_cands = sum(len(e.get("candidate_shots") or []) for e in knowledge.get("events") or [])
-        step_done(5, "Candidates", f"{n_cands} candidate links")
+        if knowledge_has_candidates(knowledge):
+            step_done(5, "Candidates", "cache hit")
+        else:
+            knowledge = attach_candidate_shots(
+                knowledge,
+                shots=shots,
+                semantic=semantic,
+                transcript_segments=transcript_segments,
+            )
+            write_json(knowledge_path, knowledge)
+            n_cands = sum(len(e.get("candidate_shots") or []) for e in knowledge.get("events") or [])
+            step_done(5, "Candidates", f"{n_cands} candidate links")
 
         # 6) CallA-2 — segments + derive Nest script.json
         step_start(6, "CallA-2", "script writer + visual beats")
         script_path = work_dir / "script.json"
         segments_path = work_dir / "segments.json"
-        if script_path.exists() and segments_path.exists() and cfg.get("reuseScript"):
-            segments = json.loads(segments_path.read_text(encoding="utf-8"))
+        if (
+            script_path.exists()
+            and segments_path.exists()
+            and artifact_fresh(segments_path, script_path)
+        ):
+            segments = load_json(segments_path)
             if isinstance(segments, dict):
                 segments = segments.get("segments") or []
-            script = json.loads(script_path.read_text(encoding="utf-8"))
-            step_done(6, "CallA-2", "reuse segments.json / script.json")
+            script = load_json(script_path)
+            step_done(6, "CallA-2", f"cache hit ({len(segments)} segments)")
         else:
             segments = generate_narration_segments(
                 knowledge,
@@ -389,77 +404,117 @@ def main() -> int:
         )
         video_speed = float(cfg.get("videoSpeed") or 1.0)
         tts_engine = str(cfg.get("ttsEngine") or "omnivoice").strip().lower()
-        step_start(7, "TTS", f"{len(narrations)} narrations · engine={tts_engine}")
-        audio_dir = work_dir / "audio"
-        audio_dir.mkdir(parents=True, exist_ok=True)
-        tts_meta = synthesize_segments(
-            narrations=narrations,
-            out_dir=audio_dir,
-            engine=tts_engine,
+        tts_path = work_dir / "tts.json"
+        tts_sig = tts_signature(
+            tts_engine,
             voice=str(cfg.get("edgeTtsVoice") or "vi-VN-HoaiMyNeural"),
             rate=edge_rate,
             ref_audio=str(cfg.get("omnivoiceRefWav") or "").strip() or None,
             ref_text=str(cfg.get("omnivoiceRefText") or "").strip() or None,
             language=str(cfg.get("omnivoiceLanguage") or "vietnamese").strip() or "vietnamese",
         )
-        write_json(work_dir / "tts.json", tts_meta)
-        step_done(7, "TTS", f"{len(tts_meta)} audio files")
+        step_start(7, "TTS", f"{len(narrations)} narrations · engine={tts_engine}")
+        audio_dir = work_dir / "audio"
+        audio_dir.mkdir(parents=True, exist_ok=True)
+        cached_tts = try_load_tts_cache(
+            tts_path,
+            narrations,
+            tts_sig,
+            script_path=script_path,
+        )
+        if cached_tts is not None:
+            tts_meta = cached_tts
+            step_done(7, "TTS", f"cache hit ({len(tts_meta)} audio files)")
+        else:
+            tts_meta = synthesize_segments(
+                narrations=narrations,
+                out_dir=audio_dir,
+                engine=tts_engine,
+                voice=str(cfg.get("edgeTtsVoice") or "vi-VN-HoaiMyNeural"),
+                rate=edge_rate,
+                ref_audio=str(cfg.get("omnivoiceRefWav") or "").strip() or None,
+                ref_text=str(cfg.get("omnivoiceRefText") or "").strip() or None,
+                language=str(cfg.get("omnivoiceLanguage") or "vietnamese").strip() or "vietnamese",
+                skip_existing=True,
+            )
+            write_json(tts_path, tts_meta)
+            step_done(7, "TTS", f"{len(tts_meta)} audio files")
 
         # 8) CallB — shot planner + diversity (after TTS for real audioDur)
         step_start(8, "CallB", "shot planner + diversity")
-        picks = plan_all_segments(
-            segments,
-            segment_candidates=segment_candidates,
-            tts_meta=tts_meta,
-            shots=shots,
-            semantic=semantic,
-            work_dir=work_dir,
-        )
-        sanitized = picks.get(PICKS_SELECTED_SHOTS) or []
-        # Sanitize: only ids in shortlist; fallback fill
-        fixed: list[list[int]] = []
-        for i, chosen in enumerate(sanitized):
-            allow = {int(c["id"]) for c in segment_candidates[i]} if i < len(segment_candidates) else set()
-            row = [int(x) for x in (chosen or []) if int(x) in allow] if allow else [int(x) for x in (chosen or [])]
-            if not row and i < len(segment_candidates) and segment_candidates[i]:
-                need = float((tts_meta[i] if i < len(tts_meta) else {}).get("durationSec") or 28)
-                row = [int(c["id"]) for c in segment_candidates[i][: max(1, int(need / 3))]]
-            fixed.append(row)
-        while len(fixed) < len(narrations):
-            i = len(fixed)
-            if i < len(segment_candidates) and segment_candidates[i]:
-                need = float((tts_meta[i] if i < len(tts_meta) else {}).get("durationSec") or 28)
-                fixed.append([int(c["id"]) for c in segment_candidates[i][: max(1, int(need / 3))]])
-            else:
-                fixed.append([])
-        picks = {PICKS_SELECTED_SHOTS: fixed}
-        write_json(work_dir / "picks.json", picks)
-        step_done(8, "CallB", f"{len(fixed)} segments picked")
+        picks_path = work_dir / "picks.json"
+        if artifact_fresh(picks_path, tts_path, segments_path, script_path):
+            picks = load_json(picks_path)
+            fixed = picks.get(PICKS_SELECTED_SHOTS) or []
+            step_done(8, "CallB", f"cache hit ({len(fixed)} segments)")
+        else:
+            picks = plan_all_segments(
+                segments,
+                segment_candidates=segment_candidates,
+                tts_meta=tts_meta,
+                shots=shots,
+                semantic=semantic,
+                work_dir=work_dir,
+            )
+            sanitized = picks.get(PICKS_SELECTED_SHOTS) or []
+            # Sanitize: only ids in shortlist; fallback fill
+            fixed: list[list[int]] = []
+            for i, chosen in enumerate(sanitized):
+                allow = {int(c["id"]) for c in segment_candidates[i]} if i < len(segment_candidates) else set()
+                row = [int(x) for x in (chosen or []) if int(x) in allow] if allow else [int(x) for x in (chosen or [])]
+                if not row and i < len(segment_candidates) and segment_candidates[i]:
+                    need = float((tts_meta[i] if i < len(tts_meta) else {}).get("durationSec") or 28)
+                    row = [int(c["id"]) for c in segment_candidates[i][: max(1, int(need / 3))]]
+                fixed.append(row)
+            while len(fixed) < len(narrations):
+                i = len(fixed)
+                if i < len(segment_candidates) and segment_candidates[i]:
+                    need = float((tts_meta[i] if i < len(tts_meta) else {}).get("durationSec") or 28)
+                    fixed.append([int(c["id"]) for c in segment_candidates[i][: max(1, int(need / 3))]])
+                else:
+                    fixed.append([])
+            picks = {PICKS_SELECTED_SHOTS: fixed}
+            write_json(picks_path, picks)
+            step_done(8, "CallB", f"{len(fixed)} segments picked")
 
         # 9) Voice-master pack + render
         step_start(9, "Render", f"timeline + FFmpeg · videoSpeed={video_speed}x")
-        timeline = pack_voice_master_timeline(
-            shots=shots,
-            picks=fixed,
-            candidates=[[c["id"] for c in seg] for seg in segment_candidates],
-            tts_meta=tts_meta,
-            video_speed=video_speed,
+        timeline_path = work_dir / "timeline.json"
+        timeline = try_load_timeline_cache(
+            timeline_path,
+            cfg,
+            picks_path,
+            tts_path,
+            script_path,
         )
-        write_json(work_dir / "timeline.json", timeline)
+        render_note = "timeline cache hit"
+        if timeline is None:
+            timeline = pack_voice_master_timeline(
+                shots=shots,
+                picks=fixed,
+                candidates=[[c["id"] for c in seg] for seg in segment_candidates],
+                tts_meta=tts_meta,
+                video_speed=video_speed,
+            )
+            write_json(timeline_path, timeline)
+            render_note = "timeline built"
 
         out_dir = work_dir / "output"
         out_dir.mkdir(parents=True, exist_ok=True)
         out_mp4 = out_dir / "recap.mp4"
-        render_timeline(
-            video=video,
-            timeline=timeline,
-            out_mp4=out_mp4,
-            work_dir=work_dir,
-            video_speed=video_speed,
-        )
-        if not out_mp4.exists():
-            raise RuntimeError("Render finished but output missing")
-        step_done(9, "Render", f"{timeline.get('durationSec')}s · {out_mp4}")
+        if artifact_fresh(out_mp4, timeline_path):
+            step_done(9, "Render", f"{render_note} · video cache hit · {out_mp4}")
+        else:
+            render_timeline(
+                video=video,
+                timeline=timeline,
+                out_mp4=out_mp4,
+                work_dir=work_dir,
+                video_speed=video_speed,
+            )
+            if not out_mp4.exists():
+                raise RuntimeError("Render finished but output missing")
+            step_done(9, "Render", f"{render_note} · {timeline.get('durationSec')}s · {out_mp4}")
 
         cleanup_work_artifacts(work_dir, keep_debug=keep_debug)
 

@@ -30,6 +30,12 @@ export class InitUploadDto {
   @IsOptional()
   @IsString()
   userId?: string;
+
+  /** Optional nested folder under `folder` (e.g. recap video slug). Overrides userId segment. */
+  @ApiPropertyOptional({ example: "xuyen_khong_xay_dung_thuyen_chien" })
+  @IsOptional()
+  @IsString()
+  subfolder?: string;
 }
 
 export class CompleteUploadDto {

@@ -61,7 +61,8 @@ export class RecapProcessor extends WorkerHost {
         "[STEP 0/9] Queue — spawning Python pipeline",
       );
 
-      const workDir = this.recapService.prepareWorkDir(recapHistoryId);
+      const workDir = this.recapService.prepareWorkDir(history);
+      this.recapService.syncScriptToWorkDir(history);
       const configPath = this.recapService.writeJobConfig(workDir, history);
       const scriptPath = this.resolveScriptPath();
       if (!existsSync(scriptPath)) {

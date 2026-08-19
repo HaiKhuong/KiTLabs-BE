@@ -123,6 +123,14 @@ export class RecapEngineConfigDto {
   @IsOptional()
   @IsString()
   geminiKeyTier?: string;
+
+  @ApiPropertyOptional({
+    example: "xuyen_khong_xay_dung_thuyen_chien",
+    description: "Work folder slug (snake_case). Defaults from video filename.",
+  })
+  @IsOptional()
+  @IsString()
+  workDirSlug?: string;
 }
 
 export class CreateRecapJobDto {

@@ -69,9 +69,11 @@ export class RecapController {
   @ApiQuery({ name: "recapHistoryId", required: true })
   @Public()
   @Get("runtime-log")
-  runtimeLog(@Query("recapHistoryId") recapHistoryId: string) {
+  async runtimeLog(@Query("recapHistoryId") recapHistoryId: string) {
     if (!recapHistoryId) throw new NotFoundException("recapHistoryId is required");
-    return { log: this.recapService.getRuntimeLog(recapHistoryId) };
+    const row = await this.recapService.getById(recapHistoryId);
+    if (!row) throw new NotFoundException("Recap job not found");
+    return { log: this.recapService.getRuntimeLog(row) };
   }
 
   @ApiOperation({ summary: "Stream recap artifact (video / script / timeline)" })

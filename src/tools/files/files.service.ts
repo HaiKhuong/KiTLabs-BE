@@ -10,11 +10,26 @@ export function resolveUploadRoot(): string {
   return isAbsolute(raw) ? resolve(raw) : resolve(process.cwd(), raw);
 }
 
-export function resolveUploadDestination(folder?: string | null, userId?: string | null): string {
+export function resolveUploadDestination(
+  folder?: string | null,
+  userId?: string | null,
+  subfolder?: string | null,
+): string {
   const folderName = (folder && folder.trim().length > 0 ? folder.trim() : "videos").replace(
     /[^a-zA-Z0-9-_]/g,
     "_",
   );
+  const safeSubfolder = subfolder
+    ? subfolder
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9_]+/g, "_")
+        .replace(/^_+|_+$/g, "")
+        .replace(/_+/g, "_")
+    : "";
+  if (safeSubfolder) {
+    return join(resolveUploadRoot(), folderName, safeSubfolder);
+  }
   const safeUserId = userId ? userId.replace(/[^a-zA-Z0-9-_]/g, "") : "";
   return safeUserId
     ? join(resolveUploadRoot(), folderName, safeUserId)
