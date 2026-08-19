@@ -55,6 +55,12 @@ from subtitle.voice_sync import (
     optimize_subtitle_timings,
     resolve_effective_tail_pad_ms,
 )
+from subtitle.audio_segment_cut import (
+    build_output_ranges,
+    build_step7c_segment_cut_command,
+    needs_audio_segment_cut,
+    parse_audio_segments_json,
+)
 
 # ==============================
 # CONFIG
@@ -222,6 +228,7 @@ SUBTITLE_BG_BLUR_CHROMA_RADIUS = 4
 SUBTITLE_BG_BLUR_CHROMA_POWER = 2
 # JSON array: [{widthRatio, height, bottomOffset}, ...] — vùng blur phụ (watermark/UI).
 SUBTITLE_BG_EXTRA_BLURS_JSON = "[]"
+AUDIO_SEGMENTS_JSON = "[]"
 LOGO_FILE = "logo/van_gioi_vietsub_logo.png"
 LOGO_WIDTH = 250
 LOGO_WIDTH_RATIO = 0.0  # >0: % chiều rộng khung hình; 0 = dùng LOGO_WIDTH (px, legacy)
@@ -609,27 +616,47 @@ def run_command(args, label):
 def get_media_duration_ms(path):
     if not FFPROBE_BIN:
         return None
-    try:
-        result = run_command(
+
+    def _probe_duration(show_entries: str, extra_args=None):
+        args = [str(FFPROBE_BIN), "-v", "error"]
+        if extra_args:
+            args.extend(extra_args)
+        args.extend(
             [
-                str(FFPROBE_BIN),
-                "-v",
-                "error",
                 "-show_entries",
-                "format=duration",
+                show_entries,
                 "-of",
                 "default=noprint_wrappers=1:nokey=1",
                 str(path),
-            ],
-            f"Probe duration for {path}",
+            ]
         )
-        duration_seconds = float((result.stdout or "").strip())
+        result = run_command(args, f"Probe duration for {path}")
+        raw = (result.stdout or "").strip().splitlines()
+        if not raw:
+            return None
+        token = raw[0].strip()
+        if not token or token.upper() == "N/A":
+            return None
+        duration_seconds = float(token)
         if duration_seconds <= 0:
             return None
         return int(duration_seconds * 1000)
-    except Exception as e:
-        log(f"Warning: could not probe media duration for {path}: {e}")
+
+    try:
+        dur = _probe_duration("format=duration")
+        if dur is not None:
+            return dur
+        return _probe_duration("stream=duration", ["-select_streams", "a:0"])
+    except Exception:
         return None
+
+
+def step3_tts_audio_usable(path, min_ms=40):
+    """True when TTS output exists and ffprobe reads a non-trivial audio duration."""
+    if not file_ready(path):
+        return False
+    dur = get_media_duration_ms(path)
+    return dur is not None and dur >= int(min_ms)
 
 
 def get_ffprobe_video_dimensions(path):
@@ -2171,7 +2198,7 @@ def _step3_prefetch_omnivoice_batches(
         ):
             continue
         raw_audio_path = chunk_dir / f"raw_{i:04d}.wav"
-        if file_ready(raw_audio_path):
+        if step3_tts_audio_usable(raw_audio_path):
             continue
         jobs.append({"text": subtitle_text, "out_wav": raw_audio_path})
 
@@ -2425,6 +2452,8 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
             current_time_ms = start_ms + int(seg_ms)
             continue
 
+        force_tts_regen = [False]
+
         def run_tts(rate):
             sleep_ms = max(0, int(STEP3_TTS_REQUEST_SLEEP_MS))
             if sleep_ms > 0:
@@ -2435,7 +2464,11 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
                 omni_kw = _step3_omnivoice_synth_kwargs(
                     omni_ref_prepared, omni_device
                 )
-                if int(OMNIVOICE_BATCH_SIZE) > 1 and file_ready(raw_audio_path):
+                if (
+                    int(OMNIVOICE_BATCH_SIZE) > 1
+                    and not force_tts_regen[0]
+                    and step3_tts_audio_usable(raw_audio_path)
+                ):
                     return
                 synthesize_to_wav(
                     text=subtitle_text,
@@ -2486,6 +2519,41 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
                 srt_path, chunk_dir, blocks, done_block_indices
             )
             continue
+
+        if use_voice_clone and not step3_tts_audio_usable(raw_audio_path):
+            log_step3(
+                f"Step3: invalid TTS output {raw_audio_path.name} "
+                f"(idx={subtitle_idx}, text={make_text_preview(subtitle_text, 40)!r}) — retry sequential",
+                important=True,
+            )
+            try:
+                raw_audio_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            force_tts_regen[0] = True
+            ok_tts_retry = step3_tts_retry(
+                lambda: run_tts(tts_rate),
+                f"Step3 TTS seg {subtitle_idx} invalid-output retry",
+                max_retry=TTS_RETRY_MAX,
+            )
+            force_tts_regen[0] = False
+            if not ok_tts_retry or not step3_tts_audio_usable(raw_audio_path):
+                log_step3(
+                    f"Step3: TTS still invalid after retry — silent segment idx={subtitle_idx}",
+                    important=True,
+                )
+                _write_step3_silent_wav(
+                    final_seg_path,
+                    subtitle_duration_ms,
+                    f"Step3 TTS invalid silent idx={i}",
+                )
+                timeline_paths.append(final_seg_path.resolve())
+                current_time_ms = end_ms
+                done_block_indices.add(i)
+                _step3_save_voice_checkpoint(
+                    srt_path, chunk_dir, blocks, done_block_indices
+                )
+                continue
 
         raw_segment_ms = get_media_duration_ms(raw_audio_path)
         if (
@@ -2561,6 +2629,12 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
             (use_omnivoice and OMNIVOICE_TRIM_TRAILING_SILENCE)
             or (use_voxcpm2 and VOXCPM2_TRIM_TRAILING_SILENCE)
         )
+        # Very short clone outputs (often 1–2 words) are easy to zero out with silenceremove.
+        if trim_clone_silence and (
+            (raw_segment_ms and raw_segment_ms < 280)
+            or len(subtitle_text.split()) <= 2
+        ):
+            trim_clone_silence = False
         if trim_clone_silence:
             stop_dur = max(
                 0.02, float(OMNIVOICE_TRAILING_SILENCE_MIN_MS) / 1000.0
@@ -3101,6 +3175,77 @@ def step7_merge_outro(main_video_path):
     return with_outro
 
 
+def step7c_segment_cut(main_video_path):
+    """Step7c: trim+concat kept segments on finalized *_vs_tm*.mp4 (post unified render)."""
+    output_duration_ms = get_media_duration_ms(main_video_path)
+    if not output_duration_ms:
+        log("Step7c: cannot read output duration — skip segment cut.")
+        return main_video_path
+
+    output_duration_sec = output_duration_ms / 1000.0
+    source_duration_sec = output_duration_sec * float(PREPROCESS_SPEED) * float(SPEED_VIDEO)
+    segments = parse_audio_segments_json(AUDIO_SEGMENTS_JSON, source_duration_sec)
+    if not segments:
+        return main_video_path
+
+    if not needs_audio_segment_cut(
+        segments, source_duration_sec, PREPROCESS_SPEED, SPEED_VIDEO
+    ):
+        log("Step7c: no segment cut needed — skip.")
+        return main_video_path
+
+    ranges = build_output_ranges(
+        segments,
+        PREPROCESS_SPEED,
+        SPEED_VIDEO,
+        output_duration_sec,
+    )
+    if not ranges:
+        raise RuntimeError("Step7c: all segments deleted — nothing to export.")
+
+    base_out = Path(main_video_path).resolve()
+    part = base_out.with_suffix(".part.mp4")
+    has_audio = media_has_audio_stream(base_out)
+    meta = ffmpeg_output_metadata_args(part)
+    common = dict(
+        video_path=str(base_out),
+        part_path=str(part),
+        ranges=ranges,
+        has_audio=has_audio,
+        ffmpeg_bin=FFMPEG_BIN,
+        output_metadata_args=meta,
+    )
+
+    gpu_cmd = build_step7c_segment_cut_command(
+        **common,
+        use_gpu=True,
+        video_encode_args=ffmpeg_video_encode_args(True),
+    )
+    try:
+        run_command(gpu_cmd, "Step7c segment cut (GPU)")
+    except Exception as e:
+        log(f"Step7c: GPU failed → CPU fallback: {e}")
+        cpu_cmd = build_step7c_segment_cut_command(
+            **common,
+            use_gpu=False,
+            video_encode_args=ffmpeg_video_encode_args(False),
+        )
+        run_command(cpu_cmd, "Step7c segment cut (CPU)")
+
+    try:
+        os.replace(part, base_out)
+    except OSError:
+        if part.is_file():
+            part.unlink(missing_ok=True)
+        raise
+
+    if not file_ready(base_out):
+        raise RuntimeError("Step7c segment cut output is missing or empty.")
+
+    log(f"Step7c: segment cut applied ({len(ranges)} kept ranges) → {base_out}")
+    return base_out
+
+
 # ==============================
 # UNIFIED SINGLE-PASS RENDER
 # Step 4 + Step 6 + Step 7a + Step 7b in one FFmpeg call
@@ -3133,6 +3278,9 @@ def build_unified_render_command(
 ):
     """Build a single FFmpeg command that covers audio mix + visual transform +
     subtitle burn + logo overlay + speed + resize + outro concat in one pass.
+
+    Video speed (setpts) runs after ASS burn so subtitles align with source frames;
+    TTS voice receives the same atempo as original audio when speed != 1.
 
     voice_path   – None when SKIP_VOICE_STEP or no voice available.
     logo_path    – None when logo disabled or file missing.
@@ -3167,21 +3315,15 @@ def build_unified_render_command(
     fc = []
     cur_v = f"[{video_slot}:v]"
 
-    # Speed: scale video PTS
-    if apply_speed:
-        fc.append(f"{cur_v}setpts=PTS/{speed:.6f}[vspeed]")
-        cur_v = "[vspeed]"
-
     # Visual transforms: hflip → zoom (scale+crop) → eq → unsharp
+    # Speed (setpts) is applied AFTER ass burn so subtitle timestamps stay aligned
+    # with source frames; burned pixels are then slowed together with video.
     vt = build_visual_transform_filters(probe_wh)
     if vt:
         fc.append(f"{cur_v}{vt}[vtransform]")
         cur_v = "[vtransform]"
 
-    # Subtitle blur strips + ASS burn
-    # build_subtitle_filter_tail returns either:
-    #   simple: "ass='path'"           (no [vsub] label)
-    #   complex: "split[m0]...;[vN]ass='path'[vsub]"  (has [vsub] label)
+    # Subtitle blur strips + ASS burn (source timeline, speed 1.0)
     sub_tail = build_subtitle_filter_tail(ass_path)
     if "[vsub]" in sub_tail:
         fc.append(f"{cur_v}{sub_tail}")
@@ -3211,6 +3353,11 @@ def build_unified_render_command(
         )
         cur_v = "[vout]"
 
+    # Apply playback speed after subtitle burn (main video only; outro stays native speed).
+    if apply_speed:
+        fc.append(f"{cur_v}setpts=PTS/{speed:.6f}[vspeed]")
+        cur_v = "[vspeed]"
+
     final_v_label = cur_v
 
     # ── Audio chain ───────────────────────────────────────────────
@@ -3219,18 +3366,24 @@ def build_unified_render_command(
 
     atempo = build_atempo_filter(speed) if apply_speed else None
 
+    def _voice_audio_chain():
+        chain = f"volume={float(NARRATION_AUDIO_VOLUME):.6f}"
+        if atempo:
+            chain = f"{atempo},{chain}"
+        return chain
+
     if voice_path and has_video_audio:
         # Original audio (attenuated) + TTS narration mixed together
         orig_chain = f"volume={float(ORIGINAL_AUDIO_VOLUME):.6f}"
         if atempo:
             orig_chain = f"{atempo},{orig_chain}"
         fc.append(f"[{video_slot}:a]{orig_chain}[orig]")
-        fc.append(f"[{voice_slot}:a]volume={float(NARRATION_AUDIO_VOLUME):.6f}[voice_a]")
+        fc.append(f"[{voice_slot}:a]{_voice_audio_chain()}[voice_a]")
         fc.append("[orig][voice_a]amix=inputs=2:duration=first:dropout_transition=0[amain]")
         final_a_label = "[amain]"
     elif voice_path and not has_video_audio:
         # Only TTS (source video has no audio track)
-        fc.append(f"[{voice_slot}:a]volume={float(NARRATION_AUDIO_VOLUME):.6f}[amain]")
+        fc.append(f"[{voice_slot}:a]{_voice_audio_chain()}[amain]")
         final_a_label = "[amain]"
     elif has_video_audio and (apply_speed or outro_path):
         # No TTS: apply speed or normalize for outro concat
@@ -3253,6 +3406,10 @@ def build_unified_render_command(
         scale = _step7_scale_pad_filter(ow, oh)
         a_fmt = "aresample=44100,aformat=sample_fmts=fltp:channel_layouts=stereo"
 
+        main_output_dur_s = max(0.1, (get_media_duration_ms(video_path) or 1000) / 1000.0)
+        if apply_speed:
+            main_output_dur_s /= speed
+
         fc.append(f"[{outro_slot}:v]{scale}[outro_v]")
 
         if final_a_label and outro_has_audio:
@@ -3274,9 +3431,7 @@ def build_unified_render_command(
             )
             final_v_label, final_a_label = "[finalv]", "[finala]"
         elif not final_a_label and outro_has_audio:
-            main_dur = get_media_duration_ms(video_path)
-            dur_s = max(0.1, (main_dur or 1000) / 1000.0)
-            fc.append(f"anullsrc=r=44100:cl=stereo:d={dur_s:.3f}[main_a]")
+            fc.append(f"anullsrc=r=44100:cl=stereo:d={main_output_dur_s:.3f}[main_a]")
             fc.append(f"[{outro_slot}:a]{a_fmt}[outro_a]")
             fc.append(
                 f"{final_v_label}[main_a][outro_v][outro_a]"
@@ -3696,6 +3851,12 @@ def parse_cli_args():
         type=float,
         default=PREPROCESS_SPEED,
         help="Before Step1: re-encode input with setpts/atempo (1.0 = skip, use original file).",
+    )
+    parser.add_argument(
+        "--audio-segments-json",
+        type=str,
+        default=AUDIO_SEGMENTS_JSON,
+        help='JSON AudioSegment[] for Step7c post-cut: [{"id":"...","startSec":0,"endSec":10,"deleted":false}]',
     )
     parser.add_argument(
         "--speed-video",
@@ -4220,6 +4381,7 @@ def apply_cli_config(args):
     global SUBTITLE_BG_BLUR_CHROMA_RADIUS
     global SUBTITLE_BG_BLUR_CHROMA_POWER
     global SUBTITLE_BG_EXTRA_BLURS_JSON
+    global AUDIO_SEGMENTS_JSON
     global LOGO_FILE
     global MERGE_OUTRO_ENABLED
     global OUTRO_FILE
@@ -4355,6 +4517,7 @@ def apply_cli_config(args):
     SUBTITLE_BG_BLUR_CHROMA_RADIUS = args.subtitle_bg_blur_chroma_radius
     SUBTITLE_BG_BLUR_CHROMA_POWER = args.subtitle_bg_blur_chroma_power
     SUBTITLE_BG_EXTRA_BLURS_JSON = str(args.subtitle_bg_extra_blurs_json or "[]").strip() or "[]"
+    AUDIO_SEGMENTS_JSON = str(args.audio_segments_json or "[]").strip() or "[]"
 
     LOGO_FILE = args.logo_file
     LOGO_WIDTH = args.logo_width
@@ -4649,6 +4812,7 @@ def _run_step6_and_finalize(ass, tm_video, video_path, skip_voice_step, voice_pa
     final = step_render_unified(video_path, ass, effective_voice)
     if not file_ready(final):
         raise RuntimeError("Unified render output is missing or empty.")
+    final = step7c_segment_cut(final)
     _cleanup_easyocr_artifacts_after_step7()
     _cleanup_paddleocr_artifacts_after_step7()
     _cleanup_vse_artifacts_after_step7()

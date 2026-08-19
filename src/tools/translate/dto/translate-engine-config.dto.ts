@@ -1074,4 +1074,13 @@ export class TranslateEngineConfigDto {
   @IsOptional()
   @IsString()
   existing_srt_dir_path?: string;
+
+  /** JSON AudioSegment[] — Step7c trim+concat sau unified render */
+  @IsOptional()
+  @IsString()
+  audioSegmentsJson?: string;
+
+  @IsOptional()
+  @IsString()
+  audio_segments_json?: string;
 }

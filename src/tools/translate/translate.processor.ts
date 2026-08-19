@@ -397,6 +397,11 @@ const OPTION_MAPPINGS: Array<{
     keys: ["existingSrtDirPath", "existing_srt_dir_path"],
     allowedTypes: ["string"],
   },
+  {
+    cliFlag: "--audio-segments-json",
+    keys: ["audioSegmentsJson", "audio_segments_json"],
+    allowedTypes: ["string"],
+  },
 ];
 
 @Processor(TRANSLATE_QUEUE_NAME)
