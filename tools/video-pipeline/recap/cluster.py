@@ -7,6 +7,9 @@ from typing import Any
 
 import recap_cache  # noqa: F401  — HF cache → ~/.cache/huggingface/hub (trước open_clip/torch)
 
+from clip_embeddings import encode_image_paths, save_shot_embeddings
+from diversity import cosine
+
 LOG = logging.getLogger("recap.cluster")
 
 
@@ -22,6 +25,15 @@ def cluster_semantic_scenes(
     paths = _extract_mid_keyframes(video, shots, keyframes_dir)
 
     embeddings = _embed_keyframes(paths)
+    if embeddings:
+        emb_by_id = {
+            int(s["id"]): embeddings[i]
+            for i, s in enumerate(shots)
+            if i < len(embeddings) and embeddings[i]
+        }
+        if emb_by_id:
+            save_shot_embeddings(work_dir, emb_by_id)
+
     scenes: list[dict[str, Any]] = []
     if not shots:
         return {"scenes": [], "shotToScene": {}}
@@ -52,7 +64,7 @@ def cluster_semantic_scenes(
         emb = embeddings[i] if embeddings and i < len(embeddings) else None
         merge = False
         if current_emb is not None and emb is not None:
-            merge = _cosine(current_emb, emb) >= sim_threshold
+            merge = cosine(current_emb, emb) >= sim_threshold
         else:
             # fallback: merge if previous shot very short
             prev = shots[i - 1]
@@ -198,31 +210,7 @@ def _embed_keyframes(paths: list[Path]) -> list[list[float]] | None:
     if not paths:
         return None
     try:
-        import open_clip  # type: ignore
-        import torch
-        from PIL import Image
-
-        model, _, preprocess = open_clip.create_model_and_transforms(
-            "ViT-B-32", pretrained="openai"
-        )
-        model.eval()
-        embs: list[list[float]] = []
-        with torch.no_grad():
-            for p in paths:
-                img = preprocess(Image.open(p).convert("RGB")).unsqueeze(0)
-                feat = model.encode_image(img)
-                feat = feat / feat.norm(dim=-1, keepdim=True)
-                embs.append(feat.squeeze(0).cpu().tolist())
-        return embs
+        return encode_image_paths(paths)
     except Exception as exc:
         LOG.warning("OpenCLIP unavailable (%s); skip embeddings", exc)
         return None
-
-
-def _cosine(a: list[float], b: list[float]) -> float:
-    import math
-
-    dot = sum(x * y for x, y in zip(a, b))
-    na = math.sqrt(sum(x * x for x in a)) or 1e-9
-    nb = math.sqrt(sum(y * y for y in b)) or 1e-9
-    return dot / (na * nb)

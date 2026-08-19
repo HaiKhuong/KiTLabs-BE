@@ -6,13 +6,17 @@ import math
 from typing import Any
 
 
-def _cosine(a: list[float] | None, b: list[float] | None) -> float:
+def cosine(a: list[float] | None, b: list[float] | None) -> float:
+    """Cosine similarity; returns 0 when vectors missing or length mismatch."""
     if not a or not b or len(a) != len(b):
         return 0.0
     dot = sum(x * y for x, y in zip(a, b))
     na = math.sqrt(sum(x * x for x in a)) or 1e-9
     nb = math.sqrt(sum(y * y for y in b)) or 1e-9
     return dot / (na * nb)
+
+
+_cosine = cosine
 
 
 def time_penalty(shot_a: dict[str, Any], shot_b: dict[str, Any], *, threshold_sec: float = 8.0) -> float:

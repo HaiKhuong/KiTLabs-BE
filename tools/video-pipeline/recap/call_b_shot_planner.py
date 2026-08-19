@@ -8,8 +8,16 @@ from typing import Any
 
 import recap_cache  # noqa: F401  — HF cache → ~/.cache/huggingface/hub (trước open_clip/torch)
 
-from diversity import mmr_select, order_by_story_flow, score_text_overlap
+from clip_embeddings import (
+    encode_shot_keyframes,
+    encode_texts,
+    load_shot_embeddings,
+    save_shot_embeddings,
+)
+from diversity import cosine, mmr_select, order_by_story_flow, score_text_overlap
 from gemini_recap import PICKS_SELECTED_SHOTS
+
+from progress_log import progress
 
 LOG = logging.getLogger("recap.call_b")
 
@@ -22,8 +30,11 @@ def _load_shot_embeddings(
     shots: list[dict[str, Any]],
     work_dir: Path,
 ) -> dict[int, list[float]]:
-    """Load/compute OpenCLIP image embeddings for keyframes when available."""
+    """Load cached OpenCLIP embeddings from cluster; compute only on cache miss."""
     keyframes_dir = work_dir / "keyframes"
+    cached = load_shot_embeddings(work_dir, keyframes_dir=keyframes_dir)
+    if cached:
+        return cached
     if not keyframes_dir.exists():
         return {}
     paths: list[tuple[int, Path]] = []
@@ -35,54 +46,13 @@ def _load_shot_embeddings(
     if not paths:
         return {}
     try:
-        import open_clip  # type: ignore
-        import torch
-        from PIL import Image
-
-        model, _, preprocess = open_clip.create_model_and_transforms(
-            "ViT-B-32", pretrained="openai"
-        )
-        model.eval()
-        out: dict[int, list[float]] = {}
-        with torch.no_grad():
-            for sid, p in paths:
-                img = preprocess(Image.open(p).convert("RGB")).unsqueeze(0)
-                feat = model.encode_image(img)
-                feat = feat / feat.norm(dim=-1, keepdim=True)
-                out[sid] = feat.squeeze(0).cpu().tolist()
+        out = encode_shot_keyframes(paths)
+        if out:
+            save_shot_embeddings(work_dir, out)
         return out
     except Exception as exc:
         LOG.warning("CallB: shot embeddings unavailable (%s)", exc)
         return {}
-
-
-def _encode_texts(texts: list[str]) -> list[list[float]] | None:
-    if not texts:
-        return []
-    try:
-        import open_clip  # type: ignore
-        import torch
-
-        model, _, _ = open_clip.create_model_and_transforms("ViT-B-32", pretrained="openai")
-        tokenizer = open_clip.get_tokenizer("ViT-B-32")
-        model.eval()
-        with torch.no_grad():
-            tokens = tokenizer(texts)
-            feat = model.encode_text(tokens)
-            feat = feat / feat.norm(dim=-1, keepdim=True)
-            return [row.cpu().tolist() for row in feat]
-    except Exception as exc:
-        LOG.warning("CallB: text embeddings unavailable (%s)", exc)
-        return None
-
-
-def _cosine(a: list[float], b: list[float]) -> float:
-    import math
-
-    dot = sum(x * y for x, y in zip(a, b))
-    na = math.sqrt(sum(x * x for x in a)) or 1e-9
-    nb = math.sqrt(sum(y * y for y in b)) or 1e-9
-    return dot / (na * nb)
 
 
 def _enrich_candidates(
@@ -142,7 +112,7 @@ def plan_shots_for_segment(
     k = min(k, max(1, len(pool)))
 
     beat_texts = [str(b.get("description") or "") for b in beats]
-    text_embs = _encode_texts(beat_texts) if embeddings else None
+    text_embs = encode_texts(beat_texts) if embeddings else None
 
     # Per-beat best candidate (greedy, then diversity refine)
     used: set[int] = set()
@@ -160,7 +130,7 @@ def plan_shots_for_segment(
             score = float(c.get("score") or 0)
             score += 0.5 * score_text_overlap(desc, str(c.get("subtitle") or ""))
             if text_embs and embeddings and sid in embeddings:
-                score += 0.8 * _cosine(text_embs[bi], embeddings[sid])
+                score += 0.8 * cosine(text_embs[bi], embeddings[sid])
             # prefer chronological progression
             if picked:
                 if _shot_mid(c) + 0.5 < _shot_mid(picked[-1]):
@@ -245,8 +215,10 @@ def plan_all_segments(
     if work_dir is not None:
         embeddings = _load_shot_embeddings(shots, work_dir)
 
+    total = len(segments)
     selected: list[list[int]] = []
     for i, seg in enumerate(segments):
+        progress(LOG, "CallB segment", i, total, every=10)
         cands = segment_candidates[i] if i < len(segment_candidates) else []
         audio_dur = float((tts_meta[i] if i < len(tts_meta) else {}).get("durationSec") or seg.get("estimatedDuration") or 28.0)
         ids = plan_shots_for_segment(
@@ -262,3 +234,30 @@ def plan_all_segments(
         selected.append(ids)
 
     return {PICKS_SELECTED_SHOTS: selected}
+
+
+def sanitize_picks(
+    raw: list[list[int]] | None,
+    *,
+    segment_candidates: list[list[dict[str, Any]]],
+    tts_meta: list[dict[str, Any]],
+    narrations: list[str],
+) -> list[list[int]]:
+    """Keep only shortlisted shot ids; fill gaps from candidate pool."""
+    sanitized = raw or []
+    fixed: list[list[int]] = []
+    for i, chosen in enumerate(sanitized):
+        allow = {int(c["id"]) for c in segment_candidates[i]} if i < len(segment_candidates) else set()
+        row = [int(x) for x in (chosen or []) if int(x) in allow] if allow else [int(x) for x in (chosen or [])]
+        if not row and i < len(segment_candidates) and segment_candidates[i]:
+            need = float((tts_meta[i] if i < len(tts_meta) else {}).get("durationSec") or 28)
+            row = [int(c["id"]) for c in segment_candidates[i][: max(1, int(need / 3))]]
+        fixed.append(row)
+    while len(fixed) < len(narrations):
+        i = len(fixed)
+        if i < len(segment_candidates) and segment_candidates[i]:
+            need = float((tts_meta[i] if i < len(tts_meta) else {}).get("durationSec") or 28)
+            fixed.append([int(c["id"]) for c in segment_candidates[i][: max(1, int(need / 3))]])
+        else:
+            fixed.append([])
+    return fixed

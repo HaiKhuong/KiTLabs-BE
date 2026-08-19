@@ -11,6 +11,21 @@ def load_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def write_json(path: Path, data: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def load_json_if_fresh(path: Path, *sources: Path) -> Any | None:
+    """Load JSON artifact when it exists and is not older than any source file."""
+    if not artifact_fresh(path, *sources):
+        return None
+    try:
+        return load_json(path)
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
 def artifact_fresh(artifact: Path, *sources: Path) -> bool:
     """True when artifact exists and is not older than any existing source file."""
     if not artifact.is_file():

@@ -91,7 +91,6 @@ def run_asr(video: Path, work_dir: Path) -> dict[str, Any]:
         raise RuntimeError(_NO_AUDIO_MSG)
 
     wav = work_dir / "audio_16k.wav"
-    LOG.info("Extracting audio → %s", wav)
     _extract_wav(video, wav)
 
     try:
@@ -105,7 +104,7 @@ def run_asr(video: Path, work_dir: Path) -> dict[str, Any]:
     model_size = (os_env("RECAP_WHISPER_MODEL") or "large-v3").strip()
     device = (os_env("RECAP_WHISPER_DEVICE") or "cpu").strip()
     compute = (os_env("RECAP_WHISPER_COMPUTE") or "int8").strip()
-    LOG.info("Whisper model=%s device=%s", model_size, device)
+    LOG.info("Whisper transcribing model=%s device=%s", model_size, device)
     model = WhisperModel(model_size, device=device, compute_type=compute)
     segments_iter, info = model.transcribe(str(wav), beam_size=1, vad_filter=True)
     segments: list[dict[str, Any]] = []

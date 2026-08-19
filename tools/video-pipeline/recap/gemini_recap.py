@@ -266,6 +266,7 @@ def _generate_json(
         return {}
 
     model_id = _model_name(model)
+    LOG.info("Gemini %s model=%s", debug_tag, model_id)
     prompt = system + "\n\n# INPUT JSON\n" + json.dumps(user_obj, ensure_ascii=False)
     _dump_debug(debug_dir, f"{debug_tag}_request.json", user_obj)
     _dump_debug(debug_dir, f"{debug_tag}_prompt.txt", prompt)
@@ -314,7 +315,7 @@ def _generate_json(
         except Exception as err:
             last_err = err
             transient = _is_transient(err)
-            LOG.warning(
+            LOG.debug(
                 "Gemini key=...%s failed%s: %s",
                 key[-4:] if len(key) >= 4 else "????",
                 " (transient)" if transient else "",
@@ -322,13 +323,13 @@ def _generate_json(
             )
             if transient and not transient_retried and _RETRY_MAX >= 1:
                 transient_retried = True
-                LOG.info("Gemini debounce %.1fs then retry once…", _RETRY_DEBOUNCE_SEC)
+                LOG.debug("Gemini debounce %.1fs then retry once", _RETRY_DEBOUNCE_SEC)
                 time.sleep(_RETRY_DEBOUNCE_SEC)
                 try:
                     return _call_once(key)
                 except Exception as retry_err:
                     last_err = retry_err
-                    LOG.warning("Gemini retry failed: %s", retry_err)
+                    LOG.debug("Gemini retry failed: %s", retry_err)
 
     if last_err:
         LOG.error("All Gemini attempts failed: %s", last_err)

@@ -5,6 +5,8 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from progress_log import progress
+
 LOG = logging.getLogger("recap.render")
 
 # Must match timeline.MAX_ADAPTIVE_CLIP_SPEED
@@ -27,8 +29,10 @@ def render_timeline(
     video_parts: list[Path] = []
     voice_parts: list[Path] = []
     idx = 0
+    cues = timeline.get("cues") or []
+    clip_total = sum(len(cue.get("video") or []) for cue in cues)
 
-    for cue in timeline.get("cues") or []:
+    for cue in cues:
         voice_file = Path(cue["voice"]["file"])
         if voice_file.exists():
             voice_parts.append(voice_file)
@@ -41,6 +45,7 @@ def render_timeline(
             clip_path = clips_dir / f"clip_{idx:05d}.mp4"
             _cut_clip(video, src_in, src_span, dur, clip_speed, clip_path)
             video_parts.append(clip_path)
+            progress(LOG, "Render clip", idx, clip_total, every=max(1, clip_total // 5))
             idx += 1
 
     if not video_parts:
@@ -80,7 +85,7 @@ def render_timeline(
         "+faststart",
         str(out_mp4),
     ]
-    LOG.info("Muxing final recap → %s", out_mp4)
+    LOG.info("Render: muxing %d clips → %s", len(video_parts), out_mp4.name)
     subprocess.check_call(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 

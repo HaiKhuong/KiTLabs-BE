@@ -10,6 +10,8 @@ import sys
 from pathlib import Path
 from typing import Any, Optional
 
+from progress_log import progress
+
 LOG = logging.getLogger("recap.tts")
 
 # recap/ → video-pipeline/
@@ -122,7 +124,6 @@ def _try_reuse_segment(
         return None
     if dur <= 0:
         return None
-    LOG.info("TTS seg %d cache hit dur=%.2fs", i, dur)
     return _tts_row(i, text, wav, dur, signature.split("|", 1)[0], signature)
 
 
@@ -161,6 +162,7 @@ def synthesize_segments(
             prior_meta = []
 
     meta: list[dict[str, Any]] = []
+    total = len(narrations)
 
     def _maybe_reuse(i: int, text: str, wav: Path) -> dict[str, Any] | None:
         if not skip_existing:
@@ -187,6 +189,7 @@ def synthesize_segments(
             cached = _maybe_reuse(i, text, wav)
             if cached:
                 meta.append(cached)
+                progress(LOG, "TTS", i, total, every=10)
                 continue
             if eng == "voxcpm2":
                 _voxcpm2_tts(text, wav, ref_path=ref_path, ref_text=rt, language=lang)
@@ -194,7 +197,7 @@ def synthesize_segments(
                 _omnivoice_tts(text, wav, ref_path=ref_path, ref_text=rt, language=lang)
             dur = _probe_duration(wav)
             meta.append(_tts_row(i, text, wav, dur, eng, signature))
-            LOG.info("TTS seg %d engine=%s dur=%.2fs", i, eng, dur)
+            progress(LOG, "TTS", i, total, every=10)
         return meta
 
     for i, text in enumerate(narrations):
@@ -203,12 +206,13 @@ def synthesize_segments(
         cached = _maybe_reuse(i, text, wav)
         if cached:
             meta.append(cached)
+            progress(LOG, "TTS", i, total, every=10)
             continue
         _edge_tts(text, mp3, voice=voice, rate=rate)
         _to_wav(mp3, wav)
         dur = _probe_duration(wav)
         meta.append(_tts_row(i, text, wav, dur, "edge", signature))
-        LOG.info("TTS seg %d engine=edge dur=%.2fs rate=%s", i, dur, rate)
+        progress(LOG, "TTS", i, total, every=10)
     return meta
 
 

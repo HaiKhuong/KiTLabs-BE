@@ -37,13 +37,12 @@ def _fit_video_cues_to_voice(
 
     fit_mult = total_v / audio_dur
     eff_speed = min(MAX_ADAPTIVE_CLIP_SPEED, max(base_speed, base_speed * fit_mult))
-    LOG.info(
-        "Voice-fit cue @%.1fs: video %.2fs > voice %.2fs → clip speed %.2fx (base %.2fx)",
+    LOG.debug(
+        "Voice-fit cue @%.1fs: video %.2fs > voice %.2fs → clip speed %.2fx",
         voice_t0,
         total_v,
         audio_dur,
         eff_speed,
-        base_speed,
     )
 
     rebuilt: list[dict[str, Any]] = []

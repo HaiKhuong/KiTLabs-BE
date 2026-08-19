@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 import logging
 import shutil
 import subprocess
@@ -12,8 +11,8 @@ import traceback
 from pathlib import Path
 from typing import Any
 
-# Flush immediately so Nest sees progress before heavy work / possible hangs.
-print(f"[RECAP] boot python={sys.executable}", flush=True)
+# Nest reads stdout for liveness before logging is configured.
+print("[RECAP] boot", flush=True)
 
 import recap_cache  # noqa: F401  — HF cache → ~/.cache/huggingface/hub (phải import trước torch/HF)
 
@@ -28,7 +27,7 @@ from call_a2_script_writer import (
     generate_narration_segments,
     merged_candidates_for_segment,
 )
-from call_b_shot_planner import plan_all_segments
+from call_b_shot_planner import plan_all_segments, sanitize_picks
 from cluster import cluster_semantic_scenes
 from gemini_recap import (
     PICKS_SELECTED_SHOTS,
@@ -41,16 +40,16 @@ from pipeline_cache import (
     artifact_fresh,
     knowledge_has_candidates,
     load_json,
+    load_json_if_fresh,
     try_load_timeline_cache,
     try_load_tts_cache,
     tts_signature,
+    write_json,
 )
 from render import render_timeline
 from scenes import detect_shots
 from timeline import pack_voice_master_timeline
 from tts import format_edge_rate, synthesize_segments
-
-print("[RECAP] boot modules loaded", flush=True)
 
 LOG = logging.getLogger("recap")
 
@@ -103,12 +102,14 @@ def setup_logging(work_dir: Path) -> None:
         "google_genai",
         "faster_whisper",
         "numba",
+        "torch",
+        "tensorflow",
     ):
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
 
 def load_config(path: Path) -> dict[str, Any]:
-    return json.loads(path.read_text(encoding="utf-8"))
+    return load_json(path)
 
 
 def probe_duration(video: Path) -> float:
@@ -126,15 +127,9 @@ def probe_duration(video: Path) -> float:
     return float(out)
 
 
-def write_json(path: Path, data: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-
-
 def cleanup_work_artifacts(work_dir: Path, keep_debug: bool) -> None:
-    """When keep_debug=False, remove heavy intermediates after successful render."""
+    """When keepDebug=False, remove heavy intermediates after successful render."""
     if keep_debug:
-        LOG.info("keepDebugArtifacts=true — retaining work-dir intermediates")
         return
     heavy = [
         work_dir / "clips",
@@ -157,7 +152,6 @@ def cleanup_work_artifacts(work_dir: Path, keep_debug: bool) -> None:
                 p.unlink(missing_ok=True)
         except Exception as exc:
             LOG.warning("cleanup skip %s: %s", p, exc)
-    LOG.info("keepDebugArtifacts=false — cleaned heavy intermediates (kept json + output)")
 
 
 def write_debug_index(debug_dir: Path, work_dir: Path) -> None:
@@ -172,6 +166,7 @@ def write_debug_index(debug_dir: Path, work_dir: Path) -> None:
         "  transcript.json          — Whisper ASR",
         "  shots.json               — shot boundaries (TransNet / FFmpeg)",
         "  semantic_scenes.json     — CLIP-clustered scenes",
+        "  shot_embeddings.json     — cached OpenCLIP vectors per shot (cluster)",
         "  story_knowledge.json     — CallA-1 characters / acts / events",
         "  segments.json            — CallA-2 narrations + visualBeats",
         "  script.json              — Nest/FE flat script (derived from A-2)",
@@ -208,7 +203,6 @@ def main() -> int:
     work_dir = Path(args.work_dir).resolve()
     work_dir.mkdir(parents=True, exist_ok=True)
     setup_logging(work_dir)
-    LOG.info("[RECAP] logging ready work=%s", work_dir)
 
     try:
         if not video.exists():
@@ -225,15 +219,13 @@ def main() -> int:
         debug_dir = work_dir / "debug"
         if keep_debug:
             write_debug_index(debug_dir, work_dir)
-        LOG.info("[RECAP] probing duration video=%s", video)
         movie_dur = probe_duration(video)
         LOG.info(
-            "Recap start title=%s source=%.0fs target=%d–%ds keepDebug=%s work=%s",
+            "[RECAP] start title=%s source=%.0fs target=%d–%ds work=%s",
             title,
             movie_dur,
             dur_min,
             dur_max,
-            keep_debug,
             work_dir,
         )
 
@@ -243,8 +235,8 @@ def main() -> int:
         # 1) ASR
         step_start(1, "ASR", "Whisper transcript")
         transcript_path = work_dir / "transcript.json"
-        if transcript_path.exists():
-            transcript = json.loads(transcript_path.read_text(encoding="utf-8"))
+        transcript = load_json_if_fresh(transcript_path)
+        if transcript is not None:
             step_done(1, "ASR", f"cache hit ({len(transcript.get('segments', []))} segs)")
         else:
             transcript = run_asr(video, work_dir)
@@ -257,8 +249,8 @@ def main() -> int:
         # 2) Shots
         step_start(2, "Scenes", "shot detect (TransNet / FFmpeg)")
         shots_path = work_dir / "shots.json"
-        if shots_path.exists():
-            shots = json.loads(shots_path.read_text(encoding="utf-8"))
+        shots = load_json_if_fresh(shots_path)
+        if shots is not None:
             step_done(2, "Scenes", f"cache hit ({len(shots)} shots)")
         else:
             shots = detect_shots(video, work_dir, movie_dur)
@@ -268,8 +260,8 @@ def main() -> int:
         # 3) Semantic cluster
         step_start(3, "Cluster", "OpenCLIP semantic scenes")
         scenes_path = work_dir / "semantic_scenes.json"
-        if scenes_path.exists():
-            semantic = json.loads(scenes_path.read_text(encoding="utf-8"))
+        semantic = load_json_if_fresh(scenes_path, shots_path)
+        if semantic is not None:
             step_done(3, "Cluster", f"cache hit ({len(semantic.get('scenes', []))} scenes)")
         else:
             semantic = cluster_semantic_scenes(video, shots, work_dir)
@@ -364,7 +356,7 @@ def main() -> int:
             # keep segments aligned to script narrations if canonicalize trimmed
             if len(segments) > len(narrations):
                 segments = segments[: len(narrations)]
-            LOG.info("segments=%d narrations=%d", len(segments), len(narrations))
+            LOG.warning("segments=%d != narrations=%d — trimmed", len(segments), len(narrations))
 
         # Build per-segment candidate pools for CallB / timeline
         segment_candidates: list[list[dict[str, Any]]] = []
@@ -456,23 +448,12 @@ def main() -> int:
                 semantic=semantic,
                 work_dir=work_dir,
             )
-            sanitized = picks.get(PICKS_SELECTED_SHOTS) or []
-            # Sanitize: only ids in shortlist; fallback fill
-            fixed: list[list[int]] = []
-            for i, chosen in enumerate(sanitized):
-                allow = {int(c["id"]) for c in segment_candidates[i]} if i < len(segment_candidates) else set()
-                row = [int(x) for x in (chosen or []) if int(x) in allow] if allow else [int(x) for x in (chosen or [])]
-                if not row and i < len(segment_candidates) and segment_candidates[i]:
-                    need = float((tts_meta[i] if i < len(tts_meta) else {}).get("durationSec") or 28)
-                    row = [int(c["id"]) for c in segment_candidates[i][: max(1, int(need / 3))]]
-                fixed.append(row)
-            while len(fixed) < len(narrations):
-                i = len(fixed)
-                if i < len(segment_candidates) and segment_candidates[i]:
-                    need = float((tts_meta[i] if i < len(tts_meta) else {}).get("durationSec") or 28)
-                    fixed.append([int(c["id"]) for c in segment_candidates[i][: max(1, int(need / 3))]])
-                else:
-                    fixed.append([])
+            fixed = sanitize_picks(
+                picks.get(PICKS_SELECTED_SHOTS),
+                segment_candidates=segment_candidates,
+                tts_meta=tts_meta,
+                narrations=narrations,
+            )
             picks = {PICKS_SELECTED_SHOTS: fixed}
             write_json(picks_path, picks)
             step_done(8, "CallB", f"{len(fixed)} segments picked")
@@ -519,7 +500,6 @@ def main() -> int:
         cleanup_work_artifacts(work_dir, keep_debug=keep_debug)
 
         print(f"DONE: {out_mp4}", flush=True)
-        LOG.info("DONE %s", out_mp4)
         return 0
     except Exception as exc:
         msg = str(exc)

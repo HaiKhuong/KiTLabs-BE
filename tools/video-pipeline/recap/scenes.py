@@ -27,21 +27,30 @@ _TRANSNET_WEIGHT_BASE_URLS = (
 
 def detect_shots(video: Path, work_dir: Path, movie_dur: float) -> list[dict[str, Any]]:
     """TransNet V2 when available; else FFmpeg scene filter / fixed grid."""
+    method = "fixed-grid"
     try:
         shots = _transnet_v2(video, work_dir)
         if shots:
-            return _merge_short_shots(shots, min_sec=1.5)
+            method = "transnet"
+            merged = _merge_short_shots(shots, min_sec=1.5)
+            LOG.info("Scene detect: %d shots (%s)", len(merged), method)
+            return merged
     except Exception as exc:
         LOG.warning("TransNet V2 failed (%s); falling back", exc)
 
     try:
         shots = _ffmpeg_scene(video, movie_dur)
         if shots:
-            return _merge_short_shots(shots, min_sec=1.5)
+            method = "ffmpeg"
+            merged = _merge_short_shots(shots, min_sec=1.5)
+            LOG.info("Scene detect: %d shots (%s)", len(merged), method)
+            return merged
     except Exception as exc:
         LOG.warning("FFmpeg scene detect failed (%s); using fixed grid", exc)
 
-    return _fixed_grid(movie_dur, step=3.0)
+    shots = _fixed_grid(movie_dur, step=3.0)
+    LOG.info("Scene detect: %d shots (%s)", len(shots), method)
+    return shots
 
 
 def _merge_short_shots(shots: list[dict[str, Any]], min_sec: float) -> list[dict[str, Any]]:
@@ -177,7 +186,7 @@ def _download_weight_file(rel: str, dest: Path) -> None:
     for base in _TRANSNET_WEIGHT_BASE_URLS:
         url = f"{base}/{rel}"
         try:
-            LOG.info("Downloading TransNet weight %s …", rel)
+            LOG.debug("Downloading TransNet weight %s", rel)
             urllib.request.urlretrieve(url, tmp)
             expected = _TRANSNET_WEIGHT_FILES[rel]
             digest = _sha256_file(tmp)
@@ -232,7 +241,6 @@ def ensure_transnet_weights() -> Path:
 
     if not _weights_dir_valid(cache):
         raise RuntimeError(f"TransNet weights still invalid after download: {cache}")
-    LOG.info("TransNet weights ready at %s", cache)
     return cache
 
 
@@ -298,7 +306,6 @@ def _transnet_v2(video: Path, work_dir: Path) -> list[dict[str, Any]]:
         single_frame_predictions = None
         try:
             frames = _extract_transnet_frames(video)
-            LOG.info("TransNet extracted %d frames via ffmpeg CLI", len(frames))
             single_frame_predictions, _ = _predict_transnet_frames(model, frames)
         except Exception as extract_exc:
             LOG.warning("TransNet ffmpeg extract / predict_frames failed (%s); trying predict_video", extract_exc)
@@ -328,7 +335,6 @@ def _transnet_v2(video: Path, work_dir: Path) -> list[dict[str, Any]]:
             )
         if not shots:
             raise RuntimeError("TransNet V2 returned 0 scenes")
-        LOG.info("TransNet V2 detected %d shots (work=%s)", len(shots), work_dir)
         return shots
     except Exception as exc:
         raise RuntimeError(f"TransNet V2 predict failed: {exc}") from exc
