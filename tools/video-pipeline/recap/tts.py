@@ -63,8 +63,11 @@ def _resolve_ref_audio(ref_wav: str | None) -> Path:
 
 
 def _probe_duration(path: Path) -> float:
+    if not path.is_file() or path.stat().st_size <= 44:
+        raise RuntimeError(f"TTS output missing or too small: {path}")
+
     cmd = [
-        "ffmpeg",
+        "ffprobe",
         "-v",
         "error",
         "-show_entries",
@@ -73,7 +76,24 @@ def _probe_duration(path: Path) -> float:
         "default=noprint_wrappers=1:nokey=1",
         str(path),
     ]
-    return float(subprocess.check_output(cmd, text=True).strip())
+    try:
+        out = subprocess.check_output(cmd, text=True, timeout=60).strip()
+        dur = float(out)
+        if dur > 0:
+            return dur
+    except (subprocess.CalledProcessError, ValueError, subprocess.TimeoutExpired) as exc:
+        LOG.warning("ffprobe duration failed for %s (%s); trying soundfile", path, exc)
+
+    try:
+        import soundfile as sf
+
+        info = sf.info(str(path))
+        if info.duration and info.duration > 0:
+            return float(info.duration)
+    except Exception as exc:
+        raise RuntimeError(f"Cannot read WAV duration: {path} ({exc})") from exc
+
+    raise RuntimeError(f"Cannot read WAV duration: {path}")
 
 
 def _tts_row(i: int, text: str, wav: Path, dur: float, engine: str, signature: str) -> dict[str, Any]:

@@ -60,5 +60,6 @@ tensorflow>=2.12
 # Not on PyPI — install from upstream (provides `from transnetv2 import TransNetV2`)
 # Weights are git-lfs; pip often installs pointer stubs. Recap auto-downloads real
 # weights into tools/video-pipeline/.cache/transnetv2-weights (or TRANSNET_WEIGHTS_DIR).
-# Frame extract uses ffmpeg CLI (not ffmpeg-python). Optional: pip install ffmpeg-python
+# Frame extract uses ffmpeg CLI (not ffmpeg-python). Recommended for predict_video fallback:
+ffmpeg-python>=0.2.0
 git+https://github.com/soCzech/TransNetV2.git#egg=transnetv2

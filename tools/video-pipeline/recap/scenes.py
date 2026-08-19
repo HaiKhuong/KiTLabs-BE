@@ -270,6 +270,21 @@ def _extract_transnet_frames(video: Path) -> Any:
     return np.frombuffer(raw[: n * frame_bytes], dtype=np.uint8).reshape([n, 27, 48, 3])
 
 
+def _predict_transnet_frames(model: Any, frames: Any) -> Any:
+    """Run predict_frames; retry on CPU when GPU JIT/XLA fails."""
+    try:
+        return model.predict_frames(frames)
+    except Exception as gpu_exc:
+        err = str(gpu_exc).lower()
+        if "jit" not in err and "rsqrt" not in err and "graph execution" not in err:
+            raise
+        LOG.warning("TransNet predict_frames failed on default device (%s); retry CPU", gpu_exc)
+        import tensorflow as tf
+
+        with tf.device("/CPU:0"):
+            return model.predict_frames(frames)
+
+
 def _transnet_v2(video: Path, work_dir: Path) -> list[dict[str, Any]]:
     """Optional TransNet V2 via transnetv2 package (TensorFlow upstream)."""
     try:
@@ -280,14 +295,24 @@ def _transnet_v2(video: Path, work_dir: Path) -> list[dict[str, Any]]:
     try:
         weights_dir = ensure_transnet_weights()
         model = TransNetV2(str(weights_dir))
-        # Prefer CLI ffmpeg → predict_frames (no ffmpeg-python dependency).
-        # Fall back to predict_video only if package is available.
+        single_frame_predictions = None
         try:
             frames = _extract_transnet_frames(video)
-            single_frame_predictions, _ = model.predict_frames(frames)
-        except Exception as frame_exc:
-            LOG.warning("TransNet CLI frame extract failed (%s); trying predict_video", frame_exc)
-            _video_frames, single_frame_predictions, _ = model.predict_video(str(video))
+            LOG.info("TransNet extracted %d frames via ffmpeg CLI", len(frames))
+            single_frame_predictions, _ = _predict_transnet_frames(model, frames)
+        except Exception as extract_exc:
+            LOG.warning("TransNet ffmpeg extract / predict_frames failed (%s); trying predict_video", extract_exc)
+            try:
+                _video_frames, single_frame_predictions, _ = model.predict_video(str(video))
+            except Exception as video_exc:
+                raise RuntimeError(
+                    f"predict_frames and predict_video both failed. "
+                    f"frames_err={extract_exc}; video_err={video_exc}. "
+                    "Try: pip install ffmpeg-python, or tensorflow-cpu<=2.15, "
+                    "or run recap/check_transnet.py --video <file>"
+                ) from video_exc
+        if single_frame_predictions is None:
+            raise RuntimeError("TransNet returned no predictions")
         scenes = model.predictions_to_scenes(single_frame_predictions)
         fps = _probe_fps(video)
         shots = []
