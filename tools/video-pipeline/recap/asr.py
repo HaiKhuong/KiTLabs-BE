@@ -9,15 +9,62 @@ import recap_cache  # noqa: F401  — HF cache → ~/.cache/huggingface/hub (tr�
 
 LOG = logging.getLogger("recap.asr")
 
+_NO_AUDIO_MSG = (
+    "Source video has no audio track (common with video-only YouTube downloads "
+    "such as videoplayback.mp4). Upload a merged file with sound, or download "
+    "audio+video and merge before recap."
+)
+
+
+def _ffmpeg_bin() -> str:
+    import os
+
+    raw = (os.environ.get("FFMPEG_BIN") or os.environ.get("FFMPEG_PATH") or "ffmpeg").strip()
+    return raw or "ffmpeg"
+
+
+def _ffprobe_bin() -> str:
+    import os
+
+    explicit = (os.environ.get("FFPROBE_BIN") or "").strip()
+    if explicit:
+        return explicit
+    fb = Path(_ffmpeg_bin())
+    for name in ("ffprobe.exe", "ffprobe"):
+        cand = fb.with_name(name)
+        if cand.exists():
+            return str(cand)
+    return "ffprobe"
+
+
+def _has_audio_stream(video: Path) -> bool:
+    cmd = [
+        _ffprobe_bin(),
+        "-v",
+        "error",
+        "-select_streams",
+        "a:0",
+        "-show_entries",
+        "stream=codec_type",
+        "-of",
+        "csv=p=0",
+        str(video),
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    return proc.returncode == 0 and (proc.stdout or "").strip() == "audio"
+
 
 def _extract_wav(video: Path, wav: Path) -> None:
     wav.parent.mkdir(parents=True, exist_ok=True)
     cmd = [
-        "ffmpeg",
+        _ffmpeg_bin(),
+        "-nostdin",
         "-y",
         "-i",
         str(video),
         "-vn",
+        "-map",
+        "0:a:0",
         "-ac",
         "1",
         "-ar",
@@ -26,11 +73,23 @@ def _extract_wav(video: Path, wav: Path) -> None:
         "pcm_s16le",
         str(wav),
     ]
-    subprocess.check_call(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=7200)
+    if proc.returncode != 0:
+        stderr = (proc.stderr or "").strip()
+        tail = stderr[-3000:] if stderr else "(no stderr)"
+        LOG.error("ffmpeg audio extract failed (code=%s): %s", proc.returncode, tail)
+        raise RuntimeError(
+            f"ffmpeg failed to extract audio (exit {proc.returncode}). "
+            f"{tail[-800:]}"
+        )
 
 
 def run_asr(video: Path, work_dir: Path) -> dict[str, Any]:
     """faster-whisper if available; else empty transcript with warning."""
+    if not _has_audio_stream(video):
+        LOG.error("%s video=%s", _NO_AUDIO_MSG, video)
+        raise RuntimeError(_NO_AUDIO_MSG)
+
     wav = work_dir / "audio_16k.wav"
     LOG.info("Extracting audio → %s", wav)
     _extract_wav(video, wav)
