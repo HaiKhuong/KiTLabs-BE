@@ -567,7 +567,7 @@ def _synthesize_many_chunk(
     out_wavs = [item.get("out_wav") for item in chunk]
     if any(not str(t).strip() for t in texts):
         raise ValueError("OmniVoice: item thiếu text trong batch.")
-    if any(not out_wavs):
+    if any(not w for w in out_wavs):
         raise ValueError("OmniVoice: item thiếu out_wav trong batch.")
 
     try:
