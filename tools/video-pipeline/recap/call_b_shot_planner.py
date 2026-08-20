@@ -148,7 +148,18 @@ def plan_shots_for_segment(
     need_more = max(0, k - len(picked))
     # also ensure total duration ≈ audio_dur
     total_dur = sum(float(p.get("durationSec") or 0) for p in picked)
+    fill_iters = 0
+    max_fill_iters = max(len(pool), len(beats) + 8)
     while total_dur < audio_dur * 0.85 and remaining and len(picked) < max(k + 4, len(beats) + 4):
+        fill_iters += 1
+        if fill_iters > max_fill_iters:
+            LOG.warning(
+                "CallB: duration fill stopped after %d iters (audio=%.1fs covered=%.1fs)",
+                fill_iters,
+                audio_dur,
+                total_dur,
+            )
+            break
         need_more = max(need_more, 1)
         extra = mmr_select(
             remaining,

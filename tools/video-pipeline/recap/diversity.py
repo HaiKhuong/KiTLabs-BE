@@ -50,9 +50,13 @@ def mmr_select(
 ) -> list[dict[str, Any]]:
     """
     Maximal Marginal Relevance selection with scene cap + time penalty vs selected.
+
+    Returns up to `k` newly picked candidates (does not include selected_seed).
     """
     shot_to_scene = shot_to_scene or {}
-    selected: list[dict[str, Any]] = list(selected_seed or [])
+    seed = list(selected_seed or [])
+    seed_len = len(seed)
+    selected: list[dict[str, Any]] = list(seed)
     scene_counts: dict[str, int] = {}
     for s in selected:
         sc = scene_id_of(s, shot_to_scene)
@@ -61,8 +65,9 @@ def mmr_select(
 
     pool = {int(c.get("id", c.get("shot_id"))): c for c in candidates if c.get("id") is not None or c.get("shot_id") is not None}
     selected_ids = {int(s.get("id", s.get("shot_id"))) for s in selected}
+    target = seed_len + max(0, k)
 
-    while len(selected) < k and pool:
+    while len(selected) < target and pool:
         best_id: int | None = None
         best_score = -1e9
         for sid, cand in pool.items():
@@ -109,7 +114,7 @@ def mmr_select(
         if sc:
             scene_counts[sc] = scene_counts.get(sc, 0) + 1
 
-    return selected
+    return selected[seed_len:]
 
 
 def order_by_story_flow(shots: list[dict[str, Any]]) -> list[dict[str, Any]]:
