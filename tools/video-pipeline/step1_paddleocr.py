@@ -15,6 +15,7 @@ Usage:
 
 from __future__ import annotations
 
+import contextlib
 import json
 import re
 import shutil
@@ -27,6 +28,7 @@ from subtitle.visual_ocr_gate import (
     build_cues_from_opencv,
     cues_from_shells_and_ocr,
     finalize_gated_cues,
+    merge_cue_shells_by_mask,
     rescue_low_conf_gated,
     resolve_extract_fps,
     write_gated_debug_jsonl,
@@ -93,6 +95,10 @@ def configure_step1_paddleocr(
     # OpenCV text-change gate
     framediff_threshold: float = 8.0,
     framediff_skip_blank: bool = True,
+    ink_change_threshold: float = 0.15,
+    change_confirm_frames: int = 2,
+    mask_merge_iou: float = 0.72,
+    workers_max: int = 6,
     # Noise filter (drop short cues; 0 = disable drop)
     noise_min_duration_ms: int = 150,
 ) -> None:
@@ -120,6 +126,10 @@ def configure_step1_paddleocr(
         min_duration_ms=max(0, int(min_duration_ms)),
         framediff_threshold=max(0.0, float(framediff_threshold)),
         framediff_skip_blank=bool(framediff_skip_blank),
+        ink_change_threshold=max(0.0, float(ink_change_threshold)),
+        change_confirm_frames=max(1, int(change_confirm_frames)),
+        mask_merge_iou=max(0.0, min(1.0, float(mask_merge_iou))),
+        workers_max=max(1, int(workers_max)),
         noise_min_duration_ms=max(0, int(noise_min_duration_ms)),
         min_confidence=float(min_confidence),
         low_conf_floor=float(low_conf_floor),
@@ -329,6 +339,47 @@ def _disable_paddle_onednn() -> None:
     os.environ.setdefault("PADDLE_PDX_ENABLE_MKLDNN_BYDEFAULT", "0")
 
 
+def _quiet_paddle_loggers() -> None:
+    """Lower Paddle/PaddleX chatter (model cache, download hints) on stderr."""
+    import logging
+    import warnings
+
+    warnings.filterwarnings("ignore", message=r".*No ccache found.*")
+    warnings.filterwarnings("ignore", message=r".*ccache.*")
+    for logger_name in ("paddlex", "paddle", "paddleocr", "ppocr", "urllib3", "huggingface_hub"):
+        logging.getLogger(logger_name).setLevel(logging.ERROR)
+
+
+@contextlib.contextmanager
+def _suppress_paddle_stderr():
+    """Mute fd=2 spam while Paddle loads cached models (each worker/process)."""
+    import os
+
+    stderr_fd = 2
+    try:
+        devnull = os.open(os.devnull, os.O_WRONLY)
+    except OSError:
+        yield
+        return
+    saved = os.dup(stderr_fd)
+    try:
+        os.dup2(devnull, stderr_fd)
+        yield
+    finally:
+        os.dup2(saved, stderr_fd)
+        os.close(saved)
+        os.close(devnull)
+
+
+def _init_paddle_ocr_engine(**kwargs):
+    """Construct PaddleOCR without PaddleX model-cache noise on stderr."""
+    from paddleocr import PaddleOCR
+
+    _quiet_paddle_loggers()
+    with _suppress_paddle_stderr():
+        return PaddleOCR(**kwargs)
+
+
 def _create_paddle_ocr(
     *,
     lang: str | None = None,
@@ -338,7 +389,6 @@ def _create_paddle_ocr(
 ):
     """Init PaddleOCR for 2.x and 3.x; disable doc preprocess + oneDNN (CPU crash workaround)."""
     _disable_paddle_onednn()
-    from paddleocr import PaddleOCR
 
     lang = str(lang if lang is not None else _cfg["lang"])
     use_gpu = bool(_cfg["use_gpu"] if use_gpu is None else use_gpu)
@@ -346,7 +396,7 @@ def _create_paddle_ocr(
     log_fn = log or _cfg.get("log") or (lambda _m: None)
 
     try:
-        ocr = PaddleOCR(
+        ocr = _init_paddle_ocr_engine(
             lang=lang,
             device="gpu" if use_gpu else "cpu",
             use_doc_orientation_classify=False,
@@ -361,7 +411,7 @@ def _create_paddle_ocr(
         log_fn(f"Step1 PaddleOCR: 3.x init failed ({exc}); fallback 2.x API")
 
     try:
-        return PaddleOCR(
+        return _init_paddle_ocr_engine(
             lang=lang,
             use_angle_cls=use_angle,
             use_gpu=use_gpu,
@@ -370,9 +420,9 @@ def _create_paddle_ocr(
         )
     except TypeError:
         try:
-            return PaddleOCR(lang=lang, use_angle_cls=use_angle, enable_mkldnn=False)
+            return _init_paddle_ocr_engine(lang=lang, use_angle_cls=use_angle, enable_mkldnn=False)
         except TypeError:
-            return PaddleOCR(lang=lang, use_angle_cls=use_angle)
+            return _init_paddle_ocr_engine(lang=lang, use_angle_cls=use_angle)
 
 
 def _ensure_bgr3(img):
@@ -835,9 +885,19 @@ def _ocr_with_paddleocr(video_path: Path) -> Path:
         progressbar=_cfg["progressbar"],
         log=log,
         label="Step1 PaddleOCR",
+        ink_change_threshold=float(_cfg.get("ink_change_threshold") or 0),
+        change_confirm_frames=int(_cfg.get("change_confirm_frames") or 1),
     )
     if not cue_shells:
         raise RuntimeError("Step1 PaddleOCR: OpenCV found no subtitle cues.")
+
+    cue_shells, _mask_merged = merge_cue_shells_by_mask(
+        cue_shells,
+        white_thresh=int(_cfg.get("white_thresh") or 0),
+        merge_iou=float(_cfg.get("mask_merge_iou") or 0),
+        log=log,
+        label="Step1 PaddleOCR",
+    )
 
     annotate_opencv_debug(
         opencv_debug, cue_shells, native_fps=native_fps, extract_fps=extract_fps
@@ -851,7 +911,9 @@ def _ocr_with_paddleocr(video_path: Path) -> Path:
     if use_gpu:
         n_workers = 1
     else:
-        n_workers = max(1, min(int(_cfg["workers"]), (os.cpu_count() or 2), 3))
+        cpu_n = os.cpu_count() or 2
+        worker_cap = max(1, int(_cfg.get("workers_max") or 6))
+        n_workers = max(1, min(int(_cfg["workers"]), cpu_n, worker_cap))
 
     jobs = [(c["ocr_idx"], c["ocr_path"]) for c in cue_shells]
     total = len(jobs)

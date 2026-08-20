@@ -285,6 +285,26 @@ const OPTION_MAPPINGS: Array<{
     allowedTypes: ["number", "string"],
   },
   {
+    cliFlag: "--paddleocr-ink-change-threshold",
+    keys: ["paddleOcrInkChangeThreshold", "paddleocr_ink_change_threshold"],
+    allowedTypes: ["number", "string"],
+  },
+  {
+    cliFlag: "--paddleocr-change-confirm-frames",
+    keys: ["paddleOcrChangeConfirmFrames", "paddleocr_change_confirm_frames"],
+    allowedTypes: ["number", "string"],
+  },
+  {
+    cliFlag: "--paddleocr-mask-merge-iou",
+    keys: ["paddleOcrMaskMergeIou", "paddleocr_mask_merge_iou"],
+    allowedTypes: ["number", "string"],
+  },
+  {
+    cliFlag: "--paddleocr-workers-max",
+    keys: ["paddleOcrWorkersMax", "paddleocr_workers_max"],
+    allowedTypes: ["number", "string"],
+  },
+  {
     cliFlag: "--paddleocr-batch-size",
     keys: ["paddleOcrBatchSize", "paddleocr_batch_size"],
     allowedTypes: ["number", "string"],
@@ -598,12 +618,31 @@ export class TranslateProcessor extends WorkerHost {
   /**
    * Echo Python stream chunks to Nest logs (trim trailing whitespace only).
    */
+  private static readonly PYTHON_LOG_NOISE_PATTERNS: RegExp[] = [
+    /^Creating model:/,
+    /^Model files already exist/,
+    /^To redownload, please delete/,
+    /No ccache found/,
+    /extension_utils\.py:\d+: UserWarning:/,
+    /^UserWarning:/,
+    /^warnings\.warn\(warning_message\)$/,
+    /^Downloading /,
+    /^Fetching \d+ files:/,
+    /^\s*\d+%\|/,
+    /^\s*\|\s*[#\s-]+\|/,
+  ];
+
   private clipPythonStreamForNestLog(chunk: string): string | null {
-    const trimmed = chunk.trimEnd();
-    if (!trimmed) {
+    const lines = chunk.split(/\r?\n/);
+    const kept = lines.map((line) => line.trimEnd()).filter((line) => line.length > 0 && !this.isPythonLogNoise(line));
+    if (!kept.length) {
       return null;
     }
-    return trimmed;
+    return kept.join("\n");
+  }
+
+  private isPythonLogNoise(line: string): boolean {
+    return TranslateProcessor.PYTHON_LOG_NOISE_PATTERNS.some((pattern) => pattern.test(line));
   }
 
   /** Parse `[STEP_n_FAILED] ...` from Python pipeline stderr/stdout after non-zero exit. */

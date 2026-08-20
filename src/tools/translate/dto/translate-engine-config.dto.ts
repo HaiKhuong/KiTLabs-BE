@@ -891,6 +891,46 @@ export class TranslateEngineConfigDto {
   @IsOptional()
   @Type(() => Number)
   @IsNumber()
+  paddleOcrInkChangeThreshold?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  paddleocr_ink_change_threshold?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  paddleOcrChangeConfirmFrames?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  paddleocr_change_confirm_frames?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  paddleOcrMaskMergeIou?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  paddleocr_mask_merge_iou?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  paddleOcrWorkersMax?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  paddleocr_workers_max?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
   paddleOcrBatchSize?: number;
 
   @IsOptional()

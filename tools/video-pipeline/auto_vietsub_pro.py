@@ -23,6 +23,9 @@ warnings.filterwarnings(
     message=r".*StreamingMediaDecoder has been deprecated.*",
     category=UserWarning,
 )
+# Paddle/PaddleX: ccache + model cache hints — spam stderr khi chạy qua BE.
+warnings.filterwarnings("ignore", message=r".*No ccache found.*", category=UserWarning)
+warnings.filterwarnings("ignore", message=r".*ccache.*", category=UserWarning)
 
 try:
     from dotenv import load_dotenv
@@ -394,6 +397,11 @@ PADDLEOCR_SCAN_FPS = 10
 # OpenCV text-change gate (mask MAD 0–255); PaddleOCR chỉ khi appear/change
 PADDLEOCR_FRAMEDIFF_THRESHOLD = 8.0
 PADDLEOCR_FRAMEDIFF_SKIP_BLANK = True
+# OpenCV gate tuning — giảm OCR dư (1436 frame → ~280 subtitle)
+PADDLEOCR_INK_CHANGE_THRESHOLD = 0.15   # 15% ink thay đổi mới coi là đổi câu (0 = dùng MAD framediff)
+PADDLEOCR_CHANGE_CONFIRM_FRAMES = 2     # cần N frame liên tiếp mới trigger change
+PADDLEOCR_MASK_MERGE_IOU = 0.72         # gộp cue shell giống mask trước khi gọi PaddleOCR
+PADDLEOCR_WORKERS_MAX = 6               # cap process pool CPU (trước đây hard-code 3)
 # Noise filter: drop cue có text nhưng duration < ngưỡng (ms)
 PADDLEOCR_NOISE_MIN_DURATION_MS = 150
 # Preprocessing frame (giống EasyOCR nhưng config độc lập để tuning riêng)
@@ -2155,6 +2163,10 @@ def _step1_ocr_with_paddleocr(video_path):
         min_duration_ms=PADDLEOCR_MIN_DURATION_MS,
         framediff_threshold=PADDLEOCR_FRAMEDIFF_THRESHOLD,
         framediff_skip_blank=PADDLEOCR_FRAMEDIFF_SKIP_BLANK,
+        ink_change_threshold=PADDLEOCR_INK_CHANGE_THRESHOLD,
+        change_confirm_frames=PADDLEOCR_CHANGE_CONFIRM_FRAMES,
+        mask_merge_iou=PADDLEOCR_MASK_MERGE_IOU,
+        workers_max=PADDLEOCR_WORKERS_MAX,
         noise_min_duration_ms=PADDLEOCR_NOISE_MIN_DURATION_MS,
         gray_contrast=PADDLEOCR_GRAY_CONTRAST,
         gray_brightness=PADDLEOCR_GRAY_BRIGHTNESS,
@@ -4062,7 +4074,31 @@ def parse_cli_args():
         "--paddleocr-framediff-threshold",
         type=float,
         default=PADDLEOCR_FRAMEDIFF_THRESHOLD,
-        help="OpenCV text-mask change threshold (MAD 0–255; default 8). OCR only on appear/change.",
+        help="OpenCV MAD fallback when ink-change-threshold=0 (0–255; default 8).",
+    )
+    parser.add_argument(
+        "--paddleocr-ink-change-threshold",
+        type=float,
+        default=PADDLEOCR_INK_CHANGE_THRESHOLD,
+        help="OpenCV ink change ratio 0–1 to trigger new cue (default 0.15). 0=use MAD framediff.",
+    )
+    parser.add_argument(
+        "--paddleocr-change-confirm-frames",
+        type=int,
+        default=PADDLEOCR_CHANGE_CONFIRM_FRAMES,
+        help="OpenCV: consecutive change frames before new OCR (debounce; default 2).",
+    )
+    parser.add_argument(
+        "--paddleocr-mask-merge-iou",
+        type=float,
+        default=PADDLEOCR_MASK_MERGE_IOU,
+        help="Merge cue shells with mask IoU>=this before OCR (default 0.72). 0=off.",
+    )
+    parser.add_argument(
+        "--paddleocr-workers-max",
+        type=int,
+        default=PADDLEOCR_WORKERS_MAX,
+        help="Max CPU process workers for PaddleOCR (default 6; was hard-capped at 3).",
     )
     parser.add_argument(
         "--paddleocr-batch-size",
@@ -4568,6 +4604,10 @@ def apply_cli_config(args):
     global PADDLEOCR_MIN_CONFIDENCE
     global PADDLEOCR_SCAN_FPS
     global PADDLEOCR_FRAMEDIFF_THRESHOLD
+    global PADDLEOCR_INK_CHANGE_THRESHOLD
+    global PADDLEOCR_CHANGE_CONFIRM_FRAMES
+    global PADDLEOCR_MASK_MERGE_IOU
+    global PADDLEOCR_WORKERS_MAX
     global PADDLEOCR_BATCH_SIZE
     global PADDLEOCR_MIN_DURATION_MS
     global PADDLEOCR_NOISE_MIN_DURATION_MS
@@ -4772,6 +4812,10 @@ def apply_cli_config(args):
     PADDLEOCR_MIN_CONFIDENCE = float(getattr(args, "paddleocr_min_confidence", PADDLEOCR_MIN_CONFIDENCE))
     PADDLEOCR_SCAN_FPS = max(0.1, float(getattr(args, "paddleocr_scan_fps", PADDLEOCR_SCAN_FPS)))
     PADDLEOCR_FRAMEDIFF_THRESHOLD = float(getattr(args, "paddleocr_framediff_threshold", PADDLEOCR_FRAMEDIFF_THRESHOLD))
+    PADDLEOCR_INK_CHANGE_THRESHOLD = max(0.0, float(getattr(args, "paddleocr_ink_change_threshold", PADDLEOCR_INK_CHANGE_THRESHOLD)))
+    PADDLEOCR_CHANGE_CONFIRM_FRAMES = max(1, int(getattr(args, "paddleocr_change_confirm_frames", PADDLEOCR_CHANGE_CONFIRM_FRAMES)))
+    PADDLEOCR_MASK_MERGE_IOU = max(0.0, min(1.0, float(getattr(args, "paddleocr_mask_merge_iou", PADDLEOCR_MASK_MERGE_IOU))))
+    PADDLEOCR_WORKERS_MAX = max(1, int(getattr(args, "paddleocr_workers_max", PADDLEOCR_WORKERS_MAX)))
     PADDLEOCR_BATCH_SIZE = max(1, int(getattr(args, "paddleocr_batch_size", PADDLEOCR_BATCH_SIZE)))
     PADDLEOCR_MIN_DURATION_MS = max(0, int(getattr(args, "paddleocr_min_duration_ms", PADDLEOCR_MIN_DURATION_MS)))
     PADDLEOCR_NOISE_MIN_DURATION_MS = max(0, int(getattr(args, "paddleocr_noise_min_duration_ms", PADDLEOCR_NOISE_MIN_DURATION_MS)))

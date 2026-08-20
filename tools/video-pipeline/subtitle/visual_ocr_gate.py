@@ -166,6 +166,101 @@ def mask_change_score(mask_a, mask_b) -> float:
     return float(np.mean(np.abs(a - b)))
 
 
+def mask_ink_change_ratio(mask_a, mask_b) -> float:
+    """Fraction of ink pixels that differ (0–1). Robust vs 1–2px mask jitter."""
+    import numpy as np
+
+    if mask_a is None or mask_b is None:
+        return 1.0
+    if mask_a.shape != mask_b.shape:
+        return 1.0
+    a = mask_a > 0
+    b = mask_b > 0
+    ink = np.logical_or(a, b)
+    ink_count = int(ink.sum())
+    if ink_count <= 0:
+        return 0.0
+    xor = np.logical_xor(a, b)
+    return float(xor.sum()) / float(ink_count)
+
+
+def mask_iou(mask_a, mask_b) -> float:
+    """IoU on binary ink regions (0–1)."""
+    import numpy as np
+
+    if mask_a is None or mask_b is None:
+        return 0.0
+    if mask_a.shape != mask_b.shape:
+        return 0.0
+    a = mask_a > 0
+    b = mask_b > 0
+    inter = int(np.logical_and(a, b).sum())
+    union = int(np.logical_or(a, b).sum())
+    if union <= 0:
+        return 1.0
+    return float(inter) / float(union)
+
+
+def resolve_opencv_change_threshold(
+    framediff_threshold: float,
+    ink_change_threshold: float | None,
+) -> tuple[float, str]:
+    """Return (threshold, metric) where metric is ink_ratio or mad."""
+    if ink_change_threshold is not None and float(ink_change_threshold) > 0:
+        return float(ink_change_threshold), "ink_ratio"
+    return float(framediff_threshold), "mad"
+
+
+def merge_cue_shells_by_mask(
+    cue_shells: list[dict],
+    *,
+    white_thresh: int,
+    merge_iou: float,
+    log: Callable[[str], None],
+    label: str = "Step1",
+) -> tuple[list[dict], int]:
+    """
+    Merge consecutive OpenCV cue shells with similar masks before OCR.
+
+    Cuts redundant Paddle/EasyOCR calls when the gate flickers on the same subtitle.
+    """
+    if merge_iou <= 0 or len(cue_shells) <= 1:
+        return cue_shells, 0
+
+    import cv2
+
+    def _load_mask(path) -> object | None:
+        img = cv2.imread(str(path))
+        if img is None:
+            return None
+        return build_text_mask(img, white_thresh=white_thresh)
+
+    merged: list[dict] = [dict(cue_shells[0])]
+    skipped = 0
+    prev_mask = _load_mask(merged[0]["ocr_path"])
+
+    for cue in cue_shells[1:]:
+        curr_mask = _load_mask(cue["ocr_path"])
+        if (
+            prev_mask is not None
+            and curr_mask is not None
+            and mask_iou(prev_mask, curr_mask) >= float(merge_iou)
+        ):
+            merged[-1]["end"] = float(cue["end"])
+            skipped += 1
+            continue
+        merged.append(dict(cue))
+        prev_mask = curr_mask
+
+    if skipped:
+        log(
+            f"{label}: mask merge IoU>={merge_iou:.2f} — "
+            f"{len(cue_shells)} cue shell(s) → {len(merged)} OCR frame(s) "
+            f"(skipped {skipped})"
+        )
+    return merged, skipped
+
+
 def build_cues_from_opencv(
     frame_files: list[Path],
     frame_interval_sec: float,
@@ -175,6 +270,8 @@ def build_cues_from_opencv(
     progressbar: Callable,
     log: Callable[[str], None],
     label: str = "Step1",
+    ink_change_threshold: float | None = 0.15,
+    change_confirm_frames: int = 2,
 ) -> tuple[list[dict], list[dict]]:
     """
     Sequential OpenCV pass → cue shells with start/end gaps.
@@ -183,13 +280,17 @@ def build_cues_from_opencv(
     """
     import cv2
 
-    threshold = float(framediff_threshold)
+    change_thr, change_metric = resolve_opencv_change_threshold(
+        framediff_threshold, ink_change_threshold
+    )
+    confirm = max(1, int(change_confirm_frames))
     cues: list[dict] = []
     debug_rows: list[dict] = []
     state: dict | None = None
+    pending_change = 0
 
     def _close_state() -> None:
-        nonlocal state
+        nonlocal state, pending_change
         if state is None:
             return
         cues.append(
@@ -202,10 +303,21 @@ def build_cues_from_opencv(
             }
         )
         state = None
+        pending_change = 0
 
     total = len(frame_files)
     log_every = max(1, total // 20)
     t0 = time.time()
+    if change_metric == "ink_ratio":
+        log(
+            f"{label}: OpenCV gate metric=ink_ratio threshold={change_thr:.3f} "
+            f"confirm_frames={confirm}"
+        )
+    else:
+        log(
+            f"{label}: OpenCV gate metric=mad threshold={change_thr:.2f} "
+            f"confirm_frames={confirm}"
+        )
 
     for idx, fpath in enumerate(
         progressbar(frame_files, total=total, desc="OpenCV text-change")
@@ -217,6 +329,7 @@ def build_cues_from_opencv(
             "frame_png": fpath.name,
             "timestamp_sec": ts,
             "opencv_change_score": None,
+            "opencv_change_metric": change_metric,
             "is_blank": None,
             "ocr_skipped": True,
             "select_reason": "skip",
@@ -243,6 +356,7 @@ def build_cues_from_opencv(
             continue
 
         if state is None:
+            pending_change = 0
             state = {
                 "start": ts,
                 "last_text_t": ts,
@@ -256,22 +370,35 @@ def build_cues_from_opencv(
             row["opencv_change_score"] = 0.0
             debug_rows.append(row)
         else:
-            score = mask_change_score(mask, state["key_mask"])
-            row["opencv_change_score"] = score
-            if score >= threshold:
-                _close_state()
-                state = {
-                    "start": ts,
-                    "last_text_t": ts,
-                    "key_mask": mask,
-                    "ocr_idx": idx,
-                    "ocr_path": fpath,
-                    "select_reason": "change",
-                }
-                row["ocr_skipped"] = False
-                row["select_reason"] = "change"
-                debug_rows.append(row)
+            if change_metric == "ink_ratio":
+                score = mask_ink_change_ratio(mask, state["key_mask"])
+                is_change = score >= change_thr
             else:
+                score = mask_change_score(mask, state["key_mask"])
+                is_change = score >= change_thr
+            row["opencv_change_score"] = score
+            if is_change:
+                pending_change += 1
+                if pending_change >= confirm:
+                    _close_state()
+                    state = {
+                        "start": ts,
+                        "last_text_t": ts,
+                        "key_mask": mask,
+                        "ocr_idx": idx,
+                        "ocr_path": fpath,
+                        "select_reason": "change",
+                    }
+                    pending_change = 0
+                    row["ocr_skipped"] = False
+                    row["select_reason"] = "change"
+                    debug_rows.append(row)
+                else:
+                    state["last_text_t"] = ts
+                    row["select_reason"] = "change_pending"
+                    debug_rows.append(row)
+            else:
+                pending_change = 0
                 state["last_text_t"] = ts
                 row["select_reason"] = "same"
                 debug_rows.append(row)
@@ -285,9 +412,11 @@ def build_cues_from_opencv(
             )
 
     _close_state()
+    _thr_label = f"{change_thr:.3f}" if change_metric == "ink_ratio" else f"{change_thr:.2f}"
     log(
         f"{label}: OpenCV done — {total} frames → {len(cues)} cue(s) "
-        f"(threshold={threshold:.2f}) elapsed={time.time() - t0:.0f}s"
+        f"(metric={change_metric}, threshold={_thr_label}) "
+        f"elapsed={time.time() - t0:.0f}s"
     )
     return cues, debug_rows
 
