@@ -10,6 +10,23 @@ import { deleteUploadedSourceVideo } from "../files/files.service";
 
 const MAX_PYTHON_LOG_BUFFER = 10 * 1024 * 1024;
 const PYTHON_INT_CLI_FLAGS = new Set(["--subtitle-margin-v", "--subtitle-alignment"]);
+/** Chỉ truyền xuống Python khi job chạy Step 3 (TTS / voice clone). */
+const STEP3_ONLY_CLI_FLAGS = new Set([
+  "--skip-voice-step",
+  "--edge-tts-voice",
+  "--edge-tts-rate",
+  "--edge-tts-volume",
+  "--edge-tts-pitch",
+  "--step3-tts-engine",
+  "--omnivoice-ref-wav",
+  "--omnivoice-ref-text",
+  "--omnivoice-language",
+  "--auto-speed",
+  "--step3-auto-rate-trigger-cps",
+  "--step3-auto-rate-bonus-percent",
+  "--step3-tts-api-timeout-sec",
+  "--step3-tts-max-retry-action",
+]);
 const OPTION_MAPPINGS: Array<{
   cliFlag: string;
   keys: string[];
@@ -517,7 +534,7 @@ export class TranslateProcessor extends WorkerHost {
 
     const args = [absScriptPath, videoInputPath];
     this.appendStepRangeArg(args, input.stepNbr);
-    this.appendOptionalCliOptions(args, engineConfig);
+    this.appendOptionalCliOptions(args, engineConfig, input.stepNbr);
     this.appendPaddleOcrCliDefaults(args, engineConfig);
 
     const scriptBase = basename(absScriptPath);
@@ -715,8 +732,16 @@ export class TranslateProcessor extends WorkerHost {
     args.push("--paddleocr-scan-mode", "stream");
   }
 
-  private appendOptionalCliOptions(args: string[], engineConfig: Record<string, unknown>): void {
+  private appendOptionalCliOptions(
+    args: string[],
+    engineConfig: Record<string, unknown>,
+    stepNbr: number[],
+  ): void {
+    const runsStep3 = Array.isArray(stepNbr) && stepNbr.includes(3);
     for (const mapping of OPTION_MAPPINGS) {
+      if (!runsStep3 && STEP3_ONLY_CLI_FLAGS.has(mapping.cliFlag)) {
+        continue;
+      }
       const rawValue = this.pickConfigValue(engineConfig, mapping.keys);
       if (rawValue === undefined || rawValue === null) {
         continue;

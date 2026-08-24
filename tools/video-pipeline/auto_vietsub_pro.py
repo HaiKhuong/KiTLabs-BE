@@ -4708,8 +4708,14 @@ def apply_cli_config(args):
     EDGE_TTS_VOLUME = args.edge_tts_volume
     EDGE_TTS_PITCH = args.edge_tts_pitch
     STEP3_TTS_ENGINE = str(args.step3_tts_engine or "edge").strip().lower() or "edge"
+    step_start, step_end = parse_step_range(getattr(args, "step", None))
+    runs_step3 = step_start <= 3 <= step_end
     omnivoice_ref_wav_name = str(getattr(args, "omnivoice_ref_wav", "") or "").strip()
-    if omnivoice_ref_wav_name:
+    if (
+        omnivoice_ref_wav_name
+        and runs_step3
+        and STEP3_TTS_ENGINE in ("omnivoice", "voxcpm2")
+    ):
         OMNIVOICE_REF_WAV = _resolve_omnivoice_ref_wav_arg(omnivoice_ref_wav_name)
     omnivoice_ref_text = str(getattr(args, "omnivoice_ref_text", "") or "").strip()
     if omnivoice_ref_text:
