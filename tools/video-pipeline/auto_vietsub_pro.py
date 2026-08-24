@@ -64,6 +64,11 @@ from subtitle.audio_segment_cut import (
     needs_audio_segment_cut,
     parse_audio_segments_json,
 )
+from subtitle.logo_motion import (
+    build_logo_overlay_filter,
+    normalize_logo_motion,
+    normalize_overlay_text_motion,
+)
 
 # ==============================
 # CONFIG
@@ -238,8 +243,18 @@ LOGO_WIDTH_RATIO = 0.0  # >0: % chiều rộng khung hình; 0 = dùng LOGO_WIDTH
 LOGO_MARGIN_X = 30
 LOGO_MARGIN_Y = 30
 LOGO_OPACITY = 0.5
-# Step 6: tắt overlay logo (--logo-enabled off) dù vẫn có file --logo-file.
+# Logo watermark is always static; running text uses OVERLAY_TEXT_*.
+LOGO_MOTION = "static"
+LOGO_SPEED = 120.0
 LOGO_ENABLED = True
+# PNG/WebP banner of text; FFmpeg overlay with rtl / diagonal / bounce.
+OVERLAY_TEXT_ENABLED = False
+OVERLAY_TEXT_FILE = ""
+OVERLAY_TEXT_MOTION = "rtl"
+OVERLAY_TEXT_SPEED = 140.0
+OVERLAY_TEXT_WIDTH_RATIO = 0.40
+OVERLAY_TEXT_MARGIN_Y = 80
+OVERLAY_TEXT_OPACITY = 0.9
 # Step 7: ghép clip outro sau video _vs_tm (tạo thêm *_vs_tm_outro.mp4).
 MERGE_OUTRO_ENABLED = False
 OUTRO_FILE = ""
@@ -1792,39 +1807,101 @@ def ffmpeg_output_metadata_args(out_path=None):
     return args
 
 
+def _resolve_optional_image(enabled, file_value):
+    if not enabled or not str(file_value or "").strip():
+        return None
+    configured = Path(str(file_value).strip())
+    resolved = (
+        configured if configured.is_absolute() else (SCRIPT_DIR / configured)
+    ).resolve()
+    return resolved if file_ready(resolved) else None
+
+
+def _overlay_scale_width(ratio, fallback_px, ref_w):
+    if float(ratio) > 0:
+        width = int(ref_w) if ref_w else 1920
+        return max(16, int(width * float(ratio)))
+    return max(16, int(fallback_px))
+
+
+def _append_image_overlays(cur_v, fc, logo_slot, overlay_text_slot, ref_w, out_pad="[vout]"):
+    """Ticker first (motion), then static logo on top."""
+    if overlay_text_slot is not None:
+        ot_w = _overlay_scale_width(OVERLAY_TEXT_WIDTH_RATIO, 480, ref_w)
+        fc.append(
+            f"[{overlay_text_slot}:v]format=rgba,scale={ot_w}:-1,"
+            f"colorchannelmixer=aa={float(OVERLAY_TEXT_OPACITY):.4f}[otxt]"
+        )
+        next_pad = "[votxt]" if logo_slot is not None else out_pad
+        fc.append(
+            build_logo_overlay_filter(
+                cur_v,
+                "[otxt]",
+                next_pad,
+                OVERLAY_TEXT_MOTION,
+                OVERLAY_TEXT_SPEED,
+                0,
+                int(OVERLAY_TEXT_MARGIN_Y),
+            )
+        )
+        cur_v = next_pad
+    if logo_slot is not None:
+        logo_w = _overlay_scale_width(LOGO_WIDTH_RATIO, LOGO_WIDTH, ref_w)
+        fc.append(
+            f"[{logo_slot}:v]format=rgba,scale={logo_w}:-1,"
+            f"colorchannelmixer=aa={float(LOGO_OPACITY):.4f}[logo]"
+        )
+        fc.append(
+            build_logo_overlay_filter(
+                cur_v,
+                "[logo]",
+                out_pad,
+                "static",
+                1.0,
+                int(LOGO_MARGIN_X),
+                int(LOGO_MARGIN_Y),
+            )
+        )
+        cur_v = out_pad
+    return cur_v
+
+
 def build_step6_render_command(
-    video_path, out_path, subtitle_filter, use_gpu, logo_path=None, video_width=None
+    video_path, out_path, subtitle_filter, use_gpu, logo_path=None, overlay_text_path=None, video_width=None
 ):
     input_args = ["-i", str(video_path)]
-    use_complex = logo_path is not None or STEP6_VISUAL_TRANSFORM_ENABLED
+    has_img = logo_path is not None or overlay_text_path is not None
+    use_complex = has_img or STEP6_VISUAL_TRANSFORM_ENABLED
     filter_arg_key = "-filter_complex" if use_complex else "-vf"
     filter_arg_value = subtitle_filter
     map_args = []
-    if use_complex and not logo_path:
+    if use_complex and not has_img:
         map_args = ["-map", "[vsub]", "-map", "0:a?"]
 
-    if logo_path:
-        # Simple ass='…' (no blur) needs an explicit [vsub] pad for logo overlay.
+    if has_img:
         if "[vsub]" not in filter_arg_value:
             if filter_arg_value.startswith("["):
                 filter_arg_value = f"{filter_arg_value}[vsub]"
             else:
                 filter_arg_value = f"[0:v]{filter_arg_value}[vsub]"
-        if LOGO_WIDTH_RATIO > 0:
-            ref_w = video_width
-            if not ref_w:
-                wh = get_ffprobe_video_dimensions(video_path)
-                ref_w = wh[0] if wh else 1920
-            logo_w = max(16, int(ref_w * LOGO_WIDTH_RATIO))
-        else:
-            logo_w = int(LOGO_WIDTH)
-        logo_filter = (
-            f"[1:v]format=rgba,scale={logo_w}:-1,colorchannelmixer=aa={float(LOGO_OPACITY)}[logo];"
-            f"[vsub][logo]overlay={int(LOGO_MARGIN_X)}:{int(LOGO_MARGIN_Y)}[vout]"
+        extra_inputs = []
+        next_i = 1
+        overlay_text_slot = None
+        logo_slot = None
+        if overlay_text_path:
+            extra_inputs.extend(["-i", str(overlay_text_path)])
+            overlay_text_slot = next_i
+            next_i += 1
+        if logo_path:
+            extra_inputs.extend(["-i", str(logo_path)])
+            logo_slot = next_i
+        overlay_filters = []
+        _append_image_overlays(
+            "[vsub]", overlay_filters, logo_slot, overlay_text_slot, video_width
         )
         filter_arg_key = "-filter_complex"
-        filter_arg_value = f"{filter_arg_value};{logo_filter}"
-        input_args.extend(["-i", str(logo_path)])
+        filter_arg_value = f"{filter_arg_value};{';'.join(overlay_filters)}"
+        input_args.extend(extra_inputs)
         map_args = ["-map", "[vout]", "-map", "0:a?"]
 
     meta = ffmpeg_output_metadata_args(out_path)
@@ -3375,6 +3452,7 @@ def build_unified_render_command(
     voice_path,
     use_gpu,
     logo_path,
+    overlay_text_path,
     outro_path,
     probe_wh,
     has_video_audio,
@@ -3405,6 +3483,7 @@ def build_unified_render_command(
     video_slot = slot.claim()  # always 0
     voice_slot = slot.claim() if voice_path else None
     logo_slot = slot.claim() if logo_path else None
+    overlay_text_slot = slot.claim() if overlay_text_path else None
     outro_slot = slot.claim() if outro_path else None
 
     input_args = ["-i", str(video_path)]
@@ -3412,6 +3491,8 @@ def build_unified_render_command(
         input_args += ["-i", str(voice_path)]
     if logo_path:
         input_args += ["-i", str(logo_path)]
+    if overlay_text_path:
+        input_args += ["-i", str(overlay_text_path)]
     if outro_path:
         input_args += ["-i", str(outro_path)]
 
@@ -3441,21 +3522,12 @@ def build_unified_render_command(
         fc.append(f"{cur_v}{resize_f}[vresized]")
         cur_v = "[vresized]"
 
-    # Logo overlay
-    if logo_path:
-        if LOGO_WIDTH_RATIO > 0:
-            ref_w = source_wh[0] if source_wh else 1920
-            logo_w = max(16, int(ref_w * LOGO_WIDTH_RATIO))
-        else:
-            logo_w = int(LOGO_WIDTH)
-        fc.append(
-            f"[{logo_slot}:v]format=rgba,scale={logo_w}:-1,"
-            f"colorchannelmixer=aa={float(LOGO_OPACITY):.4f}[logo]"
+    # Overlay text (motion) then static logo
+    if overlay_text_path or logo_path:
+        ref_w = source_wh[0] if source_wh else 1920
+        cur_v = _append_image_overlays(
+            cur_v, fc, logo_slot, overlay_text_slot, ref_w
         )
-        fc.append(
-            f"{cur_v}[logo]overlay={int(LOGO_MARGIN_X)}:{int(LOGO_MARGIN_Y)}[vout]"
-        )
-        cur_v = "[vout]"
 
     # Apply playback speed after subtitle burn (main video only; outro stays native speed).
     if apply_speed:
@@ -3595,14 +3667,8 @@ def step_render_unified(video_path, ass_path, voice_path):
     probe_wh = get_ffprobe_video_dimensions(video_path)
 
     # Resolve logo path
-    logo_path = None
-    if LOGO_ENABLED and LOGO_FILE:
-        configured_logo = Path(LOGO_FILE)
-        resolved = (
-            configured_logo if configured_logo.is_absolute() else (SCRIPT_DIR / configured_logo)
-        ).resolve()
-        if file_ready(resolved):
-            logo_path = resolved
+    logo_path = _resolve_optional_image(LOGO_ENABLED, LOGO_FILE)
+    overlay_text_path = _resolve_optional_image(OVERLAY_TEXT_ENABLED, OVERLAY_TEXT_FILE)
 
     # Resolve outro path and probe its audio
     outro_path = None
@@ -3633,6 +3699,7 @@ def step_render_unified(video_path, ass_path, voice_path):
         ass_path=ass_path,
         voice_path=effective_voice_path,
         logo_path=logo_path,
+        overlay_text_path=overlay_text_path,
         outro_path=outro_path,
         probe_wh=probe_wh,
         has_video_audio=has_video_audio,
@@ -3734,28 +3801,30 @@ def step6_render(video_path, ass_path):
         probe_wh = get_ffprobe_video_dimensions(video_path)
     subtitle_filter = build_subtitle_filter(ass_path, probe_wh)
     video_width = probe_wh[0] if probe_wh else None
-    logo_path = None
-    if LOGO_ENABLED:
-        configured_logo = Path(LOGO_FILE)
-        # Resolve relative logo paths from this script directory
-        # so changing LOGO_FILE in code always takes effect.
-        logo_path = (
-            configured_logo
-            if configured_logo.is_absolute()
-            else (SCRIPT_DIR / configured_logo)
-        ).resolve()
-        if not file_ready(logo_path):
-            logo_path = None
+    logo_path = _resolve_optional_image(LOGO_ENABLED, LOGO_FILE)
+    overlay_text_path = _resolve_optional_image(OVERLAY_TEXT_ENABLED, OVERLAY_TEXT_FILE)
 
     gpu_cmd = build_step6_render_command(
-        video_path, out, subtitle_filter, use_gpu=True, logo_path=logo_path, video_width=video_width
+        video_path,
+        out,
+        subtitle_filter,
+        use_gpu=True,
+        logo_path=logo_path,
+        overlay_text_path=overlay_text_path,
+        video_width=video_width,
     )
     try:
         run_command(gpu_cmd, "Render ASS subtitles (GPU)")
     except Exception as e:
         log(f"Step6: GPU render failed → CPU: {e}")
         cpu_cmd = build_step6_render_command(
-            video_path, out, subtitle_filter, use_gpu=False, logo_path=logo_path, video_width=video_width
+            video_path,
+            out,
+            subtitle_filter,
+            use_gpu=False,
+            logo_path=logo_path,
+            overlay_text_path=overlay_text_path,
+            video_width=video_width,
         )
         run_command(cpu_cmd, "Render ASS subtitles (CPU fallback)")
     return out
@@ -3861,6 +3930,39 @@ def parse_cli_args():
         default="on" if LOGO_ENABLED else "off",
         help="Step6: overlay logo image on video. off = skip logo even if --logo-file exists.",
     )
+    parser.add_argument(
+        "--logo-motion",
+        choices=["static", "rtl", "diagonal", "bounce"],
+        default=LOGO_MOTION,
+        help="Logo motion: static, rtl (right-to-left wrap), diagonal wrap, bounce off edges.",
+    )
+    parser.add_argument(
+        "--logo-speed",
+        type=float,
+        default=LOGO_SPEED,
+        help="Unused for logo (always static). Kept for CLI compatibility.",
+    )
+    parser.add_argument(
+        "--overlay-text-enabled",
+        choices=["on", "off"],
+        default="on" if OVERLAY_TEXT_ENABLED else "off",
+        help="Overlay uploaded text image with motion (rtl/diagonal/bounce).",
+    )
+    parser.add_argument("--overlay-text-file", default=OVERLAY_TEXT_FILE)
+    parser.add_argument(
+        "--overlay-text-motion",
+        choices=["rtl", "diagonal", "bounce", "static"],
+        default=OVERLAY_TEXT_MOTION,
+    )
+    parser.add_argument("--overlay-text-speed", type=float, default=OVERLAY_TEXT_SPEED)
+    parser.add_argument(
+        "--overlay-text-width-ratio",
+        type=float,
+        default=OVERLAY_TEXT_WIDTH_RATIO,
+        help="Overlay-text width as fraction of frame width.",
+    )
+    parser.add_argument("--overlay-text-margin-y", type=int, default=OVERLAY_TEXT_MARGIN_Y)
+    parser.add_argument("--overlay-text-opacity", type=float, default=OVERLAY_TEXT_OPACITY)
     parser.add_argument(
         "--skip-voice-step",
         choices=["on", "off"],
@@ -4542,7 +4644,16 @@ def apply_cli_config(args):
     global LOGO_MARGIN_X
     global LOGO_MARGIN_Y
     global LOGO_OPACITY
+    global LOGO_MOTION
+    global LOGO_SPEED
     global LOGO_ENABLED
+    global OVERLAY_TEXT_ENABLED
+    global OVERLAY_TEXT_FILE
+    global OVERLAY_TEXT_MOTION
+    global OVERLAY_TEXT_SPEED
+    global OVERLAY_TEXT_WIDTH_RATIO
+    global OVERLAY_TEXT_MARGIN_Y
+    global OVERLAY_TEXT_OPACITY
     global SKIP_VOICE_STEP
     global REMOVE_CACHED_VOICE
     global STEP6_VISUAL_TRANSFORM_ENABLED
@@ -4685,7 +4796,16 @@ def apply_cli_config(args):
     LOGO_MARGIN_X = args.logo_margin_x
     LOGO_MARGIN_Y = args.logo_margin_y
     LOGO_OPACITY = args.logo_opacity
+    LOGO_MOTION = "static"
+    LOGO_SPEED = max(1.0, min(2000.0, float(args.logo_speed)))
     LOGO_ENABLED = args.logo_enabled == "on"
+    OVERLAY_TEXT_ENABLED = args.overlay_text_enabled == "on"
+    OVERLAY_TEXT_FILE = str(args.overlay_text_file or "").strip()
+    OVERLAY_TEXT_MOTION = normalize_overlay_text_motion(args.overlay_text_motion)
+    OVERLAY_TEXT_SPEED = max(1.0, min(2000.0, float(args.overlay_text_speed)))
+    OVERLAY_TEXT_WIDTH_RATIO = max(0.0, min(1.0, float(args.overlay_text_width_ratio)))
+    OVERLAY_TEXT_MARGIN_Y = int(args.overlay_text_margin_y)
+    OVERLAY_TEXT_OPACITY = float(args.overlay_text_opacity)
     SKIP_VOICE_STEP = args.skip_voice_step == "on"
     REMOVE_CACHED_VOICE = getattr(args, "remove_cached_voice", "off") == "on"
     MERGE_OUTRO_ENABLED = args.merge_outro == "on"

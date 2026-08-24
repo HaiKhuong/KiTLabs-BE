@@ -241,6 +241,98 @@ export class TranslateEngineConfigDto {
   @IsString()
   logo_enabled?: string;
 
+  /** static | rtl | diagonal | bounce */
+  @IsOptional()
+  @IsIn(["static", "rtl", "diagonal", "bounce"])
+  logoMotion?: string;
+
+  @IsOptional()
+  @IsIn(["static", "rtl", "diagonal", "bounce"])
+  logo_motion?: string;
+
+  /** Pixels per second for animated logo overlay */
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(1)
+  @Max(2000)
+  logoSpeed?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(1)
+  @Max(2000)
+  logo_speed?: number;
+
+  @IsOptional()
+  @IsIn(["on", "off"])
+  overlayTextEnabled?: string;
+
+  @IsOptional()
+  @IsIn(["on", "off"])
+  overlay_text_enabled?: string;
+
+  @IsOptional()
+  @IsString()
+  overlayTextFile?: string;
+
+  @IsOptional()
+  @IsString()
+  overlay_text_file?: string;
+
+  @IsOptional()
+  @IsIn(["rtl", "diagonal", "bounce", "static"])
+  overlayTextMotion?: string;
+
+  @IsOptional()
+  @IsIn(["rtl", "diagonal", "bounce", "static"])
+  overlay_text_motion?: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(1)
+  @Max(2000)
+  overlayTextSpeed?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(1)
+  @Max(2000)
+  overlay_text_speed?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  overlayTextWidthRatio?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  overlay_text_width_ratio?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  overlayTextMarginY?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  overlay_text_margin_y?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  overlayTextOpacity?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  overlay_text_opacity?: number;
+
   /** on = bỏ Step3/4 (chỉ sub, không TTS/mix narration). */
   @IsOptional()
   @IsString()

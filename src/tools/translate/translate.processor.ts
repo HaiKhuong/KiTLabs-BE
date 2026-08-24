@@ -116,6 +116,43 @@ const OPTION_MAPPINGS: Array<{
   { cliFlag: "--logo-margin-y", keys: ["logoMarginY", "logo_margin_y"], allowedTypes: ["number", "string"] },
   { cliFlag: "--logo-opacity", keys: ["logoOpacity", "logo_opacity"], allowedTypes: ["number", "string"] },
   { cliFlag: "--logo-enabled", keys: ["logoEnabled", "logo_enabled"], allowedTypes: ["string"] },
+  { cliFlag: "--logo-motion", keys: ["logoMotion", "logo_motion"], allowedTypes: ["string"] },
+  { cliFlag: "--logo-speed", keys: ["logoSpeed", "logo_speed"], allowedTypes: ["number", "string"] },
+  {
+    cliFlag: "--overlay-text-enabled",
+    keys: ["overlayTextEnabled", "overlay_text_enabled"],
+    allowedTypes: ["string"],
+  },
+  {
+    cliFlag: "--overlay-text-file",
+    keys: ["overlayTextFile", "overlay_text_file"],
+    allowedTypes: ["string"],
+  },
+  {
+    cliFlag: "--overlay-text-motion",
+    keys: ["overlayTextMotion", "overlay_text_motion"],
+    allowedTypes: ["string"],
+  },
+  {
+    cliFlag: "--overlay-text-speed",
+    keys: ["overlayTextSpeed", "overlay_text_speed"],
+    allowedTypes: ["number", "string"],
+  },
+  {
+    cliFlag: "--overlay-text-width-ratio",
+    keys: ["overlayTextWidthRatio", "overlay_text_width_ratio"],
+    allowedTypes: ["number", "string"],
+  },
+  {
+    cliFlag: "--overlay-text-margin-y",
+    keys: ["overlayTextMarginY", "overlay_text_margin_y"],
+    allowedTypes: ["number", "string"],
+  },
+  {
+    cliFlag: "--overlay-text-opacity",
+    keys: ["overlayTextOpacity", "overlay_text_opacity"],
+    allowedTypes: ["number", "string"],
+  },
   {
     cliFlag: "--skip-voice-step",
     keys: ["skipVoiceStep", "skip_voice_step"],
