@@ -18,8 +18,12 @@ from __future__ import annotations
 import contextlib
 import json
 import re
+import shutil
+import time
+from pathlib import Path
+from typing import Any, Callable
 
-_RE_CJK = re.compile(r"[\u4e00-\u9fff]")
+from subtitle.normalize import has_cjk, is_single_cjk_char
 
 
 def _is_single_junk_char(text: str) -> bool:
@@ -27,11 +31,17 @@ def _is_single_junk_char(text: str) -> bool:
     t = str(text or "").strip()
     if len(t) != 1:
         return False
-    return not _RE_CJK.match(t)
-import shutil
-import time
-from pathlib import Path
-from typing import Any, Callable
+    return not has_cjk(t)
+
+
+def _box_passes_confidence(text: str, conf: float, *, min_conf: float, low_floor: float) -> bool:
+    """Single CJK chars use low_floor — OCR often scores them below min_conf."""
+    t = str(text or "").strip()
+    if not t or _is_single_junk_char(t):
+        return False
+    if is_single_cjk_char(t):
+        return conf >= low_floor
+    return conf >= min_conf
 
 from subtitle.visual_ocr_gate import (
     annotate_opencv_debug,
@@ -112,12 +122,12 @@ def configure_step1_paddleocr(
     ink_change_threshold: float = 0.10,
     change_confirm_frames: int = 1,
     min_cue_hold_frames: int = 1,
-    mask_merge_iou: float = 0.60,
+    mask_merge_iou: float = 0.67,
     workers_max: int = 6,
     scan_mode: str = "stream",
     scan_max_width: int = 0,
     # Noise filter (drop short cues; 0 = disable drop)
-    noise_min_duration_ms: int = 150,
+    noise_min_duration_ms: int = 100,
 ) -> None:
     """Populate module config. Call before run()."""
     _cfg.clear()
@@ -882,14 +892,21 @@ def _pool_ocr_one(item: tuple) -> tuple:
         texts = [
             str(t).strip()
             for _b, t, conf in sorted_results
-            if conf >= _pool_min_conf and str(t).strip() and not _is_single_junk_char(t)
+            if _box_passes_confidence(
+                t, conf, min_conf=_pool_min_conf, low_floor=_pool_low_floor
+            )
         ]
         joined = " ".join(texts)
         debug_row["joined_after_filter"] = joined
         low_texts = [
             str(t).strip()
             for _b, t, conf in sorted_results
-            if _pool_low_floor <= conf < _pool_min_conf and str(t).strip() and not _is_single_junk_char(t)
+            if (
+                _pool_low_floor <= conf < _pool_min_conf
+                and str(t).strip()
+                and not _is_single_junk_char(t)
+                and not is_single_cjk_char(t)
+            )
         ]
         return timestamp_sec, joined, " ".join(low_texts), debug_row
     except Exception as exc:

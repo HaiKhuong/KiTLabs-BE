@@ -10,13 +10,12 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Any, Callable
 
-from subtitle.normalize import clean_text, same_subtitle_line
+from subtitle.normalize import clean_text, has_cjk, same_subtitle_line
 from subtitle.watermark import should_skip_text
 
 # Giữ cue đếm ngược phim (3 → 2 → 1); lọc noise OCR ngắn.
 _COUNTDOWN_SINGLE_CHARS = frozenset({"1", "2", "3", "１", "２", "３"})
 _SHORT_ASCII_NOISE_MAX_LEN = 3
-_RE_CJK = re.compile(r"[\u4e00-\u9fff]")
 _RE_ASCII_ALNUM = re.compile(r"^[A-Za-z0-9]+$")
 
 
@@ -662,15 +661,16 @@ def merge_cues_with_gap(
 def should_drop_short_noise_subtitle(text: str) -> bool:
     """
     Drop OCR garbage on Chinese subs:
-    - 1 char (except countdown 1/2/3)
-    - <=3 ASCII alnum chars without CJK (CE, AUM, y, …)
+    - Never drop text with CJK (including single-char Chinese like 人/我/好)
+    - Keep countdown 1/2/3
+    - Drop single non-CJK chars and <=3 ASCII alnum without CJK (CE, AUM, y, …)
     """
     compact = clean_text(text)
     if not compact:
         return True
     if compact in _COUNTDOWN_SINGLE_CHARS:
         return False
-    if _RE_CJK.search(compact):
+    if has_cjk(compact):
         return False
     if len(compact) == 1:
         return True
@@ -804,7 +804,7 @@ def finalize_gated_cues(
     log: Callable[[str], None],
     label: str = "Step1",
 ) -> list:
-    """Merge gap → skip regex → single-char filter → noise filter."""
+    """Merge gap → skip regex → short non-CJK noise filter → noise filter."""
     if not raw_cues:
         return []
     merged = merge_cues_with_gap(

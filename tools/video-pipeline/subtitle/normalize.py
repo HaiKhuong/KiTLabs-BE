@@ -6,6 +6,19 @@ import re
 from collections import Counter
 
 _RE_KEEP = re.compile(r"[\w\s\u4e00-\u9fff\u3000-\u303f\uff00-\uffef]+")
+# CJK Unified + Extension A + Compatibility Ideographs
+_RE_CJK = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
+
+
+def has_cjk(text: str) -> bool:
+    """True when text contains at least one CJK ideograph."""
+    return bool(_RE_CJK.search(str(text or "")))
+
+
+def is_single_cjk_char(text: str) -> bool:
+    """True when text is exactly one CJK ideograph."""
+    t = str(text or "").strip()
+    return len(t) == 1 and bool(_RE_CJK.match(t))
 
 
 def clean_text(text: str) -> str:

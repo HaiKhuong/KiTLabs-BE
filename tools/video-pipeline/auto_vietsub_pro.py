@@ -402,12 +402,12 @@ PADDLEOCR_FRAMEDIFF_SKIP_BLANK = True
 PADDLEOCR_INK_CHANGE_THRESHOLD = 0.10   # % ink đổi để coi là câu mới (0 = MAD framediff)
 PADDLEOCR_CHANGE_CONFIRM_FRAMES = 1     # 1 = phát hiện đổi câu ngay frame đầu
 PADDLEOCR_MIN_CUE_HOLD_FRAMES = 1       # không trì hoãn OCR
-PADDLEOCR_MASK_MERGE_IOU = 0.60         # gộp cue shell trùng mask trước OCR (0 = tắt)
+PADDLEOCR_MASK_MERGE_IOU = 0.67         # gộp cue shell trùng mask trước OCR (0 = tắt); 0.67 = ít gộp hơn 0.60
 PADDLEOCR_WORKERS_MAX = 6               # cap process pool CPU (trước đây hard-code 3)
 PADDLEOCR_SCAN_MODE = "stream"          # stream = ffmpeg pipe + OpenCV in RAM; disk = PNG folder
 PADDLEOCR_SCAN_MAX_WIDTH = 0            # 0 = giữ width crop; >0 = scale down (vd 960) cho scan nhanh hơn
 # Noise filter: drop cue có text nhưng duration < ngưỡng (ms)
-PADDLEOCR_NOISE_MIN_DURATION_MS = 150
+PADDLEOCR_NOISE_MIN_DURATION_MS = 100   # pre+post filter; 100ms ≈ 1 frame @10fps, cứu cue ngắn mà không mở quá nhiều OCR
 # Preprocessing frame (giống EasyOCR nhưng config độc lập để tuning riêng)
 PADDLEOCR_GRAY_CONTRAST = 2.0       # eq contrast
 PADDLEOCR_GRAY_BRIGHTNESS = -0.15   # eq brightness (âm = làm tối; giúp giảm logo sáng)

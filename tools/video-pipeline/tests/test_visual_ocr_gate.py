@@ -63,7 +63,9 @@ def test_resolve_opencv_change_threshold_mad_fallback():
 @pytest.mark.parametrize(
     ("text", "drop"),
     [
-        ("人", True),
+        ("人", False),
+        ("我", False),
+        ("好", False),
         ("V", True),
         ("y", True),
         ("CE", True),
@@ -153,16 +155,23 @@ def test_filter_cue_shells_by_duration_zero_passthrough():
 def test_is_single_junk_char():
     import sys, os
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-    from step1_paddleocr import _is_single_junk_char
+    from step1_paddleocr import _box_passes_confidence, _is_single_junk_char
 
     assert _is_single_junk_char("V") is True
     assert _is_single_junk_char("A") is True
     assert _is_single_junk_char("3") is True
     assert _is_single_junk_char("y") is True
     assert _is_single_junk_char("我") is False
+    assert _is_single_junk_char("人") is False
+    assert _is_single_junk_char("好") is False
     assert _is_single_junk_char("AB") is False
     assert _is_single_junk_char("") is False
     assert _is_single_junk_char("我刚才为什么会向他行礼") is False
+
+    # Single CJK accepted at low_floor even below min_conf
+    assert _box_passes_confidence("我", 0.12, min_conf=0.5, low_floor=0.003) is True
+    assert _box_passes_confidence("V", 0.12, min_conf=0.5, low_floor=0.003) is False
+    assert _box_passes_confidence("我", 0.001, min_conf=0.5, low_floor=0.003) is False
 
 
 # ── gate with gate_preprocess ──
