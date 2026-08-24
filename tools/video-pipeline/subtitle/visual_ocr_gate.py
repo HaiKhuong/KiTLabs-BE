@@ -305,6 +305,7 @@ def _opencv_gate_core(
     change_confirm_frames: int,
     min_cue_hold_frames: int,
     ocr_frames_dir: Path | None = None,
+    gate_preprocess: Callable | None = None,
 ) -> tuple[list[dict], list[dict], int]:
     """Shared OpenCV gate loop for disk paths or ffmpeg pipe stream."""
     change_thr, change_metric = resolve_opencv_change_threshold(
@@ -380,7 +381,8 @@ def _opencv_gate_core(
                 _close_state()
             continue
 
-        mask = build_text_mask(img, white_thresh=white_thresh)
+        gate_img = gate_preprocess(img) if gate_preprocess else img
+        mask = build_text_mask(gate_img, white_thresh=white_thresh)
         blank = is_blank_mask(mask)
         row["is_blank"] = blank
 
@@ -482,9 +484,10 @@ def build_cues_from_opencv_stream(
     progressbar: Callable,
     log: Callable[[str], None],
     label: str = "Step1",
-    ink_change_threshold: float | None = 0.0,
+    ink_change_threshold: float | None = 0.10,
     change_confirm_frames: int = 1,
     min_cue_hold_frames: int = 1,
+    gate_preprocess: Callable | None = None,
 ) -> tuple[list[dict], list[dict], int]:
     """OpenCV gate over ffmpeg pipe stream; persist PNG only for appear/change frames."""
 
@@ -505,6 +508,7 @@ def build_cues_from_opencv_stream(
         change_confirm_frames=change_confirm_frames,
         min_cue_hold_frames=min_cue_hold_frames,
         ocr_frames_dir=ocr_frames_dir,
+        gate_preprocess=gate_preprocess,
     )
 
 
@@ -517,9 +521,10 @@ def build_cues_from_opencv(
     progressbar: Callable,
     log: Callable[[str], None],
     label: str = "Step1",
-    ink_change_threshold: float | None = 0.0,
+    ink_change_threshold: float | None = 0.10,
     change_confirm_frames: int = 1,
     min_cue_hold_frames: int = 1,
+    gate_preprocess: Callable | None = None,
 ) -> tuple[list[dict], list[dict]]:
     """
     Sequential OpenCV pass over PNG folder → cue shells with start/end gaps.
@@ -546,6 +551,7 @@ def build_cues_from_opencv(
         ink_change_threshold=ink_change_threshold,
         change_confirm_frames=change_confirm_frames,
         min_cue_hold_frames=min_cue_hold_frames,
+        gate_preprocess=gate_preprocess,
     )
     return cues, debug_rows
 
@@ -563,6 +569,24 @@ def annotate_opencv_debug(
         row["extract_fps"] = extract_fps
         if row["frame_index"] in ocr_idx_set and row.get("select_reason") in ("appear", "change"):
             row["ocr_skipped"] = False
+
+
+def filter_cue_shells_by_duration(
+    cue_shells: list[dict],
+    min_duration_ms: int,
+    *,
+    log: Callable[[str], None] | None = None,
+    label: str = "Step1",
+) -> list[dict]:
+    """Drop cue shells shorter than min_duration_ms before OCR to save time."""
+    if min_duration_ms <= 0:
+        return cue_shells
+    threshold_sec = min_duration_ms / 1000.0
+    kept = [c for c in cue_shells if (c["end"] - c["start"]) >= threshold_sec]
+    dropped = len(cue_shells) - len(kept)
+    if dropped > 0 and log:
+        log(f"{label}: duration prefilter dropped {dropped} cue(s) < {min_duration_ms}ms, kept {len(kept)}")
+    return kept
 
 
 def rescue_low_conf_gated(

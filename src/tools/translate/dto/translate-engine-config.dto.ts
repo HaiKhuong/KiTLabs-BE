@@ -869,6 +869,14 @@ export class TranslateEngineConfigDto {
   paddleocr_max_strip_height_ratio?: number;
 
   @IsOptional()
+  @IsIn(['on', 'off'])
+  paddleOcrCropAuto?: string;
+
+  @IsOptional()
+  @IsIn(['on', 'off'])
+  paddleocr_crop_auto?: string;
+
+  @IsOptional()
   @Type(() => Number)
   @IsNumber()
   paddleOcrScanFps?: number;

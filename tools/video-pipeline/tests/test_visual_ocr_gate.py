@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pytest
 
 from subtitle.visual_ocr_gate import (
+    filter_cue_shells_by_duration,
     mask_ink_change_ratio,
     mask_iou,
     merge_cue_shells_by_mask,
@@ -120,3 +123,86 @@ def test_merge_cue_shells_by_mask(monkeypatch):
     assert skipped == 1
     assert merged[0]["end"] == pytest.approx(2.0)
     assert any("mask merge" in line for line in logs)
+
+
+# ── filter_cue_shells_by_duration ──
+
+def test_filter_cue_shells_by_duration_drops_short():
+    shells = [
+        {"start": 0.0, "end": 0.05, "ocr_idx": 0, "ocr_path": "a.png", "select_reason": "appear"},
+        {"start": 1.0, "end": 2.0, "ocr_idx": 1, "ocr_path": "b.png", "select_reason": "change"},
+        {"start": 3.0, "end": 3.1, "ocr_idx": 2, "ocr_path": "c.png", "select_reason": "appear"},
+    ]
+    logs: list[str] = []
+    kept = filter_cue_shells_by_duration(shells, 150, log=logs.append, label="test")
+    assert len(kept) == 1
+    assert kept[0]["ocr_idx"] == 1
+    assert any("dropped 2" in line for line in logs)
+
+
+def test_filter_cue_shells_by_duration_zero_passthrough():
+    shells = [
+        {"start": 0.0, "end": 0.0, "ocr_idx": 0, "ocr_path": "a.png", "select_reason": "appear"},
+    ]
+    kept = filter_cue_shells_by_duration(shells, 0)
+    assert len(kept) == 1
+
+
+# ── _is_single_junk_char ──
+
+def test_is_single_junk_char():
+    import sys, os
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+    from step1_paddleocr import _is_single_junk_char
+
+    assert _is_single_junk_char("V") is True
+    assert _is_single_junk_char("A") is True
+    assert _is_single_junk_char("3") is True
+    assert _is_single_junk_char("y") is True
+    assert _is_single_junk_char("我") is False
+    assert _is_single_junk_char("AB") is False
+    assert _is_single_junk_char("") is False
+    assert _is_single_junk_char("我刚才为什么会向他行礼") is False
+
+
+# ── gate with gate_preprocess ──
+
+def test_opencv_gate_core_with_gate_preprocess():
+    """Gate should apply gate_preprocess before build_text_mask but persist original img."""
+    import cv2
+    import subtitle.visual_ocr_gate as gate
+
+    preprocess_called = []
+
+    def fake_preprocess(img):
+        preprocess_called.append(True)
+        return cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if img.ndim == 3 else img
+
+    color_img = np.zeros((40, 200, 3), dtype=np.uint8)
+    color_img[30:38, 20:180, :] = 255
+
+    def _source():
+        yield 0, 0.0, color_img.copy(), "frame_0", None
+        blank = np.zeros((40, 200, 3), dtype=np.uint8)
+        yield 1, 0.1, blank, "frame_1", None
+
+    import tempfile, os
+    with tempfile.TemporaryDirectory() as tmpdir:
+        cues, debug_rows, scanned = gate._opencv_gate_core(
+            _source(),
+            total=2,
+            frame_interval_sec=0.1,
+            framediff_threshold=8.0,
+            white_thresh=0,
+            progressbar=lambda it, **kw: it,
+            log=lambda _: None,
+            label="test",
+            ink_change_threshold=0.10,
+            change_confirm_frames=1,
+            min_cue_hold_frames=1,
+            ocr_frames_dir=Path(tmpdir),
+            gate_preprocess=fake_preprocess,
+        )
+    assert len(preprocess_called) >= 1
+    assert len(cues) == 1
+    assert cues[0]["select_reason"] == "appear"

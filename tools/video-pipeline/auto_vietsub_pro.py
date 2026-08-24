@@ -383,6 +383,7 @@ PADDLEOCR_MIN_CONFIDENCE = 0.5      # loại bỏ kết quả dưới ngưỡng
 PADDLEOCR_LOW_CONF_FLOOR = 0.003    # ngưỡng tối thiểu để xem xét rescue cluster
 PADDLEOCR_BATCH_SIZE = 4            # parallel OCR threads (giống EASYOCR_WORKERS)
 PADDLEOCR_SUBTITLE_CROP_BAND_HI = 0.20  # giới hạn cao nhất dải phụ đề (% từ đáy)
+PADDLEOCR_CROP_AUTO = True           # True: tự dò vùng sub; False: dùng band_hi/strip từ config
 PADDLEOCR_CROP_PROBE_FRAMES = 12    # số frame mẫu để auto-detect crop band
 PADDLEOCR_CROP_PROBE_H_TRIM_LEFT_FRAC = 0.15   # bỏ mé trái trước khi OCR
 PADDLEOCR_CROP_PROBE_H_TRIM_RIGHT_FRAC = 0.15  # bỏ mé phải trước khi OCR
@@ -397,11 +398,11 @@ PADDLEOCR_SCAN_FPS = 10
 # OpenCV text-change gate (mask MAD 0–255); PaddleOCR chỉ khi appear/change
 PADDLEOCR_FRAMEDIFF_THRESHOLD = 8.0
 PADDLEOCR_FRAMEDIFF_SKIP_BLANK = True
-# OpenCV gate — mặc định MAD (ink=0) như bản ~900 frame OCR; mask merge tắt.
-PADDLEOCR_INK_CHANGE_THRESHOLD = 0.0    # 0 = MAD framediff (nhạy hơn ink_ratio 0.12+)
+# OpenCV gate — ink ratio trên text mask (bỏ qua nhiễu nền), mask merge dedup trước OCR.
+PADDLEOCR_INK_CHANGE_THRESHOLD = 0.10   # % ink đổi để coi là câu mới (0 = MAD framediff)
 PADDLEOCR_CHANGE_CONFIRM_FRAMES = 1     # 1 = phát hiện đổi câu ngay frame đầu
 PADDLEOCR_MIN_CUE_HOLD_FRAMES = 1       # không trì hoãn OCR
-PADDLEOCR_MASK_MERGE_IOU = 0.0          # 0 = tắt gộp cue trước OCR (chính xác hơn)
+PADDLEOCR_MASK_MERGE_IOU = 0.60         # gộp cue shell trùng mask trước OCR (0 = tắt)
 PADDLEOCR_WORKERS_MAX = 6               # cap process pool CPU (trước đây hard-code 3)
 PADDLEOCR_SCAN_MODE = "stream"          # stream = ffmpeg pipe + OpenCV in RAM; disk = PNG folder
 PADDLEOCR_SCAN_MAX_WIDTH = 0            # 0 = giữ width crop; >0 = scale down (vd 960) cho scan nhanh hơn
@@ -2151,6 +2152,7 @@ def _step1_ocr_with_paddleocr(video_path):
         use_gpu=PADDLEOCR_USE_GPU,
         use_angle_cls=PADDLEOCR_USE_ANGLE_CLS,
         workers=PADDLEOCR_BATCH_SIZE,
+        crop_auto=PADDLEOCR_CROP_AUTO,
         subtitle_crop_band_hi=PADDLEOCR_SUBTITLE_CROP_BAND_HI,
         crop_probe_frames=PADDLEOCR_CROP_PROBE_FRAMES,
         crop_probe_h_trim_left_frac=PADDLEOCR_CROP_PROBE_H_TRIM_LEFT_FRAC,
@@ -4047,6 +4049,12 @@ def parse_cli_args():
         help="Use GPU for PaddleOCR inference (default on).",
     )
     parser.add_argument(
+        "--paddleocr-crop-auto",
+        type=str,
+        default="on",
+        help="Auto-detect subtitle crop band (on/off). When off, use --paddleocr-crop-band-hi and --paddleocr-max-strip-height-ratio directly.",
+    )
+    parser.add_argument(
         "--paddleocr-crop-band-hi",
         type=float,
         default=PADDLEOCR_SUBTITLE_CROP_BAND_HI,
@@ -4622,6 +4630,7 @@ def apply_cli_config(args):
     global EASYOCR_TEXT_SKIP_REGEXES_JSON
     global PADDLEOCR_LANG
     global PADDLEOCR_USE_GPU
+    global PADDLEOCR_CROP_AUTO
     global PADDLEOCR_SUBTITLE_CROP_BAND_HI
     global PADDLEOCR_CROP_PROBE_H_TRIM_LEFT_FRAC
     global PADDLEOCR_CROP_PROBE_H_TRIM_RIGHT_FRAC
@@ -4835,6 +4844,7 @@ def apply_cli_config(args):
     if getattr(args, "paddleocr_lang", None):
         PADDLEOCR_LANG = str(args.paddleocr_lang).strip()
     PADDLEOCR_USE_GPU = getattr(args, "paddleocr_use_gpu", "on") == "on"
+    PADDLEOCR_CROP_AUTO = str(getattr(args, "paddleocr_crop_auto", "on")).strip().lower() != "off"
     PADDLEOCR_SUBTITLE_CROP_BAND_HI = float(getattr(args, "paddleocr_crop_band_hi", PADDLEOCR_SUBTITLE_CROP_BAND_HI))
     PADDLEOCR_CROP_PROBE_H_TRIM_LEFT_FRAC = max(
         0.0, min(0.49, float(getattr(args, "paddleocr_crop_probe_h_trim_left_frac", PADDLEOCR_CROP_PROBE_H_TRIM_LEFT_FRAC)))

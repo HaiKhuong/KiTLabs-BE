@@ -292,6 +292,11 @@ const OPTION_MAPPINGS: Array<{
     allowedTypes: ["number", "string"],
   },
   {
+    cliFlag: "--paddleocr-crop-auto",
+    keys: ["paddleOcrCropAuto", "paddleocr_crop_auto"],
+    allowedTypes: ["string"],
+  },
+  {
     cliFlag: "--paddleocr-scan-fps",
     keys: ["paddleOcrScanFps", "paddleocr_scan_fps"],
     allowedTypes: ["number", "string"],

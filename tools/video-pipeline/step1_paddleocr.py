@@ -18,6 +18,16 @@ from __future__ import annotations
 import contextlib
 import json
 import re
+
+_RE_CJK = re.compile(r"[\u4e00-\u9fff]")
+
+
+def _is_single_junk_char(text: str) -> bool:
+    """True when box contains exactly 1 char and it is not CJK."""
+    t = str(text or "").strip()
+    if len(t) != 1:
+        return False
+    return not _RE_CJK.match(t)
 import shutil
 import time
 from pathlib import Path
@@ -28,6 +38,7 @@ from subtitle.visual_ocr_gate import (
     build_cues_from_opencv,
     build_cues_from_opencv_stream,
     cues_from_shells_and_ocr,
+    filter_cue_shells_by_duration,
     finalize_gated_cues,
     merge_cue_shells_by_mask,
     rescue_low_conf_gated,
@@ -69,7 +80,8 @@ def configure_step1_paddleocr(
     use_angle_cls: bool,
     workers: int,
     # Crop band / geometry
-    subtitle_crop_band_hi: float,
+    crop_auto: bool = True,
+    subtitle_crop_band_hi: float = 0.20,
     crop_probe_frames: int,
     crop_probe_h_trim_left_frac: float,
     crop_probe_h_trim_right_frac: float,
@@ -97,10 +109,10 @@ def configure_step1_paddleocr(
     # OpenCV text-change gate
     framediff_threshold: float = 8.0,
     framediff_skip_blank: bool = True,
-    ink_change_threshold: float = 0.0,
+    ink_change_threshold: float = 0.10,
     change_confirm_frames: int = 1,
     min_cue_hold_frames: int = 1,
-    mask_merge_iou: float = 0.0,
+    mask_merge_iou: float = 0.60,
     workers_max: int = 6,
     scan_mode: str = "stream",
     scan_max_width: int = 0,
@@ -122,6 +134,7 @@ def configure_step1_paddleocr(
         use_gpu=bool(use_gpu),
         use_angle_cls=bool(use_angle_cls),
         workers=max(1, int(workers)),
+        crop_auto=bool(crop_auto),
         subtitle_crop_band_hi=float(subtitle_crop_band_hi),
         crop_probe_frames=max(1, int(crop_probe_frames)),
         crop_probe_h_trim_left_frac=max(0.0, min(0.49, float(crop_probe_h_trim_left_frac))),
@@ -234,6 +247,22 @@ def _crop_ffmpeg_vf(band_lo: float, band_hi: float) -> str:
     g = float(_cfg["gray_gamma"])
     post = _ffmpeg_gray_post_eq_suffix()
     return f"{vert},{htrim},format=gray,eq=contrast={c:.6f}:brightness={b:.6f}:gamma={g:.6f}{post}"
+
+
+def _ocr_vf(band_lo: float, band_hi: float) -> str:
+    """Crop + htrim only, keep color bgr24 for PaddleOCR. Gate preprocessing done in RAM."""
+    lo, hi = float(band_lo), float(band_hi)
+    if hi <= lo + 1e-9:
+        raise ValueError("PaddleOCR crop band: need band_hi > band_lo")
+    dh = hi - lo
+    y_from_top = 1.0 - hi
+    vert = f"crop=iw:ih*{dh:.6f}:0:ih*{y_from_top:.6f}"
+    htrim = _h_trim_crop_vf()
+    vf = f"{vert},{htrim}"
+    max_w = int(_cfg.get("scan_max_width") or 0)
+    if max_w > 0:
+        vf = f"{vf},scale='min({max_w}\\,iw)':-2"
+    return vf
 
 
 def _scan_vf(band_lo: float, band_hi: float) -> str:
@@ -356,6 +385,32 @@ def _disable_paddle_onednn() -> None:
     os.environ.setdefault("PADDLE_PDX_ENABLE_MKLDNN_BYDEFAULT", "0")
 
 
+def _limit_cpu_threads(n_threads: int = 1) -> None:
+    """
+    Pin BLAS/OpenMP/OpenCV to n_threads inside each OCR worker.
+
+    Without this every worker process spawns one thread per core, so N workers
+    oversubscribe the CPU by N× and each frame takes seconds instead of ms.
+    """
+    import os
+
+    value = str(max(1, int(n_threads)))
+    for var in (
+        "OMP_NUM_THREADS",
+        "MKL_NUM_THREADS",
+        "OPENBLAS_NUM_THREADS",
+        "NUMEXPR_NUM_THREADS",
+        "VECLIB_MAXIMUM_THREADS",
+    ):
+        os.environ[var] = value
+    try:
+        import cv2
+
+        cv2.setNumThreads(0)
+    except Exception:
+        pass
+
+
 def _quiet_paddle_loggers() -> None:
     """Lower Paddle/PaddleX chatter (model cache, download hints) on stderr."""
     import logging
@@ -402,6 +457,7 @@ def _create_paddle_ocr(
     lang: str | None = None,
     use_gpu: bool | None = None,
     use_angle_cls: bool | None = None,
+    cpu_threads: int = 0,
     log: Callable[[str], None] | None = None,
 ):
     """Init PaddleOCR for 2.x and 3.x; disable doc preprocess + oneDNN (CPU crash workaround)."""
@@ -412,19 +468,32 @@ def _create_paddle_ocr(
     use_angle = bool(_cfg["use_angle_cls"] if use_angle_cls is None else use_angle_cls)
     log_fn = log or _cfg.get("log") or (lambda _m: None)
 
+    kwargs = dict(
+        lang=lang,
+        device="gpu" if use_gpu else "cpu",
+        use_doc_orientation_classify=False,
+        use_doc_unwarping=False,
+        use_textline_orientation=use_angle,
+        text_rec_score_thresh=0.0,
+        enable_mkldnn=False,  # bypass Paddle 3.3.x oneDNN/PIR bug
+    )
+    if cpu_threads > 0 and not use_gpu:
+        kwargs["cpu_threads"] = int(cpu_threads)
+
     try:
-        ocr = _init_paddle_ocr_engine(
-            lang=lang,
-            device="gpu" if use_gpu else "cpu",
-            use_doc_orientation_classify=False,
-            use_doc_unwarping=False,
-            use_textline_orientation=use_angle,
-            text_rec_score_thresh=0.0,
-            enable_mkldnn=False,  # bypass Paddle 3.3.x oneDNN/PIR bug
+        ocr = _init_paddle_ocr_engine(**kwargs)
+        log_fn(
+            f"Step1 PaddleOCR: engine=3.x lang={lang} gpu={use_gpu} mkldnn=False "
+            f"textline_orient={use_angle} cpu_threads={kwargs.get('cpu_threads', 'auto')}"
         )
-        log_fn(f"Step1 PaddleOCR: engine=3.x lang={lang} gpu={use_gpu} mkldnn=False textline_orient={use_angle}")
         return ocr
     except TypeError as exc:
+        if "cpu_threads" in kwargs:
+            kwargs.pop("cpu_threads")
+            try:
+                return _init_paddle_ocr_engine(**kwargs)
+            except TypeError:
+                pass
         log_fn(f"Step1 PaddleOCR: 3.x init failed ({exc}); fallback 2.x API")
 
     try:
@@ -752,8 +821,10 @@ def _pool_worker_init(
     low_floor: float,
     use_cls: bool,
     frame_interval: float,
+    cpu_threads: int = 1,
 ) -> None:
     global _pool_ocr, _pool_min_conf, _pool_low_floor, _pool_use_cls, _pool_frame_interval
+    _limit_cpu_threads(cpu_threads)
     _pool_min_conf = float(min_conf)
     _pool_low_floor = float(low_floor)
     _pool_use_cls = bool(use_cls)
@@ -762,6 +833,7 @@ def _pool_worker_init(
         lang=lang,
         use_gpu=use_gpu,
         use_angle_cls=use_angle,
+        cpu_threads=cpu_threads,
         log=lambda _m: None,
     )
 
@@ -810,14 +882,14 @@ def _pool_ocr_one(item: tuple) -> tuple:
         texts = [
             str(t).strip()
             for _b, t, conf in sorted_results
-            if conf >= _pool_min_conf and str(t).strip()
+            if conf >= _pool_min_conf and str(t).strip() and not _is_single_junk_char(t)
         ]
         joined = " ".join(texts)
         debug_row["joined_after_filter"] = joined
         low_texts = [
             str(t).strip()
             for _b, t, conf in sorted_results
-            if _pool_low_floor <= conf < _pool_min_conf and str(t).strip()
+            if _pool_low_floor <= conf < _pool_min_conf and str(t).strip() and not _is_single_junk_char(t)
         ]
         return timestamp_sec, joined, " ".join(low_texts), debug_row
     except Exception as exc:
@@ -853,21 +925,28 @@ def _ocr_with_paddleocr(video_path: Path) -> Path:
     shutil.rmtree(ocr_dir, ignore_errors=True)
     ocr_dir.mkdir(parents=True, exist_ok=True)
 
-    ocr = _create_paddle_ocr()
     log(
         f"Step1 PaddleOCR: gray eq contrast={_cfg['gray_contrast']:.3f} "
         f"brightness={_cfg['gray_brightness']:.3f} gamma={_cfg['gray_gamma']:.3f} "
         f"lang={_cfg['lang']} gpu={_cfg['use_gpu']}"
     )
 
-    band_lo, band_hi = _detect_crop_band(video_path, ocr, ocr_dir)
-    if band_hi <= band_lo + 1e-9:
-        raise RuntimeError(f"Step1 PaddleOCR: invalid crop band lo={band_lo} hi={band_hi}")
-
-    log(f"Step1 PaddleOCR: crop apply lo={band_lo:.3f} hi={band_hi:.3f} strip_pct={(band_hi - band_lo) * 100:.1f}")
-
-    del ocr
-    gc.collect()
+    if _cfg.get("crop_auto", True):
+        ocr = _create_paddle_ocr()
+        band_lo, band_hi = _detect_crop_band(video_path, ocr, ocr_dir)
+        if band_hi <= band_lo + 1e-9:
+            raise RuntimeError(f"Step1 PaddleOCR: invalid crop band lo={band_lo} hi={band_hi}")
+        log(f"Step1 PaddleOCR: crop apply lo={band_lo:.3f} hi={band_hi:.3f} strip_pct={(band_hi - band_lo) * 100:.1f}")
+        del ocr
+        gc.collect()
+    else:
+        band_hi = float(_cfg["subtitle_crop_band_hi"])
+        strip_max = float(_cfg["max_strip_height_ratio"])
+        band_lo = max(0.0, band_hi - strip_max) if strip_max > 0 else 0.0
+        log(
+            f"Step1 PaddleOCR: crop_auto=off → using config band lo={band_lo:.3f} "
+            f"hi={band_hi:.3f} strip_pct={(band_hi - band_lo) * 100:.1f}%"
+        )
 
     extract_fps, native_fps = resolve_extract_fps(
         video_path,
@@ -897,7 +976,16 @@ def _ocr_with_paddleocr(video_path: Path) -> Path:
         change_confirm_frames=int(_cfg.get("change_confirm_frames") or 1),
         min_cue_hold_frames=int(_cfg.get("min_cue_hold_frames") or 1),
     )
-    scan_vf = _scan_vf(band_lo, band_hi)
+    wt = int(_cfg.get("white_thresh") or 0)
+    ls = max(0.0, min(1.0, float(_cfg.get("luma_suppress") or 0.0)))
+    use_color_ocr = wt <= 0 and ls <= 1e-9
+    if use_color_ocr:
+        scan_vf = _ocr_vf(band_lo, band_hi)
+        gate_preprocess_fn = lambda img: _preprocess_strip(img, for_probe=True)
+        log("Step1 PaddleOCR: color OCR mode — gate uses gray+eq in RAM, PaddleOCR reads color PNG")
+    else:
+        scan_vf = _scan_vf(band_lo, band_hi)
+        gate_preprocess_fn = None
     log(f"Step1 PaddleOCR: scan vf = {scan_vf}")
     frame_count = 0
 
@@ -921,7 +1009,9 @@ def _ocr_with_paddleocr(video_path: Path) -> Path:
         log(
             f"Step1 PaddleOCR: extracted {frame_count} frames to disk in {time.time() - t_ff:.0f}s"
         )
-        cue_shells, opencv_debug = build_cues_from_opencv(frame_files, **gate_kwargs)
+        cue_shells, opencv_debug = build_cues_from_opencv(
+            frame_files, gate_preprocess=gate_preprocess_fn, **gate_kwargs,
+        )
     else:
         duration_ms = _cfg["get_media_duration_ms"](video_path) or 0
         total_estimate = max(1, int((duration_ms / 1000.0) * extract_fps) + 2)
@@ -941,6 +1031,7 @@ def _ocr_with_paddleocr(video_path: Path) -> Path:
             frame_iter,
             ocr_frames_dir=ocr_frames_dir,
             total_estimate=total_estimate,
+            gate_preprocess=gate_preprocess_fn,
             **gate_kwargs,
         )
         saved_ocr = len(list(ocr_frames_dir.glob("ocr_*.png"))) if ocr_frames_dir.exists() else 0
@@ -959,29 +1050,57 @@ def _ocr_with_paddleocr(video_path: Path) -> Path:
         log=log,
         label="Step1 PaddleOCR",
     )
+    # Mask stream giữ trong RAM (~200KB/cue) — bỏ sau khi merge xong.
+    for _cue in cue_shells:
+        _cue.pop("ocr_mask", None)
+    gc.collect()
+
+    noise_dur = int(_cfg.get("noise_min_duration_ms") or 0)
+    if noise_dur > 0:
+        cue_shells = filter_cue_shells_by_duration(
+            cue_shells, noise_dur, log=log, label="Step1 PaddleOCR",
+        )
 
     annotate_opencv_debug(
         opencv_debug, cue_shells, native_fps=native_fps, extract_fps=extract_fps
     )
+
+    # Gate breakdown stats
+    from collections import Counter
+    reason_counts = Counter(r.get("select_reason", "?") for r in opencv_debug)
+    reason_str = " ".join(f"{k}={v}" for k, v in sorted(reason_counts.items()))
+    durations = sorted(c["end"] - c["start"] for c in cue_shells)
+    if durations:
+        p50 = durations[len(durations) // 2]
+        p90 = durations[min(len(durations) - 1, int(len(durations) * 0.9))]
+        log(
+            f"Step1 PaddleOCR: gate breakdown {reason_str} | "
+            f"cue duration p50={p50:.1f}s p90={p90:.1f}s | {len(cue_shells)} cue(s) for OCR"
+        )
+    else:
+        log(f"Step1 PaddleOCR: gate breakdown {reason_str} | 0 cues")
 
     min_conf = float(_cfg["min_confidence"])
     low_floor = float(_cfg["low_conf_floor"])
     use_angle_cls = bool(_cfg["use_angle_cls"])
     use_gpu = bool(_cfg["use_gpu"])
 
+    cpu_n = os.cpu_count() or 2
     if use_gpu:
         n_workers = 1
     else:
-        cpu_n = os.cpu_count() or 2
         worker_cap = max(1, int(_cfg.get("workers_max") or 6))
         n_workers = max(1, min(int(_cfg["workers"]), cpu_n, worker_cap))
+    # Chia đều core cho worker; nếu không sẽ có n_workers × cpu_n thread tranh nhau.
+    threads_per_worker = max(1, cpu_n // max(1, n_workers))
 
     jobs = [(c["ocr_idx"], c["ocr_path"]) for c in cue_shells]
     total = len(jobs)
     log_every = max(1, total // 20)
     log(
         f"Step1 PaddleOCR: OCR {total}/{frame_count} change frames "
-        f"({total * 100 / max(1, frame_count):.1f}%) with {n_workers} worker(s)…"
+        f"({total * 100 / max(1, frame_count):.1f}%) with {n_workers} worker(s) "
+        f"× {threads_per_worker} thread(s) on {cpu_n} core(s)…"
     )
 
     ocr_by_idx: dict[int, tuple] = {}
@@ -998,6 +1117,7 @@ def _ocr_with_paddleocr(video_path: Path) -> Path:
         low_floor,
         use_angle_cls,
         frame_interval_sec,
+        threads_per_worker,
     )
 
     def _consume(idx: int, ts: float, text: str, low_text: str, dbg: dict) -> None:
