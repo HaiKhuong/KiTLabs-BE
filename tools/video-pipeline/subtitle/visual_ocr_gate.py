@@ -5,8 +5,9 @@ from __future__ import annotations
 import json
 import subprocess
 import time
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 from subtitle.normalize import clean_text, same_subtitle_line
 from subtitle.watermark import should_skip_text
@@ -218,6 +219,7 @@ def merge_cue_shells_by_mask(
     merge_iou: float,
     log: Callable[[str], None],
     label: str = "Step1",
+    short_gap_sec: float = 0.25,
 ) -> tuple[list[dict], int]:
     """
     Merge consecutive OpenCV cue shells with similar masks before OCR.
@@ -237,20 +239,29 @@ def merge_cue_shells_by_mask(
 
     merged: list[dict] = [dict(cue_shells[0])]
     skipped = 0
-    prev_mask = _load_mask(merged[0]["ocr_path"])
+    prev_mask = cue_shells[0].get("ocr_mask")
+    if prev_mask is None:
+        prev_mask = _load_mask(merged[0]["ocr_path"])
+    gap_iou_floor = max(0.45, float(merge_iou) - 0.15)
 
     for cue in cue_shells[1:]:
-        curr_mask = _load_mask(cue["ocr_path"])
-        if (
-            prev_mask is not None
-            and curr_mask is not None
-            and mask_iou(prev_mask, curr_mask) >= float(merge_iou)
-        ):
+        curr_mask = cue.get("ocr_mask")
+        if curr_mask is None:
+            curr_mask = _load_mask(cue["ocr_path"])
+        gap_sec = float(cue["start"]) - float(merged[-1]["end"])
+        should_merge = False
+        if prev_mask is not None and curr_mask is not None:
+            iou = mask_iou(prev_mask, curr_mask)
+            if iou >= float(merge_iou):
+                should_merge = True
+            elif gap_sec <= float(short_gap_sec) and iou >= gap_iou_floor:
+                should_merge = True
+        if should_merge:
             merged[-1]["end"] = float(cue["end"])
             skipped += 1
             continue
         merged.append(dict(cue))
-        prev_mask = curr_mask
+        prev_mask = curr_mask if curr_mask is not None else _load_mask(cue["ocr_path"])
 
     if skipped:
         log(
@@ -261,33 +272,52 @@ def merge_cue_shells_by_mask(
     return merged, skipped
 
 
-def build_cues_from_opencv(
-    frame_files: list[Path],
-    frame_interval_sec: float,
+def _persist_ocr_frame(img, ocr_frames_dir: Path, frame_index: int) -> Path:
+    import cv2
+
+    ocr_frames_dir.mkdir(parents=True, exist_ok=True)
+    path = ocr_frames_dir / f"ocr_{frame_index:05d}.png"
+    to_write = img
+    if img is not None and getattr(img, "ndim", 0) == 2:
+        to_write = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+    cv2.imwrite(str(path), to_write)
+    return path
+
+
+def _opencv_gate_core(
+    frame_source: Iterable[tuple[int, float, Any, str, Path | None]],
     *,
+    total: int,
+    frame_interval_sec: float,
     framediff_threshold: float,
     white_thresh: int,
     progressbar: Callable,
     log: Callable[[str], None],
-    label: str = "Step1",
-    ink_change_threshold: float | None = 0.15,
-    change_confirm_frames: int = 2,
-) -> tuple[list[dict], list[dict]]:
-    """
-    Sequential OpenCV pass → cue shells with start/end gaps.
-
-    Each cue: {start, end, ocr_idx, ocr_path, select_reason}
-    """
-    import cv2
-
+    label: str,
+    ink_change_threshold: float | None,
+    change_confirm_frames: int,
+    min_cue_hold_frames: int,
+    ocr_frames_dir: Path | None = None,
+) -> tuple[list[dict], list[dict], int]:
+    """Shared OpenCV gate loop for disk paths or ffmpeg pipe stream."""
     change_thr, change_metric = resolve_opencv_change_threshold(
         framediff_threshold, ink_change_threshold
     )
     confirm = max(1, int(change_confirm_frames))
+    min_hold = max(1, int(min_cue_hold_frames))
     cues: list[dict] = []
     debug_rows: list[dict] = []
     state: dict | None = None
     pending_change = 0
+    scanned = 0
+    ocr_save_dir = Path(ocr_frames_dir) if ocr_frames_dir else None
+
+    def _ocr_path_for(idx: int, img, existing: Path | None) -> Path | None:
+        if existing is not None:
+            return existing
+        if ocr_save_dir is None:
+            return None
+        return _persist_ocr_frame(img, ocr_save_dir, idx)
 
     def _close_state() -> None:
         nonlocal state, pending_change
@@ -300,18 +330,19 @@ def build_cues_from_opencv(
                 "ocr_idx": int(state["ocr_idx"]),
                 "ocr_path": str(state["ocr_path"]),
                 "select_reason": state.get("select_reason", "appear"),
+                "ocr_mask": state.get("ocr_mask"),
             }
         )
         state = None
         pending_change = 0
 
-    total = len(frame_files)
-    log_every = max(1, total // 20)
+    total_hint = max(1, int(total))
+    log_every = max(1, total_hint // 20)
     t0 = time.time()
     if change_metric == "ink_ratio":
         log(
             f"{label}: OpenCV gate metric=ink_ratio threshold={change_thr:.3f} "
-            f"confirm_frames={confirm}"
+            f"confirm_frames={confirm} min_hold_frames={min_hold}"
         )
     else:
         log(
@@ -319,14 +350,13 @@ def build_cues_from_opencv(
             f"confirm_frames={confirm}"
         )
 
-    for idx, fpath in enumerate(
-        progressbar(frame_files, total=total, desc="OpenCV text-change")
+    for idx, ts, img, frame_label, ocr_path in progressbar(
+        frame_source, total=total_hint, desc="OpenCV text-change"
     ):
-        ts = idx * frame_interval_sec
-        img = cv2.imread(str(fpath))
+        scanned = idx + 1
         row = {
             "frame_index": idx,
-            "frame_png": fpath.name,
+            "frame_png": frame_label,
             "timestamp_sec": ts,
             "opencv_change_score": None,
             "opencv_change_metric": change_metric,
@@ -357,13 +387,16 @@ def build_cues_from_opencv(
 
         if state is None:
             pending_change = 0
+            ocr_path = _ocr_path_for(idx, img, ocr_path)
             state = {
                 "start": ts,
                 "last_text_t": ts,
                 "key_mask": mask,
                 "ocr_idx": idx,
-                "ocr_path": fpath,
+                "ocr_path": ocr_path,
+                "ocr_mask": mask,
                 "select_reason": "appear",
+                "frame_count": 1,
             }
             row["ocr_skipped"] = False
             row["select_reason"] = "appear"
@@ -377,17 +410,23 @@ def build_cues_from_opencv(
                 score = mask_change_score(mask, state["key_mask"])
                 is_change = score >= change_thr
             row["opencv_change_score"] = score
+            if is_change and int(state.get("frame_count", 1)) < min_hold:
+                is_change = False
+                row["select_reason"] = "hold"
             if is_change:
                 pending_change += 1
                 if pending_change >= confirm:
                     _close_state()
+                    saved_path = _ocr_path_for(idx, img, ocr_path)
                     state = {
                         "start": ts,
                         "last_text_t": ts,
                         "key_mask": mask,
                         "ocr_idx": idx,
-                        "ocr_path": fpath,
+                        "ocr_path": saved_path,
+                        "ocr_mask": mask,
                         "select_reason": "change",
+                        "frame_count": 1,
                     }
                     pending_change = 0
                     row["ocr_skipped"] = False
@@ -395,18 +434,22 @@ def build_cues_from_opencv(
                     debug_rows.append(row)
                 else:
                     state["last_text_t"] = ts
+                    state["key_mask"] = mask
+                    state["frame_count"] = int(state.get("frame_count", 1)) + 1
                     row["select_reason"] = "change_pending"
                     debug_rows.append(row)
             else:
                 pending_change = 0
                 state["last_text_t"] = ts
-                row["select_reason"] = "same"
+                state["key_mask"] = mask
+                state["frame_count"] = int(state.get("frame_count", 1)) + 1
+                row["select_reason"] = row.get("select_reason") or "same"
                 debug_rows.append(row)
 
         done = idx + 1
-        if done == 1 or done % log_every == 0 or done == total:
+        if done == 1 or done % log_every == 0 or done >= total_hint:
             log(
-                f"{label}: OpenCV progress {done}/{total} "
+                f"{label}: OpenCV progress {done}/{total_hint} "
                 f"cues={len(cues) + (1 if state else 0)} "
                 f"elapsed={time.time() - t0:.0f}s"
             )
@@ -414,9 +457,88 @@ def build_cues_from_opencv(
     _close_state()
     _thr_label = f"{change_thr:.3f}" if change_metric == "ink_ratio" else f"{change_thr:.2f}"
     log(
-        f"{label}: OpenCV done — {total} frames → {len(cues)} cue(s) "
+        f"{label}: OpenCV done — {scanned} frames → {len(cues)} cue(s) "
         f"(metric={change_metric}, threshold={_thr_label}) "
         f"elapsed={time.time() - t0:.0f}s"
+    )
+    return cues, debug_rows, scanned
+
+
+def build_cues_from_opencv_stream(
+    frame_iter: Iterable[tuple[int, float, Any]],
+    frame_interval_sec: float,
+    *,
+    ocr_frames_dir: Path,
+    total_estimate: int,
+    framediff_threshold: float,
+    white_thresh: int,
+    progressbar: Callable,
+    log: Callable[[str], None],
+    label: str = "Step1",
+    ink_change_threshold: float | None = 0.20,
+    change_confirm_frames: int = 3,
+    min_cue_hold_frames: int = 3,
+) -> tuple[list[dict], list[dict], int]:
+    """OpenCV gate over ffmpeg pipe stream; persist PNG only for appear/change frames."""
+
+    def _source():
+        for idx, ts, img in frame_iter:
+            yield idx, ts, img, f"stream_{idx:05d}", None
+
+    return _opencv_gate_core(
+        _source(),
+        total=total_estimate,
+        frame_interval_sec=frame_interval_sec,
+        framediff_threshold=framediff_threshold,
+        white_thresh=white_thresh,
+        progressbar=progressbar,
+        log=log,
+        label=label,
+        ink_change_threshold=ink_change_threshold,
+        change_confirm_frames=change_confirm_frames,
+        min_cue_hold_frames=min_cue_hold_frames,
+        ocr_frames_dir=ocr_frames_dir,
+    )
+
+
+def build_cues_from_opencv(
+    frame_files: list[Path],
+    frame_interval_sec: float,
+    *,
+    framediff_threshold: float,
+    white_thresh: int,
+    progressbar: Callable,
+    log: Callable[[str], None],
+    label: str = "Step1",
+    ink_change_threshold: float | None = 0.20,
+    change_confirm_frames: int = 3,
+    min_cue_hold_frames: int = 3,
+) -> tuple[list[dict], list[dict]]:
+    """
+    Sequential OpenCV pass over PNG folder → cue shells with start/end gaps.
+
+    Each cue: {start, end, ocr_idx, ocr_path, select_reason}
+    """
+    import cv2
+
+    def _source():
+        for idx, fpath in enumerate(frame_files):
+            ts = idx * frame_interval_sec
+            img = cv2.imread(str(fpath))
+            yield idx, ts, img, fpath.name, fpath
+
+    cues, debug_rows, _scanned = _opencv_gate_core(
+        _source(),
+        total=len(frame_files),
+        frame_interval_sec=frame_interval_sec,
+        framediff_threshold=framediff_threshold,
+        white_thresh=white_thresh,
+        progressbar=progressbar,
+        log=log,
+        label=label,
+        ink_change_threshold=ink_change_threshold,
+        change_confirm_frames=change_confirm_frames,
+        min_cue_hold_frames=min_cue_hold_frames,
     )
     return cues, debug_rows
 

@@ -911,6 +911,16 @@ export class TranslateEngineConfigDto {
   @IsOptional()
   @Type(() => Number)
   @IsNumber()
+  paddleOcrMinCueHoldFrames?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  paddleocr_min_cue_hold_frames?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
   paddleOcrMaskMergeIou?: number;
 
   @IsOptional()
@@ -927,6 +937,24 @@ export class TranslateEngineConfigDto {
   @Type(() => Number)
   @IsNumber()
   paddleocr_workers_max?: number;
+
+  @IsOptional()
+  @IsIn(["stream", "disk"])
+  paddleOcrScanMode?: string;
+
+  @IsOptional()
+  @IsIn(["stream", "disk"])
+  paddleocr_scan_mode?: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  paddleOcrScanMaxWidth?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  paddleocr_scan_max_width?: number;
 
   @IsOptional()
   @Type(() => Number)

@@ -295,6 +295,11 @@ const OPTION_MAPPINGS: Array<{
     allowedTypes: ["number", "string"],
   },
   {
+    cliFlag: "--paddleocr-min-cue-hold-frames",
+    keys: ["paddleOcrMinCueHoldFrames", "paddleocr_min_cue_hold_frames"],
+    allowedTypes: ["number", "string"],
+  },
+  {
     cliFlag: "--paddleocr-mask-merge-iou",
     keys: ["paddleOcrMaskMergeIou", "paddleocr_mask_merge_iou"],
     allowedTypes: ["number", "string"],
@@ -302,6 +307,16 @@ const OPTION_MAPPINGS: Array<{
   {
     cliFlag: "--paddleocr-workers-max",
     keys: ["paddleOcrWorkersMax", "paddleocr_workers_max"],
+    allowedTypes: ["number", "string"],
+  },
+  {
+    cliFlag: "--paddleocr-scan-mode",
+    keys: ["paddleOcrScanMode", "paddleocr_scan_mode"],
+    allowedTypes: ["string"],
+  },
+  {
+    cliFlag: "--paddleocr-scan-max-width",
+    keys: ["paddleOcrScanMaxWidth", "paddleocr_scan_max_width"],
     allowedTypes: ["number", "string"],
   },
   {
@@ -503,6 +518,7 @@ export class TranslateProcessor extends WorkerHost {
     const args = [absScriptPath, videoInputPath];
     this.appendStepRangeArg(args, input.stepNbr);
     this.appendOptionalCliOptions(args, engineConfig);
+    this.appendPaddleOcrCliDefaults(args, engineConfig);
 
     const scriptBase = basename(absScriptPath);
     const videoBase = basename(videoInputPath);
@@ -680,6 +696,23 @@ export class TranslateProcessor extends WorkerHost {
       return null;
     }
     return matched[1].trim();
+  }
+
+  private appendPaddleOcrCliDefaults(args: string[], engineConfig: Record<string, unknown>): void {
+    const hasScanMode = args.some(
+      (arg, index) =>
+        arg === "--paddleocr-scan-mode" ||
+        arg.startsWith("--paddleocr-scan-mode=") ||
+        (arg === "--paddleocr-scan-mode" && args[index + 1] !== undefined),
+    );
+    if (hasScanMode) {
+      return;
+    }
+    const configured = this.pickConfigValue(engineConfig, ["paddleOcrScanMode", "paddleocr_scan_mode"]);
+    if (configured !== undefined && configured !== null && String(configured).trim() !== "") {
+      return;
+    }
+    args.push("--paddleocr-scan-mode", "stream");
   }
 
   private appendOptionalCliOptions(args: string[], engineConfig: Record<string, unknown>): void {

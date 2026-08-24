@@ -4,7 +4,7 @@ Step 1 – PaddleOCR engine: visual subtitle extraction.
 Flow:
   1) probe PNG → auto-detect crop band
   2) probe native FPS → extract @ min(scan_fps, native)
-  3) OpenCV light detector (appear/same/change/blank) → start/end có ngắt
+  3) OpenCV gate on ffmpeg pipe stream (default) or PNG folder (disk mode)
   4) PaddleOCR chỉ khi appear/change → clean / merge → noise filter → .zh.srt
 
 Usage:
@@ -26,6 +26,7 @@ from typing import Any, Callable
 from subtitle.visual_ocr_gate import (
     annotate_opencv_debug,
     build_cues_from_opencv,
+    build_cues_from_opencv_stream,
     cues_from_shells_and_ocr,
     finalize_gated_cues,
     merge_cue_shells_by_mask,
@@ -34,6 +35,7 @@ from subtitle.visual_ocr_gate import (
     write_gated_debug_jsonl,
     write_srt_cues,
 )
+from subtitle.ffmpeg_frames import iter_vf_frames
 from subtitle.watermark import should_skip_text
 
 _cfg: dict[str, Any] = {}
@@ -95,10 +97,13 @@ def configure_step1_paddleocr(
     # OpenCV text-change gate
     framediff_threshold: float = 8.0,
     framediff_skip_blank: bool = True,
-    ink_change_threshold: float = 0.15,
-    change_confirm_frames: int = 2,
-    mask_merge_iou: float = 0.72,
+    ink_change_threshold: float = 0.20,
+    change_confirm_frames: int = 3,
+    min_cue_hold_frames: int = 3,
+    mask_merge_iou: float = 0.60,
     workers_max: int = 6,
+    scan_mode: str = "stream",
+    scan_max_width: int = 0,
     # Noise filter (drop short cues; 0 = disable drop)
     noise_min_duration_ms: int = 150,
 ) -> None:
@@ -128,8 +133,11 @@ def configure_step1_paddleocr(
         framediff_skip_blank=bool(framediff_skip_blank),
         ink_change_threshold=max(0.0, float(ink_change_threshold)),
         change_confirm_frames=max(1, int(change_confirm_frames)),
+        min_cue_hold_frames=max(1, int(min_cue_hold_frames)),
         mask_merge_iou=max(0.0, min(1.0, float(mask_merge_iou))),
         workers_max=max(1, int(workers_max)),
+        scan_mode=str(scan_mode or "stream").strip().lower(),
+        scan_max_width=max(0, int(scan_max_width)),
         noise_min_duration_ms=max(0, int(noise_min_duration_ms)),
         min_confidence=float(min_confidence),
         low_conf_floor=float(low_conf_floor),
@@ -226,6 +234,15 @@ def _crop_ffmpeg_vf(band_lo: float, band_hi: float) -> str:
     g = float(_cfg["gray_gamma"])
     post = _ffmpeg_gray_post_eq_suffix()
     return f"{vert},{htrim},format=gray,eq=contrast={c:.6f}:brightness={b:.6f}:gamma={g:.6f}{post}"
+
+
+def _scan_vf(band_lo: float, band_hi: float) -> str:
+    """Crop + preprocess vf for OpenCV scan (stream or disk)."""
+    vf = _crop_ffmpeg_vf(band_lo, band_hi)
+    max_w = int(_cfg.get("scan_max_width") or 0)
+    if max_w > 0:
+        vf = f"{vf},scale='min({max_w}\\,iw)':-2"
+    return vf
 
 
 def _probe_timestamps_sec(duration_ms, n_frames: int) -> list[float]:
@@ -604,7 +621,17 @@ def _detect_crop_band(video_path: Path, ocr, ocr_dir: Path):
     import cv2
 
     hi_max = float(_cfg["subtitle_crop_band_hi"])
+    _SUBTITLE_STRIP_CAP = 0.06
     strip_max = float(_cfg.get("max_strip_height_ratio") or 0.05)
+    if strip_max <= 0:
+        strip_max = 0.05
+    elif strip_max > _SUBTITLE_STRIP_CAP:
+        log = _cfg["log"]
+        log(
+            f"Step1 PaddleOCR: clamp max_strip_height_ratio {strip_max:.2f} "
+            f"→ {_SUBTITLE_STRIP_CAP:.2f} (subtitle-only band)"
+        )
+        strip_max = _SUBTITLE_STRIP_CAP
     fallback_hi = hi_max
     fallback_lo = max(0.0, fallback_hi - strip_max)
 
@@ -822,6 +849,7 @@ def _ocr_with_paddleocr(video_path: Path) -> Path:
         )
 
     ocr_dir = _cfg["log_dir"] / "step1_paddleocr"
+    ocr_frames_dir = ocr_dir / "ocr_frames"
     frames_dir = ocr_dir / "frames"
     shutil.rmtree(ocr_dir, ignore_errors=True)
     ocr_dir.mkdir(parents=True, exist_ok=True)
@@ -857,29 +885,10 @@ def _ocr_with_paddleocr(video_path: Path) -> Path:
     else:
         log(f"Step1 PaddleOCR: native_fps=unknown → extract_fps={extract_fps:.3f}")
 
-    frames_dir.mkdir(parents=True, exist_ok=True)
-    vf = f"{_crop_ffmpeg_vf(band_lo, band_hi)},fps={extract_fps}"
-    log(f"Step1 PaddleOCR: ffmpeg extract cropped frames @ {extract_fps} fps (1 pass)…")
-    t_ff = time.time()
-    _cfg["run_command"](
-        [
-            _cfg["ffmpeg_bin"], "-y", "-i", str(video_path),
-            "-vf", vf, "-an",
-            str(frames_dir / "frame_%05d.png"),
-        ],
-        "PaddleOCR: extract cropped frames",
-    )
-    frame_files = sorted(frames_dir.glob("frame_*.png"))
-    if not frame_files:
-        raise RuntimeError("Step1 PaddleOCR: no frames extracted.")
-    log(
-        f"Step1 PaddleOCR: extracted {len(frame_files)} frames in {time.time() - t_ff:.0f}s"
-    )
-
     frame_interval_sec = 1.0 / extract_fps
-    cue_shells, opencv_debug = build_cues_from_opencv(
-        frame_files,
-        frame_interval_sec,
+    scan_mode = str(_cfg.get("scan_mode") or "stream").lower()
+    gate_kwargs = dict(
+        frame_interval_sec=frame_interval_sec,
         framediff_threshold=float(_cfg["framediff_threshold"]),
         white_thresh=int(_cfg.get("white_thresh") or 0),
         progressbar=_cfg["progressbar"],
@@ -887,7 +896,59 @@ def _ocr_with_paddleocr(video_path: Path) -> Path:
         label="Step1 PaddleOCR",
         ink_change_threshold=float(_cfg.get("ink_change_threshold") or 0),
         change_confirm_frames=int(_cfg.get("change_confirm_frames") or 1),
+        min_cue_hold_frames=int(_cfg.get("min_cue_hold_frames") or 1),
     )
+    scan_vf = _scan_vf(band_lo, band_hi)
+    frame_count = 0
+
+    if scan_mode == "disk":
+        frames_dir.mkdir(parents=True, exist_ok=True)
+        vf = f"{scan_vf},fps={extract_fps}"
+        log(f"Step1 PaddleOCR: ffmpeg extract cropped frames @ {extract_fps} fps (disk mode)…")
+        t_ff = time.time()
+        _cfg["run_command"](
+            [
+                _cfg["ffmpeg_bin"], "-y", "-i", str(video_path),
+                "-vf", vf, "-an",
+                str(frames_dir / "frame_%05d.png"),
+            ],
+            "PaddleOCR: extract cropped frames",
+        )
+        frame_files = sorted(frames_dir.glob("frame_*.png"))
+        if not frame_files:
+            raise RuntimeError("Step1 PaddleOCR: no frames extracted.")
+        frame_count = len(frame_files)
+        log(
+            f"Step1 PaddleOCR: extracted {frame_count} frames to disk in {time.time() - t_ff:.0f}s"
+        )
+        cue_shells, opencv_debug = build_cues_from_opencv(frame_files, **gate_kwargs)
+    else:
+        duration_ms = _cfg["get_media_duration_ms"](video_path) or 0
+        total_estimate = max(1, int((duration_ms / 1000.0) * extract_fps) + 2)
+        log(
+            f"Step1 PaddleOCR: ffmpeg pipe stream @ {extract_fps} fps "
+            f"(scan_mode=stream, no full-frame PNG extract)…"
+        )
+        t_ff = time.time()
+        frame_iter = iter_vf_frames(
+            video_path,
+            str(_cfg["ffmpeg_bin"]),
+            scan_vf,
+            extract_fps,
+            log=log,
+        )
+        cue_shells, opencv_debug, frame_count = build_cues_from_opencv_stream(
+            frame_iter,
+            ocr_frames_dir=ocr_frames_dir,
+            total_estimate=total_estimate,
+            **gate_kwargs,
+        )
+        saved_ocr = len(list(ocr_frames_dir.glob("ocr_*.png"))) if ocr_frames_dir.exists() else 0
+        log(
+            f"Step1 PaddleOCR: streamed {frame_count} frame(s) in {time.time() - t_ff:.0f}s, "
+            f"saved {saved_ocr} OCR PNG(s)"
+        )
+
     if not cue_shells:
         raise RuntimeError("Step1 PaddleOCR: OpenCV found no subtitle cues.")
 
@@ -919,8 +980,8 @@ def _ocr_with_paddleocr(video_path: Path) -> Path:
     total = len(jobs)
     log_every = max(1, total // 20)
     log(
-        f"Step1 PaddleOCR: OCR {total}/{len(frame_files)} change frames "
-        f"({total * 100 / max(1, len(frame_files)):.1f}%) with {n_workers} worker(s)…"
+        f"Step1 PaddleOCR: OCR {total}/{frame_count} change frames "
+        f"({total * 100 / max(1, frame_count):.1f}%) with {n_workers} worker(s)…"
     )
 
     ocr_by_idx: dict[int, tuple] = {}

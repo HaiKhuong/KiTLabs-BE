@@ -397,11 +397,14 @@ PADDLEOCR_SCAN_FPS = 10
 # OpenCV text-change gate (mask MAD 0–255); PaddleOCR chỉ khi appear/change
 PADDLEOCR_FRAMEDIFF_THRESHOLD = 8.0
 PADDLEOCR_FRAMEDIFF_SKIP_BLANK = True
-# OpenCV gate tuning — giảm OCR dư (1436 frame → ~280 subtitle)
-PADDLEOCR_INK_CHANGE_THRESHOLD = 0.15   # 15% ink thay đổi mới coi là đổi câu (0 = dùng MAD framediff)
-PADDLEOCR_CHANGE_CONFIRM_FRAMES = 2     # cần N frame liên tiếp mới trigger change
-PADDLEOCR_MASK_MERGE_IOU = 0.72         # gộp cue shell giống mask trước khi gọi PaddleOCR
+# OpenCV gate tuning — giảm OCR dư (OpenCV cue → ~số câu SRT)
+PADDLEOCR_INK_CHANGE_THRESHOLD = 0.20   # 20% ink thay đổi mới coi là đổi câu (0 = dùng MAD framediff)
+PADDLEOCR_CHANGE_CONFIRM_FRAMES = 3     # cần N frame liên tiếp mới trigger change
+PADDLEOCR_MIN_CUE_HOLD_FRAMES = 3       # tối thiểu N frame trước khi cho phép change (chống flicker)
+PADDLEOCR_MASK_MERGE_IOU = 0.60         # gộp cue shell giống mask trước khi gọi PaddleOCR
 PADDLEOCR_WORKERS_MAX = 6               # cap process pool CPU (trước đây hard-code 3)
+PADDLEOCR_SCAN_MODE = "stream"          # stream = ffmpeg pipe + OpenCV in RAM; disk = PNG folder
+PADDLEOCR_SCAN_MAX_WIDTH = 0            # 0 = giữ width crop; >0 = scale down (vd 960) cho scan nhanh hơn
 # Noise filter: drop cue có text nhưng duration < ngưỡng (ms)
 PADDLEOCR_NOISE_MIN_DURATION_MS = 150
 # Preprocessing frame (giống EasyOCR nhưng config độc lập để tuning riêng)
@@ -2165,8 +2168,11 @@ def _step1_ocr_with_paddleocr(video_path):
         framediff_skip_blank=PADDLEOCR_FRAMEDIFF_SKIP_BLANK,
         ink_change_threshold=PADDLEOCR_INK_CHANGE_THRESHOLD,
         change_confirm_frames=PADDLEOCR_CHANGE_CONFIRM_FRAMES,
+        min_cue_hold_frames=PADDLEOCR_MIN_CUE_HOLD_FRAMES,
         mask_merge_iou=PADDLEOCR_MASK_MERGE_IOU,
         workers_max=PADDLEOCR_WORKERS_MAX,
+        scan_mode=PADDLEOCR_SCAN_MODE,
+        scan_max_width=PADDLEOCR_SCAN_MAX_WIDTH,
         noise_min_duration_ms=PADDLEOCR_NOISE_MIN_DURATION_MS,
         gray_contrast=PADDLEOCR_GRAY_CONTRAST,
         gray_brightness=PADDLEOCR_GRAY_BRIGHTNESS,
@@ -4080,25 +4086,43 @@ def parse_cli_args():
         "--paddleocr-ink-change-threshold",
         type=float,
         default=PADDLEOCR_INK_CHANGE_THRESHOLD,
-        help="OpenCV ink change ratio 0–1 to trigger new cue (default 0.15). 0=use MAD framediff.",
+        help="OpenCV ink change ratio 0–1 to trigger new cue (default 0.20). 0=use MAD framediff.",
     )
     parser.add_argument(
         "--paddleocr-change-confirm-frames",
         type=int,
         default=PADDLEOCR_CHANGE_CONFIRM_FRAMES,
-        help="OpenCV: consecutive change frames before new OCR (debounce; default 2).",
+        help="OpenCV: consecutive change frames before new OCR (debounce; default 3).",
+    )
+    parser.add_argument(
+        "--paddleocr-min-cue-hold-frames",
+        type=int,
+        default=PADDLEOCR_MIN_CUE_HOLD_FRAMES,
+        help="OpenCV: minimum frames in a cue before allowing change (default 3).",
     )
     parser.add_argument(
         "--paddleocr-mask-merge-iou",
         type=float,
         default=PADDLEOCR_MASK_MERGE_IOU,
-        help="Merge cue shells with mask IoU>=this before OCR (default 0.72). 0=off.",
+        help="Merge cue shells with mask IoU>=this before OCR (default 0.60). 0=off.",
     )
     parser.add_argument(
         "--paddleocr-workers-max",
         type=int,
         default=PADDLEOCR_WORKERS_MAX,
         help="Max CPU process workers for PaddleOCR (default 6; was hard-capped at 3).",
+    )
+    parser.add_argument(
+        "--paddleocr-scan-mode",
+        choices=["stream", "disk"],
+        default=PADDLEOCR_SCAN_MODE,
+        help="OpenCV scan mode: stream=ffmpeg pipe (default, no PNG folder); disk=extract all frames.",
+    )
+    parser.add_argument(
+        "--paddleocr-scan-max-width",
+        type=int,
+        default=PADDLEOCR_SCAN_MAX_WIDTH,
+        help="Downscale cropped scan strip to max width px before OpenCV (0=off, try 960).",
     )
     parser.add_argument(
         "--paddleocr-batch-size",
@@ -4606,8 +4630,11 @@ def apply_cli_config(args):
     global PADDLEOCR_FRAMEDIFF_THRESHOLD
     global PADDLEOCR_INK_CHANGE_THRESHOLD
     global PADDLEOCR_CHANGE_CONFIRM_FRAMES
+    global PADDLEOCR_MIN_CUE_HOLD_FRAMES
     global PADDLEOCR_MASK_MERGE_IOU
     global PADDLEOCR_WORKERS_MAX
+    global PADDLEOCR_SCAN_MODE
+    global PADDLEOCR_SCAN_MAX_WIDTH
     global PADDLEOCR_BATCH_SIZE
     global PADDLEOCR_MIN_DURATION_MS
     global PADDLEOCR_NOISE_MIN_DURATION_MS
@@ -4814,8 +4841,11 @@ def apply_cli_config(args):
     PADDLEOCR_FRAMEDIFF_THRESHOLD = float(getattr(args, "paddleocr_framediff_threshold", PADDLEOCR_FRAMEDIFF_THRESHOLD))
     PADDLEOCR_INK_CHANGE_THRESHOLD = max(0.0, float(getattr(args, "paddleocr_ink_change_threshold", PADDLEOCR_INK_CHANGE_THRESHOLD)))
     PADDLEOCR_CHANGE_CONFIRM_FRAMES = max(1, int(getattr(args, "paddleocr_change_confirm_frames", PADDLEOCR_CHANGE_CONFIRM_FRAMES)))
+    PADDLEOCR_MIN_CUE_HOLD_FRAMES = max(1, int(getattr(args, "paddleocr_min_cue_hold_frames", PADDLEOCR_MIN_CUE_HOLD_FRAMES)))
     PADDLEOCR_MASK_MERGE_IOU = max(0.0, min(1.0, float(getattr(args, "paddleocr_mask_merge_iou", PADDLEOCR_MASK_MERGE_IOU))))
     PADDLEOCR_WORKERS_MAX = max(1, int(getattr(args, "paddleocr_workers_max", PADDLEOCR_WORKERS_MAX)))
+    PADDLEOCR_SCAN_MODE = str(getattr(args, "paddleocr_scan_mode", PADDLEOCR_SCAN_MODE) or "stream")
+    PADDLEOCR_SCAN_MAX_WIDTH = max(0, int(getattr(args, "paddleocr_scan_max_width", PADDLEOCR_SCAN_MAX_WIDTH)))
     PADDLEOCR_BATCH_SIZE = max(1, int(getattr(args, "paddleocr_batch_size", PADDLEOCR_BATCH_SIZE)))
     PADDLEOCR_MIN_DURATION_MS = max(0, int(getattr(args, "paddleocr_min_duration_ms", PADDLEOCR_MIN_DURATION_MS)))
     PADDLEOCR_NOISE_MIN_DURATION_MS = max(0, int(getattr(args, "paddleocr_noise_min_duration_ms", PADDLEOCR_NOISE_MIN_DURATION_MS)))

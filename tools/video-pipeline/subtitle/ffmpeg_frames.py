@@ -2,14 +2,16 @@
 
 Provides:
 - probe_frames_to_memory: extract N sample frames at given timestamps (for crop detection)
-- iter_cropped_frames: generator streaming cropped ROI frames via rawvideo pipe
+- iter_vf_frames: stream frames through an arbitrary -vf chain (crop/gray/fps) via rawvideo pipe
+- iter_cropped_frames: legacy helper using band_lo/band_hi crop_vf builder
 """
 
 from __future__ import annotations
 
+import re
 import subprocess
 from pathlib import Path
-from typing import Callable, Generator
+from typing import Callable, Generator, Iterator
 
 
 def _ffprobe_video_dimensions(ffmpeg_bin: str, video_path: Path) -> tuple[int, int]:
@@ -96,6 +98,118 @@ def probe_frames_to_memory(
     return frames
 
 
+def _probe_vf_frame_shape(
+    video_path: Path,
+    ffmpeg_bin: str,
+    vf: str,
+) -> tuple[int, int, int]:
+    """Return (width, height, channels) for one frame after ``vf``."""
+    import cv2
+    import numpy as np
+
+    cmd = [
+        ffmpeg_bin, "-ss", "0.5", "-i", str(video_path),
+        "-vf", vf, "-frames:v", "1", "-f", "image2pipe", "-vcodec", "png", "-",
+    ]
+    try:
+        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
+        if proc.returncode == 0 and proc.stdout:
+            buf = np.frombuffer(proc.stdout, dtype=np.uint8)
+            img = cv2.imdecode(buf, cv2.IMREAD_UNCHANGED)
+            if img is not None and img.size > 0:
+                if img.ndim == 2:
+                    return int(img.shape[1]), int(img.shape[0]), 1
+                if img.shape[2] == 1:
+                    return int(img.shape[1]), int(img.shape[0]), 1
+                return int(img.shape[1]), int(img.shape[0]), 3
+    except Exception:
+        pass
+    return 0, 0, 0
+
+
+def _vf_with_fps(vf: str, scan_fps: float) -> str:
+    if scan_fps > 0 and not re.search(r"(?:^|,)fps=", vf):
+        return f"{vf},fps={scan_fps}"
+    return vf
+
+
+def iter_vf_frames(
+    video_path: Path,
+    ffmpeg_bin: str,
+    vf: str,
+    scan_fps: float,
+    *,
+    log: Callable[[str], None] | None = None,
+) -> Iterator[tuple[int, float, "np.ndarray"]]:
+    """Stream preprocessed frames via FFmpeg rawvideo pipe (no PNG folder).
+
+    Yields ``(frame_index, timestamp_sec, ndarray)`` where ndarray is gray (H,W) or BGR (H,W,3).
+    """
+    import numpy as np
+
+    vf_full = _vf_with_fps(vf, scan_fps)
+    out_w, out_h, channels = _probe_vf_frame_shape(video_path, ffmpeg_bin, vf_full)
+    if out_w <= 0 or out_h <= 0 or channels not in (1, 3):
+        if log:
+            log("ffmpeg_frames: vf probe failed, falling back to cv2 VideoCapture")
+        for idx, (ts, frame) in enumerate(
+            _fallback_cv2_iter(video_path, scan_fps, vf_full, log)
+        ):
+            yield idx, ts, frame
+        return
+
+    pix_fmt = "gray" if channels == 1 else "bgr24"
+    frame_size = out_w * out_h * channels
+    cmd = [
+        ffmpeg_bin, "-i", str(video_path),
+        "-vf", vf_full,
+        "-an", "-sn", "-dn",
+        "-f", "rawvideo", "-pix_fmt", pix_fmt, "-",
+    ]
+
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            bufsize=frame_size * 4,
+        )
+    except OSError as exc:
+        if log:
+            log(f"ffmpeg_frames: pipe start failed ({exc}), falling back to cv2")
+        for idx, (ts, frame) in enumerate(
+            _fallback_cv2_iter(video_path, scan_fps, vf_full, log)
+        ):
+            yield idx, ts, frame
+        return
+
+    frame_idx = 0
+    try:
+        assert proc.stdout is not None
+        while True:
+            raw = proc.stdout.read(frame_size)
+            if len(raw) < frame_size:
+                break
+            if channels == 1:
+                frame = np.frombuffer(raw, dtype=np.uint8).reshape((out_h, out_w))
+            else:
+                frame = np.frombuffer(raw, dtype=np.uint8).reshape((out_h, out_w, 3))
+            ts = frame_idx / scan_fps if scan_fps > 0 else 0.0
+            yield frame_idx, ts, frame.copy()
+            frame_idx += 1
+    finally:
+        if proc.stdout:
+            proc.stdout.close()
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+
+    if log:
+        log(f"ffmpeg_frames: pipe stream done — {frame_idx} frame(s)")
+
+
 def _compute_output_dimensions(
     video_path: Path, ffmpeg_bin: str, vf: str,
 ) -> tuple[int, int]:
@@ -126,59 +240,11 @@ def iter_cropped_frames(
     scan_fps: float,
     log: Callable[[str], None] | None = None,
 ) -> Generator[tuple[float, "np.ndarray"], None, None]:
-    """Stream cropped subtitle-region frames via FFmpeg rawvideo pipe.
-
-    Yields (timestamp_sec, bgr_ndarray) for each frame.
-    Falls back to cv2.VideoCapture if FFmpeg pipe fails to start.
-    """
-    import numpy as np
-    vf_with_fps = crop_vf
-    if f"fps=" not in vf_with_fps:
-        vf_with_fps = f"{crop_vf},fps={scan_fps}"
-
-    out_w, out_h = _compute_output_dimensions(video_path, ffmpeg_bin, vf_with_fps)
-    if out_w <= 0 or out_h <= 0:
-        if log:
-            log("ffmpeg_frames: cannot determine output dims, falling back to cv2")
-        yield from _fallback_cv2_iter(video_path, scan_fps, crop_vf, log)
-        return
-
-    frame_size = out_w * out_h * 3
-    cmd = [
-        ffmpeg_bin, "-i", str(video_path),
-        "-vf", vf_with_fps,
-        "-f", "rawvideo", "-pix_fmt", "bgr24", "-",
-    ]
-
-    try:
-        proc = subprocess.Popen(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            bufsize=frame_size * 4,
-        )
-    except OSError as exc:
-        if log:
-            log(f"ffmpeg_frames: pipe start failed ({exc}), falling back to cv2")
-        yield from _fallback_cv2_iter(video_path, scan_fps, crop_vf, log)
-        return
-
-    frame_idx = 0
-    try:
-        while True:
-            raw = proc.stdout.read(frame_size)
-            if len(raw) < frame_size:
-                break
-            frame = np.frombuffer(raw, dtype=np.uint8).reshape((out_h, out_w, 3))
-            ts = frame_idx / scan_fps
-            yield ts, frame.copy()
-            frame_idx += 1
-    finally:
-        proc.stdout.close()
-        proc.stderr.close()
-        proc.terminate()
-        proc.wait()
-
-    if log:
-        log(f"ffmpeg_frames: pipe done — {frame_idx} frames streamed")
+    """Stream cropped subtitle-region frames via FFmpeg rawvideo pipe."""
+    for _idx, ts, frame in iter_vf_frames(
+        video_path, ffmpeg_bin, crop_vf, scan_fps, log=log
+    ):
+        yield ts, frame
 
 
 def _fallback_cv2_iter(
