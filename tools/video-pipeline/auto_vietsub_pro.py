@@ -386,22 +386,22 @@ PADDLEOCR_SUBTITLE_CROP_BAND_HI = 0.20  # giới hạn cao nhất dải phụ đ
 PADDLEOCR_CROP_PROBE_FRAMES = 12    # số frame mẫu để auto-detect crop band
 PADDLEOCR_CROP_PROBE_H_TRIM_LEFT_FRAC = 0.15   # bỏ mé trái trước khi OCR
 PADDLEOCR_CROP_PROBE_H_TRIM_RIGHT_FRAC = 0.15  # bỏ mé phải trước khi OCR
-PADDLEOCR_MAX_STRIP_HEIGHT_RATIO = 0.05  # giới hạn độ cao dải OCR (0 = không chặn)
+PADDLEOCR_MAX_STRIP_HEIGHT_RATIO = 0.14  # giới hạn độ cao dải OCR (0 = không chặn); quá nhỏ sẽ cắt cụt chữ
 PADDLEOCR_MIN_DURATION_MS = 0      # 0 = không pad; nhiễu ngắn dùng noise filter drop
 PADDLEOCR_MERGE_GAP_MS = 200        # merge các block gần nhau trong ngưỡng này (ms)
-PADDLEOCR_FUZZY_THRESHOLD = 50      # % similarity để gộp / dedup block (thấp = ít gộp nhầm)
+PADDLEOCR_FUZZY_THRESHOLD = 55      # % similarity để gộp / dedup block
 PADDLEOCR_BRIDGE_FRAMES = 8         # số frame lân cận để vote rescue cluster
-PADDLEOCR_BRIDGE_MIN_MATCH = 2      # số frame tương đồng tối thiểu để rescue low-conf
+PADDLEOCR_BRIDGE_MIN_MATCH = 3      # số frame tương đồng tối thiểu để rescue low-conf
 # Target extract FPS (clamp theo native FPS runtime); 10 ≈ Δt 0.1s — bắt cue ~0.4s
 PADDLEOCR_SCAN_FPS = 10
 # OpenCV text-change gate (mask MAD 0–255); PaddleOCR chỉ khi appear/change
 PADDLEOCR_FRAMEDIFF_THRESHOLD = 8.0
 PADDLEOCR_FRAMEDIFF_SKIP_BLANK = True
-# OpenCV gate tuning — cân bằng tốc độ / độ chính xác (OpenCV cue → ~số câu SRT)
-PADDLEOCR_INK_CHANGE_THRESHOLD = 0.12   # % ink thay đổi để coi là đổi câu (thấp = nhạy hơn; 0 = MAD)
-PADDLEOCR_CHANGE_CONFIRM_FRAMES = 2     # cần N frame liên tiếp mới trigger change
-PADDLEOCR_MIN_CUE_HOLD_FRAMES = 2       # chờ N frame ổn định trước OCR + chống flicker
-PADDLEOCR_MASK_MERGE_IOU = 0.50         # gộp cue shell giống mask (thấp = ít gộp, chính xác hơn)
+# OpenCV gate — mặc định MAD (ink=0) như bản ~900 frame OCR; mask merge tắt.
+PADDLEOCR_INK_CHANGE_THRESHOLD = 0.0    # 0 = MAD framediff (nhạy hơn ink_ratio 0.12+)
+PADDLEOCR_CHANGE_CONFIRM_FRAMES = 1     # 1 = phát hiện đổi câu ngay frame đầu
+PADDLEOCR_MIN_CUE_HOLD_FRAMES = 1       # không trì hoãn OCR
+PADDLEOCR_MASK_MERGE_IOU = 0.0          # 0 = tắt gộp cue trước OCR (chính xác hơn)
 PADDLEOCR_WORKERS_MAX = 6               # cap process pool CPU (trước đây hard-code 3)
 PADDLEOCR_SCAN_MODE = "stream"          # stream = ffmpeg pipe + OpenCV in RAM; disk = PNG folder
 PADDLEOCR_SCAN_MAX_WIDTH = 0            # 0 = giữ width crop; >0 = scale down (vd 960) cho scan nhanh hơn
@@ -4086,25 +4086,25 @@ def parse_cli_args():
         "--paddleocr-ink-change-threshold",
         type=float,
         default=PADDLEOCR_INK_CHANGE_THRESHOLD,
-        help="OpenCV ink change ratio 0–1 to trigger new cue (default 0.12). 0=use MAD framediff.",
+        help="OpenCV ink change ratio 0–1 to trigger new cue (default 0=use MAD framediff).",
     )
     parser.add_argument(
         "--paddleocr-change-confirm-frames",
         type=int,
         default=PADDLEOCR_CHANGE_CONFIRM_FRAMES,
-        help="OpenCV: consecutive change frames before new OCR (debounce; default 2).",
+        help="OpenCV: consecutive change frames before new OCR (debounce; default 1).",
     )
     parser.add_argument(
         "--paddleocr-min-cue-hold-frames",
         type=int,
         default=PADDLEOCR_MIN_CUE_HOLD_FRAMES,
-        help="OpenCV: minimum frames in a cue before OCR / allowing change (default 2).",
+        help="OpenCV: minimum frames in a cue before allowing change (default 1).",
     )
     parser.add_argument(
         "--paddleocr-mask-merge-iou",
         type=float,
         default=PADDLEOCR_MASK_MERGE_IOU,
-        help="Merge cue shells with mask IoU>=this before OCR (default 0.50). 0=off.",
+        help="Merge cue shells with mask IoU>=this before OCR (default 0=off).",
     )
     parser.add_argument(
         "--paddleocr-workers-max",

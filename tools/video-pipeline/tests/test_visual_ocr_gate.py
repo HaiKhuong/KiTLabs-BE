@@ -10,6 +10,7 @@ from subtitle.visual_ocr_gate import (
     mask_iou,
     merge_cue_shells_by_mask,
     resolve_opencv_change_threshold,
+    should_drop_short_noise_subtitle,
 )
 
 
@@ -54,6 +55,28 @@ def test_resolve_opencv_change_threshold_mad_fallback():
     thr, metric = resolve_opencv_change_threshold(8.0, 0.0)
     assert metric == "mad"
     assert thr == pytest.approx(8.0)
+
+
+@pytest.mark.parametrize(
+    ("text", "drop"),
+    [
+        ("人", True),
+        ("V", True),
+        ("y", True),
+        ("CE", True),
+        ("AUM", True),
+        ("NO", True),
+        ("2", False),
+        ("1", False),
+        ("3", False),
+        ("３", False),
+        ("放山我工手龙", False),
+        ("西不就l你开私", False),
+        (" 3 ", False),
+    ],
+)
+def test_should_drop_short_noise_subtitle(text, drop):
+    assert should_drop_short_noise_subtitle(text) is drop
 
 
 def test_merge_cue_shells_by_mask(monkeypatch):

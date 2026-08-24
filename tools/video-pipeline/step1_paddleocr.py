@@ -97,10 +97,10 @@ def configure_step1_paddleocr(
     # OpenCV text-change gate
     framediff_threshold: float = 8.0,
     framediff_skip_blank: bool = True,
-    ink_change_threshold: float = 0.12,
-    change_confirm_frames: int = 2,
-    min_cue_hold_frames: int = 2,
-    mask_merge_iou: float = 0.50,
+    ink_change_threshold: float = 0.0,
+    change_confirm_frames: int = 1,
+    min_cue_hold_frames: int = 1,
+    mask_merge_iou: float = 0.0,
     workers_max: int = 6,
     scan_mode: str = "stream",
     scan_max_width: int = 0,
@@ -621,17 +621,10 @@ def _detect_crop_band(video_path: Path, ocr, ocr_dir: Path):
     import cv2
 
     hi_max = float(_cfg["subtitle_crop_band_hi"])
-    _SUBTITLE_STRIP_CAP = 0.06
-    strip_max = float(_cfg.get("max_strip_height_ratio") or 0.05)
-    if strip_max <= 0:
-        strip_max = 0.05
-    elif strip_max > _SUBTITLE_STRIP_CAP:
-        log = _cfg["log"]
-        log(
-            f"Step1 PaddleOCR: clamp max_strip_height_ratio {strip_max:.2f} "
-            f"→ {_SUBTITLE_STRIP_CAP:.2f} (subtitle-only band)"
-        )
-        strip_max = _SUBTITLE_STRIP_CAP
+    # Cắt sát quá làm mất chân/đầu nét chữ Hán → PaddleOCR đọc sai. Chỉ chặn theo band_hi.
+    strip_max = float(_cfg.get("max_strip_height_ratio") or 0)
+    if strip_max <= 0 or strip_max > hi_max:
+        strip_max = hi_max
     fallback_hi = hi_max
     fallback_lo = max(0.0, fallback_hi - strip_max)
 
@@ -725,8 +718,14 @@ def _detect_crop_band(video_path: Path, ocr, ocr_dir: Path):
         f"hi=[{all_hi_s[0]:.3f}…{all_hi_s[-1]:.3f}] p95={all_hi_s[min(n-1,int(n*0.95))]:.3f} "
         f"lo=[{all_lo_s[0]:.3f}…{all_lo_s[-1]:.3f}] p5={all_lo_s[max(0,int(n*0.05))]:.3f} n={n}"
     )
-    if strip_max > 0:
-        det_lo = max(lo_floor, det_hi - strip_max)
+    # Chỉ thu hẹp khi dải phát hiện được thực sự rộng hơn ngưỡng, tránh cắt cụt chữ.
+    if strip_max > 0 and (det_hi - det_lo) > strip_max:
+        clamped_lo = max(lo_floor, det_hi - strip_max)
+        log(
+            f"Step1 PaddleOCR: clamp strip {(det_hi - det_lo) * 100:.1f}% → "
+            f"{(det_hi - clamped_lo) * 100:.1f}% (max_strip_height_ratio={strip_max:.2f})"
+        )
+        det_lo = clamped_lo
     if det_hi <= det_lo + 1e-9:
         log(f"Step1 PaddleOCR: crop detect — dải không hợp lệ, fallback lo={fallback_lo:.3f} hi={fallback_hi:.3f}")
         return fallback_lo, fallback_hi
@@ -899,6 +898,7 @@ def _ocr_with_paddleocr(video_path: Path) -> Path:
         min_cue_hold_frames=int(_cfg.get("min_cue_hold_frames") or 1),
     )
     scan_vf = _scan_vf(band_lo, band_hi)
+    log(f"Step1 PaddleOCR: scan vf = {scan_vf}")
     frame_count = 0
 
     if scan_mode == "disk":
