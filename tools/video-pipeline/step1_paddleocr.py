@@ -122,12 +122,12 @@ def configure_step1_paddleocr(
     ink_change_threshold: float = 0.10,
     change_confirm_frames: int = 1,
     min_cue_hold_frames: int = 1,
-    mask_merge_iou: float = 0.67,
+    mask_merge_iou: float = 0.72,
     workers_max: int = 6,
     scan_mode: str = "stream",
     scan_max_width: int = 0,
     # Noise filter (drop short cues; 0 = disable drop)
-    noise_min_duration_ms: int = 100,
+    noise_min_duration_ms: int = 50,
 ) -> None:
     """Populate module config. Call before run()."""
     _cfg.clear()
@@ -273,6 +273,61 @@ def _ocr_vf(band_lo: float, band_hi: float) -> str:
     if max_w > 0:
         vf = f"{vf},scale='min({max_w}\\,iw)':-2"
     return vf
+
+
+def _export_opencv_scan_crop_video(
+    video_path: Path,
+    ocr_dir: Path,
+    *,
+    scan_vf: str,
+    extract_fps: float,
+    band_lo: float,
+    band_hi: float,
+    use_color_ocr: bool,
+) -> Path | None:
+    """Export cropped strip @ scan_fps — same ffmpeg vf as OpenCV gate input."""
+    log = _cfg["log"]
+    out_mp4 = ocr_dir / "opencv_scan_crop.mp4"
+    out_json = ocr_dir / "opencv_scan_crop.json"
+    vf = f"{scan_vf},fps={extract_fps}"
+    t0 = time.time()
+    try:
+        _cfg["run_command"](
+            [
+                _cfg["ffmpeg_bin"], "-y", "-i", str(video_path),
+                "-vf", vf,
+                "-an",
+                "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+                "-movflags", "+faststart",
+                str(out_mp4),
+            ],
+            "PaddleOCR: export OpenCV scan crop",
+        )
+    except Exception as exc:
+        log(f"Step1 PaddleOCR: scan crop export failed: {exc}")
+        return None
+
+    if not out_mp4.exists() or out_mp4.stat().st_size <= 0:
+        log("Step1 PaddleOCR: scan crop export produced empty file")
+        return None
+
+    meta = {
+        "band_lo": round(float(band_lo), 6),
+        "band_hi": round(float(band_hi), 6),
+        "strip_pct": round((band_hi - band_lo) * 100.0, 2),
+        "scan_vf": scan_vf,
+        "extract_fps": round(float(extract_fps), 4),
+        "color_ocr": bool(use_color_ocr),
+        "gate_preprocess": "gray+eq in RAM (not in this mp4)" if use_color_ocr else "included in ffmpeg vf",
+        "output_mp4": str(out_mp4.resolve()),
+    }
+    out_json.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf8")
+    log(
+        f"Step1 PaddleOCR: OpenCV scan crop → {out_mp4} "
+        f"(lo={band_lo:.3f} hi={band_hi:.3f} fps={extract_fps:.3f} "
+        f"elapsed={time.time() - t0:.0f}s, meta={out_json.name})"
+    )
+    return out_mp4
 
 
 def _scan_vf(band_lo: float, band_hi: float) -> str:
@@ -1004,6 +1059,15 @@ def _ocr_with_paddleocr(video_path: Path) -> Path:
         scan_vf = _scan_vf(band_lo, band_hi)
         gate_preprocess_fn = None
     log(f"Step1 PaddleOCR: scan vf = {scan_vf}")
+    _export_opencv_scan_crop_video(
+        video_path,
+        ocr_dir,
+        scan_vf=scan_vf,
+        extract_fps=extract_fps,
+        band_lo=band_lo,
+        band_hi=band_hi,
+        use_color_ocr=use_color_ocr,
+    )
     frame_count = 0
 
     if scan_mode == "disk":
