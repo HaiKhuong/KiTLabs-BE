@@ -319,9 +319,28 @@ def _opencv_gate_core(
             return None
         return _persist_ocr_frame(img, ocr_save_dir, idx)
 
+    def _commit_ocr_frame(state: dict, idx: int, img, ocr_path: Path | None) -> Path | None:
+        """Persist OCR PNG once the subtitle strip is stable (after fade-in)."""
+        if state.get("ocr_ready"):
+            return state.get("ocr_path")
+        saved = _ocr_path_for(idx, img, ocr_path)
+        state["ocr_idx"] = idx
+        state["ocr_path"] = saved
+        state["ocr_ready"] = True
+        return saved
+
     def _close_state() -> None:
         nonlocal state, pending_change
         if state is None:
+            return
+        if not state.get("ocr_ready"):
+            best_idx = state.get("best_idx")
+            best_img = state.get("best_img")
+            if best_idx is not None and best_img is not None:
+                _commit_ocr_frame(state, int(best_idx), best_img, state.get("ocr_path"))
+        if state.get("ocr_path") is None:
+            state = None
+            pending_change = 0
             return
         cues.append(
             {
@@ -387,20 +406,25 @@ def _opencv_gate_core(
 
         if state is None:
             pending_change = 0
-            ocr_path = _ocr_path_for(idx, img, ocr_path)
             state = {
                 "start": ts,
                 "last_text_t": ts,
                 "key_mask": mask,
-                "ocr_idx": idx,
-                "ocr_path": ocr_path,
                 "ocr_mask": mask,
                 "select_reason": "appear",
                 "frame_count": 1,
+                "ocr_ready": False,
+                "best_idx": idx,
+                "best_img": img,
             }
-            row["ocr_skipped"] = False
-            row["select_reason"] = "appear"
             row["opencv_change_score"] = 0.0
+            if int(state["frame_count"]) >= min_hold:
+                _commit_ocr_frame(state, idx, img, ocr_path)
+                row["ocr_skipped"] = False
+                row["select_reason"] = "appear"
+            else:
+                row["ocr_skipped"] = True
+                row["select_reason"] = "appear_pending"
             debug_rows.append(row)
         else:
             if change_metric == "ink_ratio":
@@ -417,20 +441,25 @@ def _opencv_gate_core(
                 pending_change += 1
                 if pending_change >= confirm:
                     _close_state()
-                    saved_path = _ocr_path_for(idx, img, ocr_path)
                     state = {
                         "start": ts,
                         "last_text_t": ts,
                         "key_mask": mask,
-                        "ocr_idx": idx,
-                        "ocr_path": saved_path,
                         "ocr_mask": mask,
                         "select_reason": "change",
                         "frame_count": 1,
+                        "ocr_ready": False,
+                        "best_idx": idx,
+                        "best_img": img,
                     }
                     pending_change = 0
-                    row["ocr_skipped"] = False
-                    row["select_reason"] = "change"
+                    if int(state["frame_count"]) >= min_hold:
+                        _commit_ocr_frame(state, idx, img, ocr_path)
+                        row["ocr_skipped"] = False
+                        row["select_reason"] = "change"
+                    else:
+                        row["ocr_skipped"] = True
+                        row["select_reason"] = "change_pending"
                     debug_rows.append(row)
                 else:
                     state["last_text_t"] = ts
@@ -443,7 +472,14 @@ def _opencv_gate_core(
                 state["last_text_t"] = ts
                 state["key_mask"] = mask
                 state["frame_count"] = int(state.get("frame_count", 1)) + 1
-                row["select_reason"] = row.get("select_reason") or "same"
+                state["best_idx"] = idx
+                state["best_img"] = img
+                if not state.get("ocr_ready") and int(state["frame_count"]) >= min_hold:
+                    _commit_ocr_frame(state, idx, img, ocr_path)
+                    row["ocr_skipped"] = False
+                    row["select_reason"] = state.get("select_reason", "appear")
+                else:
+                    row["select_reason"] = row.get("select_reason") or "same"
                 debug_rows.append(row)
 
         done = idx + 1
@@ -475,9 +511,9 @@ def build_cues_from_opencv_stream(
     progressbar: Callable,
     log: Callable[[str], None],
     label: str = "Step1",
-    ink_change_threshold: float | None = 0.20,
-    change_confirm_frames: int = 3,
-    min_cue_hold_frames: int = 3,
+    ink_change_threshold: float | None = 0.12,
+    change_confirm_frames: int = 2,
+    min_cue_hold_frames: int = 2,
 ) -> tuple[list[dict], list[dict], int]:
     """OpenCV gate over ffmpeg pipe stream; persist PNG only for appear/change frames."""
 
@@ -510,9 +546,9 @@ def build_cues_from_opencv(
     progressbar: Callable,
     log: Callable[[str], None],
     label: str = "Step1",
-    ink_change_threshold: float | None = 0.20,
-    change_confirm_frames: int = 3,
-    min_cue_hold_frames: int = 3,
+    ink_change_threshold: float | None = 0.12,
+    change_confirm_frames: int = 2,
+    min_cue_hold_frames: int = 2,
 ) -> tuple[list[dict], list[dict]]:
     """
     Sequential OpenCV pass over PNG folder → cue shells with start/end gaps.
