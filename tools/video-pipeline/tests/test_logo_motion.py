@@ -50,7 +50,7 @@ class TestLogoOverlayExpr(unittest.TestCase):
     def test_bounce_uses_triangle_wave_with_start_offset(self):
         x, y = logo_overlay_xy_expr("bounce", 150, 0, 0)
         self.assertIn("0.25*W", x)
-        self.assertIn("0.25*H", y)
+        self.assertIn("0*H", y)
         self.assertIn("max(W-w\\,1)", x)
         self.assertIn("max(H-h\\,1)", y)
 

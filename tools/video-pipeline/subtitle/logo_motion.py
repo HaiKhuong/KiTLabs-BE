@@ -7,7 +7,7 @@ DIAGONAL_Y_SPEED_RATIO = 0.65
 BOUNCE_Y_SPEED_RATIO = 0.618
 # Bounce: điểm bắt đầu ~25% khung; biên độ vẫn full (0 … W-w / H-h).
 BOUNCE_START_X_FRAC = 0.25
-BOUNCE_START_Y_FRAC = 0.25
+BOUNCE_START_Y_FRAC = 0.0
 
 
 def _esc(expr: str) -> str:
@@ -55,12 +55,12 @@ def logo_overlay_xy_expr(
             _esc(f"W-mod(t*{sp},W+w)"),
             _esc(f"H-mod(t*{ysp},H+h)"),
         )
-    # bounce: triangle wave full frame; phase offset → bắt đầu ~25% W/H.
+    # bounce: triangle wave full frame; bắt đầu ~25% ngang, 0% dọc.
     ysp = f"{speed * BOUNCE_Y_SPEED_RATIO:.4f}"
     rx = "max(W-w\\,1)"
     ry = "max(H-h\\,1)"
-    sx = f"{BOUNCE_START_X_FRAC}*W"
-    sy = f"{BOUNCE_START_Y_FRAC}*H"
+    sx = f"{BOUNCE_START_X_FRAC:g}*W"
+    sy = f"{BOUNCE_START_Y_FRAC:g}*H"
     return (
         _esc(f"abs(mod(t*{sp}+{rx}+{sx},2*{rx})-{rx})"),
         _esc(f"abs(mod(t*{ysp}+{ry}+{sy},2*{ry})-{ry})"),
