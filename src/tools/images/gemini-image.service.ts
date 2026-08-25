@@ -191,7 +191,7 @@ export class GeminiImageService {
   }
 
   private keysForTier(tier: GeminiKeyTier): string[] {
-    const keys = this.keyPools[tier];
+    const keys = loadGeminiKeyPools(this.config)[tier];
     if (keys.length === 0) {
       throw new BadRequestException(`Gemini API key chưa cấu hình. Set ${geminiKeyPoolEnvHint(tier)} trong .env`);
     }

@@ -8,6 +8,7 @@ import { basename, extname, isAbsolute, join, resolve } from "path";
 import { Repository } from "typeorm";
 
 import { QueueJobStatus } from "../../common/enums/domain.enums";
+import { resolveConfiguredPath } from "../../common/desktop/data-path";
 import { NotificationsService } from "../notifications/notifications.service";
 import { CreateShortVideoJobDto } from "./dto/create-shortvideo-job.dto";
 import { RenderShortVideoUploadDto } from "./dto/render-shortvideo-upload.dto";
@@ -55,7 +56,7 @@ export class ShortVideoService {
   }
 
   private resolveWorkRoot(): string {
-    return resolve(process.cwd(), process.env.SHORTVIDEO_WORK_ROOT ?? "uploads/shortvideo");
+    return resolveConfiguredPath(process.env.SHORTVIDEO_WORK_ROOT, "uploads/shortvideo");
   }
 
   private parseSpec(raw: string): Record<string, unknown> {

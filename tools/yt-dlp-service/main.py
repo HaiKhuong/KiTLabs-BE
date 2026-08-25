@@ -13,7 +13,9 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-TEMP_DIR = "/tmp/ytdlp"
+TEMP_DIR = os.environ.get("TEMP_DIR") or os.path.join(
+    os.environ.get("KITLABS_DATA_ROOT") or os.getcwd(), "temp", "ytdlp"
+)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("ytdlp-service")

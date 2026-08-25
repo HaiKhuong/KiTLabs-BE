@@ -13,6 +13,8 @@ import { LogsService } from "../logs/logs.service";
 import { NotificationsService } from "../notifications/notifications.service";
 import { User } from "../users/user.entity";
 import { QueueJobStatus } from "../../common/enums/domain.enums";
+import { resolveConfiguredPath } from "../../common/desktop/data-path";
+import { ModelsService } from "../models/models.service";
 import { CreateTranslateJobDto } from "./dto/create-translate-job.dto";
 import { TranslateEngineConfigDto } from "./dto/translate-engine-config.dto";
 import { TranslateHistory } from "./translate-history.entity";
@@ -42,6 +44,7 @@ export class TranslateService {
     private readonly logsService: LogsService,
     private readonly notificationsService: NotificationsService,
     private readonly audioService: AudioService,
+    private readonly modelsService: ModelsService,
   ) {}
 
   async enqueue(dto: CreateTranslateJobDto): Promise<TranslateHistory> {
@@ -63,6 +66,9 @@ export class TranslateService {
     const functionUsed = normalizedSteps.map((step) => STEP_TO_FUNCTION_CODE[step]);
 
     await this.validateOmnivoiceConfigForTranslate(normalizedSteps, dto.engineConfig, dto.userId);
+    this.modelsService.assertInstalled(
+      this.modelsService.requiredModelsForTranslate(dto.engineConfig as Record<string, unknown>, normalizedSteps),
+    );
 
     const history = this.translateRepository.create({
       userId: dto.userId,
@@ -325,10 +331,10 @@ export class TranslateService {
       throw new BadRequestException("Cannot resolve runtime log path: engineConfig.localVideoPath is missing");
     }
 
-    const workRoot =
-      process.env.TRANSLATE_WORK_STAGING_ROOT?.trim() ||
-      process.env.TRANSLATE_WORK_ROOT ||
-      "/mnt/c/Users/haikh/Videos/VideoVietsub/videos";
+    const workRoot = resolveConfiguredPath(
+      process.env.TRANSLATE_WORK_STAGING_ROOT?.trim() || process.env.TRANSLATE_WORK_ROOT,
+      "videos",
+    );
     const workName = basename(resolve(localPath.trim()), extname(resolve(localPath.trim())));
     return join(workRoot, workName, "logs", "pipeline.log");
   }

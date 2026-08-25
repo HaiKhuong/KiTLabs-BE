@@ -43,15 +43,16 @@ export function parseGeminiApiKeys(raw: string | undefined | null): string[] {
 }
 
 /** normal = GEMINI_API_KEY + GOOGLE_API_KEY; vip = GEMINI_API_KEY_VIP */
-export function loadGeminiKeyPools(config: ConfigService): {
+export function loadGeminiKeyPools(config?: ConfigService): {
   normal: string[];
   vip: string[];
 } {
+  const read = (name: string) => process.env[name] || config?.get<string>(name);
   const normal = dedupeKeys([
-    ...parseGeminiApiKeys(config.get<string>("GEMINI_API_KEY")),
-    ...parseGeminiApiKeys(config.get<string>("GOOGLE_API_KEY")),
+    ...parseGeminiApiKeys(read("GEMINI_API_KEY")),
+    ...parseGeminiApiKeys(read("GOOGLE_API_KEY")),
   ]);
-  const vip = parseGeminiApiKeys(config.get<string>("GEMINI_API_KEY_VIP"));
+  const vip = parseGeminiApiKeys(read("GEMINI_API_KEY_VIP"));
   return { normal, vip };
 }
 

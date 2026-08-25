@@ -590,7 +590,7 @@ export class TranslateProcessor extends WorkerHost {
           windowsHide: true,
           env: {
             ...process.env,
-            HOME: "/home/haikhuong",
+            HOME: process.env.HOME ?? process.env.USERPROFILE ?? process.env.HOMEPATH,
             // Không ép XDG_CACHE_HOME → ~/.cache (tách Whisper khỏi pipeline cache).
             // pipeline_cache.py đặt HF_HOME → tools/video-pipeline/cache/huggingface.
             // Force Python to flush stdout on every write (line-buffered).

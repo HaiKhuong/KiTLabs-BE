@@ -17,12 +17,38 @@ import { UpdateUserSettingProfileDto } from "./dto/update-user-setting-profile.d
 import { UpsertSettingDto } from "./dto/upsert-setting.dto";
 import { UpsertUserSettingDto } from "./dto/upsert-user-setting.dto";
 import { SettingsService } from "./settings.service";
+import { AppConfigService } from "../../common/config/app-config.service";
+import { RUNTIME_CODE_SET } from "../../common/config/runtime-settings.catalog";
+import { UpsertRuntimeSettingsDto } from "./dto/upsert-runtime-settings.dto";
 
 @ApiTags("Settings")
 @ApiBearerAuth("bearer")
 @Controller("tools/settings")
 export class SettingsController {
-  constructor(private readonly settingsService: SettingsService) {}
+  constructor(
+    private readonly settingsService: SettingsService,
+    private readonly appConfigService: AppConfigService,
+  ) {}
+
+  @Public()
+  @ApiOperation({ summary: "List runtime pipeline settings (secrets masked)" })
+  @Get("runtime")
+  async listRuntime() {
+    return this.appConfigService.listRuntime();
+  }
+
+  @Public()
+  @ApiOperation({ summary: "Upsert runtime pipeline settings" })
+  @Put("runtime")
+  async upsertRuntime(@Body() dto: UpsertRuntimeSettingsDto) {
+    for (const item of dto.items ?? []) {
+      if (!RUNTIME_CODE_SET.has(item.code)) {
+        throw new BadRequestException(`Unknown runtime setting: ${item.code}`);
+      }
+      await this.appConfigService.upsertRuntime(item.code, item.value ?? "");
+    }
+    return this.appConfigService.listRuntime();
+  }
 
   @ApiOperation({ summary: "List global settings" })
   @ApiQuery({ name: "type", required: false, description: "Filter by setting type" })

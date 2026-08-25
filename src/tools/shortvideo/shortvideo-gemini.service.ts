@@ -5,6 +5,7 @@ import { randomUUID } from "crypto";
 import { mkdir, writeFile } from "fs/promises";
 import { join, resolve } from "path";
 
+import { resolveConfiguredPath } from "../../common/desktop/data-path";
 import { geminiKeyPoolEnvHint, loadGeminiKeyPools } from "../../common/gemini/gemini-key-pools";
 
 type GeneratedCaption = { text: string };
@@ -122,9 +123,11 @@ export class ShortVideoGeminiService {
   }
 
   private async prepareTraceDir(): Promise<string> {
-    const root = resolve(
-      process.cwd(),
-      this.config.get<string>("SHORTVIDEO_WORK_ROOT")?.trim() || "uploads/shortvideo",
+    const root = join(
+      resolveConfiguredPath(
+        this.config.get<string>("SHORTVIDEO_WORK_ROOT")?.trim() || process.env.SHORTVIDEO_WORK_ROOT,
+        "uploads/shortvideo",
+      ),
       "gemini",
     );
     const timestamp = new Date().toISOString().replace(/[:.]/g, "-");

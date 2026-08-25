@@ -8,6 +8,7 @@ import { basename, extname, join, resolve } from "path";
 import { Not, IsNull, Repository } from "typeorm";
 
 import { QueueJobStatus } from "../../common/enums/domain.enums";
+import { resolveConfiguredPath } from "../../common/desktop/data-path";
 import { NotificationsService } from "../notifications/notifications.service";
 import { AnalyzeWhiteboardDto } from "./dto/analyze-whiteboard.dto";
 import { MergeWhiteboardDto } from "./dto/merge-whiteboard.dto";
@@ -69,7 +70,7 @@ export class WhiteboardService {
   }
 
   resolveWorkRoot(): string {
-    return resolve(process.cwd(), process.env.WHITEBOARD_WORK_ROOT ?? "uploads/whiteboard");
+    return resolveConfiguredPath(process.env.WHITEBOARD_WORK_ROOT, "uploads/whiteboard");
   }
 
   prepareWorkDir(id: string): string {

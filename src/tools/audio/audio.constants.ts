@@ -13,6 +13,10 @@ function resolveAudioDataRoot(): string {
   if (raw) {
     return resolve(raw);
   }
+  const dataRoot = process.env.KITLABS_DATA_ROOT?.trim();
+  if (dataRoot) {
+    return resolve(dataRoot, "audio");
+  }
   return resolve(process.cwd(), "uploads");
 }
 

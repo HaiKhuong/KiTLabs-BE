@@ -27,7 +27,8 @@ export class WorkflowAiService {
   }
 
   private getKeyPool(tier: GeminiKeyTier): string[] {
-    return tier === "vip" ? this.vipKeys : this.normalKeys;
+    const pools = loadGeminiKeyPools(this.configService);
+    return tier === "vip" ? pools.vip : pools.normal;
   }
 
   private getNextKey(tier: GeminiKeyTier): string {

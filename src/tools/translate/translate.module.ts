@@ -6,6 +6,7 @@ import { CreditHistory } from "../credits/credit-history.entity";
 import { LogsModule } from "../logs/logs.module";
 import { NotificationsModule } from "../notifications/notifications.module";
 import { AudioModule } from "../audio/audio.module";
+import { ModelsModule } from "../models/models.module";
 import { User } from "../users/user.entity";
 import { TranslateController } from "./translate.controller";
 import { TranslateProcessor } from "./translate.processor";
@@ -20,6 +21,7 @@ import { TRANSLATE_QUEUE_NAME, TranslateService } from "./translate.service";
     LogsModule,
     NotificationsModule,
     AudioModule,
+    ModelsModule,
   ],
   controllers: [TranslateController],
   providers: [TranslateService, TranslateProcessor, GeminiSubtitleTranslateService],

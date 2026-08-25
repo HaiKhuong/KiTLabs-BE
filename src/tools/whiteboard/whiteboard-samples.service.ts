@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, unlinkSync, writeFileSync } from "fs";
 import { extname, join, resolve } from "path";
 import { Repository } from "typeorm";
 
+import { resolveConfiguredPath } from "../../common/desktop/data-path";
 import { WhiteboardSampleImage } from "./whiteboard-sample-image.entity";
 
 const SAMPLE_IMAGE_MIME = new Set([
@@ -34,7 +35,7 @@ export class WhiteboardSamplesService {
   ) {}
 
   resolveWorkRoot(): string {
-    return resolve(process.cwd(), process.env.WHITEBOARD_WORK_ROOT ?? "uploads/whiteboard");
+    return resolveConfiguredPath(process.env.WHITEBOARD_WORK_ROOT, "uploads/whiteboard");
   }
 
   resolveSamplesRoot(): string {

@@ -7,6 +7,7 @@ import { basename, dirname, isAbsolute, join, resolve } from "path";
 import { Repository } from "typeorm";
 
 import { QueueJobStatus } from "../../common/enums/domain.enums";
+import { resolveConfiguredPath } from "../../common/desktop/data-path";
 import { CreditHistory } from "../credits/credit-history.entity";
 import { LogsService } from "../logs/logs.service";
 import { NotificationsService } from "../notifications/notifications.service";
@@ -42,7 +43,10 @@ export class RecapService {
   }
 
   private resolveWorkRoot(): string {
-    return resolve(process.cwd(), process.env.RECAP_WORK_ROOT ?? process.env.TRANSLATE_WORK_ROOT ?? "uploads/recap");
+    return resolveConfiguredPath(
+      process.env.RECAP_WORK_ROOT ?? process.env.TRANSLATE_WORK_ROOT,
+      "uploads/recap",
+    );
   }
 
   resolveVideoPath(localVideoPath: string): string {

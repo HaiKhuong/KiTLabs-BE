@@ -2,12 +2,13 @@ import { Injectable, Logger } from "@nestjs/common";
 import { existsSync, mkdirSync, readdirSync, rmdirSync, unlinkSync } from "fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "path";
 
+import { resolveConfiguredPath } from "../../common/desktop/data-path";
+
 const logger = new Logger("FilesService");
 
 /** Project-root upload dir — never relative to tools/video-pipeline cwd. */
 export function resolveUploadRoot(): string {
-  const raw = (process.env.UPLOAD_DIR ?? "uploads").trim() || "uploads";
-  return isAbsolute(raw) ? resolve(raw) : resolve(process.cwd(), raw);
+  return resolveConfiguredPath(process.env.UPLOAD_DIR, "uploads");
 }
 
 export function resolveUploadDestination(

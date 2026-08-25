@@ -4,6 +4,7 @@ import { copyFileSync, existsSync, mkdirSync, unlinkSync, writeFileSync } from "
 import { extname, join, resolve } from "path";
 import { Repository } from "typeorm";
 
+import { resolveConfiguredPath } from "../../common/desktop/data-path";
 import { WhiteboardRecentImage } from "./whiteboard-recent-image.entity";
 
 const RECENT_IMAGE_MIME = new Set([
@@ -38,7 +39,7 @@ export class WhiteboardRecentsService {
   ) {}
 
   resolveWorkRoot(): string {
-    return resolve(process.cwd(), process.env.WHITEBOARD_WORK_ROOT ?? "uploads/whiteboard");
+    return resolveConfiguredPath(process.env.WHITEBOARD_WORK_ROOT, "uploads/whiteboard");
   }
 
   resolveRecentsRoot(): string {

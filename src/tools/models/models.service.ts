@@ -1,0 +1,166 @@
+import { spawn } from "child_process";
+import { existsSync, readdirSync, statSync } from "fs";
+import { dirname, isAbsolute, join, resolve } from "path";
+
+import { BadRequestException, HttpException, HttpStatus, Injectable, Logger } from "@nestjs/common";
+
+import { ToolsRealtimeGateway } from "../realtime/tools-realtime.gateway";
+import { resolveConfiguredPath } from "../../common/desktop/data-path";
+
+export type AiModelId = "whisper-large-v3" | "omnivoice" | "voxcpm2";
+
+export type AiModelCatalogItem = {
+  id: AiModelId;
+  repoId: string;
+  label: string;
+  gated: boolean;
+};
+
+export const AI_MODEL_CATALOG: AiModelCatalogItem[] = [
+  { id: "whisper-large-v3", repoId: "Systran/faster-whisper-large-v3", label: "Whisper large-v3", gated: false },
+  { id: "omnivoice", repoId: "k2-fsa/OmniVoice", label: "OmniVoice", gated: true },
+  { id: "voxcpm2", repoId: "openbmb/VoxCPM2", label: "VoxCPM2", gated: false },
+];
+
+function hubFolder(repoId: string): string {
+  return `models--${repoId.replace("/", "--")}`;
+}
+
+function dirSizeBytes(dir: string): number {
+  if (!existsSync(dir)) return 0;
+  let total = 0;
+  const walk = (p: string) => {
+    for (const name of readdirSync(p, { withFileTypes: true })) {
+      const next = join(p, name.name);
+      if (name.isDirectory()) walk(next);
+      else {
+        try {
+          total += statSync(next).size;
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+  };
+  walk(dir);
+  return total;
+}
+
+@Injectable()
+export class ModelsService {
+  private readonly logger = new Logger(ModelsService.name);
+  private downloading = new Set<string>();
+
+  constructor(private readonly realtimeGateway: ToolsRealtimeGateway) {}
+
+  cacheHub(): string {
+    const cacheRoot = resolveConfiguredPath(process.env.KITLABS_PYTHON_CACHE_DIR, "cache");
+    return join(cacheRoot, "huggingface", "hub");
+  }
+
+  status() {
+    const hub = this.cacheHub();
+    return AI_MODEL_CATALOG.map((item) => {
+      const path = join(hub, hubFolder(item.repoId));
+      const installed = existsSync(path);
+      return {
+        ...item,
+        installed,
+        path,
+        sizeBytes: installed ? dirSizeBytes(path) : 0,
+        downloading: this.downloading.has(item.id),
+      };
+    });
+  }
+
+  isInstalled(id: AiModelId): boolean {
+    const row = this.status().find((s) => s.id === id);
+    return Boolean(row?.installed);
+  }
+
+  requiredModelsForTranslate(engineConfig: Record<string, unknown> | null | undefined, stepNbr: number[]): AiModelId[] {
+    const needed: AiModelId[] = [];
+    const source = String(engineConfig?.step1SubtitleSource ?? engineConfig?.subtitleSource ?? "whisper");
+    if (stepNbr.includes(1) && source === "whisper") {
+      needed.push("whisper-large-v3");
+    }
+    const tts = String(engineConfig?.step3TtsEngine ?? engineConfig?.ttsEngine ?? "");
+    if (stepNbr.includes(3) && tts === "omnivoice") needed.push("omnivoice");
+    if (stepNbr.includes(3) && (tts === "voxcpm2" || tts === "voxcpm")) needed.push("voxcpm2");
+    return needed;
+  }
+
+  assertInstalled(ids: AiModelId[]): void {
+    const missing = ids.filter((id) => !this.isInstalled(id));
+    if (missing.length === 0) return;
+    throw new HttpException(
+      {
+        statusCode: HttpStatus.CONFLICT,
+        code: "MODEL_REQUIRED",
+        message: "AI model is not downloaded yet",
+        modelIds: missing,
+      },
+      HttpStatus.CONFLICT,
+    );
+  }
+
+  async download(ids: string[], userId?: string): Promise<{ started: string[] }> {
+    const valid = ids.filter((id): id is AiModelId => AI_MODEL_CATALOG.some((c) => c.id === id));
+    if (valid.length === 0) {
+      throw new BadRequestException("No valid model ids");
+    }
+    const pythonBin =
+      process.env.TRANSLATE_PYTHON_BIN ?? (process.platform === "win32" ? "py" : "python3");
+    const scriptRaw = process.env.TRANSLATE_PYTHON_SCRIPT ?? "tools/video-pipeline/auto_vietsub_pro.py";
+    const scriptPath = isAbsolute(scriptRaw) ? scriptRaw : resolve(process.cwd(), scriptRaw);
+    const downloadScript = join(dirname(scriptPath), "download_hf_model.py");
+    if (!existsSync(downloadScript)) {
+      throw new BadRequestException(`download_hf_model.py not found next to pipeline (${downloadScript})`);
+    }
+
+    for (const id of valid) {
+      if (this.downloading.has(id)) continue;
+      this.downloading.add(id);
+      const item = AI_MODEL_CATALOG.find((c) => c.id === id)!;
+      void this.runDownload(pythonBin, downloadScript, item, userId).finally(() => {
+        this.downloading.delete(id);
+      });
+    }
+    return { started: valid };
+  }
+
+  private runDownload(pythonBin: string, script: string, item: AiModelCatalogItem, userId?: string) {
+    return new Promise<void>((resolvePromise, rejectPromise) => {
+      const child = spawn(pythonBin, [script, "--repo", item.repoId, "--cache-dir", this.cacheHub()], {
+        windowsHide: true,
+        env: { ...process.env, PYTHONUNBUFFERED: "1" },
+      });
+      child.stdout?.on("data", (buf: Buffer) => {
+        const text = buf.toString("utf8");
+        this.realtimeGateway.notifyUser(userId ?? "all", "models.download.progress", {
+          id: item.id,
+          repoId: item.repoId,
+          text,
+        });
+      });
+      child.stderr?.on("data", (buf: Buffer) => {
+        const text = buf.toString("utf8");
+        this.realtimeGateway.notifyUser(userId ?? "all", "models.download.progress", {
+          id: item.id,
+          repoId: item.repoId,
+          text,
+        });
+      });
+      child.on("exit", (code) => {
+        const ok = code === 0;
+        this.realtimeGateway.notifyUser(userId ?? "all", ok ? "models.download.completed" : "models.download.failed", {
+          id: item.id,
+          repoId: item.repoId,
+          code,
+        });
+        if (ok) resolvePromise();
+        else rejectPromise(new Error(`download ${item.id} exited ${code}`));
+      });
+    });
+  }
+}

@@ -27,11 +27,17 @@ export class HttpExceptionFilter implements ExceptionFilter {
       message = exception.message;
     }
 
+    const extra =
+      exceptionResponse && typeof exceptionResponse === "object" && !Array.isArray(exceptionResponse)
+        ? exceptionResponse
+        : {};
+
     response.status(status).json({
       success: false,
       error: {
-        code: status,
+        code: (extra as { code?: string }).code ?? status,
         message,
+        modelIds: (extra as { modelIds?: string[] }).modelIds,
       },
       meta: {
         requestId: request.requestId ?? null,

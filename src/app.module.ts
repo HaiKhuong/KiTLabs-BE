@@ -11,6 +11,7 @@ import { AppController } from "./app.controller";
 import { HttpExceptionFilter } from "./common/filters/http-exception.filter";
 import { AntiSpamInterceptor } from "./common/interceptors/anti-spam.interceptor";
 import { ResponseTransformInterceptor } from "./common/interceptors/response-transform.interceptor";
+import { AppConfigModule } from "./common/config/app-config.module";
 import { DatabaseModule } from "./database/database.module";
 import { AUDIT_DB_ENTITIES } from "./database/entities/audit.entities";
 import { MAIN_DB_ENTITIES } from "./database/entities/main.entities";
@@ -33,11 +34,15 @@ import { UsersModule } from "./tools/users/users.module";
 import { WorkflowModule } from "./tools/workflow/workflow.module";
 import { ImagesModule } from "./tools/images/images.module";
 import { VideosModule } from "./tools/videos/videos.module";
+import { ModelsModule } from "./tools/models/models.module";
 import { YouTubeModule } from "./tools/youtube/youtube.module";
 
 @Module({
   imports: [
-    ConfigModule.forRoot({ isGlobal: true }),
+    ConfigModule.forRoot({
+      isGlobal: true,
+      envFilePath: [process.env.DOTENV_CONFIG_PATH, ".env"].filter(Boolean) as string[],
+    }),
     ThrottlerModule.forRoot([
       {
         ttl: Number(process.env.RATE_LIMIT_TTL_SECONDS ?? 60) * 1000,
@@ -93,6 +98,7 @@ import { YouTubeModule } from "./tools/youtube/youtube.module";
         db: Number(process.env.REDIS_DB ?? 0),
       },
     }),
+    AppConfigModule,
     UsersModule,
     CreditsModule,
     LogsModule,
@@ -105,6 +111,7 @@ import { YouTubeModule } from "./tools/youtube/youtube.module";
     AudioModule,
     NotificationsModule,
     SettingsModule,
+    ModelsModule,
     AuthModule,
     FilesModule,
     DatabaseModule,

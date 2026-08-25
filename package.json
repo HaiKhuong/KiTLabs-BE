@@ -19,7 +19,8 @@
     "migration:revert:audit": "typeorm-ts-node-commonjs -d src/database/data-source.audit.ts migration:revert",
     "migration:generate:audit": "typeorm-ts-node-commonjs -d src/database/data-source.audit.ts migration:generate src/database/migrations/audit/AutoAuditMigration",
     "test": "jest --runInBand",
-    "test:watch": "jest --watch"
+    "test:watch": "jest --watch",
+    "desktop:prepare": "npm run build"
   },
   "keywords": [],
   "author": "",

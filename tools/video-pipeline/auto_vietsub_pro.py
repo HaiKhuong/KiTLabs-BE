@@ -170,7 +170,7 @@ VOICE_SYNC_SHORT_TIMELINE_MAX_MS = 1500
 # Optional: set absolute ffmpeg.exe path here if needed.
 FFMPEG_PATH = ""
 
-_DEFAULT_WORK_OUTPUT_ROOT = "/mnt/c/Users/haikh/Videos/VideoVietsub/videos"
+_DEFAULT_WORK_OUTPUT_ROOT = os.path.join(os.getenv("KITLABS_DATA_ROOT") or os.getcwd(), "videos")
 
 
 def _env_flag(var_name: str, default: bool) -> bool:

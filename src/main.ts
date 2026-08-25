@@ -18,7 +18,18 @@ async function bootstrap() {
     .map((origin) => origin.trim())
     .filter(Boolean);
   app.enableCors({
-    origin: corsOrigins,
+    origin: (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
+      if (
+        !origin ||
+        corsOrigins.includes(origin) ||
+        origin.startsWith("file:") ||
+        origin.startsWith("app:")
+      ) {
+        callback(null, true);
+        return;
+      }
+      callback(null, false);
+    },
     credentials: true,
     exposedHeaders: ["Accept-Ranges", "Content-Range", "Content-Length", "Content-Type"],
   });
