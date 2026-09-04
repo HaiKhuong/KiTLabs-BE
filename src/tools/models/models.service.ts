@@ -4,6 +4,8 @@ import { dirname, isAbsolute, join, resolve } from "path";
 
 import { BadRequestException, HttpException, HttpStatus, Injectable, Logger } from "@nestjs/common";
 
+import { AppConfigService } from "../../common/config/app-config.service";
+import { pythonBinExists, resolvePythonBin } from "../../common/desktop/python-path";
 import { ToolsRealtimeGateway } from "../realtime/tools-realtime.gateway";
 import { resolveConfiguredPath } from "../../common/desktop/data-path";
 
@@ -51,7 +53,10 @@ export class ModelsService {
   private readonly logger = new Logger(ModelsService.name);
   private downloading = new Set<string>();
 
-  constructor(private readonly realtimeGateway: ToolsRealtimeGateway) {}
+  constructor(
+    private readonly realtimeGateway: ToolsRealtimeGateway,
+    private readonly appConfig: AppConfigService,
+  ) {}
 
   cacheHub(): string {
     const cacheRoot = resolveConfiguredPath(process.env.KITLABS_PYTHON_CACHE_DIR, "cache");
@@ -104,17 +109,26 @@ export class ModelsService {
     );
   }
 
+  private shouldDownloadViaNode(): boolean {
+    if (process.env.MODELS_DOWNLOAD_VIA_NODE === "1") return true;
+    if (process.env.MODELS_DOWNLOAD_VIA_NODE === "0") return false;
+    const pythonBin = resolvePythonBin();
+    return !pythonBinExists(pythonBin);
+  }
+
   async download(ids: string[], userId?: string): Promise<{ started: string[] }> {
     const valid = ids.filter((id): id is AiModelId => AI_MODEL_CATALOG.some((c) => c.id === id));
     if (valid.length === 0) {
       throw new BadRequestException("No valid model ids");
     }
-    const pythonBin =
-      process.env.TRANSLATE_PYTHON_BIN ?? (process.platform === "win32" ? "py" : "python3");
+
+    const useNode = this.shouldDownloadViaNode();
+    const pythonBin = resolvePythonBin();
     const scriptRaw = process.env.TRANSLATE_PYTHON_SCRIPT ?? "tools/video-pipeline/auto_vietsub_pro.py";
     const scriptPath = isAbsolute(scriptRaw) ? scriptRaw : resolve(process.cwd(), scriptRaw);
     const downloadScript = join(dirname(scriptPath), "download_hf_model.py");
-    if (!existsSync(downloadScript)) {
+
+    if (!useNode && !existsSync(downloadScript)) {
       throw new BadRequestException(`download_hf_model.py not found next to pipeline (${downloadScript})`);
     }
 
@@ -122,44 +136,94 @@ export class ModelsService {
       if (this.downloading.has(id)) continue;
       this.downloading.add(id);
       const item = AI_MODEL_CATALOG.find((c) => c.id === id)!;
-      void this.runDownload(pythonBin, downloadScript, item, userId).finally(() => {
+      const task = useNode
+        ? this.runDownloadViaNode(item, userId)
+        : this.runDownloadViaPython(pythonBin, downloadScript, item, userId);
+      void task.finally(() => {
         this.downloading.delete(id);
       });
     }
     return { started: valid };
   }
 
-  private runDownload(pythonBin: string, script: string, item: AiModelCatalogItem, userId?: string) {
+  private notifyProgress(item: AiModelCatalogItem, userId: string | undefined, text: string): void {
+    this.realtimeGateway.notifyUser(userId ?? "all", "models.download.progress", {
+      id: item.id,
+      repoId: item.repoId,
+      text,
+    });
+  }
+
+  private notifyDone(
+    item: AiModelCatalogItem,
+    userId: string | undefined,
+    ok: boolean,
+    code: number,
+  ): void {
+    this.realtimeGateway.notifyUser(
+      userId ?? "all",
+      ok ? "models.download.completed" : "models.download.failed",
+      {
+        id: item.id,
+        repoId: item.repoId,
+        code,
+      },
+    );
+  }
+
+  private async runDownloadViaNode(item: AiModelCatalogItem, userId?: string): Promise<void> {
+    const hfToken = this.appConfig.getSecret("HF_TOKEN").trim() || undefined;
+    this.notifyProgress(item, userId, `DOWNLOAD_START repo=${item.repoId}\n`);
+
+    try {
+      const { snapshotDownload } = await import("@huggingface/hub");
+      await snapshotDownload({
+        repo: item.repoId,
+        cacheDir: this.cacheHub(),
+        accessToken: hfToken,
+      });
+      this.notifyProgress(item, userId, `DOWNLOAD_DONE repo=${item.repoId}\n`);
+      this.notifyDone(item, userId, true, 0);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.error(`Node model download failed (${item.id}): ${message}`);
+      this.notifyProgress(item, userId, `DOWNLOAD_FAILED ${message}\n`);
+      this.notifyDone(item, userId, false, 1);
+      throw err instanceof Error ? err : new Error(message);
+    }
+  }
+
+  private runDownloadViaPython(
+    pythonBin: string,
+    script: string,
+    item: AiModelCatalogItem,
+    userId?: string,
+  ): Promise<void> {
     return new Promise<void>((resolvePromise, rejectPromise) => {
+      const hfToken = this.appConfig.getSecret("HF_TOKEN").trim();
       const child = spawn(pythonBin, [script, "--repo", item.repoId, "--cache-dir", this.cacheHub()], {
         windowsHide: true,
-        env: { ...process.env, PYTHONUNBUFFERED: "1" },
+        env: {
+          ...process.env,
+          PYTHONUNBUFFERED: "1",
+          ...(hfToken ? { HF_TOKEN: hfToken, HUGGING_FACE_HUB_TOKEN: hfToken } : {}),
+        },
       });
       child.stdout?.on("data", (buf: Buffer) => {
-        const text = buf.toString("utf8");
-        this.realtimeGateway.notifyUser(userId ?? "all", "models.download.progress", {
-          id: item.id,
-          repoId: item.repoId,
-          text,
-        });
+        this.notifyProgress(item, userId, buf.toString("utf8"));
       });
       child.stderr?.on("data", (buf: Buffer) => {
-        const text = buf.toString("utf8");
-        this.realtimeGateway.notifyUser(userId ?? "all", "models.download.progress", {
-          id: item.id,
-          repoId: item.repoId,
-          text,
-        });
+        this.notifyProgress(item, userId, buf.toString("utf8"));
+      });
+      child.on("error", (err: Error) => {
+        this.notifyDone(item, userId, false, 1);
+        rejectPromise(err);
       });
       child.on("exit", (code) => {
         const ok = code === 0;
-        this.realtimeGateway.notifyUser(userId ?? "all", ok ? "models.download.completed" : "models.download.failed", {
-          id: item.id,
-          repoId: item.repoId,
-          code,
-        });
+        this.notifyDone(item, userId, ok, code ?? 1);
         if (ok) resolvePromise();
-        else rejectPromise(new Error(`download ${item.id} exited ${code}`));
+        else rejectPromise(new Error(`download ${item.id} exited ${code ?? "?"}`));
       });
     });
   }

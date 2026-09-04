@@ -46,6 +46,12 @@ class DownloadRequest(BaseModel):
     url: str
     format_id: Optional[str] = None
     cookie_content: Optional[str] = None
+    media_format: Optional[str] = "video"
+
+
+class PlaylistRequest(BaseModel):
+    url: str
+    cookie_content: Optional[str] = None
 
 
 def _write_cookies_temp(cookie_content: Optional[str]) -> Optional[str]:
@@ -67,9 +73,11 @@ def _cleanup(path: Optional[str]):
             pass
 
 
-def _extract_via_cli(url: str, cookie_path: Optional[str]) -> dict:
+def _extract_via_cli(url: str, cookie_path: Optional[str], extra: Optional[list] = None) -> dict:
     """Fallback: call yt-dlp CLI with --dump-json."""
-    cmd = ["yt-dlp", "--dump-json", "--no-check-certificates", "--no-warnings"]
+    cmd = ["yt-dlp", "--dump-json", "--no-check-certificates", "--no-warnings", "--no-playlist"]
+    if extra:
+        cmd += extra
     if cookie_path:
         cmd += ["--cookies", cookie_path]
     cmd.append(url)
@@ -103,11 +111,19 @@ def extract_video(req: ExtractRequest):
         if not info:
             raise HTTPException(status_code=400, detail="Could not extract video info")
 
-        if "entries" in info:
-            raise HTTPException(
-                status_code=400,
-                detail="URL is a playlist/profile. Use /extract-profile instead.",
-            )
+        if info.get("entries"):
+            urls = []
+            for entry in info.get("entries") or []:
+                if not entry:
+                    continue
+                entry_url = entry.get("webpage_url") or entry.get("url")
+                if entry_url and str(entry_url).startswith("http"):
+                    urls.append(entry_url)
+            return {
+                "type": "playlist",
+                "title": info.get("title"),
+                "urls": urls,
+            }
 
         formats = []
         for f in info.get("formats", []):
@@ -133,6 +149,7 @@ def extract_video(req: ExtractRequest):
 
         logger.info("Extract success: id=%s, formats=%d", info.get("id"), len(formats))
         return {
+            "type": "video",
             "id": info.get("id"),
             "title": info.get("title"),
             "thumbnail": thumbnail,
@@ -239,9 +256,63 @@ def extract_profile(req: ExtractProfileRequest):
         _cleanup(cookie_path)
 
 
+@app.post("/playlist")
+def extract_playlist(req: PlaylistRequest):
+    logger.info("Playlist request: url=%s", req.url)
+    cookie_path = _write_cookies_temp(req.cookie_content)
+    try:
+        cmd = [
+            "yt-dlp",
+            "--flat-playlist",
+            "--print", "url",
+            "--no-check-certificates",
+            "--no-warnings",
+        ]
+        if cookie_path:
+            cmd += ["--cookies", cookie_path]
+        cmd.append(req.url)
+
+        logger.info("CLI playlist: %s", " ".join(cmd))
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+
+        if result.returncode != 0:
+            err = result.stderr.strip()
+            logger.error("CLI stderr: %s", err)
+            raise Exception(err or f"yt-dlp exited with code {result.returncode}")
+
+        urls = []
+        seen = set()
+        for line in result.stdout.splitlines():
+            url = line.strip()
+            if not url.startswith("http") or url in seen:
+                continue
+            seen.add(url)
+            urls.append(url)
+
+        if not urls:
+            raise HTTPException(status_code=400, detail="No playlist entries found")
+
+        return {"urls": urls, "count": len(urls)}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Playlist error: %s\n%s", str(e), traceback.format_exc())
+        detail = str(e)
+        status = 400 if "Unsupported URL" in detail else 500
+        raise HTTPException(status_code=status, detail=detail)
+    finally:
+        _cleanup(cookie_path)
+
+
 @app.post("/download")
 def download_video(req: DownloadRequest):
-    logger.info("Download request: url=%s, format_id=%s", req.url, req.format_id)
+    media_format = (req.media_format or "video").strip().lower()
+    logger.info(
+        "Download request: url=%s, format_id=%s, media_format=%s",
+        req.url,
+        req.format_id,
+        media_format,
+    )
     cookie_path = _write_cookies_temp(req.cookie_content)
     download_id = uuid.uuid4().hex
     out_dir = os.path.join(TEMP_DIR, download_id)
@@ -251,13 +322,17 @@ def download_video(req: DownloadRequest):
         cmd = [
             "yt-dlp",
             "--no-check-certificates", "--no-warnings",
+            "--no-playlist",
             "-o", os.path.join(out_dir, "%(title).80s.%(ext)s"),
-            "--merge-output-format", "mp4",
         ]
-        if req.format_id:
-            cmd += ["-f", req.format_id]
+        if media_format == "audio":
+            cmd += ["-x", "--audio-format", "mp3", "-f", "bestaudio/best"]
         else:
-            cmd += ["-f", "bestvideo*+bestaudio/best"]
+            cmd += ["--merge-output-format", "mp4"]
+            if req.format_id:
+                cmd += ["-f", req.format_id]
+            else:
+                cmd += ["-f", "bestvideo*+bestaudio/best"]
         if cookie_path:
             cmd += ["--cookies", cookie_path]
         cmd.append(req.url)

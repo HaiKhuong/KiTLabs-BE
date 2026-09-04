@@ -14,6 +14,7 @@ import { NotificationsService } from "../notifications/notifications.service";
 import { User } from "../users/user.entity";
 import { QueueJobStatus } from "../../common/enums/domain.enums";
 import { resolveConfiguredPath } from "../../common/desktop/data-path";
+import { isAppPlatform } from "../../common/desktop/request-platform";
 import { ModelsService } from "../models/models.service";
 import { CreateTranslateJobDto } from "./dto/create-translate-job.dto";
 import { TranslateEngineConfigDto } from "./dto/translate-engine-config.dto";
@@ -66,9 +67,11 @@ export class TranslateService {
     const functionUsed = normalizedSteps.map((step) => STEP_TO_FUNCTION_CODE[step]);
 
     await this.validateOmnivoiceConfigForTranslate(normalizedSteps, dto.engineConfig, dto.userId);
-    this.modelsService.assertInstalled(
-      this.modelsService.requiredModelsForTranslate(dto.engineConfig as Record<string, unknown>, normalizedSteps),
-    );
+    if (isAppPlatform()) {
+      this.modelsService.assertInstalled(
+        this.modelsService.requiredModelsForTranslate(dto.engineConfig as Record<string, unknown>, normalizedSteps),
+      );
+    }
 
     const history = this.translateRepository.create({
       userId: dto.userId,

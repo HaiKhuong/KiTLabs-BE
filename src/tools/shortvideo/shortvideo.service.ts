@@ -3,12 +3,13 @@ import { InjectQueue } from "@nestjs/bullmq";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Queue } from "bullmq";
 import { randomUUID } from "crypto";
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "fs";
+import { existsSync, copyFileSync, mkdirSync, rmSync, writeFileSync } from "fs";
 import { basename, extname, isAbsolute, join, resolve } from "path";
 import { Repository } from "typeorm";
 
 import { QueueJobStatus } from "../../common/enums/domain.enums";
 import { resolveConfiguredPath } from "../../common/desktop/data-path";
+import { isAppPlatform } from "../../common/desktop/request-platform";
 import { NotificationsService } from "../notifications/notifications.service";
 import { CreateShortVideoJobDto } from "./dto/create-shortvideo-job.dto";
 import { RenderShortVideoUploadDto } from "./dto/render-shortvideo-upload.dto";
@@ -123,15 +124,30 @@ export class ShortVideoService {
     return this.repository.save(created);
   }
 
-  /** Persist uploaded asset buffers into a fresh dir; return abs dir + saved filenames per field. */
-  saveUploadAssets(files: UploadedFiles): {
+  /** Persist uploaded buffers and/or App local paths into a fresh dir. */
+  saveUploadAssets(
+    files: UploadedFiles,
+    localPaths?: Partial<Record<UploadField, string>>,
+  ): {
     assetsDir: string;
     fileNames: Partial<Record<UploadField, string>>;
   } {
     const dir = join(this.resolveWorkRoot(), "_uploads", randomUUID());
     mkdirSync(dir, { recursive: true });
     const fileNames: Partial<Record<UploadField, string>> = {};
+    const allowLocal = isAppPlatform();
     for (const field of UPLOAD_FIELDS) {
+      const localSrc = allowLocal ? localPaths?.[field]?.trim() : "";
+      if (localSrc) {
+        if (!isAbsolute(localSrc) || !existsSync(localSrc)) {
+          throw new BadRequestException(`Local ${field} file not found`);
+        }
+        const ext = extname(localSrc).toLowerCase() || DEFAULT_EXT[field];
+        const name = `${field}${ext}`;
+        copyFileSync(localSrc, join(dir, name));
+        fileNames[field] = name;
+        continue;
+      }
       const file = files[field]?.[0];
       if (!file) continue;
       const ext = extname(file.originalname).toLowerCase() || DEFAULT_EXT[field];
@@ -145,7 +161,13 @@ export class ShortVideoService {
   /** Standalone menu flow: save uploaded assets, merge them into the spec, then enqueue. */
   async enqueueFromUpload(body: RenderShortVideoUploadDto, files: UploadedFiles): Promise<ShortVideoHistory> {
     const spec = this.parseSpec(body.spec);
-    const { assetsDir, fileNames } = this.saveUploadAssets(files);
+    const { assetsDir, fileNames } = this.saveUploadAssets(files, {
+      background: body.backgroundPath,
+      left: body.leftPath,
+      right: body.rightPath,
+      voice: body.voicePath,
+      sfx: body.sfxPath,
+    });
 
     if (fileNames.background) spec.background = fileNames.background;
     if (fileNames.voice) spec.voice = fileNames.voice;

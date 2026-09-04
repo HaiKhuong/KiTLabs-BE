@@ -5,6 +5,11 @@ import { resolve } from "path";
 import { randomUUID } from "crypto";
 
 import { QueueJobStatus } from "../../common/enums/domain.enums";
+import {
+  resolveOmnivoiceDeviceMapForPayload,
+  resolveOmnivoiceDtypeForPayload,
+} from "../../common/omnivoice/omnivoice-env";
+import { pythonSubprocessEnv } from "../../common/desktop/python-path";
 import { AudioService } from "../audio/audio.service";
 import { VIDEO_PIPELINE_DIR } from "../audio/audio.constants";
 import { ExecuteVoiceDto } from "./dto/execute-voice.dto";
@@ -188,6 +193,7 @@ export class WorkflowVoiceService {
         cwd: scriptDir,
         windowsHide: true,
         stdio: ["pipe", "pipe", "pipe"],
+        env: pythonSubprocessEnv(),
       });
 
       let stdout = "";
@@ -221,7 +227,7 @@ export class WorkflowVoiceService {
         }
       });
 
-      child.stdin?.write(JSON.stringify(payload));
+      child.stdin?.write(Buffer.from(JSON.stringify(payload), "utf8"));
       child.stdin?.end();
     });
   }
@@ -237,6 +243,7 @@ export class WorkflowVoiceService {
         cwd: scriptDir,
         windowsHide: true,
         stdio: ["pipe", "pipe", "pipe"],
+        env: pythonSubprocessEnv(),
       });
 
       let stdout = "";
@@ -270,7 +277,7 @@ export class WorkflowVoiceService {
         }
       });
 
-      child.stdin?.write(JSON.stringify(payload));
+      child.stdin?.write(Buffer.from(JSON.stringify(payload), "utf8"));
       child.stdin?.end();
     });
   }
@@ -377,8 +384,8 @@ export class WorkflowVoiceService {
         ref_audio: voiceRef.refAudioPath,
         ref_text: voiceRef.refText,
         model_id: (process.env.OMNIVOICE_MODEL_ID ?? "k2-fsa/OmniVoice").trim(),
-        device_map: (process.env.OMNIVOICE_DEVICE_MAP ?? "").trim() || "cuda:0",
-        dtype_str: (process.env.OMNIVOICE_DTYPE ?? "float16").trim(),
+        device_map: resolveOmnivoiceDeviceMapForPayload(),
+        dtype_str: resolveOmnivoiceDtypeForPayload(),
         language: voiceRef.language,
         num_step: Number(process.env.OMNIVOICE_NUM_STEP ?? 32),
         guidance_scale: Number(process.env.OMNIVOICE_GUIDANCE_SCALE ?? 2),

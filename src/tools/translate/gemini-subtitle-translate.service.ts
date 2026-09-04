@@ -2,6 +2,7 @@ import { BadRequestException, Injectable, InternalServerErrorException } from "@
 import { ConfigService } from "@nestjs/config";
 import axios from "axios";
 
+import { missingGeminiKeyMessage, resolveLiveGeminiKeys } from "../../common/gemini/gemini-key-pools";
 import { CompareSubtitleBlockDto } from "./dto/translate-compare-subtitle.dto";
 
 type GeminiGenerateResponse = {
@@ -16,34 +17,23 @@ type GeminiGenerateResponse = {
 export class GeminiSubtitleTranslateService {
   private readonly modelName: string;
   private readonly batchSize: number;
-  private readonly apiKeys: string[];
 
   constructor(private readonly configService: ConfigService) {
     this.modelName = this.configService.get<string>("GEMINI_MODEL_NAME") ?? "gemini-2.5-flash";
     this.batchSize = Number(this.configService.get<string>("TRANSLATE_BATCH_SIZE") ?? 20);
-    this.apiKeys = this.resolveApiKeys();
   }
 
   private resolveApiKeys(): string[] {
-    const raw =
-      this.configService.get<string>("GEMINI_API_KEY") ??
-      this.configService.get<string>("GOOGLE_API_KEY") ??
-      "";
-    const keys = raw
-      .split(/[,;\n]+/)
-      .map((k) => k.trim())
-      .filter(Boolean);
-    return [...new Set(keys)];
+    return resolveLiveGeminiKeys(this.configService);
   }
 
   async translateBlocks(
     blocks: CompareSubtitleBlockDto[],
     translationContext?: string,
   ): Promise<CompareSubtitleBlockDto[]> {
-    if (!this.apiKeys.length) {
-      throw new BadRequestException(
-        "Missing GEMINI_API_KEY (or GOOGLE_API_KEY) on server.",
-      );
+    const apiKeys = this.resolveApiKeys();
+    if (!apiKeys.length) {
+      throw new BadRequestException(missingGeminiKeyMessage("normal"));
     }
 
     const translated: CompareSubtitleBlockDto[] = [];
@@ -129,7 +119,7 @@ export class GeminiSubtitleTranslateService {
 
   private async callGemini(prompt: string): Promise<string> {
     let lastError: unknown;
-    for (const apiKey of this.apiKeys) {
+    for (const apiKey of this.resolveApiKeys()) {
       try {
         const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(this.modelName)}:generateContent`;
         const response = await axios.post<GeminiGenerateResponse>(

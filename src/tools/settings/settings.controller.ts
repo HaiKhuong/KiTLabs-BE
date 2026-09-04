@@ -20,6 +20,7 @@ import { SettingsService } from "./settings.service";
 import { AppConfigService } from "../../common/config/app-config.service";
 import { RUNTIME_CODE_SET } from "../../common/config/runtime-settings.catalog";
 import { UpsertRuntimeSettingsDto } from "./dto/upsert-runtime-settings.dto";
+import { RuntimeHealthService } from "./runtime-health.service";
 
 @ApiTags("Settings")
 @ApiBearerAuth("bearer")
@@ -28,6 +29,7 @@ export class SettingsController {
   constructor(
     private readonly settingsService: SettingsService,
     private readonly appConfigService: AppConfigService,
+    private readonly runtimeHealthService: RuntimeHealthService,
   ) {}
 
   @Public()
@@ -48,6 +50,13 @@ export class SettingsController {
       await this.appConfigService.upsertRuntime(item.code, item.value ?? "");
     }
     return this.appConfigService.listRuntime();
+  }
+
+  @Public()
+  @ApiOperation({ summary: "Health-check pipeline Docker/sidecar services" })
+  @Get("runtime/health")
+  async runtimeHealth() {
+    return this.runtimeHealthService.checkAll();
   }
 
   @ApiOperation({ summary: "List global settings" })

@@ -19,15 +19,9 @@ from omnivoice_tts import (
 
 
 def resolve_device_map(raw: str) -> str:
-    s = str(raw or "").strip()
-    if s:
-        return s
-    try:
-        import torch
+    from omnivoice_tts import resolve_omnivoice_device_map
 
-        return "cuda:0" if torch.cuda.is_available() else "cpu"
-    except Exception:
-        return "cpu"
+    return resolve_omnivoice_device_map(raw)
 
 
 def _env_bool(name: str, default: bool) -> bool:

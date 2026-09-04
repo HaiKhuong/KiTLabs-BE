@@ -65,3 +65,13 @@ export function geminiKeyPoolEnvHint(tier: GeminiKeyTier): string {
     ? "GEMINI_API_KEY_VIP"
     : "GEMINI_API_KEY (hoặc GOOGLE_API_KEY)";
 }
+
+/** Prefer the normal pool; fall back to VIP so Settings → Pipeline keys work after boot. */
+export function resolveLiveGeminiKeys(config?: ConfigService): string[] {
+  const pools = loadGeminiKeyPools(config);
+  return pools.normal.length > 0 ? pools.normal : pools.vip;
+}
+
+export function missingGeminiKeyMessage(tier: GeminiKeyTier = "normal"): string {
+  return `Gemini API key chưa cấu hình. Cấu hình ${geminiKeyPoolEnvHint(tier)} trong Settings → Pipeline (hoặc .env).`;
+}

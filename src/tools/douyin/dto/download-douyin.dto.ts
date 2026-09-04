@@ -1,5 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
-import { IsOptional, IsString, IsUrl } from "class-validator";
+import { IsIn, IsOptional, IsString, IsUrl } from "class-validator";
 
 export class DownloadDouyinDto {
   @ApiProperty({ description: "Douyin video URL" })
@@ -16,4 +16,9 @@ export class DownloadDouyinDto {
   @IsOptional()
   @IsString()
   directUrl?: string;
+
+  @ApiPropertyOptional({ enum: ["playwright", "ytdlp"] })
+  @IsOptional()
+  @IsIn(["playwright", "ytdlp"])
+  provider?: "playwright" | "ytdlp";
 }

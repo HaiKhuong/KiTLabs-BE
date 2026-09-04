@@ -2,11 +2,14 @@ import { Injectable, Logger, OnModuleInit } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Repository } from "typeorm";
 
+import { getRequestPlatform } from "../desktop/request-platform";
 import { Setting } from "../../tools/settings/setting.entity";
 import {
+  PLATFORM_SCOPED_SECRET_CODES,
   RUNTIME_SETTING_FIELDS,
   RUNTIME_SETTING_TYPE,
   SECRET_SETTING_CODES,
+  runtimeStorageCode,
 } from "./runtime-settings.catalog";
 import { decryptSecret, encryptSecret, isEncryptedSecret, maskGeminiKeys } from "./settings-crypto";
 
@@ -28,6 +31,21 @@ export class AppConfigService implements OnModuleInit {
     const rows = await this.settingRepository.find({ where: { type: RUNTIME_SETTING_TYPE } });
     const byCode = new Map(rows.map((r) => [r.code, r.value]));
     for (const field of RUNTIME_SETTING_FIELDS) {
+      if (PLATFORM_SCOPED_SECRET_CODES.has(field.code)) {
+        for (const platform of ["App", "Web"] as const) {
+          const storageCode = runtimeStorageCode(field.code, platform);
+          const stored = byCode.get(storageCode);
+          if (stored == null || stored === "") {
+            continue;
+          }
+          try {
+            this.secretCache.set(storageCode, decryptSecret(stored));
+          } catch {
+            this.logger.error(`Failed to decrypt ${storageCode}`);
+          }
+        }
+        continue;
+      }
       const stored = byCode.get(field.code);
       if (stored == null || stored === "") {
         continue;
@@ -37,7 +55,7 @@ export class AppConfigService implements OnModuleInit {
           const plain = decryptSecret(stored);
           this.secretCache.set(field.code, plain);
           process.env[field.code] = plain;
-        } catch (err) {
+        } catch {
           this.logger.error(`Failed to decrypt ${field.code}`);
         }
         continue;
@@ -56,7 +74,29 @@ export class AppConfigService implements OnModuleInit {
   }
 
   getSecret(code: string): string {
+    if (PLATFORM_SCOPED_SECRET_CODES.has(code)) {
+      const storageCode = runtimeStorageCode(code, getRequestPlatform());
+      return this.secretCache.get(storageCode) ?? "";
+    }
     return this.secretCache.get(code) ?? process.env[code] ?? "";
+  }
+
+  private storageCodeFor(code: string): string {
+    if (PLATFORM_SCOPED_SECRET_CODES.has(code)) {
+      return runtimeStorageCode(code, getRequestPlatform());
+    }
+    return code;
+  }
+
+  private maskSecret(code: string, plain: string): { configured: boolean; keyCount: number; masked: string } {
+    if (code === "DOUYIN_COOKIE_CONTENT") {
+      const trimmed = plain.trim();
+      if (!trimmed) {
+        return { configured: false, keyCount: 0, masked: "" };
+      }
+      return { configured: true, keyCount: 1, masked: `cookie••••${trimmed.slice(-4)}` };
+    }
+    return maskGeminiKeys(plain);
   }
 
   spawnEnv(): NodeJS.ProcessEnv {
@@ -67,7 +107,8 @@ export class AppConfigService implements OnModuleInit {
     const rows = await this.settingRepository.find({ where: { type: RUNTIME_SETTING_TYPE } });
     const byCode = new Map(rows.map((r) => [r.code, r.value]));
     return RUNTIME_SETTING_FIELDS.map((field) => {
-      const stored = byCode.get(field.code) ?? "";
+      const storageCode = this.storageCodeFor(field.code);
+      const stored = byCode.get(storageCode) ?? "";
       if (field.kind === "secret") {
         let plain = "";
         if (stored) {
@@ -76,10 +117,10 @@ export class AppConfigService implements OnModuleInit {
           } catch {
             plain = "";
           }
-        } else {
+        } else if (!PLATFORM_SCOPED_SECRET_CODES.has(field.code)) {
           plain = process.env[field.code] ?? "";
         }
-        const mask = maskGeminiKeys(plain);
+        const mask = this.maskSecret(field.code, plain);
         return {
           ...field,
           value: "",
@@ -101,16 +142,19 @@ export class AppConfigService implements OnModuleInit {
     if (field.kind === "secret" && !value.trim()) {
       return;
     }
+    const storageCode = this.storageCodeFor(code);
     let stored = value;
     if (field.kind === "secret") {
       stored = encryptSecret(value);
-      this.secretCache.set(code, value);
-      process.env[code] = value;
+      this.secretCache.set(storageCode, value);
+      if (!PLATFORM_SCOPED_SECRET_CODES.has(code)) {
+        process.env[code] = value;
+      }
     } else {
       process.env[code] = value;
     }
     const existed = await this.settingRepository.findOne({
-      where: { type: RUNTIME_SETTING_TYPE, code },
+      where: { type: RUNTIME_SETTING_TYPE, code: storageCode },
     });
     if (existed) {
       existed.value = stored;
@@ -118,7 +162,7 @@ export class AppConfigService implements OnModuleInit {
       return;
     }
     await this.settingRepository.save(
-      this.settingRepository.create({ type: RUNTIME_SETTING_TYPE, code, value: stored }),
+      this.settingRepository.create({ type: RUNTIME_SETTING_TYPE, code: storageCode, value: stored }),
     );
   }
 

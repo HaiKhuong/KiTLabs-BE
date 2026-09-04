@@ -1,5 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
-import { IsInt, IsOptional, IsString, IsUrl, Max, Min } from "class-validator";
+import { IsIn, IsInt, IsOptional, IsString, IsUrl, Max, Min } from "class-validator";
 import { Type } from "class-transformer";
 
 export class ExtractProfileDto {
@@ -22,4 +22,9 @@ export class ExtractProfileDto {
   @IsInt()
   @Min(0)
   cursor?: number;
+
+  @ApiPropertyOptional({ enum: ["playwright", "ytdlp"] })
+  @IsOptional()
+  @IsIn(["playwright", "ytdlp"])
+  provider?: "playwright" | "ytdlp";
 }

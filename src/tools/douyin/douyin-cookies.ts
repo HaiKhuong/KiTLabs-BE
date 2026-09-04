@@ -1,9 +1,15 @@
 import * as fs from "fs";
 import * as path from "path";
 
+import { AppConfigService } from "../../common/config/app-config.service";
 import { DOUYIN_COOKIE_FILE } from "./douyin.constants";
 
-export function getDouyinCookieContent(): string | null {
+export function getDouyinCookieContent(appConfig?: AppConfigService): string | null {
+  const fromSecret = appConfig?.getSecret("DOUYIN_COOKIE_CONTENT")?.trim();
+  if (fromSecret) {
+    return fromSecret;
+  }
+
   const inline = process.env.DOUYIN_COOKIE_CONTENT?.trim();
   if (inline) {
     return inline;

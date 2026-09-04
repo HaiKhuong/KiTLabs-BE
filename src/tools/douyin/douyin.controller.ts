@@ -23,6 +23,7 @@ export class DouyinController {
       dto.url,
       dto.maxVideos,
       dto.cursor ?? 0,
+      dto.provider,
     );
   }
 
@@ -31,7 +32,7 @@ export class DouyinController {
   @Public()
   @Post("extract")
   async extract(@Body() dto: ExtractDouyinDto) {
-    return this.douyinService.extractVideo(dto.url);
+    return this.douyinService.extractVideo(dto.url, dto.provider);
   }
 
   @ApiOperation({ summary: "Extract videos from Douyin user profile" })
@@ -43,6 +44,7 @@ export class DouyinController {
       dto.url,
       dto.maxVideos,
       dto.cursor ?? 0,
+      dto.provider,
     );
   }
 
@@ -56,6 +58,7 @@ export class DouyinController {
         dto.url,
         dto.formatId,
         dto.directUrl,
+        dto.provider,
       );
 
       const contentDisposition = streamResponse.headers["content-disposition"] as string | undefined;

@@ -4,7 +4,7 @@ import { InjectRepository } from "@nestjs/typeorm";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { Not, Repository } from "typeorm";
 
-import { geminiKeyPoolEnvHint, loadGeminiKeyPools } from "../../common/gemini/gemini-key-pools";
+import { missingGeminiKeyMessage, resolveLiveGeminiKeys } from "../../common/gemini/gemini-key-pools";
 import {
   WhiteboardIdeaHistory,
   WhiteboardIdeaSceneRow,
@@ -27,17 +27,13 @@ export type WhiteboardIdeasResult = {
 @Injectable()
 export class WhiteboardIdeasService {
   private readonly logger = new Logger(WhiteboardIdeasService.name);
-  private readonly apiKeys: string[];
   private keyIndex = 0;
 
   constructor(
     private readonly config: ConfigService,
     @InjectRepository(WhiteboardIdeaHistory, "tool")
     private readonly repository: Repository<WhiteboardIdeaHistory>,
-  ) {
-    const pools = loadGeminiKeyPools(this.config);
-    this.apiKeys = pools.normal.length > 0 ? pools.normal : pools.vip;
-  }
+  ) {}
 
   async generateAndSave(userIdInput: string, ideaInput: string): Promise<WhiteboardIdeasResult> {
     const userId = userIdInput?.trim();
@@ -132,15 +128,16 @@ export class WhiteboardIdeasService {
     const idea = ideaInput?.trim();
     if (!idea) throw new BadRequestException("idea is required");
 
-    if (this.apiKeys.length === 0) {
-      throw new BadRequestException(`Gemini API key not configured. Set ${geminiKeyPoolEnvHint("normal")} in .env`);
+    const apiKeys = resolveLiveGeminiKeys(this.config);
+    if (apiKeys.length === 0) {
+      throw new BadRequestException(missingGeminiKeyMessage("normal"));
     }
 
     const modelName = this.config.get<string>("WHITEBOARD_GEMINI_MODEL")?.trim() || "gemini-2.5-flash";
     const prompt = this.buildPrompt(idea);
 
     let lastError: unknown;
-    const maxAttempts = Math.max(this.apiKeys.length, 2);
+    const maxAttempts = Math.max(apiKeys.length, 2);
 
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       try {
@@ -702,8 +699,12 @@ export class WhiteboardIdeasService {
   }
 
   private nextKey(): string {
-    const key = this.apiKeys[this.keyIndex % this.apiKeys.length];
-    this.keyIndex = (this.keyIndex + 1) % this.apiKeys.length;
+    const apiKeys = resolveLiveGeminiKeys(this.config);
+    if (apiKeys.length === 0) {
+      throw new BadRequestException(missingGeminiKeyMessage("normal"));
+    }
+    const key = apiKeys[this.keyIndex % apiKeys.length];
+    this.keyIndex = (this.keyIndex + 1) % apiKeys.length;
     return key;
   }
 }

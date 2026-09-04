@@ -5,6 +5,7 @@ const { closeBrowser } = require("./shared");
 
 const app = express();
 const PORT = Number(process.env.PORT || 8000);
+const HOST = process.env.HOST?.trim() || "0.0.0.0";
 
 app.use(express.json({ limit: "2mb" }));
 
@@ -64,8 +65,8 @@ app.post("/extract-profile", async (req, res) => {
   }
 });
 
-const server = app.listen(PORT, () => {
-  console.log(`douyin-playwright-service listening on :${PORT}`);
+const server = app.listen(PORT, HOST, () => {
+  console.log(`douyin-playwright-service listening on ${HOST}:${PORT}`);
 });
 
 async function shutdown() {

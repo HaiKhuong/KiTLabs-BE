@@ -32,4 +32,29 @@ export class RenderShortVideoUploadDto {
   @IsOptional()
   @IsString()
   engineConfig?: string;
+
+  @ApiPropertyOptional({ description: "Absolute local background image path (App only)" })
+  @IsOptional()
+  @IsString()
+  backgroundPath?: string;
+
+  @ApiPropertyOptional({ description: "Absolute local left image path (App only)" })
+  @IsOptional()
+  @IsString()
+  leftPath?: string;
+
+  @ApiPropertyOptional({ description: "Absolute local right image path (App only)" })
+  @IsOptional()
+  @IsString()
+  rightPath?: string;
+
+  @ApiPropertyOptional({ description: "Absolute local voice audio path (App only)" })
+  @IsOptional()
+  @IsString()
+  voicePath?: string;
+
+  @ApiPropertyOptional({ description: "Absolute local sfx audio path (App only)" })
+  @IsOptional()
+  @IsString()
+  sfxPath?: string;
 }

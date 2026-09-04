@@ -6,6 +6,7 @@ import { NestFactory } from "@nestjs/core";
 import { DocumentBuilder, SwaggerModule } from "@nestjs/swagger";
 import { json, NextFunction, Request, Response, urlencoded } from "express";
 
+import { kitLabsPlatformMiddleware } from "./common/desktop/request-platform";
 import { AppModule } from "./app.module";
 
 async function bootstrap() {
@@ -33,6 +34,7 @@ async function bootstrap() {
     credentials: true,
     exposedHeaders: ["Accept-Ranges", "Content-Range", "Content-Length", "Content-Type"],
   });
+  app.use(kitLabsPlatformMiddleware);
   app.use((req: Request & { requestId?: string }, res: Response, next: NextFunction) => {
     const headerRequestId = req.headers["x-request-id"];
     const requestId = typeof headerRequestId === "string" ? headerRequestId : randomUUID();
@@ -53,8 +55,9 @@ async function bootstrap() {
   setupSwagger(app);
 
   const port = Number(process.env.PORT ?? 3000);
-  console.log(`Server is running on port ${port}`);
-  await app.listen(port);
+  const host = process.env.HOST?.trim() || "0.0.0.0";
+  console.log(`Server is running on ${host}:${port}`);
+  await app.listen(port, host);
 }
 
 function setupSwagger(app: INestApplication): void {

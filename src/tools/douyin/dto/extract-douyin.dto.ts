@@ -1,5 +1,5 @@
-import { ApiProperty } from "@nestjs/swagger";
-import { IsString, IsUrl } from "class-validator";
+import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
+import { IsIn, IsOptional, IsString, IsUrl } from "class-validator";
 
 export class ExtractDouyinDto {
   @ApiProperty({
@@ -9,4 +9,9 @@ export class ExtractDouyinDto {
   @IsString()
   @IsUrl()
   url!: string;
+
+  @ApiPropertyOptional({ enum: ["playwright", "ytdlp"] })
+  @IsOptional()
+  @IsIn(["playwright", "ytdlp"])
+  provider?: "playwright" | "ytdlp";
 }

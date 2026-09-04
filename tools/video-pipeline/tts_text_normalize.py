@@ -8,8 +8,25 @@ Pipeline tiếng Việt:
 from __future__ import annotations
 
 import re
+import unicodedata
 
 _VIETNAMESE_LANG_KEYS = frozenset({"vietnamese", "vi", "vie"})
+
+
+def sanitize_tts_unicode(text: str) -> str:
+    """
+    Loại ký tự format/control gây lỗi tokenizer (thường do stdin Windows cp1252).
+    Ví dụ: NBSP \\xa0, soft hyphen \\xad tách dấu tiếng Việt.
+    """
+    s = unicodedata.normalize("NFC", str(text or ""))
+    s = s.replace("\ufeff", "").replace("\u00a0", " ").replace("\u00ad", "")
+    cleaned: list[str] = []
+    for ch in s:
+        cat = unicodedata.category(ch)
+        if cat in ("Cf", "Cc") and ch not in "\t\n\r":
+            continue
+        cleaned.append(ch)
+    return re.sub(r"\s+", " ", "".join(cleaned)).strip()
 
 
 def is_vietnamese_language(language: str | None) -> bool:
@@ -159,9 +176,10 @@ def prepare_tts_input_text(
     vinorm_enabled: bool = False,
 ) -> str:
     """Chuẩn hóa text theo ngôn ngữ trước khi gọi model TTS."""
+    text = sanitize_tts_unicode(text)
     if is_vietnamese_language(language):
         return prepare_tts_vi_text(text, vinorm_enabled=vinorm_enabled)
-    return normalize_tts_text_for_audio(str(text or "").strip())
+    return normalize_tts_text_for_audio(text)
 
 
 # Alias tương thích code cũ

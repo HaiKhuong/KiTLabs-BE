@@ -1,20 +1,23 @@
 export type DouyinExtractProvider = "playwright" | "ytdlp";
 
-function parseProvider(raw: string | undefined, fallback: DouyinExtractProvider): DouyinExtractProvider {
+export function parseDouyinExtractProvider(
+  raw: string | undefined,
+  fallback: DouyinExtractProvider,
+): DouyinExtractProvider {
   const value = (raw ?? fallback).trim().toLowerCase();
   if (value === "ytdlp" || value === "yt-dlp" || value === "yt_dlp") return "ytdlp";
   if (value === "playwright" || value === "pw") return "playwright";
   return fallback;
 }
 
-const defaultProvider = parseProvider(process.env.DOUYIN_EXTRACT_PROVIDER, "playwright");
+const defaultProvider = parseDouyinExtractProvider(process.env.DOUYIN_EXTRACT_PROVIDER, "playwright");
 
-export const DOUYIN_VIDEO_EXTRACT_PROVIDER = parseProvider(
+export const DOUYIN_VIDEO_EXTRACT_PROVIDER = parseDouyinExtractProvider(
   process.env.DOUYIN_VIDEO_EXTRACT_PROVIDER,
   defaultProvider,
 );
 
-export const DOUYIN_PROFILE_EXTRACT_PROVIDER = parseProvider(
+export const DOUYIN_PROFILE_EXTRACT_PROVIDER = parseDouyinExtractProvider(
   process.env.DOUYIN_PROFILE_EXTRACT_PROVIDER,
   defaultProvider,
 );

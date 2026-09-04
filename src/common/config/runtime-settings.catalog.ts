@@ -10,7 +10,22 @@ export type RuntimeSettingField = {
 
 export const RUNTIME_SETTING_TYPE = "runtime";
 
-export const SECRET_SETTING_CODES = new Set(["GEMINI_API_KEY", "GEMINI_API_KEY_VIP", "HF_TOKEN"]);
+export const SECRET_SETTING_CODES = new Set([
+  "GEMINI_API_KEY",
+  "GEMINI_API_KEY_VIP",
+  "HF_TOKEN",
+  "DOUYIN_COOKIE_CONTENT",
+]);
+
+/** Stored as `${code}__App` / `${code}__Web` so one Nest can keep both cookies. */
+export const PLATFORM_SCOPED_SECRET_CODES = new Set(["DOUYIN_COOKIE_CONTENT"]);
+
+export function runtimeStorageCode(code: string, platform: "App" | "Web"): string {
+  if (!PLATFORM_SCOPED_SECRET_CODES.has(code)) {
+    return code;
+  }
+  return `${code}__${platform}`;
+}
 
 export const RUNTIME_SETTING_FIELDS: RuntimeSettingField[] = [
   { code: "OMNIVOICE_SEED", group: "omnivoice", kind: "string", label: "OmniVoice seed", defaultValue: "42" },
@@ -38,6 +53,7 @@ export const RUNTIME_SETTING_FIELDS: RuntimeSettingField[] = [
   { code: "SHORTVIDEO_WORK_ROOT", group: "shortvideo", kind: "string", label: "ShortVideo work folder", defaultValue: "" },
   { code: "YTDLP_SERVICE_URL", group: "services", kind: "string", label: "yt-dlp service URL", defaultValue: "http://localhost:8100" },
   { code: "DOUYIN_PLAYWRIGHT_SERVICE_URL", group: "services", kind: "string", label: "Playwright service URL", defaultValue: "http://localhost:8101" },
+  { code: "DOUYIN_COOKIE_CONTENT", group: "douyin", kind: "secret", label: "Douyin cookies", defaultValue: "" },
   { code: "GEMINI_API_KEY", group: "gemini", kind: "secret", label: "Gemini API key (normal)", defaultValue: "" },
   { code: "GEMINI_API_KEY_VIP", group: "gemini", kind: "secret", label: "Gemini API key (VIP)", defaultValue: "" },
   { code: "HF_TOKEN", group: "gemini", kind: "secret", label: "Hugging Face token", defaultValue: "" },

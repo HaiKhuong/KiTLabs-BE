@@ -25,11 +25,15 @@ export const AUDIO_CLONE_UPLOAD_DIR = join(AUDIO_DATA_ROOT, "audio-clone");
 export const AUDIO_OUTPUT_DIR = join(AUDIO_DATA_ROOT, "audio-tts");
 export const AUDIO_PREVIEW_CACHE_DIR = join(AUDIO_DATA_ROOT, "audio-previews");
 
-/** Voice mẫu pipeline — mặc định trong repo: `tools/video-pipeline/voice`. */
+/** Voice mẫu pipeline — App: `$KITLABS_DATA_ROOT/voice`; Web: `tools/video-pipeline/voice`. */
 export function resolvePipelineVoiceDir(): string {
   const raw = (process.env.PIPELINE_VOICE_DIR ?? process.env.AUDIO_PIPELINE_VOICE_DIR ?? "").trim();
   if (raw) {
     return resolve(raw);
+  }
+  const dataRoot = process.env.KITLABS_DATA_ROOT?.trim();
+  if (dataRoot) {
+    return resolve(dataRoot, "voice");
   }
   return resolve(process.cwd(), VOICE_SAMPLES_DIR);
 }

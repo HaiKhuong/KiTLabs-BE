@@ -6,7 +6,7 @@ import { mkdir, writeFile } from "fs/promises";
 import { join, resolve } from "path";
 
 import { resolveConfiguredPath } from "../../common/desktop/data-path";
-import { geminiKeyPoolEnvHint, loadGeminiKeyPools } from "../../common/gemini/gemini-key-pools";
+import { missingGeminiKeyMessage, resolveLiveGeminiKeys } from "../../common/gemini/gemini-key-pools";
 
 type GeneratedCaption = { text: string };
 type GeneratedScene = {
@@ -38,13 +38,9 @@ const ALLOWED_POSES = new Set(Object.keys(POSE_SFX_MAP));
 @Injectable()
 export class ShortVideoGeminiService {
   private readonly logger = new Logger(ShortVideoGeminiService.name);
-  private readonly apiKeys: string[];
   private keyIndex = 0;
 
-  constructor(private readonly config: ConfigService) {
-    const pools = loadGeminiKeyPools(this.config);
-    this.apiKeys = pools.normal.length > 0 ? pools.normal : pools.vip;
-  }
+  constructor(private readonly config: ConfigService) {}
 
   async generateSpec(topicInput: string): Promise<{
     topic: string;
@@ -54,8 +50,9 @@ export class ShortVideoGeminiService {
     const topic = topicInput?.trim();
     if (!topic) throw new BadRequestException("topic is required");
 
-    if (this.apiKeys.length === 0) {
-      throw new BadRequestException(`Gemini API key chưa cấu hình. Set ${geminiKeyPoolEnvHint("normal")} trong .env`);
+    const apiKeys = this.liveKeys();
+    if (apiKeys.length === 0) {
+      throw new BadRequestException(missingGeminiKeyMessage("normal"));
     }
 
     const modelName = this.config.get<string>("SHORTVIDEO_GEMINI_MODEL")?.trim() || "gemini-2.5-flash";
@@ -76,7 +73,7 @@ export class ShortVideoGeminiService {
       ].join("\n"),
     );
     let lastError: unknown;
-    const maxAttempts = Math.max(this.apiKeys.length, 2);
+    const maxAttempts = Math.max(apiKeys.length, 2);
 
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       let rawResponse: string | null = null;
@@ -154,9 +151,17 @@ export class ShortVideoGeminiService {
     return error instanceof Error ? `${error.name}: ${error.message}` : String(error);
   }
 
+  private liveKeys(): string[] {
+    return resolveLiveGeminiKeys(this.config);
+  }
+
   private nextKey(): string {
-    const key = this.apiKeys[this.keyIndex];
-    this.keyIndex = (this.keyIndex + 1) % this.apiKeys.length;
+    const apiKeys = this.liveKeys();
+    if (apiKeys.length === 0) {
+      throw new BadRequestException(missingGeminiKeyMessage("normal"));
+    }
+    const key = apiKeys[this.keyIndex % apiKeys.length];
+    this.keyIndex = (this.keyIndex + 1) % apiKeys.length;
     return key;
   }
 

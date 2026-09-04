@@ -1,5 +1,6 @@
 import "dotenv/config";
 
+import { join } from "path";
 import { DataSource } from "typeorm";
 
 import { MAIN_DB_ENTITIES } from "./entities/main.entities";
@@ -13,5 +14,5 @@ export default new DataSource({
   database: process.env.MAIN_DB_NAME ?? process.env.DB_NAME ?? "kitools",
   synchronize: false,
   entities: MAIN_DB_ENTITIES,
-  migrations: ["src/database/migrations/main/*{.ts,.js}"],
+  migrations: [join(__dirname, "migrations/main/*{.ts,.js}")],
 });

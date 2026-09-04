@@ -292,7 +292,9 @@ export class GeminiVeoService implements OnModuleInit {
   private nextApiKey(tier: GeminiKeyTier): string {
     const keys = loadGeminiKeyPools(this.config)[tier];
     if (keys.length === 0) {
-      throw new BadRequestException(`Gemini API key chưa cấu hình. Set ${geminiKeyPoolEnvHint(tier)} trong .env`);
+      throw new BadRequestException(
+        `Gemini API key chưa cấu hình. Cấu hình ${geminiKeyPoolEnvHint(tier)} trong Settings → Pipeline (hoặc .env)`,
+      );
     }
     const index = this.keyIndexes[tier] % keys.length;
     this.keyIndexes[tier] = (index + 1) % keys.length;
@@ -312,7 +314,9 @@ export class GeminiVeoService implements OnModuleInit {
     ].filter((key, index, keys) => keys.indexOf(key) === index);
 
     if (candidates.length === 0) {
-      throw new BadRequestException(`Gemini API key chưa cấu hình. Set ${geminiKeyPoolEnvHint(tier)} trong .env`);
+      throw new BadRequestException(
+        `Gemini API key chưa cấu hình. Cấu hình ${geminiKeyPoolEnvHint(tier)} trong Settings → Pipeline (hoặc .env)`,
+      );
     }
 
     let lastError: unknown;

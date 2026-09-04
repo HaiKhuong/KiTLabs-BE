@@ -35,7 +35,7 @@ export class WorkflowAiService {
     const pool = this.getKeyPool(tier);
     if (pool.length === 0) {
       throw new BadRequestException(
-        `Gemini API key (${tier}) chưa cấu hình. Set ${geminiKeyPoolEnvHint(tier)} trong .env`,
+        `Gemini API key (${tier}) chưa cấu hình. Cấu hình ${geminiKeyPoolEnvHint(tier)} trong Settings → Pipeline (hoặc .env)`,
       );
     }
     const key = pool[this.keyIndices[tier]];

@@ -1,5 +1,6 @@
 import "dotenv/config";
 
+import { join } from "path";
 import { DataSource } from "typeorm";
 
 import { AUDIT_DB_ENTITIES } from "./entities/audit.entities";
@@ -13,5 +14,5 @@ export default new DataSource({
   database: process.env.AUDIT_DB_NAME ?? "kitools_audit",
   synchronize: false,
   entities: AUDIT_DB_ENTITIES,
-  migrations: ["src/database/migrations/audit/*{.ts,.js}"],
+  migrations: [join(__dirname, "migrations/audit/*{.ts,.js}")],
 });

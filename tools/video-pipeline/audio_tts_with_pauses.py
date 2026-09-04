@@ -377,8 +377,8 @@ def synthesize_with_pause_settings(
     ref_audio: str | Path,
     ref_text: str,
     model_id: str,
-    device_map: str = "cuda:0",
-    dtype_str: str = "float16",
+    device_map: str = "",
+    dtype_str: str = "",
     language: str | None = None,
     num_step: Optional[int] = 32,
     guidance_scale: Optional[float] = 2.0,
@@ -414,14 +414,23 @@ def synthesize_with_pause_settings(
             seed=resolved_seed,
         )
     else:
+        from omnivoice_tts import (
+            resolve_omnivoice_device_map,
+            resolve_omnivoice_dtype,
+            resolve_omnivoice_language,
+            synthesize_to_wav as synthesize_omnivoice_to_wav,
+        )
+
         resolved_language = resolve_omnivoice_language(language)
+        resolved_device = resolve_omnivoice_device_map(device_map)
+        resolved_dtype = resolve_omnivoice_dtype(dtype_str, resolved_device)
         synthesize_fn = synthesize_omnivoice_to_wav
         synth_kw = dict(
             ref_audio=str(ref_prepared),
             ref_text=ref_text,
             model_id=model_id,
-            device_map=device_map,
-            dtype_str=dtype_str,
+            device_map=resolved_device,
+            dtype_str=resolved_dtype,
             language=resolved_language,
             num_step=num_step,
             guidance_scale=guidance_scale,

@@ -1,6 +1,6 @@
 import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
 import { Type } from "class-transformer";
-import { IsInt, IsOptional, IsString, IsUrl, Max, Min } from "class-validator";
+import { IsIn, IsInt, IsOptional, IsString, IsUrl, Max, Min } from "class-validator";
 
 export class ExtractUrlDto {
   @ApiProperty({
@@ -28,4 +28,9 @@ export class ExtractUrlDto {
   @IsInt()
   @Min(0)
   cursor?: number;
+
+  @ApiPropertyOptional({ enum: ["playwright", "ytdlp"] })
+  @IsOptional()
+  @IsIn(["playwright", "ytdlp"])
+  provider?: "playwright" | "ytdlp";
 }

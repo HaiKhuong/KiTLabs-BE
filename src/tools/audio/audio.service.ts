@@ -9,6 +9,11 @@ import { basename, extname, isAbsolute, join, resolve } from "path";
 import { Repository, SelectQueryBuilder } from "typeorm";
 
 import { QueueJobStatus } from "../../common/enums/domain.enums";
+import { pythonSubprocessEnv } from "../../common/desktop/python-path";
+import {
+  resolveOmnivoiceDeviceMapForPayload,
+  resolveOmnivoiceDtypeForPayload,
+} from "../../common/omnivoice/omnivoice-env";
 import { CreditHistory } from "../credits/credit-history.entity";
 import { LogsService } from "../logs/logs.service";
 import { NotificationsService } from "../notifications/notifications.service";
@@ -84,7 +89,7 @@ export class AudioService {
 
   private static readonly OMNIVOICE_INLINE_PY = [
     "import json,sys",
-    "p=json.load(sys.stdin)",
+    "p=json.loads(sys.stdin.buffer.read().decode('utf-8'))",
     "from audio_tts_with_pauses import synthesize_with_pause_settings",
     "synthesize_with_pause_settings(**{k:v for k,v in p.items() if v is not None})",
   ].join(";");
@@ -246,8 +251,8 @@ export class AudioService {
             ref_audio: refAudio,
             ref_text: opts.refText ?? "",
             model_id: (process.env.OMNIVOICE_MODEL_ID ?? "k2-fsa/OmniVoice").trim(),
-            device_map: (process.env.OMNIVOICE_DEVICE_MAP ?? "").trim() || "cuda:0",
-            dtype_str: (process.env.OMNIVOICE_DTYPE ?? "float16").trim(),
+            device_map: resolveOmnivoiceDeviceMapForPayload(),
+            dtype_str: resolveOmnivoiceDtypeForPayload(),
             language,
             ...this.resolveOmnivoiceGenerateOpts(),
             ...(seed != null ? { seed } : {}),
@@ -265,6 +270,7 @@ export class AudioService {
         cwd: scriptDir,
         windowsHide: true,
         stdio: ["pipe", "pipe", "pipe"],
+        env: pythonSubprocessEnv(),
       });
 
       if (audioHistoryId) {
@@ -308,7 +314,7 @@ export class AudioService {
         resolvePromise();
       });
 
-      child.stdin?.write(JSON.stringify(payload));
+      child.stdin?.write(Buffer.from(JSON.stringify(payload), "utf8"));
       child.stdin?.end();
     });
 
@@ -370,8 +376,8 @@ export class AudioService {
             ref_audio: refAudio,
             ref_text: opts.refText ?? "",
             model_id: (process.env.OMNIVOICE_MODEL_ID ?? "k2-fsa/OmniVoice").trim(),
-            device_map: (process.env.OMNIVOICE_DEVICE_MAP ?? "").trim() || "cuda:0",
-            dtype_str: (process.env.OMNIVOICE_DTYPE ?? "float16").trim(),
+            device_map: resolveOmnivoiceDeviceMapForPayload(),
+            dtype_str: resolveOmnivoiceDtypeForPayload(),
             language,
             ...this.resolveOmnivoiceGenerateOpts(),
             ...(seed != null ? { seed } : {}),
@@ -387,6 +393,7 @@ export class AudioService {
         cwd: scriptDir,
         windowsHide: true,
         stdio: ["pipe", "pipe", "pipe"],
+        env: pythonSubprocessEnv(),
       });
 
       if (audioHistoryId) {
@@ -436,7 +443,7 @@ export class AudioService {
         resolvePromise();
       });
 
-      child.stdin?.write(JSON.stringify(payload));
+      child.stdin?.write(Buffer.from(JSON.stringify(payload), "utf8"));
       child.stdin?.end();
     });
 
@@ -535,16 +542,21 @@ export class AudioService {
     return user.id;
   }
 
+  private resolveStoredVoiceAbsolutePath(row: AudioCloneVoice): string {
+    const fallback = join(this.resolvePipelineVoiceDir(), row.userId ?? "", row.fileName);
+    if (!row.filePath) return fallback;
+    const fromDb = isAbsolute(row.filePath) ? row.filePath : resolve(process.cwd(), row.filePath);
+    return existsSync(fromDb) ? fromDb : fallback;
+  }
+
   private resolvePipelineVoiceAbsolutePath(
     row: AudioCloneVoice | null,
     fileName: string,
     ownerUserId?: string,
   ): { voiceDir: string; absolutePath: string } {
     const rootDir = this.resolvePipelineVoiceDir();
-    if (row?.filePath) {
-      const absolutePath = isAbsolute(row.filePath)
-        ? row.filePath
-        : resolve(process.cwd(), row.filePath);
+    if (row) {
+      const absolutePath = this.resolveStoredVoiceAbsolutePath(row);
       const voiceDir = row.userId ? join(rootDir, row.userId) : rootDir;
       return { voiceDir, absolutePath };
     }
@@ -693,7 +705,7 @@ export class AudioService {
   }
 
   private mapCloneVoiceRow(row: AudioCloneVoice): PipelineVoiceDto {
-    const abs = isAbsolute(row.filePath) ? row.filePath : resolve(process.cwd(), row.filePath);
+    const abs = this.resolveStoredVoiceAbsolutePath(row);
     const sizeOnDisk = existsSync(abs) ? statSync(abs).size : row.fileSize;
     const voiceDir = row.userId
       ? join(this.resolvePipelineVoiceDir(), row.userId).replace(/\\/g, "/")
@@ -774,10 +786,7 @@ export class AudioService {
 
     const verified = await this.assertPipelineVoiceReady(fileName, refText, ownerId);
     const stats = statSync(abs);
-    const relativePath = join("tools", "video-pipeline", "voice", ownerId, fileName).replace(
-      /\\/g,
-      "/",
-    );
+    const storedPath = abs.replace(/\\/g, "/");
     const mimeType =
       ext === ".mp3" ? "audio/mpeg" : ext === ".m4a" ? "audio/mp4" : ext === ".wav" ? "audio/wav" : null;
 
@@ -789,7 +798,7 @@ export class AudioService {
           displayName,
           refText,
           omnivoiceLanguage,
-          filePath: relativePath,
+          filePath: storedPath,
           fileSize: stats.size,
           mimeType,
           userId: ownerId,
@@ -799,7 +808,7 @@ export class AudioService {
           fileName,
           refText,
           omnivoiceLanguage,
-          filePath: relativePath,
+          filePath: storedPath,
           fileSize: stats.size,
           mimeType,
           userId: ownerId,
@@ -831,11 +840,7 @@ export class AudioService {
       throw new NotFoundException(`Clone voice not found: ${safeName}`);
     }
 
-    const abs = row.filePath
-      ? isAbsolute(row.filePath)
-        ? row.filePath
-        : resolve(process.cwd(), row.filePath)
-      : join(this.resolvePipelineVoiceDir(), ownerId, safeName);
+    const abs = this.resolveStoredVoiceAbsolutePath(row);
 
     if (existsSync(abs)) {
       try {
@@ -1313,8 +1318,8 @@ export class AudioService {
             engine: "omnivoice",
             ...base,
             model_id: (process.env.OMNIVOICE_MODEL_ID ?? "k2-fsa/OmniVoice").trim(),
-            device_map: (process.env.OMNIVOICE_DEVICE_MAP ?? "").trim() || "cuda:0",
-            dtype_str: (process.env.OMNIVOICE_DTYPE ?? "float16").trim(),
+            device_map: resolveOmnivoiceDeviceMapForPayload(),
+            dtype_str: resolveOmnivoiceDtypeForPayload(),
             ...this.resolveOmnivoiceGenerateOpts(),
           };
 
@@ -1326,6 +1331,7 @@ export class AudioService {
         cwd: scriptDir,
         windowsHide: true,
         stdio: ["pipe", "pipe", "pipe"],
+        env: pythonSubprocessEnv(),
       });
 
       let stderr = "";
@@ -1360,7 +1366,7 @@ export class AudioService {
         resolvePromise();
       });
 
-      child.stdin?.write(JSON.stringify(payload));
+      child.stdin?.write(Buffer.from(JSON.stringify(payload), "utf8"));
       child.stdin?.end();
     });
 

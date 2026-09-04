@@ -30,7 +30,7 @@ from typing import Any, Optional, Sequence, Tuple, Union
 
 import pipeline_cache  # noqa: F401 — HF cache → tools/video-pipeline/cache
 
-from tts_text_normalize import prepare_tts_input_text
+from tts_text_normalize import prepare_tts_input_text, sanitize_tts_unicode
 
 # Cache theo (model_id, device_map, dtype_str)
 _session_model: Optional[Any] = None
@@ -141,6 +141,34 @@ def _resolve_dtype(dtype_str: str):
     raise ValueError(f"omnivoice: dtype không hỗ trợ: {dtype_str!r}")
 
 
+def resolve_omnivoice_device_map(raw: str | None = None) -> str:
+    """Chọn device: env/arg → cuda nếu có GPU, ngược lại cpu."""
+    s = str(raw if raw is not None else os.getenv("OMNIVOICE_DEVICE_MAP") or "").strip()
+    try:
+        import torch
+
+        cuda_ok = torch.cuda.is_available()
+    except Exception:
+        cuda_ok = False
+
+    if s:
+        low = s.lower()
+        if low.startswith("cuda") or low == "gpu":
+            return "cuda:0" if cuda_ok else "cpu"
+        return s
+
+    return "cuda:0" if cuda_ok else "cpu"
+
+
+def resolve_omnivoice_dtype(dtype_str: str | None, device_map: str | None = None) -> str:
+    """CPU nên dùng float32; GPU mặc định float16."""
+    raw = str(dtype_str if dtype_str is not None else os.getenv("OMNIVOICE_DTYPE") or "").strip()
+    dev = resolve_omnivoice_device_map(device_map).lower()
+    if dev == "cpu" or dev.startswith("cpu"):
+        return raw or "float32"
+    return raw or "float16"
+
+
 def _get_model(*, model_id: str, device_map: str, dtype_str: str):
     global _session_model, _session_model_key
     try:
@@ -155,8 +183,8 @@ def _get_model(*, model_id: str, device_map: str, dtype_str: str):
     mid = str(model_id or "").strip()
     if not mid:
         raise ValueError("omnivoice: model_id rỗng.")
-    dev = str(device_map or "cuda:0").strip() or "cuda:0"
-    dt = str(dtype_str or "float16").strip() or "float16"
+    dev = resolve_omnivoice_device_map(device_map)
+    dt = resolve_omnivoice_dtype(dtype_str, dev)
     key = (mid, dev, dt)
     if _session_model is not None and _session_model_key == key:
         return _session_model
@@ -174,6 +202,7 @@ def _get_model(*, model_id: str, device_map: str, dtype_str: str):
     if hf_token:
         # Một số bản nhận `token`, số khác nhận `use_auth_token`.
         load_kwargs["token"] = hf_token
+    _apply_omnivoice_compat_patches()
     try:
         _session_model = OmniVoice.from_pretrained(
             mid,
@@ -290,6 +319,166 @@ def _normalize_generate_audios(audio: Any) -> list[Any]:
     return [audio]
 
 
+_OMNIVOICE_COMPAT_PATCHED = False
+
+
+def _encoding_input_ids(enc: Any) -> list[int]:
+    ids = enc["input_ids"] if isinstance(enc, dict) else getattr(enc, "input_ids", enc)
+    if hasattr(ids, "tolist"):
+        ids = ids.tolist()
+    if ids and isinstance(ids[0], list):
+        ids = ids[0]
+    return [int(x) for x in (ids or [])]
+
+
+def _clean_tokenizer_text(raw: Any) -> str:
+    if raw is None:
+        return ""
+    if isinstance(raw, (list, tuple, dict, bytes)):
+        raise TypeError(f"invalid tokenizer input type: {type(raw).__name__}")
+    return sanitize_tts_unicode(str(raw))
+
+
+def _tokenize_for_omnivoice(
+    tokenizer: Any,
+    text: str,
+    *,
+    add_special_tokens: bool,
+    return_tensors: Optional[str] = None,
+) -> Any:
+    """Tokenize text for OmniVoice; prefer encode/backend for TF 5.x compatibility."""
+    cleaned = _clean_tokenizer_text(text)
+    if not cleaned.strip():
+        if return_tensors == "pt":
+            import torch
+
+            return type("Enc", (), {"input_ids": torch.zeros((1, 0), dtype=torch.long)})()
+        return []
+
+    errors: list[str] = []
+    if hasattr(tokenizer, "encode"):
+        try:
+            ids = tokenizer.encode(cleaned, add_special_tokens=add_special_tokens)
+            if return_tensors == "pt":
+                import torch
+
+                return type("Enc", (), {"input_ids": torch.tensor([list(ids)], dtype=torch.long)})()
+            return ids
+        except Exception as exc:
+            errors.append(f"encode: {exc}")
+
+    backend = getattr(tokenizer, "backend_tokenizer", None) or getattr(
+        tokenizer, "_tokenizer", None
+    )
+    if backend is not None and hasattr(backend, "encode"):
+        try:
+            enc = backend.encode(cleaned, add_special_tokens=add_special_tokens)
+            ids = list(getattr(enc, "ids", enc))
+            if return_tensors == "pt":
+                import torch
+
+                return type("Enc", (), {"input_ids": torch.tensor([ids], dtype=torch.long)})()
+            return ids
+        except Exception as exc:
+            errors.append(f"backend.encode: {exc}")
+
+    try:
+        return tokenizer(
+            cleaned,
+            add_special_tokens=add_special_tokens,
+            return_tensors=return_tensors,
+        )
+    except Exception as exc:
+        errors.append(f"__call__: {exc}")
+        joined = "; ".join(errors) or str(exc)
+        preview = cleaned[:120].replace("\n", "\\n")
+        raise TypeError(
+            f"OmniVoice tokenizer failed ({joined}); preview={preview!r} len={len(cleaned)}"
+        ) from exc
+
+
+def _safe_tokenize_segment(tokenizer: Any, segment: str) -> list[int]:
+    """Tokenize one segment between non-verbal tags."""
+    text = _clean_tokenizer_text(segment)
+    if not text.strip():
+        return []
+    for add_special in (False, True):
+        try:
+            out = _tokenize_for_omnivoice(
+                tokenizer,
+                text,
+                add_special_tokens=add_special,
+            )
+            return _encoding_input_ids(out)
+        except TypeError:
+            continue
+    return []
+
+
+def _apply_omnivoice_compat_patches() -> None:
+    """Patch upstream omnivoice tokenization for transformers 5.x."""
+    global _OMNIVOICE_COMPAT_PATCHED
+    if _OMNIVOICE_COMPAT_PATCHED:
+        return
+    try:
+        import torch
+        import omnivoice.models.omnivoice as ov_mod
+    except ImportError:
+        return
+
+    pattern = getattr(ov_mod, "_NONVERBAL_PATTERN", None)
+    if pattern is None:
+        return
+
+    def _patched_tokenize_with_nonverbal_tags(text: str, tokenizer) -> "torch.Tensor":
+        text = _clean_tokenizer_text(text)
+        if not text.strip():
+            return torch.zeros((1, 0), dtype=torch.long)
+
+        # Không có [laughter]/... → tokenize cả chuỗi như training processor (add_special_tokens=True).
+        if pattern.search(text) is None:
+            enc = _tokenize_for_omnivoice(
+                tokenizer,
+                text,
+                add_special_tokens=True,
+                return_tensors="pt",
+            )
+            return enc.input_ids
+
+        parts: list[list[int]] = []
+        last_end = 0
+        for match in pattern.finditer(text):
+            if match.start() > last_end:
+                ids = _safe_tokenize_segment(tokenizer, text[last_end : match.start()])
+                if ids:
+                    parts.append(ids)
+            ids = _safe_tokenize_segment(tokenizer, match.group())
+            if ids:
+                parts.append(ids)
+            last_end = match.end()
+        if last_end < len(text):
+            ids = _safe_tokenize_segment(tokenizer, text[last_end:])
+            if ids:
+                parts.append(ids)
+
+        if not parts:
+            enc = _tokenize_for_omnivoice(
+                tokenizer,
+                text,
+                add_special_tokens=True,
+                return_tensors="pt",
+            )
+            return enc.input_ids
+
+        combined: list[int] = []
+        for chunk in parts:
+            combined.extend(chunk)
+        return torch.tensor([combined], dtype=torch.long)
+
+    ov_mod._tokenize_with_nonverbal_tags = _patched_tokenize_with_nonverbal_tags
+    _OMNIVOICE_COMPAT_PATCHED = True
+
+
 def _run_omnivoice_generate(
     model: Any,
     texts: Sequence[str],
@@ -305,68 +494,46 @@ def _run_omnivoice_generate(
     guidance_scale: Optional[float],
 ) -> list[Any]:
     """Gọi ``model.generate`` cho 1 hoặc nhiều text; trả list wave (pre-numpy)."""
+    _apply_omnivoice_compat_patches()
+
+    from omnivoice import OmniVoiceGenerationConfig
+
+    text_list = [str(t) for t in texts]
+    if not text_list:
+        return []
+
     pp = bool(preprocess_prompt)
-    langs = [language] * len(texts)
-    gen_kw: dict = dict(
-        text=list(texts),
-        voice_clone_prompt=voice_prompt,
-        language=langs,
+    langs = [language] * len(text_list)
+    gen_config = OmniVoiceGenerationConfig(
+        num_step=int(num_step) if num_step is not None else DEFAULT_OMNIVOICE_NUM_STEP,
+        guidance_scale=(
+            float(guidance_scale)
+            if guidance_scale is not None
+            else DEFAULT_OMNIVOICE_GUIDANCE_SCALE
+        ),
         denoise=bool(denoise),
         preprocess_prompt=pp,
         postprocess_output=bool(postprocess_output),
     )
-    if (
-        num_step is not None
-        and guidance_scale is not None
-        and int(num_step) > 0
-    ):
-        gen_kw["num_step"] = int(num_step)
-        gen_kw["guidance_scale"] = float(guidance_scale)
 
-    try:
-        audio = model.generate(**gen_kw)
-    except TypeError:
-        try:
-            cfg_kw = {
-                "text": list(texts),
-                "voice_clone_prompt": voice_prompt,
-                "language": langs,
-            }
-            if "num_step" in gen_kw:
-                try:
-                    from omnivoice import OmniVoiceGenerationConfig
+    vcp = voice_prompt
+    if len(text_list) > 1 and not isinstance(vcp, list):
+        vcp = [voice_prompt] * len(text_list)
 
-                    cfg_kw["generation_config"] = OmniVoiceGenerationConfig(
-                        num_step=int(gen_kw["num_step"]),
-                        guidance_scale=float(gen_kw["guidance_scale"]),
-                        denoise=bool(denoise),
-                        preprocess_prompt=pp,
-                        postprocess_output=bool(postprocess_output),
-                    )
-                except Exception:
-                    pass
-            audio = model.generate(**cfg_kw)
-        except TypeError:
-            try:
-                slim_kw = {"text": list(texts), "voice_clone_prompt": voice_prompt}
-                audio = model.generate(**slim_kw)
-            except TypeError:
-                import warnings
+    gen_text: str | list[str] = text_list[0] if len(text_list) == 1 else text_list
+    gen_lang: str | list[str] = langs[0] if len(text_list) == 1 else langs
 
-                warnings.warn(
-                    "OmniVoice: Version này không hỗ trợ voice_clone_prompt. "
-                    "Đang dùng ref_audio trực tiếp — nên nâng lên omnivoice>=0.2.1.",
-                    UserWarning,
-                )
-                slim_kw = {"text": list(texts), "ref_audio": ref_audio_path}
-                if ref_text:
-                    slim_kw["ref_text"] = ref_text
-                audio = model.generate(**slim_kw)
+    audio = model.generate(
+        text=gen_text,
+        voice_clone_prompt=vcp,
+        language=gen_lang,
+        generation_config=gen_config,
+    )
 
     waves = _normalize_generate_audios(audio)
-    if len(waves) != len(texts):
+    if len(waves) != len(text_list):
         raise RuntimeError(
-            f"OmniVoice: batch output count {len(waves)} != input {len(texts)}"
+            f"OmniVoice: batch output count {len(waves)} != input {len(text_list)}"
         )
     return waves
 
@@ -419,7 +586,7 @@ def _prepare_synthesis_context(
             raise ValueError("OmniVoice: text rỗng sau chuẩn hóa.")
         prepared.append(t)
 
-    rt = str(ref_text or "").strip()
+    rt = sanitize_tts_unicode(str(ref_text or "").strip())
     pp = bool(preprocess_prompt)
     voice_prompt = ensure_voice_clone_prompt(
         ref_audio=ref_audio_path,

@@ -2,6 +2,7 @@ import { Injectable, Logger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { GoogleGenerativeAI, GenerativeModel } from "@google/generative-ai";
 
+import { loadGeminiKeyPools } from "../../../common/gemini/gemini-key-pools";
 import { AiProvider, AiAnalysisInput, AiRecommendationOutput } from "./ai-provider.interface";
 import { SYSTEM_PROMPT } from "./prompts/system.prompt";
 import { RECOMMENDATION_PROMPT } from "./prompts/recommendation.prompt";
@@ -9,26 +10,20 @@ import { RECOMMENDATION_PROMPT } from "./prompts/recommendation.prompt";
 @Injectable()
 export class GeminiProvider implements AiProvider {
   private readonly logger = new Logger(GeminiProvider.name);
-  private readonly apiKeys: string[];
   private currentKeyIndex = 0;
 
-  constructor(private readonly configService: ConfigService) {
-    this.apiKeys = this.parseKeys();
-    this.logger.log(`Loaded ${this.apiKeys.length} Gemini VIP key(s)`);
-  }
+  constructor(private readonly configService: ConfigService) {}
 
   private parseKeys(): string[] {
-    const raw = this.configService.get("GEMINI_API_KEY_VIP") ?? this.configService.get("GEMINI_API_KEY") ?? "";
-    return raw
-      .split(",")
-      .map((k: string) => k.trim())
-      .filter(Boolean);
+    const pools = loadGeminiKeyPools(this.configService);
+    return pools.vip.length > 0 ? pools.vip : pools.normal;
   }
 
   private getNextKey(): string {
-    if (this.apiKeys.length === 0) return "";
-    const key = this.apiKeys[this.currentKeyIndex];
-    this.currentKeyIndex = (this.currentKeyIndex + 1) % this.apiKeys.length;
+    const apiKeys = this.parseKeys();
+    if (apiKeys.length === 0) return "";
+    const key = apiKeys[this.currentKeyIndex % apiKeys.length];
+    this.currentKeyIndex = (this.currentKeyIndex + 1) % apiKeys.length;
     return key;
   }
 
@@ -54,7 +49,8 @@ export class GeminiProvider implements AiProvider {
    * tự động xoay sang key tiếp theo (tối đa thử hết tất cả keys).
    */
   private async withRetry<T>(fn: (genAI: GoogleGenerativeAI) => Promise<T>): Promise<T> {
-    const maxAttempts = Math.max(this.apiKeys.length, 1);
+    const apiKeys = this.parseKeys();
+    const maxAttempts = Math.max(apiKeys.length, 1);
     let lastError: unknown;
 
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
@@ -67,7 +63,9 @@ export class GeminiProvider implements AiProvider {
         const isRetryable = status === 429 || status === 503 || status === 500;
 
         if (isRetryable && attempt < maxAttempts - 1) {
-          this.logger.warn(`Key #${((this.currentKeyIndex - 1 + this.apiKeys.length) % this.apiKeys.length) + 1} failed (${status}), rotating to next key...`);
+          this.logger.warn(
+            `Key #${((this.currentKeyIndex - 1 + apiKeys.length) % apiKeys.length) + 1} failed (${status}), rotating to next key...`,
+          );
           continue;
         }
         break;

@@ -1,11 +1,13 @@
 import { Injectable, Logger } from "@nestjs/common";
 import axios, { AxiosResponse } from "axios";
 
+import { AppConfigService } from "../../common/config/app-config.service";
 import {
   DOUYIN_PLAYWRIGHT_SERVICE_URL,
   DOUYIN_PROFILE_EXTRACT_PROVIDER,
   DOUYIN_VIDEO_EXTRACT_PROVIDER,
   DouyinExtractProvider,
+  parseDouyinExtractProvider,
   YTDLP_SERVICE_URL,
 } from "./douyin.constants";
 import { detectDouyinUrlType, DouyinUrlType } from "./douyin-url.util";
@@ -146,11 +148,28 @@ export interface ExtractedProfileInfo {
 export class DouyinService {
   private readonly logger = new Logger(DouyinService.name);
 
+  constructor(private readonly appConfig: AppConfigService) {}
+
+  private ytdlpUrl(): string {
+    return this.appConfig.get("YTDLP_SERVICE_URL", YTDLP_SERVICE_URL);
+  }
+
+  private playwrightUrl(): string {
+    return this.appConfig.get("DOUYIN_PLAYWRIGHT_SERVICE_URL", DOUYIN_PLAYWRIGHT_SERVICE_URL);
+  }
+
+  private resolveProvider(
+    requested: DouyinExtractProvider | undefined,
+    fallback: DouyinExtractProvider,
+  ): DouyinExtractProvider {
+    return parseDouyinExtractProvider(requested, fallback);
+  }
+
   private resolveCookieContent(): string | null {
-    const cookieContent = getDouyinCookieContent();
+    const cookieContent = getDouyinCookieContent(this.appConfig);
     if (!cookieContent) {
       this.logger.warn(
-        "Douyin cookies not configured. Set DOUYIN_COOKIE_FILE or DOUYIN_COOKIE_CONTENT.",
+        "Douyin cookies not configured. Upload cookies on Download, or set DOUYIN_COOKIE_FILE / DOUYIN_COOKIE_CONTENT.",
       );
     }
     return cookieContent;
@@ -208,7 +227,7 @@ export class DouyinService {
 
   private async extractVideoViaYtDlp(url: string): Promise<ExtractedVideoInfo> {
     const cookieContent = this.resolveCookieContent();
-    const response = await axios.post<YtDlpExtractResponse>(`${YTDLP_SERVICE_URL}/extract`, {
+    const response = await axios.post<YtDlpExtractResponse>(`${this.ytdlpUrl()}/extract`, {
       url,
       cookie_content: cookieContent,
     }, { timeout: 60_000 });
@@ -231,7 +250,7 @@ export class DouyinService {
   private async extractVideoViaPlaywright(url: string): Promise<ExtractedVideoInfo> {
     const cookieContent = this.resolveCookieContent();
     const response = await axios.post<PlaywrightExtractResponse>(
-      `${DOUYIN_PLAYWRIGHT_SERVICE_URL}/extract`,
+      `${this.playwrightUrl()}/extract`,
       {
         url,
         cookie_content: cookieContent,
@@ -260,7 +279,7 @@ export class DouyinService {
   ): Promise<ExtractedProfileInfo> {
     const cookieContent = this.resolveCookieContent();
     const response = await axios.post<YtDlpProfileResponse>(
-      `${YTDLP_SERVICE_URL}/extract-profile`,
+      `${this.ytdlpUrl()}/extract-profile`,
       {
         url,
         cookie_content: cookieContent,
@@ -298,7 +317,7 @@ export class DouyinService {
   ): Promise<ExtractedProfileInfo> {
     const cookieContent = this.resolveCookieContent();
     const response = await axios.post<PlaywrightProfileResponse>(
-      `${DOUYIN_PLAYWRIGHT_SERVICE_URL}/extract-profile`,
+      `${this.playwrightUrl()}/extract-profile`,
       {
         url,
         cookie_content: cookieContent,
@@ -334,12 +353,13 @@ export class DouyinService {
     url: string,
     maxVideos = 10,
     cursor = 0,
+    provider?: DouyinExtractProvider,
   ): Promise<ExtractedUrlInfo> {
     const type = detectDouyinUrlType(url);
     this.logger.debug(`extractByUrl type=${type} url=${url} cursor=${cursor}`);
 
     if (type === "profile") {
-      const data = await this.extractProfile(url, maxVideos, cursor);
+      const data = await this.extractProfile(url, maxVideos, cursor, provider);
       return { type: "profile", data };
     }
 
@@ -347,12 +367,15 @@ export class DouyinService {
       this.logger.warn("cursor ignored for video URL");
     }
 
-    const data = await this.extractVideo(url);
+    const data = await this.extractVideo(url, provider);
     return { type: "video", data };
   }
 
-  async extractVideo(url: string): Promise<ExtractedVideoInfo> {
-    const provider = DOUYIN_VIDEO_EXTRACT_PROVIDER;
+  async extractVideo(
+    url: string,
+    requestedProvider?: DouyinExtractProvider,
+  ): Promise<ExtractedVideoInfo> {
+    const provider = this.resolveProvider(requestedProvider, DOUYIN_VIDEO_EXTRACT_PROVIDER);
     this.logger.debug(`extractVideo provider=${provider} url=${url}`);
 
     if (provider === "ytdlp") {
@@ -366,8 +389,9 @@ export class DouyinService {
     url: string,
     maxVideos = 10,
     cursor = 0,
+    requestedProvider?: DouyinExtractProvider,
   ): Promise<ExtractedProfileInfo> {
-    const provider = DOUYIN_PROFILE_EXTRACT_PROVIDER;
+    const provider = this.resolveProvider(requestedProvider, DOUYIN_PROFILE_EXTRACT_PROVIDER);
     this.logger.debug(`extractProfile provider=${provider} url=${url} cursor=${cursor}`);
 
     if (provider === "ytdlp") {
@@ -384,8 +408,10 @@ export class DouyinService {
     url: string,
     formatId?: string,
     directUrl?: string,
+    requestedProvider?: DouyinExtractProvider,
   ): Promise<AxiosResponse> {
-    if (directUrl) {
+    const provider = this.resolveProvider(requestedProvider, DOUYIN_VIDEO_EXTRACT_PROVIDER);
+    if (directUrl && provider !== "ytdlp") {
       return axios.get(directUrl, {
         timeout: 300_000,
         responseType: "stream",
@@ -399,7 +425,7 @@ export class DouyinService {
     }
 
     const cookieContent = this.resolveCookieContent();
-    const response = await axios.post(`${YTDLP_SERVICE_URL}/download`, {
+    const response = await axios.post(`${this.ytdlpUrl()}/download`, {
       url,
       format_id: formatId || null,
       cookie_content: cookieContent,

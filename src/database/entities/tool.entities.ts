@@ -16,6 +16,7 @@ import { TranslateHistory } from "../../tools/translate/translate-history.entity
 import { User } from "../../tools/users/user.entity";
 import { ChunkUpload } from "../../tools/files/entities/chunk-upload.entity";
 import { WorkflowEntity } from "../../tools/workflow/workflow.entity";
+import { WorkflowRunEntity } from "../../tools/workflow/workflow-run.entity";
 import { WhiteboardHistory } from "../../tools/whiteboard/whiteboard-history.entity";
 import { WhiteboardIdeaHistory } from "../../tools/whiteboard/whiteboard-idea-history.entity";
 import { WhiteboardSampleImage } from "../../tools/whiteboard/whiteboard-sample-image.entity";
@@ -56,6 +57,7 @@ export const TOOL_DB_ENTITIES = [
   AiChatHistory,
   ChunkUpload,
   WorkflowEntity,
+  WorkflowRunEntity,
   WhiteboardHistory,
   WhiteboardIdeaHistory,
   WhiteboardSampleImage,

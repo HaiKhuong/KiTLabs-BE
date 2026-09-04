@@ -20,6 +20,7 @@ import { AuthModule } from "./tools/auth/auth.module";
 import { AppJwtAuthGuard } from "./tools/auth/guards/app-jwt-auth.guard";
 import { CreditsModule } from "./tools/credits/credits.module";
 import { DouyinModule } from "./tools/douyin/douyin.module";
+import { YtdlpModule } from "./tools/ytdlp/ytdlp.module";
 import { FilesModule } from "./tools/files/files.module";
 import { LogsModule } from "./tools/logs/logs.module";
 import { NotificationsModule } from "./tools/notifications/notifications.module";
@@ -57,7 +58,7 @@ import { YouTubeModule } from "./tools/youtube/youtube.module";
       password: process.env.MAIN_DB_PASSWORD ?? process.env.DB_PASSWORD ?? "postgres",
       database: process.env.MAIN_DB_NAME ?? process.env.DB_NAME ?? "kitools",
       synchronize: false,
-      migrationsRun: (process.env.MAIN_DB_MIGRATIONS_RUN ?? "false") === "true",
+      migrationsRun: false,
       autoLoadEntities: false,
       entities: MAIN_DB_ENTITIES,
       migrations: [join(__dirname, "database/migrations/main/*{.ts,.js}")],
@@ -103,6 +104,7 @@ import { YouTubeModule } from "./tools/youtube/youtube.module";
     CreditsModule,
     LogsModule,
     DouyinModule,
+    YtdlpModule,
     ToolsRealtimeModule,
     TranslateModule,
     RecapModule,

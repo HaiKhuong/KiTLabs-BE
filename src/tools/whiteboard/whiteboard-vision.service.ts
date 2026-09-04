@@ -3,7 +3,7 @@ import { ConfigService } from "@nestjs/config";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { readFileSync } from "fs";
 
-import { geminiKeyPoolEnvHint, loadGeminiKeyPools } from "../../common/gemini/gemini-key-pools";
+import { missingGeminiKeyMessage, resolveLiveGeminiKeys } from "../../common/gemini/gemini-key-pools";
 import { mimeFromPath, readImageDimensions } from "./whiteboard-image";
 import { normalizeSceneObjects, WhiteboardSceneJson } from "./whiteboard-scene";
 
@@ -33,23 +33,18 @@ Rules:
 @Injectable()
 export class WhiteboardVisionService {
   private readonly logger = new Logger(WhiteboardVisionService.name);
-  private readonly apiKeys: string[];
   private keyIndex = 0;
 
-  constructor(private readonly config: ConfigService) {
-    const pools = loadGeminiKeyPools(this.config);
-    this.apiKeys = pools.normal.length > 0 ? pools.normal : pools.vip;
-  }
+  constructor(private readonly config: ConfigService) {}
 
   async analyze(sourceImagePath: string): Promise<{
     sceneJson: WhiteboardSceneJson;
     imageWidth: number;
     imageHeight: number;
   }> {
-    if (this.apiKeys.length === 0) {
-      throw new BadRequestException(
-        `Gemini API key not configured. Set ${geminiKeyPoolEnvHint("normal")} in .env`,
-      );
+    const apiKeys = resolveLiveGeminiKeys(this.config);
+    if (apiKeys.length === 0) {
+      throw new BadRequestException(missingGeminiKeyMessage("normal"));
     }
 
     const modelName =
@@ -61,7 +56,7 @@ export class WhiteboardVisionService {
     const { imageWidth, imageHeight } = readImageDimensions(imageData, mimeType);
 
     let lastError: unknown;
-    const maxAttempts = Math.max(this.apiKeys.length, 2);
+    const maxAttempts = Math.max(apiKeys.length, 2);
 
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       try {
@@ -128,8 +123,12 @@ export class WhiteboardVisionService {
   }
 
   private nextKey(): string {
-    const key = this.apiKeys[this.keyIndex];
-    this.keyIndex = (this.keyIndex + 1) % this.apiKeys.length;
+    const apiKeys = resolveLiveGeminiKeys(this.config);
+    if (apiKeys.length === 0) {
+      throw new BadRequestException(missingGeminiKeyMessage("normal"));
+    }
+    const key = apiKeys[this.keyIndex % apiKeys.length];
+    this.keyIndex = (this.keyIndex + 1) % apiKeys.length;
     return key;
   }
 }

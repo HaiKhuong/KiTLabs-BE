@@ -263,7 +263,12 @@ def _omnivoice_tts(
     language: str,
 ) -> None:
     """Recap OmniVoice → shared module tools/video-pipeline/omnivoice_tts.py"""
-    from omnivoice_tts import resolve_omnivoice_language, synthesize_to_wav
+    from omnivoice_tts import (
+        resolve_omnivoice_device_map,
+        resolve_omnivoice_dtype,
+        resolve_omnivoice_language,
+        synthesize_to_wav,
+    )
 
     synthesize_to_wav(
         text=text or ".",
@@ -271,8 +276,8 @@ def _omnivoice_tts(
         ref_audio=str(_prepare_ref_audio(ref_path)),
         ref_text=ref_text,
         model_id=(os.getenv("OMNIVOICE_MODEL_ID") or "k2-fsa/OmniVoice").strip(),
-        device_map=(os.getenv("OMNIVOICE_DEVICE_MAP") or "").strip() or "cuda:0",
-        dtype_str=(os.getenv("OMNIVOICE_DTYPE") or "float16").strip() or "float16",
+        device_map=resolve_omnivoice_device_map(os.getenv("OMNIVOICE_DEVICE_MAP")),
+        dtype_str=resolve_omnivoice_dtype(os.getenv("OMNIVOICE_DTYPE")),
         language=resolve_omnivoice_language(language),
         num_step=int(os.getenv("OMNIVOICE_NUM_STEP") or 32),
         guidance_scale=float(os.getenv("OMNIVOICE_GUIDANCE_SCALE") or 2),
