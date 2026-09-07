@@ -34,7 +34,7 @@ from call_a2_script_writer import (
     generate_narration_segments,
     merged_candidates_for_segment,
 )
-from call_b_shot_planner import plan_all_segments, sanitize_picks
+from call_b_shot_planner import PICKS_PLAN_VERSION, plan_all_segments, sanitize_picks
 from cluster import cluster_semantic_scenes
 from gemini_recap import (
     PICKS_SELECTED_SHOTS,
@@ -628,9 +628,15 @@ def run_step_call_b(ctx: RecapContext) -> None:
     script_path = ctx.work_dir / "script.json"
     if artifact_fresh(picks_path, tts_path, segments_path, script_path):
         picks = load_json(picks_path)
-        fixed = picks.get(PICKS_SELECTED_SHOTS) or []
-        step_done(n, "CallB", f"cache hit ({len(fixed)} segments)")
-        return
+        cached_ok = (
+            isinstance(picks, dict)
+            and picks.get("planVersion") == PICKS_PLAN_VERSION
+            and (picks.get(PICKS_SELECTED_SHOTS) or [])
+        )
+        if cached_ok:
+            fixed = picks.get(PICKS_SELECTED_SHOTS) or []
+            step_done(n, "CallB", f"cache hit ({len(fixed)} segments)")
+            return
 
     picks = plan_all_segments(
         segments,
@@ -649,7 +655,7 @@ def run_step_call_b(ctx: RecapContext) -> None:
         tts_meta=tts_meta,
         narrations=narrations,
     )
-    out_picks = {PICKS_SELECTED_SHOTS: fixed}
+    out_picks = {PICKS_SELECTED_SHOTS: fixed, "planVersion": PICKS_PLAN_VERSION}
     if ctx.keep_debug:
         out_picks["selectedShotsDetail"] = picks.get("selectedShotsDetail") or []
     write_json(picks_path, out_picks)

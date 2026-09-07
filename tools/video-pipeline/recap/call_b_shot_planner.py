@@ -22,6 +22,9 @@ from ranking import final_score, quality_score, ranking_config, shot_mid, tempor
 
 LOG = logging.getLogger("recap.call_b")
 
+# Bump when pick rules change so work-dir cache does not reuse old picks.json.
+PICKS_PLAN_VERSION = 4
+
 
 def _shot_mid(s: dict[str, Any]) -> float:
     return shot_mid(s)
@@ -610,34 +613,32 @@ def sanitize_picks(
     tts_meta: list[dict[str, Any]],
     narrations: list[str],
 ) -> list[list[int]]:
-    """Keep shortlisted ids, chronological (increasing), no global repeats."""
+    """Keep planner ids; drop only duplicates and timeline regressions (id must increase)."""
     sanitized = raw or []
     fixed: list[list[int]] = []
     used: set[int] = set()
     cursor = 0
     for i, chosen in enumerate(sanitized):
-        allow = {int(c["id"]) for c in segment_candidates[i]} if i < len(segment_candidates) else set()
-        row = [int(x) for x in (chosen or []) if int(x) in allow] if allow else [int(x) for x in (chosen or [])]
         seen_row: set[int] = set()
-        unique_row: list[int] = []
-        for sid in row:
-            if sid in seen_row:
+        row: list[int] = []
+        for sid in chosen or []:
+            sid = int(sid)
+            if sid in seen_row or sid in used or sid <= cursor:
                 continue
             seen_row.add(sid)
-            unique_row.append(sid)
-        unique_row.sort()
-        forward = [sid for sid in unique_row if sid > cursor]
-        row = list(forward)
+            row.append(sid)
+        row.sort()
         if not row and i < len(segment_candidates) and segment_candidates[i]:
             need = float((tts_meta[i] if i < len(tts_meta) else {}).get("durationSec") or 28)
             take = max(1, int(need / 3))
             cands = segment_candidates[i]
-            row = [int(c["id"]) for c in cands if int(c["id"]) not in used and int(c["id"]) > cursor][:take]
-            if not row:
-                row = [int(c["id"]) for c in cands if int(c["id"]) not in used][:take]
-            if not row:
-                row = [int(c["id"]) for c in cands[:take]]
-            row = sorted(set(row))
+            row = sorted(
+                {
+                    int(c["id"])
+                    for c in cands
+                    if int(c["id"]) not in used and int(c["id"]) > cursor
+                }
+            )[:take]
         used.update(row)
         if row:
             cursor = max(cursor, max(row))
@@ -648,12 +649,13 @@ def sanitize_picks(
             need = float((tts_meta[i] if i < len(tts_meta) else {}).get("durationSec") or 28)
             take = max(1, int(need / 3))
             cands = segment_candidates[i]
-            row = [int(c["id"]) for c in cands if int(c["id"]) not in used and int(c["id"]) > cursor][:take]
-            if not row:
-                row = [int(c["id"]) for c in cands if int(c["id"]) not in used][:take]
-            if not row:
-                row = [int(c["id"]) for c in cands[:take]]
-            row = sorted(set(row))
+            row = sorted(
+                {
+                    int(c["id"])
+                    for c in cands
+                    if int(c["id"]) not in used and int(c["id"]) > cursor
+                }
+            )[:take]
             used.update(row)
             if row:
                 cursor = max(cursor, max(row))
