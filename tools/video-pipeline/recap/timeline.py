@@ -157,21 +157,26 @@ def pack_voice_master_timeline(
         if remain > 0.05 and video_cues:
             last = video_cues[-1]
             last["t1"] = round(float(last["t1"]) + remain, 3)
-            # Giữ frame cuối (không kéo thêm source).
             remain = 0.0
-        elif remain > 0.05 and shots:
-            # no picks at all — use first shot freeze
-            s0 = shots[0]
-            video_cues.append(
-                {
-                    "shot": int(s0["id"]),
-                    "t0": round(voice_t0, 3),
-                    "t1": round(voice_t1, 3),
-                    "srcIn": float(s0["startSec"]),
-                    "srcOut": round(float(s0["startSec"]) + min(audio_dur * speed, 0.5), 3),
-                    "speed": round(speed, 4),
-                }
-            )
+        elif remain > 0.05:
+            hold = None
+            if cues:
+                prev_video = cues[-1].get("video") or []
+                if prev_video:
+                    hold = by_id.get(int(prev_video[-1]["shot"]))
+            if hold is None and shots:
+                hold = shots[-1] if i >= max(0, len(tts_meta) - 3) else shots[0]
+            if hold is not None:
+                video_cues.append(
+                    {
+                        "shot": int(hold["id"]),
+                        "t0": round(voice_t0, 3),
+                        "t1": round(voice_t1, 3),
+                        "srcIn": float(hold["startSec"]),
+                        "srcOut": round(float(hold["startSec"]) + min(audio_dur * speed, 0.5), 3),
+                        "speed": round(speed, 4),
+                    }
+                )
 
         video_cues = _fit_video_cues_to_voice(video_cues, audio_dur, voice_t0, speed)
 

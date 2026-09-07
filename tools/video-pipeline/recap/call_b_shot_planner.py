@@ -23,7 +23,7 @@ from ranking import final_score, quality_score, ranking_config, shot_mid, tempor
 LOG = logging.getLogger("recap.call_b")
 
 # Bump when pick rules change so work-dir cache does not reuse old picks.json.
-PICKS_PLAN_VERSION = 4
+PICKS_PLAN_VERSION = 5
 
 
 def _shot_mid(s: dict[str, Any]) -> float:
@@ -563,22 +563,21 @@ def plan_all_segments(
                 story_cursor=story_cursor,
                 id_max=ending_floor - 1 if ending_n else None,
             )
-        if not ids and cands and opening_n <= i < ending_start:
-            mid_max = ending_floor - 1 if ending_n else 10**9
-            ids = [
-                int(c.get("id", c.get("shot_id")))
-                for c in cands
-                if int(c.get("id", c.get("shot_id") or -1)) not in global_used
-                and story_cursor < int(c.get("id", c.get("shot_id") or -1)) <= mid_max
-            ][: max(1, int(audio_dur / 3))]
-            if not ids:
-                ids = [
-                    int(c.get("id", c.get("shot_id")))
-                    for c in cands
-                    if int(c.get("id", c.get("shot_id") or -1)) not in global_used
-                ][: max(1, int(audio_dur / 3))]
-            if not ids:
-                ids = [int(c.get("id", c.get("shot_id"))) for c in cands[: max(1, int(audio_dur / 3))]]
+        if not ids:
+            if i >= ending_start:
+                fill_min, fill_max = max(story_cursor + 1, ending_floor), hi
+            elif i < opening_n:
+                fill_min, fill_max = story_cursor + 1 if story_cursor else lo, ending_floor - 1 if ending_n else hi
+            else:
+                fill_min, fill_max = story_cursor + 1, ending_floor - 1 if ending_n else hi
+            ids = _walk_shot_window(
+                shots,
+                audio_dur=audio_dur,
+                min_id=max(lo, fill_min),
+                max_id=max(fill_min, fill_max),
+                used=global_used,
+                cfg=cfg,
+            )
         ids = sorted({int(x) for x in ids})
         selected.append(ids)
         global_used.update(ids)
@@ -628,17 +627,17 @@ def sanitize_picks(
             seen_row.add(sid)
             row.append(sid)
         row.sort()
-        if not row and i < len(segment_candidates) and segment_candidates[i]:
+        if not row:
             need = float((tts_meta[i] if i < len(tts_meta) else {}).get("durationSec") or 28)
             take = max(1, int(need / 3))
-            cands = segment_candidates[i]
-            row = sorted(
-                {
-                    int(c["id"])
-                    for c in cands
-                    if int(c["id"]) not in used and int(c["id"]) > cursor
-                }
-            )[:take]
+            if i < len(segment_candidates) and segment_candidates[i]:
+                row = sorted(
+                    {
+                        int(c["id"])
+                        for c in segment_candidates[i]
+                        if int(c["id"]) not in used and int(c["id"]) > cursor
+                    }
+                )[:take]
         used.update(row)
         if row:
             cursor = max(cursor, max(row))
