@@ -47,6 +47,8 @@ def mmr_select(
     shot_to_scene: dict[str, str] | None = None,
     scene_cap: int = 2,
     selected_seed: list[dict[str, Any]] | None = None,
+    consecutive_penalty: float = 0.82,
+    group_of: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """
     Maximal Marginal Relevance selection with scene cap + time penalty vs selected.
@@ -54,6 +56,7 @@ def mmr_select(
     Returns up to `k` newly picked candidates (does not include selected_seed).
     """
     shot_to_scene = shot_to_scene or {}
+    group_of = group_of or {}
     seed = list(selected_seed or [])
     seed_len = len(seed)
     selected: list[dict[str, Any]] = list(seed)
@@ -70,6 +73,12 @@ def mmr_select(
     while len(selected) < target and pool:
         best_id: int | None = None
         best_score = -1e9
+        last_id = int(selected[-1].get("id", selected[-1].get("shot_id"))) if selected else None
+        last_group = None
+        if selected:
+            last_group = group_of.get(str(last_id)) if last_id is not None else None
+            if last_group is None:
+                last_group = selected[-1].get("sceneGroupId")
         for sid, cand in pool.items():
             if sid in selected_ids:
                 continue
@@ -79,23 +88,28 @@ def mmr_select(
             rel = float(relevance.get(sid, cand.get("score") or 0.0))
             max_sim = 0.0
             emb_c = (embeddings or {}).get(sid)
+            cand_group = cand.get("sceneGroupId", group_of.get(str(sid)))
             for prev in selected:
                 pid = int(prev.get("id", prev.get("shot_id")))
                 emb_p = (embeddings or {}).get(pid)
                 if emb_c and emb_p:
                     max_sim = max(max_sim, _cosine(emb_c, emb_p))
                 else:
-                    # fallback: duration/time proximity as crude similarity
                     max_sim = max(max_sim, 1.0 - time_penalty(cand, prev))
+                prev_g = prev.get("sceneGroupId", group_of.get(str(pid)))
+                if cand_group is not None and prev_g is not None and cand_group == prev_g:
+                    max_sim = max(max_sim, 0.72)
             mmr = lambda_rel * rel - (1.0 - lambda_rel) * max_sim
-            # apply time penalty vs last selected
             if selected:
                 mmr *= time_penalty(cand, selected[-1])
+            if last_id is not None and abs(sid - last_id) == 1:
+                mmr *= float(consecutive_penalty)
+            if last_group is not None and cand_group is not None and last_group == cand_group:
+                mmr *= 0.92
             if mmr > best_score:
                 best_score = mmr
                 best_id = sid
         if best_id is None:
-            # relax scene cap
             for sid, cand in pool.items():
                 if sid in selected_ids:
                     continue
@@ -106,7 +120,6 @@ def mmr_select(
         if best_id is None:
             break
         chosen = pool.pop(best_id)
-        # normalize id field
         chosen = {**chosen, "id": best_id, "shot_id": best_id}
         selected.append(chosen)
         selected_ids.add(best_id)

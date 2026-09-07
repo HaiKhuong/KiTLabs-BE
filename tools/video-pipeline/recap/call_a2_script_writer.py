@@ -7,7 +7,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from call_a1_story_analyst import EMOTIONS
+from ranking import a2_length_quota, duration_out_of_range, estimate_narration_sec
 from gemini_recap import (
     SCRIPT_DURATION_SEC,
     SCRIPT_MOVIE_WINDOWS,
@@ -21,269 +21,104 @@ LOG = logging.getLogger("recap.call_a2")
 
 SYSTEM_A2 = """# ROLE
 
-You are an award-winning YouTube movie recap writer and film editor.
-
-Your job is to transform a structured movie outline into a complete, engaging movie recap script.
+You write a YouTube movie recap narration from a finished story analysis.
 
 You are NOT selecting video shots.
-
-You are designing HOW the audience should experience the story.
-
-Every narration segment must also include a visual storytelling plan so another AI editor can later choose the correct movie shots.
+You are NOT inventing plot.
 
 ---
 
-# INPUT
+# SOURCE OF TRUTH
 
-You will receive:
+Use ONLY:
 
-- Movie title
-- Movie summary
-- Story outline
-- Characters
-- Important events
-- Story timeline
-- language — write all narration text in this language
+- events (title, summary, window, importance)
+- plotFacts
+- movieSummary
+- characters listed in input
+- creativeFocus (hook / conflict) as tone, not new facts
+- visualEvidence on each event (what Qwen2.5-VL saw on the shortlisted frames)
 
-Example
+Do not add characters, twists, locations, or endings that are not in that input.
+Keep chronological order by event.window.from.
 
-{
-    "movieTitle": "...",
-    "summary": "...",
-    "storyOutline": [...],
-    "characters": [...],
-    "events": [...],
-    "language": "vi"
-}
+Cover every event with importance >= 7.
+Events with importance <= 3 may be skipped if you need room — never invent replacements.
+
+visualBeats MUST match visualEvidence when it is present (people, actions, place, on-screen text).
+Do not invent shots that contradict those frames.
 
 ---
 
-# GOAL
+# LENGTH QUOTA (MANDATORY)
 
-Generate a professional movie recap script.
+Input includes concrete numbers. Obey them:
 
-The recap should:
+- targetSegmentCount — number of segments (allow ±15%)
+- targetNarrationRange [minSec, maxSec] — sum(estimatedDuration) MUST fall inside this range
+- targetMidSec / targetTotalWords — aim near the midpoint
+- segmentDurationSec [22, 38]
+- wordsPerSegmentRange — each narration MUST be this many words (2–5 spoken sentences, not one short line)
+- wordsPerMinute — estimatedDuration ≈ 60 * wordCount / wordsPerMinute
 
-- sound like a popular YouTube movie recap channel
-- be chronological
-- preserve all important story events
-- explain motivations
-- explain cause and effect
-- explain character decisions
-- explain emotional changes
-- keep viewers curious
-
-The target total narration length is approximately 15 minutes.
-If input includes targetNarrationRange [minSec, maxSec], stay within that range.
+Too few segments or too few words produces a recap that is too short. That is a failure.
 
 ---
 
 # NARRATION STYLE
 
-Write naturally.
+Write in `language`. Natural spoken recap, not subtitle reading.
+Explain cause and effect. Connect to the next segment.
+Avoid filler and long quoted dialogue.
 
-Use storytelling.
-
-Avoid reading like subtitles.
-
-Instead of
-
-"John says..."
-
-Write
-
-"John realizes..."
-
-Instead of
-
-"He walks."
-
-Write
-
-"He quietly walks toward the abandoned castle, unaware that everything is about to change."
-
-Explain WHY things happen.
-
-Connect events naturally.
-
-Avoid repeating names unnecessarily.
+If creativeFocus.hook exists, the first segment may open with that hook, then continue the real plot.
 
 ---
 
 # VISUAL PLAN
 
-For every narration segment, generate visual beats.
-
-A visual beat is a single important visual moment.
-
-A visual beat should describe:
-
-- what should appear on screen
-- the key action
-- the emotional focus
-
-A visual beat should NOT describe:
-
-- camera angles
-- zoom
-- editing
-- transitions
-
-Example
-
-Narration
-
-"John finally escapes from prison after defeating the guards."
-
-Visual Beats
-
-1.
-John sneaks through the prison corridor.
-
-2.
-John fights the guards.
-
-3.
-John opens the prison gate.
-
-4.
-John runs outside into freedom.
-
-These beats will later be matched with candidate shots.
-
----
-
-# SEGMENT RULES
-
-Each narration segment should
-
-- describe one logical story event
-- last around 20~40 seconds
-- contain 2~6 visual beats
-
-Do not create segments that are too small.
-
-Do not merge unrelated events.
-
----
-
-# EMOTION
-
-Assign one emotion to every segment.
-
-Allowed values
-
-- calm
-- mystery
-- suspense
-- action
-- happy
-- sad
-- emotional
-- horror
-- tense
-- climax
-
----
-
-# IMPORTANCE
-
-Assign importance
-
-1~10
-
-10 means
-
-- climax
-- plot twist
-- major reveal
-- emotional peak
+For every segment, 2–6 visualBeats describing on-screen story action from that event.
+No camera angles, zooms, or editing language.
 
 ---
 
 # OUTPUT
 
-Return JSON only.
+Return JSON only:
 
 {
   "segments":[
-
     {
       "segmentId":1,
-
-      "title":"John's Childhood",
-
+      "title":"...",
       "importance":3,
-
       "emotion":"calm",
-
       "estimatedDuration":28,
-
-      "narration":
-
-      "John grows up in a poor village with his mother. Although life is difficult, he dreams of leaving the village one day.",
-
-      "visualBeats":[
-
-        {
-          "order":1,
-          "description":"Young John living in a poor village."
-        },
-
-        {
-          "order":2,
-          "description":"John spending time with his mother."
-        },
-
-        {
-          "order":3,
-          "description":"John looking toward the distant city."
-        }
-
-      ]
+      "narration":"...",
+      "visualBeats":[{"order":1,"description":"..."}]
     }
-
   ]
 }
 
----
+emotion must be one of: calm, mystery, suspense, action, happy, sad, emotional, horror, tense, climax.
 
-# IMPORTANT
+Return valid JSON only. No markdown.
+"""
 
-Visual beats must describe STORY EVENTS.
-
-Do NOT describe camera movement.
-
-Do NOT describe cinematic language.
-
-Do NOT describe editing techniques.
-
-Only describe what should appear on screen.
-
----
-
-# NARRATION QUALITY
-
-Every narration should:
-
-- explain the story clearly
-- preserve emotional progression
-- maintain curiosity
-- naturally connect to the next segment
-- avoid unnecessary dialogue
-- avoid filler
-
----
-
-# OUTPUT REQUIREMENTS
-
-Return valid JSON only.
-
-Do not output Markdown.
-
-Do not explain anything.
-
-Do not include any text outside the JSON."""
+EMOTIONS = frozenset(
+    {
+        "calm",
+        "happy",
+        "mystery",
+        "sad",
+        "suspense",
+        "action",
+        "tense",
+        "horror",
+        "emotional",
+        "climax",
+    }
+)
 
 
 def _normalize_emotion(v: Any) -> str:
@@ -301,7 +136,7 @@ def _clamp_importance(v: Any) -> int:
     return max(1, min(10, n))
 
 
-def _clamp_duration(v: Any, *, min_sec: float = 20.0, max_sec: float = 40.0) -> float:
+def _clamp_duration(v: Any, *, min_sec: float = 22.0, max_sec: float = 38.0) -> float:
     try:
         d = float(v)
     except Exception:
@@ -365,7 +200,14 @@ def canonicalize_segments(raw: dict[str, Any]) -> list[dict[str, Any]]:
     return out
 
 
-def build_a2_payload(knowledge: dict[str, Any], *, locale: str, dur_min: int, dur_max: int) -> dict[str, Any]:
+def build_a2_payload(
+    knowledge: dict[str, Any],
+    *,
+    locale: str,
+    dur_min: int,
+    dur_max: int,
+    wpm: int = 140,
+) -> dict[str, Any]:
     acts = knowledge.get("storyActs") or []
     outline = [str(a.get("summary") or a.get("title") or "") for a in acts if isinstance(a, dict)]
     outline = [x for x in outline if x]
@@ -393,6 +235,8 @@ def build_a2_payload(knowledge: dict[str, Any], *, locale: str, dur_min: int, du
                 "importance": e.get("importance"),
                 "emotion": e.get("emotion"),
                 "window": e.get("window"),
+                "visualEvidence": e.get("visualEvidence") or "",
+                "vlmShotIds": e.get("vlmShotIds") or [],
             }
         )
     return {
@@ -401,8 +245,10 @@ def build_a2_payload(knowledge: dict[str, Any], *, locale: str, dur_min: int, du
         "storyOutline": outline,
         "characters": characters,
         "events": events,
+        "creativeFocus": knowledge.get("creativeFocus") or {},
+        "plotFacts": knowledge.get("plotFacts") or [],
         "language": locale,
-        "targetNarrationRange": [dur_min, dur_max],
+        **a2_length_quota(dur_min, dur_max, wpm=wpm),
     }
 
 
@@ -515,9 +361,16 @@ def derive_script_from_segments(
     }
 
 
-def heuristic_segments(knowledge: dict[str, Any], *, locale: str = "vi") -> list[dict[str, Any]]:
+def heuristic_segments(
+    knowledge: dict[str, Any],
+    *,
+    locale: str = "vi",
+    dur_min: int = 900,
+    dur_max: int = 1200,
+    wpm: int = 140,
+) -> list[dict[str, Any]]:
+    quota = a2_length_quota(dur_min, dur_max, wpm=wpm)
     events = [e for e in (knowledge.get("events") or []) if isinstance(e, dict)]
-    # Prefer important events; keep chronological
     picked = [e for e in events if int(e.get("importance") or 5) >= 5]
     if len(picked) < 8:
         picked = events
@@ -533,14 +386,25 @@ def heuristic_segments(knowledge: dict[str, Any], *, locale: str = "vi") -> list
             }
         ]
 
+    n = int(quota["targetSegmentCount"])
+    min_words = int(quota["wordsPerSegmentRange"][0])
+    filler = (
+        " Câu chuyện tiếp tục đúng theo diễn biến đã phân tích."
+        if locale.startswith("vi")
+        else " The story continues according to the established plot."
+    )
+
     segments: list[dict[str, Any]] = []
-    for i, ev in enumerate(picked):
+    for i in range(n):
+        ev = picked[i % len(picked)]
         summary = str(ev.get("summary") or ev.get("title") or "").strip()
         title = str(ev.get("title") or f"Segment {i + 1}")
         if locale.startswith("vi"):
             narration = summary if summary else f"Câu chuyện tiếp tục với {title}."
         else:
             narration = summary if summary else f"The story continues with {title}."
+        while len(narration.split()) < min_words:
+            narration = (narration.rstrip() + filler).strip()
         words = summary.split()
         beats = []
         chunk = max(1, len(words) // 3) if words else 1
@@ -571,11 +435,12 @@ def generate_narration_segments(
     locale: str = "vi",
     dur_min: int = 900,
     dur_max: int = 1200,
+    wpm: int = 140,
     model: str = "",
     key_tier: str = "",
     debug_dir: Path | None = None,
 ) -> list[dict[str, Any]]:
-    payload = build_a2_payload(knowledge, locale=locale, dur_min=dur_min, dur_max=dur_max)
+    payload = build_a2_payload(knowledge, locale=locale, dur_min=dur_min, dur_max=dur_max, wpm=wpm)
     result = _generate_json(
         SYSTEM_A2,
         payload,
@@ -586,9 +451,50 @@ def generate_narration_segments(
     )
     segments = canonicalize_segments(result)
     if segments:
+        est = estimate_narration_sec(segments, wpm=wpm)
+        if duration_out_of_range(est, dur_min, dur_max):
+            LOG.warning(
+                "CallA-2 duration estimate %.1fs outside [%s,%s]; retrying once",
+                est,
+                dur_min,
+                dur_max,
+            )
+            retry_payload = dict(payload)
+            retry_payload["lengthRetry"] = (
+                f"Previous draft was {est:.0f}s of speech. Rewrite to hit targetMidSec="
+                f"{payload.get('targetMidSec')} with targetSegmentCount={payload.get('targetSegmentCount')} "
+                "segments and wordsPerSegmentRange. Use only the same events. Do not invent plot."
+            )
+            result2 = _generate_json(
+                SYSTEM_A2,
+                retry_payload,
+                model=model,
+                key_tier=key_tier,
+                debug_dir=debug_dir,
+                debug_tag="gemini_a2_retry",
+            )
+            segs2 = canonicalize_segments(result2)
+            if segs2:
+                est2 = estimate_narration_sec(segs2, wpm=wpm)
+                LOG.info("CallA-2 retry estimate %.1fs (was %.1fs)", est2, est)
+                if duration_out_of_range(est2, dur_min, dur_max):
+                    LOG.warning(
+                        "CallA-2 still off quota after retry: est=%.1fs target=[%s,%s] "
+                        "mid=%s segments=%s (want ~%s)",
+                        est2,
+                        dur_min,
+                        dur_max,
+                        payload.get("targetMidSec"),
+                        len(segs2),
+                        payload.get("targetSegmentCount"),
+                    )
+                segments = segs2
         return map_event_ids_to_segments(segments, knowledge)
     LOG.warning("CallA-2 invalid or empty; using heuristic segments")
-    return map_event_ids_to_segments(heuristic_segments(knowledge, locale=locale), knowledge)
+    return map_event_ids_to_segments(
+        heuristic_segments(knowledge, locale=locale, dur_min=dur_min, dur_max=dur_max, wpm=wpm),
+        knowledge,
+    )
 
 
 def merged_candidates_for_segment(

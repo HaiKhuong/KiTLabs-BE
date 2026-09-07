@@ -51,9 +51,10 @@ shapely
 pyclipper
 scikit-image
 
-# ─── Recap: shot detect + semantic cluster ───
+# ─── Recap: shot detect + semantic cluster + Qwen2.5-VL ───
 # open_clip import name; needs torch + Pillow (above)
 open-clip-torch
+# Qwen2.5-VL-3B is loaded lazily in recap step `vlm` (CUDA only; skipped on CPU).
 # TransNet V2 (soCzech) needs TensorFlow. Prefer CPU wheel if sharing GPU with torch:
 #   pip install tensorflow-cpu
 # otherwise:

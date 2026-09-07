@@ -44,17 +44,88 @@ function truncateText(text: string, max = 120): string {
   return `${trimmed.slice(0, max - 1)}…`;
 }
 
-function transcriptPreview(segments: unknown[], limit = 3): string {
-  const lines = segments
-    .slice(0, limit)
-    .map((seg) => {
-      const row = asRecord(seg);
-      const text = String(row.text ?? row.content ?? "").trim();
-      const start = row.start ?? row.t0;
-      return start != null ? `[${start}] ${text}` : text;
-    })
-    .filter(Boolean);
-  return lines.join(" · ");
+type RecapFileExtras = {
+  resultPath?: string | null;
+  readText?: (path: string) => string | null;
+};
+
+const SRT_RANGE_RE =
+  /(\d{1,2}):(\d{2}):(\d{2})[,.](\d{1,3})\s*-->\s*(\d{1,2}):(\d{2}):(\d{2})[,.](\d{1,3})/;
+
+function padMs(raw: string): number {
+  const digits = raw.replace(/\D/g, "") || "0";
+  return Number((digits + "000").slice(0, 3));
+}
+
+function srtPartsToSec(h: string, m: string, s: string, ms: string): number {
+  return Number(h) * 3600 + Number(m) * 60 + Number(s) + padMs(ms) / 1000;
+}
+
+export type RecapSrtCue = {
+  index: number;
+  startSec: number;
+  endSec: number;
+  start: string;
+  end: string;
+  text: string;
+};
+
+export function parseSrtCues(srt: string): RecapSrtCue[] {
+  const raw = (srt || "").replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim();
+  if (!raw) return [];
+  const chunks = raw.split(/\n\s*\n/);
+  const cues: RecapSrtCue[] = [];
+  for (const chunk of chunks) {
+    const lines = chunk
+      .split("\n")
+      .map((ln) => ln.trim())
+      .filter(Boolean);
+    if (!lines.length) continue;
+    const tsIdx = /^\d+$/.test(lines[0]) && lines.length > 1 ? 1 : 0;
+    const tsLine = lines[tsIdx];
+    if (!tsLine) continue;
+    const match = tsLine.match(SRT_RANGE_RE);
+    if (!match) continue;
+    const startSec = srtPartsToSec(match[1], match[2], match[3], match[4]);
+    const endSec = srtPartsToSec(match[5], match[6], match[7], match[8]);
+    const text = lines.slice(tsIdx + 1).join("\n").trim();
+    if (!text) continue;
+    const start = `${match[1].padStart(2, "0")}:${match[2]}:${match[3]},${String(padMs(match[4])).padStart(3, "0")}`;
+    const end = `${match[5].padStart(2, "0")}:${match[6]}:${match[7]},${String(padMs(match[8])).padStart(3, "0")}`;
+    cues.push({
+      index: cues.length + 1,
+      startSec,
+      endSec: Math.max(endSec, startSec + 0.001),
+      start,
+      end,
+      text,
+    });
+  }
+  return cues;
+}
+
+function loadAsrCues(
+  workDir: string,
+  readJson: (path: string) => unknown | null,
+  readText?: (path: string) => string | null,
+): RecapSrtCue[] {
+  const srt = readText?.(join(workDir, "transcript.srt"));
+  if (srt) return parseSrtCues(srt);
+  const transcript = readJsonRecord(readJson, join(workDir, "transcript.json"));
+  const segments = asArray(transcript?.segments);
+  return segments.map((seg, idx) => {
+    const row = asRecord(seg);
+    const startSec = Number(row.startSec ?? row.start ?? 0);
+    const endSec = Number(row.endSec ?? row.end ?? startSec);
+    return {
+      index: idx + 1,
+      startSec,
+      endSec,
+      start: String(row.start ?? startSec),
+      end: String(row.end ?? endSec),
+      text: String(row.text ?? row.content ?? ""),
+    };
+  });
 }
 
 export function readRecapStepSummaries(
@@ -69,17 +140,21 @@ export function buildRecapStepSummary(
   step: RecapStepId,
   workDir: string,
   readJson: (path: string) => unknown | null,
-  extras?: { resultPath?: string | null },
+  extras?: RecapFileExtras,
 ): RecapStepSummary | null {
+  const readText = extras?.readText;
   switch (step) {
     case "asr": {
-      const transcript = readJsonFile(readJson, join(workDir, "transcript.json"));
-      const segments = asArray(asRecord(transcript).segments);
-      if (!segments.length) return null;
+      const cues = loadAsrCues(workDir, readJson, readText);
+      if (!cues.length) return null;
+      const preview = cues
+        .slice(0, 3)
+        .map((cue) => `[${cue.start}] ${cue.text}`)
+        .join(" · ");
       return {
-        label: `${segments.length} segments`,
-        detail: truncateText(transcriptPreview(segments)),
-        metrics: { segmentCount: segments.length },
+        label: `${cues.length} cues`,
+        detail: truncateText(preview),
+        metrics: { cueCount: cues.length },
       };
     }
     case "scenes": {
@@ -104,9 +179,11 @@ export function buildRecapStepSummary(
       const knowledge = readJsonRecord(readJson, join(workDir, "story_knowledge.json"));
       const events = asArray(knowledge?.events);
       const characters = asArray(knowledge?.characters);
-      if (!events.length && !characters.length) return null;
+      const analysis = readText?.(join(workDir, "story_analysis.md"))?.trim() ?? "";
+      if (!events.length && !characters.length && !analysis) return null;
       return {
         label: `${events.length} events · ${characters.length} chars`,
+        detail: analysis ? truncateText(analysis.replace(/\s+/g, " "), 160) : undefined,
         metrics: { eventCount: events.length, characterCount: characters.length },
       };
     }
@@ -121,6 +198,23 @@ export function buildRecapStepSummary(
       return {
         label: `${candidateLinkCount} candidate links`,
         metrics: { candidateLinkCount },
+      };
+    }
+    case "vlm": {
+      const vlm = readJsonRecord(readJson, join(workDir, "vlm_evidence.json"));
+      if (!vlm) return null;
+      if (vlm.skipped) {
+        return {
+          label: "Skipped",
+          detail: String(vlm.reason ?? ""),
+          metrics: { skipped: true },
+        };
+      }
+      const eventCount = Number(vlm.eventCount ?? asArray(vlm.events).length);
+      const imageCount = Number(vlm.imageCount ?? 0);
+      return {
+        label: `${eventCount} events · ${imageCount} frames`,
+        metrics: { eventCount, imageCount },
       };
     }
     case "call_a2": {
@@ -189,15 +283,18 @@ export function buildRecapStepArtifactPayload(
   workDir: string,
   readJson: (path: string) => unknown | null,
   history: { id: string; resultPath?: string | null; playUrl?: string | null },
+  extras?: RecapFileExtras,
 ): Record<string, unknown> {
+  const readText = extras?.readText;
   switch (step) {
     case "asr": {
-      const transcript = readJsonRecord(readJson, join(workDir, "transcript.json"));
-      const segments = asArray(transcript?.segments);
+      const cues = loadAsrCues(workDir, readJson, readText);
       return {
-        segments: segments.slice(0, 200),
-        totalSegments: segments.length,
-        truncated: segments.length > 200,
+        format: "srt",
+        segments: cues.slice(0, 200),
+        totalSegments: cues.length,
+        truncated: cues.length > 200,
+        srtPreview: (readText?.(join(workDir, "transcript.srt")) ?? "").slice(0, 4000),
       };
     }
     case "scenes": {
@@ -215,13 +312,33 @@ export function buildRecapStepArtifactPayload(
       const knowledge = readJsonRecord(readJson, join(workDir, "story_knowledge.json"));
       const events = asArray(knowledge?.events).slice(0, 50);
       const characters = asArray(knowledge?.characters).slice(0, 30);
+      const analysisMarkdown =
+        step === "call_a1" ? readText?.(join(workDir, "story_analysis.md")) ?? "" : "";
       return {
         view: step,
         events,
         characters,
         totalEvents: asArray(knowledge?.events).length,
         totalCharacters: asArray(knowledge?.characters).length,
+        movieSummary: knowledge?.movieSummary ?? "",
+        analysisMarkdown,
       };
+    }
+    case "vlm": {
+      const vlm = readJsonRecord(readJson, join(workDir, "vlm_evidence.json")) ?? {};
+      const knowledge = readJsonRecord(readJson, join(workDir, "story_knowledge.json"));
+      const events = asArray(knowledge?.events)
+        .slice(0, 40)
+        .map((event) => {
+          const row = asRecord(event);
+          return {
+            eventId: row.eventId,
+            title: row.title,
+            visualEvidence: row.visualEvidence ?? "",
+            vlmShotIds: row.vlmShotIds ?? [],
+          };
+        });
+      return { ...vlm, events };
     }
     case "call_a2": {
       const script = readJsonRecord(readJson, join(workDir, "script.json"));

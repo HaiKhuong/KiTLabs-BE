@@ -9,9 +9,8 @@ from typing import Any
 
 import recap_cache  # noqa: F401  — HF cache trước open_clip/torch
 
+from keyframes import VISUAL_VERSION
 from progress_log import progress
-
-LOG = logging.getLogger("recap.clip")
 
 CLIP_MODEL = "ViT-B-32"
 CLIP_PRETRAINED = "openai"
@@ -112,13 +111,19 @@ def keyframes_cache_fresh(emb_path: Path, keyframes_dir: Path) -> bool:
     return True
 
 
-def save_shot_embeddings(work_dir: Path, embeddings: dict[int, list[float]]) -> Path:
+def save_shot_embeddings(
+    work_dir: Path,
+    embeddings: dict[int, list[float]],
+    extras: dict[int, list[list[float]]] | None = None,
+) -> Path:
     path = _embeddings_path(work_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "model": CLIP_MODEL,
         "pretrained": CLIP_PRETRAINED,
+        "version": VISUAL_VERSION,
         "embeddings": {str(sid): vec for sid, vec in sorted(embeddings.items())},
+        "extras": {str(sid): vecs for sid, vecs in sorted((extras or {}).items())},
     }
     path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
     return path
@@ -140,6 +145,8 @@ def load_shot_embeddings(
         return {}
     if raw.get("model") != CLIP_MODEL or raw.get("pretrained") != CLIP_PRETRAINED:
         return {}
+    if str(raw.get("version") or "") != VISUAL_VERSION:
+        return {}
     emb_raw = raw.get("embeddings") or {}
     if not isinstance(emb_raw, dict):
         return {}
@@ -147,4 +154,20 @@ def load_shot_embeddings(
     for key, vec in emb_raw.items():
         if isinstance(vec, list) and vec:
             out[int(key)] = vec
+    return out
+
+
+def load_shot_extra_embeddings(work_dir: Path) -> dict[int, list[list[float]]]:
+    path = _embeddings_path(work_dir)
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+    extra_raw = raw.get("extras") or {}
+    if not isinstance(extra_raw, dict):
+        return {}
+    out: dict[int, list[list[float]]] = {}
+    for key, vecs in extra_raw.items():
+        if isinstance(vecs, list) and vecs:
+            out[int(key)] = [v for v in vecs if isinstance(v, list) and v]
     return out

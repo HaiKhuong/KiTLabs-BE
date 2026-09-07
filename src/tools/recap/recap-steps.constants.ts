@@ -5,6 +5,7 @@ export const RECAP_STEP_IDS = [
   "cluster",
   "call_a1",
   "candidates",
+  "vlm",
   "call_a2",
   "tts",
   "call_b",
@@ -19,6 +20,7 @@ export const RECAP_STEP_SCRIPTS: Record<RecapStepId, string> = {
   cluster: "step_03_cluster.py",
   call_a1: "step_04_call_a1.py",
   candidates: "step_05_candidates.py",
+  vlm: "step_vlm.py",
   call_a2: "step_06_call_a2.py",
   tts: "step_07_tts.py",
   call_b: "step_08_call_b.py",
@@ -31,10 +33,11 @@ export const RECAP_STEP_LABELS: Record<RecapStepId, string> = {
   cluster: "3. Cluster",
   call_a1: "4. Story (CallA-1)",
   candidates: "5. Candidates",
-  call_a2: "6. Script (CallA-2)",
-  tts: "7. TTS",
-  call_b: "8. Shot Plan (CallB)",
-  render: "9. Render",
+  vlm: "6. VLM",
+  call_a2: "7. Script (CallA-2)",
+  tts: "8. TTS",
+  call_b: "9. Shot Plan (CallB)",
+  render: "10. Render",
 };
 
 export type RecapStepProgress = {

@@ -124,6 +124,32 @@ export class RecapEngineConfigDto {
   geminiKeyTier?: string;
 
   @ApiPropertyOptional({
+    description: "Run Qwen2.5-VL on shortlisted candidate keyframes before CallA-2 (CUDA)",
+  })
+  @IsOptional()
+  @IsBoolean()
+  vlmEnabled?: boolean;
+
+  @ApiPropertyOptional({ example: "Qwen/Qwen2.5-VL-3B-Instruct" })
+  @IsOptional()
+  @IsString()
+  vlmModel?: string;
+
+  @ApiPropertyOptional({ example: 6, description: "Max keyframes per event sent to VLM (2–8)" })
+  @IsOptional()
+  @IsInt()
+  @Min(2)
+  @Max(8)
+  vlmMaxShotsPerEvent?: number;
+
+  @ApiPropertyOptional({
+    description: "Shot ranking weights and keyframe thresholds (optional)",
+  })
+  @IsOptional()
+  @IsObject()
+  ranking?: Record<string, unknown>;
+
+  @ApiPropertyOptional({
     example: "xuyen_khong_xay_dung_thuyen_chien",
     description: "Work folder slug (snake_case). Defaults from video filename.",
   })
@@ -135,7 +161,7 @@ export class RecapEngineConfigDto {
 export class RunRecapStepDto {
   @ApiProperty({
     example: "asr",
-    description: "Pipeline step id: asr | scenes | cluster | call_a1 | candidates | call_a2 | tts | call_b | render",
+    description: "Pipeline step id: asr | scenes | cluster | call_a1 | candidates | vlm | call_a2 | tts | call_b | render",
   })
   @IsString()
   step!: string;

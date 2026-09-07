@@ -9,7 +9,7 @@ import { pythonBinExists, resolvePythonBin } from "../../common/desktop/python-p
 import { ToolsRealtimeGateway } from "../realtime/tools-realtime.gateway";
 import { resolveConfiguredPath } from "../../common/desktop/data-path";
 
-export type AiModelId = "whisper-large-v3" | "omnivoice" | "voxcpm2";
+export type AiModelId = "whisper-large-v3" | "omnivoice" | "voxcpm2" | "qwen-vl-3b";
 
 export type AiModelCatalogItem = {
   id: AiModelId;
@@ -22,6 +22,7 @@ export const AI_MODEL_CATALOG: AiModelCatalogItem[] = [
   { id: "whisper-large-v3", repoId: "Systran/faster-whisper-large-v3", label: "Whisper large-v3", gated: false },
   { id: "omnivoice", repoId: "k2-fsa/OmniVoice", label: "OmniVoice", gated: true },
   { id: "voxcpm2", repoId: "openbmb/VoxCPM2", label: "VoxCPM2", gated: false },
+  { id: "qwen-vl-3b", repoId: "Qwen/Qwen2.5-VL-3B-Instruct", label: "Qwen2.5-VL-3B (Recap VLM)", gated: false },
 ];
 
 function hubFolder(repoId: string): string {
@@ -92,6 +93,19 @@ export class ModelsService {
     const tts = String(engineConfig?.step3TtsEngine ?? engineConfig?.ttsEngine ?? "");
     if (stepNbr.includes(3) && tts === "omnivoice") needed.push("omnivoice");
     if (stepNbr.includes(3) && (tts === "voxcpm2" || tts === "voxcpm")) needed.push("voxcpm2");
+    return needed;
+  }
+
+  requiredModelsForRecap(
+    engineConfig: Record<string, unknown> | null | undefined,
+    step: string,
+  ): AiModelId[] {
+    const needed: AiModelId[] = [];
+    const tts = String(engineConfig?.ttsEngine ?? "").toLowerCase();
+    if (step === "tts" && tts === "omnivoice") needed.push("omnivoice");
+    if (step === "tts" && (tts === "voxcpm2" || tts === "voxcpm")) needed.push("voxcpm2");
+    const vlmOn = engineConfig?.vlmEnabled !== false;
+    if (step === "vlm" && vlmOn) needed.push("qwen-vl-3b");
     return needed;
   }
 

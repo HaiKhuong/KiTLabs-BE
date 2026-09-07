@@ -12,8 +12,19 @@ from typing import Any
 
 import recap_cache  # noqa: F401 — HF cache before torch/HF
 
-from asr import format_transcript_timestamped, merge_transcript_windows, run_asr
+from asr import (
+    format_transcript_timestamped,
+    load_srt_segments,
+    merge_transcript_windows,
+    parse_srt,
+    run_asr,
+    segments_to_srt,
+    write_srt,
+)
+from clip_embeddings import load_shot_embeddings
+from keyframes import VISUAL_VERSION
 from call_a1_story_analyst import (
+    analysis_markdown_from_knowledge,
     attach_candidate_shots,
     build_a1_payload,
     generate_story_knowledge,
@@ -42,13 +53,14 @@ from pipeline_cache import (
     tts_signature,
     write_json,
 )
+from qwen_vl import describe_candidate_events, knowledge_has_vlm
 from render import render_timeline
 from scenes import detect_shots
 from timeline import pack_voice_master_timeline
 from tts import format_edge_rate, synthesize_segments
 
 LOG = logging.getLogger("recap")
-TOTAL_STEPS = 9
+TOTAL_STEPS = 10
 
 STEP_IDS = (
     "asr",
@@ -56,6 +68,7 @@ STEP_IDS = (
     "cluster",
     "call_a1",
     "candidates",
+    "vlm",
     "call_a2",
     "tts",
     "call_b",
@@ -68,6 +81,7 @@ STEP_SCRIPT_NAMES: dict[str, str] = {
     "cluster": "step_03_cluster.py",
     "call_a1": "step_04_call_a1.py",
     "candidates": "step_05_candidates.py",
+    "vlm": "step_vlm.py",
     "call_a2": "step_06_call_a2.py",
     "tts": "step_07_tts.py",
     "call_b": "step_08_call_b.py",
@@ -214,11 +228,22 @@ class RecapContext:
             write_debug_index(self.debug_dir, self.work_dir)
 
     def load_transcript(self) -> dict[str, Any]:
-        path = self.work_dir / "transcript.json"
-        data = load_json(path)
-        if not isinstance(data, dict):
-            raise FileNotFoundError("transcript.json missing — run ASR first")
-        return data
+        srt_path = self.work_dir / "transcript.srt"
+        json_path = self.work_dir / "transcript.json"
+        if srt_path.is_file():
+            text = srt_path.read_text(encoding="utf-8")
+            return {"language": "unknown", "segments": parse_srt(text), "srt": text}
+        if json_path.is_file():
+            data = load_json(json_path)
+            if not isinstance(data, dict):
+                raise FileNotFoundError("transcript.srt missing — run ASR first")
+            segs = data.get("segments") or []
+            return {
+                "language": data.get("language") or "unknown",
+                "segments": segs,
+                "srt": segments_to_srt(segs) if isinstance(segs, list) else "",
+            }
+        raise FileNotFoundError("transcript.srt missing — run ASR first")
 
     def load_shots(self) -> list[dict[str, Any]]:
         path = self.work_dir / "shots.json"
@@ -291,15 +316,32 @@ class RecapContext:
 
 def run_step_asr(ctx: RecapContext) -> None:
     n = 1
-    step_start(n, "ASR", "Whisper transcript")
-    transcript_path = ctx.work_dir / "transcript.json"
-    transcript = load_json_if_fresh(transcript_path)
-    if transcript is not None:
-        step_done(n, "ASR", f"cache hit ({len(transcript.get('segments', []))} segs)")
+    step_start(n, "ASR", "Whisper SRT")
+    srt_path = ctx.work_dir / "transcript.srt"
+    json_path = ctx.work_dir / "transcript.json"
+    if artifact_fresh(srt_path):
+        segs = load_srt_segments(srt_path)
+        step_done(n, "ASR", f"cache hit ({len(segs)} cues)")
         return
+    if json_path.is_file():
+        legacy = load_json(json_path)
+        segs = legacy.get("segments") if isinstance(legacy, dict) else None
+        if isinstance(segs, list) and segs:
+            write_srt(srt_path, segs)
+            try:
+                json_path.unlink()
+            except OSError:
+                pass
+            step_done(n, "ASR", f"migrated JSON → SRT ({len(segs)} cues)")
+            return
     transcript = run_asr(ctx.video, ctx.work_dir)
-    write_json(transcript_path, transcript)
-    step_done(n, "ASR", f"{len(transcript.get('segments', []))} segs")
+    write_srt(srt_path, transcript.get("segments") or [])
+    if json_path.is_file():
+        try:
+            json_path.unlink()
+        except OSError:
+            pass
+    step_done(n, "ASR", f"{len(transcript.get('segments') or [])} cues")
 
 
 def run_step_scenes(ctx: RecapContext) -> None:
@@ -322,10 +364,35 @@ def run_step_cluster(ctx: RecapContext) -> None:
     scenes_path = ctx.work_dir / "semantic_scenes.json"
     shots_path = ctx.work_dir / "shots.json"
     semantic = load_json_if_fresh(scenes_path, shots_path)
-    if semantic is not None:
+    has_kf = bool(
+        isinstance(shots, list)
+        and shots
+        and isinstance(shots[0], dict)
+        and (shots[0].get("keyframes") or {}).get("primary")
+    )
+    if (
+        semantic is not None
+        and str(semantic.get("visualVersion") or "") == VISUAL_VERSION
+        and has_kf
+    ):
         step_done(n, "Cluster", f"cache hit ({len(semantic.get('scenes', []))} scenes)")
         return
-    semantic = cluster_semantic_scenes(ctx.video, shots, ctx.work_dir)
+    tr_segs: list = []
+    try:
+        tr_segs = list(ctx.load_transcript().get("segments") or [])
+    except Exception:
+        tr_segs = []
+    semantic = cluster_semantic_scenes(
+        ctx.video,
+        shots,
+        ctx.work_dir,
+        transcript_segments=tr_segs,
+        cfg=ctx.cfg,
+    )
+    for s in shots:
+        if isinstance(s, dict):
+            s.pop("_secondaryEmbeddings", None)
+    write_json(shots_path, shots)
     write_json(scenes_path, semantic)
     step_done(n, "Cluster", f"{len(semantic.get('scenes', []))} scenes")
 
@@ -334,23 +401,37 @@ def run_step_call_a1(ctx: RecapContext) -> None:
     n = 4
     transcript = ctx.load_transcript()
     semantic = ctx.load_semantic()
-    transcript_text = format_transcript_timestamped(transcript.get("segments", []))
+    srt_text = str(transcript.get("srt") or "").strip() or format_transcript_timestamped(
+        transcript.get("segments", [])
+    )
     tr_merged = merge_transcript_windows(transcript.get("segments", []), window_sec=30.0)
 
-    step_start(n, "CallA-1", "story analyst")
+    step_start(n, "CallA-1", "film analysis")
     knowledge_path = ctx.work_dir / "story_knowledge.json"
+    analysis_path = ctx.work_dir / "story_analysis.md"
     if knowledge_path.exists():
         knowledge = load_json(knowledge_path)
+        if not analysis_path.exists() and isinstance(knowledge, dict):
+            analysis_path.write_text(
+                analysis_markdown_from_knowledge(
+                    knowledge,
+                    video_name=ctx.video.name,
+                    movie_dur=ctx.movie_dur,
+                ),
+                encoding="utf-8",
+            )
         step_done(n, "CallA-1", f"cache hit ({len(knowledge.get('events', []))} events)")
         return
 
     payload_a1 = build_a1_payload(
         movie_title=ctx.title,
         movie_duration=ctx.movie_dur,
-        transcript=transcript_text,
+        srt=srt_text,
+        video_file_name=ctx.video.name,
     )
-    payload_a1["year"] = ctx.year
-    knowledge = generate_story_knowledge(
+    if ctx.year is not None:
+        payload_a1["year"] = ctx.year
+    knowledge, analysis_md = generate_story_knowledge(
         payload_a1,
         model=ctx.gemini_model,
         key_tier=ctx.gemini_tier,
@@ -361,6 +442,10 @@ def run_step_call_a1(ctx: RecapContext) -> None:
         semantic=semantic,
     )
     write_json(knowledge_path, knowledge)
+    analysis_path.write_text(analysis_md, encoding="utf-8")
+    if ctx.keep_debug:
+        ctx.debug_dir.mkdir(parents=True, exist_ok=True)
+        (ctx.debug_dir / "story_analysis.md").write_text(analysis_md, encoding="utf-8")
     step_done(
         n,
         "CallA-1",
@@ -387,14 +472,53 @@ def run_step_candidates(ctx: RecapContext) -> None:
         shots=shots,
         semantic=semantic,
         transcript_segments=transcript_segments,
+        embeddings=load_shot_embeddings(ctx.work_dir),
     )
     write_json(knowledge_path, knowledge)
     n_cands = sum(len(e.get("candidate_shots") or []) for e in knowledge.get("events") or [])
     step_done(n, "Candidates", f"{n_cands} candidate links")
 
 
-def run_step_call_a2(ctx: RecapContext) -> None:
+def run_step_vlm(ctx: RecapContext) -> None:
     n = 6
+    knowledge = ctx.load_knowledge()
+    shots = ctx.load_shots()
+    step_start(n, "VLM", "Qwen2.5-VL on shortlisted keyframes")
+    knowledge_path = ctx.work_dir / "story_knowledge.json"
+    vlm_path = ctx.work_dir / "vlm_evidence.json"
+    if knowledge_has_vlm(knowledge):
+        step_done(n, "VLM", "cache hit")
+        return
+    if vlm_path.exists():
+        cached = load_json(vlm_path)
+        knowledge_mtime = knowledge_path.stat().st_mtime if knowledge_path.exists() else 0
+        if (
+            isinstance(cached, dict)
+            and cached.get("skipped")
+            and vlm_path.stat().st_mtime >= knowledge_mtime
+        ):
+            step_done(n, "VLM", f"skipped ({cached.get('reason')})")
+            return
+    meta = describe_candidate_events(
+        knowledge,
+        shots=shots,
+        work_dir=ctx.work_dir,
+        cfg=ctx.cfg,
+        locale=ctx.locale,
+    )
+    write_json(knowledge_path, knowledge)
+    write_json(vlm_path, meta)
+    if ctx.keep_debug:
+        ctx.debug_dir.mkdir(parents=True, exist_ok=True)
+        write_json(ctx.debug_dir / "vlm_evidence.json", meta)
+    if meta.get("skipped"):
+        step_done(n, "VLM", f"skipped ({meta.get('reason')})")
+        return
+    step_done(n, "VLM", f"{meta.get('eventCount', 0)} events · {meta.get('imageCount', 0)} frames")
+
+
+def run_step_call_a2(ctx: RecapContext) -> None:
+    n = 7
     knowledge = ctx.load_knowledge()
     step_start(n, "CallA-2", "script writer + visual beats")
     script_path = ctx.work_dir / "script.json"
@@ -415,6 +539,7 @@ def run_step_call_a2(ctx: RecapContext) -> None:
         locale=ctx.locale,
         dur_min=ctx.dur_min,
         dur_max=ctx.dur_max,
+        wpm=ctx.wpm,
         model=ctx.gemini_model,
         key_tier=ctx.gemini_tier,
         debug_dir=ctx.debug_dir if ctx.keep_debug else None,
@@ -435,7 +560,7 @@ def run_step_call_a2(ctx: RecapContext) -> None:
 
 
 def run_step_tts(ctx: RecapContext) -> None:
-    n = 7
+    n = 8
     segments, script = ctx.load_segments_and_script()
     knowledge = ctx.load_knowledge()
     narrations = script[SCRIPT_NARRATIONS]
@@ -481,7 +606,7 @@ def run_step_tts(ctx: RecapContext) -> None:
 
 
 def run_step_call_b(ctx: RecapContext) -> None:
-    n = 8
+    n = 9
     shots = ctx.load_shots()
     semantic = ctx.load_semantic()
     knowledge = ctx.load_knowledge()
@@ -514,20 +639,28 @@ def run_step_call_b(ctx: RecapContext) -> None:
         shots=shots,
         semantic=semantic,
         work_dir=ctx.work_dir,
+        cfg=ctx.cfg,
+        knowledge=knowledge,
     )
+    debug_rank = picks.pop("_debugRanking", None)
     fixed = sanitize_picks(
         picks.get(PICKS_SELECTED_SHOTS),
         segment_candidates=segment_candidates,
         tts_meta=tts_meta,
         narrations=narrations,
     )
-    picks = {PICKS_SELECTED_SHOTS: fixed}
-    write_json(picks_path, picks)
+    out_picks = {PICKS_SELECTED_SHOTS: fixed}
+    if ctx.keep_debug:
+        out_picks["selectedShotsDetail"] = picks.get("selectedShotsDetail") or []
+    write_json(picks_path, out_picks)
+    if ctx.keep_debug and debug_rank:
+        ctx.debug_dir.mkdir(parents=True, exist_ok=True)
+        write_json(ctx.debug_dir / "call_b_ranking.json", debug_rank)
     step_done(n, "CallB", f"{len(fixed)} segments picked")
 
 
 def run_step_render(ctx: RecapContext) -> Path:
-    n = 9
+    n = 10
     shots = ctx.load_shots()
     knowledge = ctx.load_knowledge()
     segments, script = ctx.load_segments_and_script()
@@ -590,6 +723,7 @@ STEP_RUNNERS: dict[str, Any] = {
     "cluster": run_step_cluster,
     "call_a1": run_step_call_a1,
     "candidates": run_step_candidates,
+    "vlm": run_step_vlm,
     "call_a2": run_step_call_a2,
     "tts": run_step_tts,
     "call_b": run_step_call_b,

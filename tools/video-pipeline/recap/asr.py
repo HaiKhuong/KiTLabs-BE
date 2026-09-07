@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -129,6 +130,28 @@ def os_env(key: str) -> str | None:
     return os.environ.get(key)
 
 
+_SRT_TS_RE = re.compile(
+    r"(\d{1,2}):(\d{2}):(\d{2})[,.](\d{1,3})\s*-->\s*(\d{1,2}):(\d{2}):(\d{2})[,.](\d{1,3})"
+)
+
+
+def _ms_token_to_millis(raw: str) -> int:
+    digits = re.sub(r"\D", "", raw or "") or "0"
+    return int((digits + "000")[:3])
+
+
+def srt_timestamp_to_sec(h: str, m: str, s: str, ms: str) -> float:
+    return int(h) * 3600 + int(m) * 60 + int(s) + _ms_token_to_millis(ms) / 1000.0
+
+
+def sec_to_srt_timestamp(sec: float) -> str:
+    total_ms = max(0, int(round(float(sec) * 1000.0)))
+    hours, rem = divmod(total_ms, 3_600_000)
+    minutes, rem = divmod(rem, 60_000)
+    seconds, millis = divmod(rem, 1000)
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d},{millis:03d}"
+
+
 def sec_to_hhmmss(sec: float) -> str:
     total = max(0, int(sec))
     h = total // 3600
@@ -139,57 +162,130 @@ def sec_to_hhmmss(sec: float) -> str:
     return f"{m:02d}:{s:02d}"
 
 
-def format_transcript_timestamped(
-    segments: list[dict[str, Any]],
-    max_chars: int | None = None,
-) -> str:
-    """
-    Chronological transcript for Gemini A:
-    00:01:10
-    John wakes up.
-    """
-    if max_chars is None:
-        raw = os_env("RECAP_TRANSCRIPT_MAX_CHARS")
-        max_chars = int(raw) if raw and raw.isdigit() else 120_000
-
+def segments_to_srt(segments: list[dict[str, Any]]) -> str:
+    """Whisper segments → SubRip (.srt) with millisecond timestamps."""
     blocks: list[str] = []
+    index = 0
     for seg in segments:
         text = str(seg.get("text") or "").strip()
         if not text:
             continue
-        ts = sec_to_hhmmss(float(seg.get("startSec") or 0))
-        blocks.append(f"{ts}\n{text}")
-
+        start = float(seg.get("startSec") or 0)
+        end = float(seg.get("endSec") or start)
+        if end <= start:
+            end = start + 0.001
+        index += 1
+        blocks.append(
+            f"{index}\n{sec_to_srt_timestamp(start)} --> {sec_to_srt_timestamp(end)}\n{text}"
+        )
     if not blocks:
         return ""
+    return "\n\n".join(blocks) + "\n"
 
-    body = "\n\n".join(blocks)
-    if len(body) <= max_chars:
+
+def parse_srt_time_range(text: str) -> tuple[float, float] | None:
+    match = _SRT_TS_RE.search(text or "")
+    if not match:
+        return None
+    start = srt_timestamp_to_sec(*match.group(1, 2, 3, 4))
+    end = srt_timestamp_to_sec(*match.group(5, 6, 7, 8))
+    return start, max(end, start + 0.001)
+
+
+def parse_srt(text: str) -> list[dict[str, Any]]:
+    """Parse SubRip into Whisper-style segments (startSec / endSec / text)."""
+    raw = (text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not raw:
+        return []
+    chunks = re.split(r"\n\s*\n", raw)
+    segments: list[dict[str, Any]] = []
+    for chunk in chunks:
+        lines = [ln.strip() for ln in chunk.split("\n") if ln.strip()]
+        if not lines:
+            continue
+        ts_idx = 1 if lines[0].isdigit() and len(lines) > 1 else 0
+        if ts_idx >= len(lines):
+            continue
+        match = _SRT_TS_RE.search(lines[ts_idx])
+        if not match:
+            continue
+        start = srt_timestamp_to_sec(*match.group(1, 2, 3, 4))
+        end = srt_timestamp_to_sec(*match.group(5, 6, 7, 8))
+        body = "\n".join(lines[ts_idx + 1 :]).strip()
+        if not body:
+            continue
+        i = len(segments)
+        segments.append(
+            {
+                "id": f"t{i:04d}",
+                "startSec": start,
+                "endSec": max(end, start + 0.001),
+                "text": body,
+            }
+        )
+    return segments
+
+
+def write_srt(path: Path, segments: list[dict[str, Any]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(segments_to_srt(segments), encoding="utf-8")
+
+
+def load_srt_segments(path: Path) -> list[dict[str, Any]]:
+    return parse_srt(path.read_text(encoding="utf-8"))
+
+
+def format_srt_for_prompt(
+    srt_text: str,
+    max_chars: int | None = None,
+) -> str:
+    """Pass real SRT to Gemini; keep head+tail cues if over budget."""
+    if max_chars is None:
+        raw = os_env("RECAP_TRANSCRIPT_MAX_CHARS")
+        max_chars = int(raw) if raw and raw.isdigit() else 120_000
+    body = (srt_text or "").strip()
+    if not body or len(body) <= max_chars:
         return body
 
-    # Keep head + tail; drop middle for very long movies
+    segments = parse_srt(body)
+    if not segments:
+        return body[:max_chars]
+
+    head: list[dict[str, Any]] = []
+    tail: list[dict[str, Any]] = []
+    size = 0
     head_budget = int(max_chars * 0.45)
     tail_budget = int(max_chars * 0.45)
-    head_parts: list[str] = []
-    tail_parts: list[str] = []
-    size = 0
-    for block in blocks:
+    for seg in segments:
+        block = segments_to_srt([seg]).strip()
         add = len(block) + 2
         if size + add > head_budget:
             break
-        head_parts.append(block)
+        head.append(seg)
         size += add
     size = 0
-    for block in reversed(blocks):
+    for seg in reversed(segments):
+        block = segments_to_srt([seg]).strip()
         add = len(block) + 2
         if size + add > tail_budget:
             break
-        tail_parts.insert(0, block)
+        tail.insert(0, seg)
         size += add
 
-    omitted = len(blocks) - len(head_parts) - len(tail_parts)
-    marker = f"\n\n[... {omitted} transcript blocks omitted for length ...]\n\n"
-    return "\n\n".join(head_parts) + marker + "\n\n".join(tail_parts)
+    omitted = max(0, len(segments) - len(head) - len(tail))
+    marker = (
+        f"\n\n{len(head) + 1}\n00:00:00,000 --> 00:00:00,001\n"
+        f"[... omitted {omitted} SRT cues for length ...]\n\n"
+    )
+    return segments_to_srt(head).rstrip() + marker + segments_to_srt(tail)
+
+
+def format_transcript_timestamped(
+    segments: list[dict[str, Any]],
+    max_chars: int | None = None,
+) -> str:
+    """Gemini input: valid SubRip (not a custom JSON dump)."""
+    return format_srt_for_prompt(segments_to_srt(segments), max_chars=max_chars)
 
 
 def merge_transcript_windows(segments: list[dict[str, Any]], window_sec: float = 30.0) -> list[list[Any]]:

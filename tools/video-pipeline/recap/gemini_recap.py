@@ -251,24 +251,30 @@ def _dump_debug(debug_dir: Path | None, name: str, data: Any) -> None:
         LOG.warning("Failed to write debug %s: %s", name, exc)
 
 
-def _generate_json(
+def _generate_raw(
     system: str,
     user_obj: Any,
+    *,
     model: str = "",
     key_tier: str = "",
     debug_dir: Path | None = None,
     debug_tag: str = "gemini",
-) -> dict[str, Any]:
+    json_mode: bool = True,
+    temperature: float = 0.4,
+) -> str:
     tier = key_tier or os.environ.get("RECAP_GEMINI_KEY_TIER") or "vip"
     keys = _load_keys(tier)
     if not keys:
         LOG.warning("No Gemini keys (tier=%s); using heuristic fallback", tier)
-        return {}
+        return ""
 
     model_id = _model_name(model)
     LOG.info("Gemini %s model=%s", debug_tag, model_id)
-    prompt = system + "\n\n# INPUT JSON\n" + json.dumps(user_obj, ensure_ascii=False)
-    _dump_debug(debug_dir, f"{debug_tag}_request.json", user_obj)
+    if isinstance(user_obj, str):
+        prompt = system + "\n\n# INPUT\n" + user_obj
+    else:
+        prompt = system + "\n\n# INPUT JSON\n" + json.dumps(user_obj, ensure_ascii=False)
+    _dump_debug(debug_dir, f"{debug_tag}_request.json", user_obj if not isinstance(user_obj, str) else {"text": user_obj})
     _dump_debug(debug_dir, f"{debug_tag}_prompt.txt", prompt)
     last_err: Exception | None = None
 
@@ -282,32 +288,30 @@ def _generate_json(
             from google.generativeai import GenerativeModel, configure  # type: ignore
         except Exception as exc:
             LOG.warning("google generative AI SDK missing (%s)", exc)
-            return {}
+            return ""
 
-    def _call_once(api_key: str) -> dict[str, Any]:
+    gen_config: dict[str, Any] = {"temperature": temperature}
+    if json_mode:
+        gen_config["response_mime_type"] = "application/json"
+
+    def _call_once(api_key: str) -> str:
         raw_text = ""
         if use_new_sdk:
             client = genai.Client(api_key=api_key)
             resp = client.models.generate_content(
                 model=model_id,
                 contents=prompt,
-                config={"response_mime_type": "application/json", "temperature": 0.4},
+                config=gen_config,
             )
             raw_text = getattr(resp, "text", None) or ""
         else:
             configure(api_key=api_key)
-            m = GenerativeModel(
-                model_id,
-                generation_config={"response_mime_type": "application/json", "temperature": 0.4},
-            )
+            m = GenerativeModel(model_id, generation_config=gen_config)
             resp = m.generate_content(prompt)
             raw_text = resp.text or ""
         _dump_debug(debug_dir, f"{debug_tag}_response_raw.txt", raw_text)
-        parsed = _parse_json(raw_text)
-        _dump_debug(debug_dir, f"{debug_tag}_response.json", parsed)
-        return parsed
+        return raw_text
 
-    # Each key once. Transient 503/429: debounce 3s then retry once (global, not per key).
     transient_retried = False
     for key in keys:
         try:
@@ -334,7 +338,69 @@ def _generate_json(
     if last_err:
         LOG.error("All Gemini attempts failed: %s", last_err)
         _dump_debug(debug_dir, f"{debug_tag}_error.txt", str(last_err))
-    return {}
+    return ""
+
+
+def _strip_fence(text: str) -> str:
+    raw = (text or "").strip()
+    if not raw:
+        return ""
+    m = re.search(r"```(?:markdown|md|text)?\s*([\s\S]*?)```", raw, re.I)
+    if m and len(m.group(1).strip()) > 80:
+        return m.group(1).strip()
+    return raw
+
+
+def _generate_text(
+    system: str,
+    user_obj: Any,
+    model: str = "",
+    key_tier: str = "",
+    debug_dir: Path | None = None,
+    debug_tag: str = "gemini",
+) -> str:
+    return _strip_fence(
+        _generate_raw(
+            system,
+            user_obj,
+            model=model,
+            key_tier=key_tier,
+            debug_dir=debug_dir,
+            debug_tag=debug_tag,
+            json_mode=False,
+            temperature=0.3,
+        )
+    )
+
+
+def _generate_json(
+    system: str,
+    user_obj: Any,
+    model: str = "",
+    key_tier: str = "",
+    debug_dir: Path | None = None,
+    debug_tag: str = "gemini",
+) -> dict[str, Any]:
+    raw_text = _generate_raw(
+        system,
+        user_obj,
+        model=model,
+        key_tier=key_tier,
+        debug_dir=debug_dir,
+        debug_tag=debug_tag,
+        json_mode=True,
+        temperature=0.4,
+    )
+    if not raw_text.strip():
+        return {}
+    try:
+        parsed = _parse_json(raw_text)
+    except Exception as exc:
+        LOG.error("Gemini JSON parse failed: %s", exc)
+        _dump_debug(debug_dir, f"{debug_tag}_parse_error.txt", str(exc))
+        return {}
+    _dump_debug(debug_dir, f"{debug_tag}_response.json", parsed)
+    return parsed
 
 
 def _parse_json(text: str) -> dict[str, Any]:

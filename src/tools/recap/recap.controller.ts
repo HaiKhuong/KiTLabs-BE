@@ -46,7 +46,7 @@ export class RecapController {
     const step = String(dto.step || "").trim();
     if (!isRecapStepId(step)) {
       throw new NotFoundException(
-        "Invalid step. Use: asr, scenes, cluster, call_a1, candidates, call_a2, tts, call_b, render",
+        "Invalid step. Use: asr, scenes, cluster, call_a1, candidates, vlm, call_a2, tts, call_b, render",
       );
     }
     const queued = await this.recapService.enqueueStep(id, step);
@@ -103,7 +103,7 @@ export class RecapController {
     const step = String(stepRaw || "").trim();
     if (!isRecapStepId(step)) {
       throw new NotFoundException(
-        "Invalid step. Use: asr, scenes, cluster, call_a1, candidates, call_a2, tts, call_b, render",
+        "Invalid step. Use: asr, scenes, cluster, call_a1, candidates, vlm, call_a2, tts, call_b, render",
       );
     }
     const row = await this.recapService.getById(id);

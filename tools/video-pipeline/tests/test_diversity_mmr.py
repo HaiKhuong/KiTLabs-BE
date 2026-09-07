@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "recap"))
@@ -21,17 +22,21 @@ def _shot(sid: int, score: float = 1.0) -> dict:
     }
 
 
-def test_mmr_select_with_seed_returns_only_new_items():
-    seed = [_shot(1), _shot(2)]
-    pool = [_shot(3, 0.9), _shot(4, 0.8), _shot(5, 0.7)]
-    extra = mmr_select(pool, relevance={3: 0.9, 4: 0.8, 5: 0.7}, embeddings=None, k=1, selected_seed=seed)
-    assert len(extra) == 1
-    assert extra[0]["id"] not in {1, 2}
+class TestDiversityMmr(unittest.TestCase):
+    def test_mmr_select_with_seed_returns_only_new_items(self) -> None:
+        seed = [_shot(1), _shot(2)]
+        pool = [_shot(3, 0.9), _shot(4, 0.8), _shot(5, 0.7)]
+        extra = mmr_select(pool, relevance={3: 0.9, 4: 0.8, 5: 0.7}, embeddings=None, k=1, selected_seed=seed)
+        self.assertEqual(len(extra), 1)
+        self.assertNotIn(extra[0]["id"], {1, 2})
+
+    def test_mmr_select_k_greater_than_pool(self) -> None:
+        seed = [_shot(1)]
+        pool = [_shot(2), _shot(3)]
+        extra = mmr_select(pool, relevance={2: 1.0, 3: 0.5}, embeddings=None, k=2, selected_seed=seed)
+        self.assertEqual(len(extra), 2)
+        self.assertEqual({e["id"] for e in extra}, {2, 3})
 
 
-def test_mmr_select_k_greater_than_pool():
-    seed = [_shot(1)]
-    pool = [_shot(2), _shot(3)]
-    extra = mmr_select(pool, relevance={2: 1.0, 3: 0.5}, embeddings=None, k=2, selected_seed=seed)
-    assert len(extra) == 2
-    assert {e["id"] for e in extra} == {2, 3}
+if __name__ == "__main__":
+    unittest.main()

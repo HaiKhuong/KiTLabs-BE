@@ -12,6 +12,7 @@ import { CreditHistory } from "../credits/credit-history.entity";
 import { LogsService } from "../logs/logs.service";
 import { NotificationsService } from "../notifications/notifications.service";
 import { AudioService } from "../audio/audio.service";
+import { ModelsService } from "../models/models.service";
 import { User } from "../users/user.entity";
 import { CreateRecapJobDto } from "./dto/create-recap-job.dto";
 import { RecapHistory } from "./recap-history.entity";
@@ -52,7 +53,28 @@ export class RecapService {
     private readonly logsService: LogsService,
     private readonly notificationsService: NotificationsService,
     private readonly audioService: AudioService,
+    private readonly modelsService: ModelsService,
   ) {}
+
+  static envStr(code: string, fallback: string): string {
+    const raw = String(process.env[code] ?? "").trim();
+    return raw || fallback;
+  }
+
+  static envNum(code: string, fallback: number): number {
+    const raw = String(process.env[code] ?? "").trim();
+    if (!raw) return fallback;
+    const n = Number(raw);
+    return Number.isFinite(n) ? n : fallback;
+  }
+
+  static envBool(code: string, fallback: boolean): boolean {
+    const raw = String(process.env[code] ?? "").trim().toLowerCase();
+    if (!raw) return fallback;
+    if (["1", "true", "yes", "on"].includes(raw)) return true;
+    if (["0", "false", "no", "off"].includes(raw)) return false;
+    return fallback;
+  }
 
   static resolveQueueLockDurationMs(): number {
     const explicit = Number(process.env.RECAP_QUEUE_LOCK_MS ?? 0);
@@ -120,6 +142,10 @@ export class RecapService {
       edgeTtsRatePercent: dto.engineConfig.edgeTtsRatePercent ?? 0,
       videoSpeed: dto.engineConfig.videoSpeed ?? 1,
       keepDebugArtifacts: dto.engineConfig.keepDebugArtifacts ?? true,
+      vlmEnabled: dto.engineConfig.vlmEnabled ?? RecapService.envBool("RECAP_VLM_ENABLED", true),
+      vlmModel: dto.engineConfig.vlmModel ?? RecapService.envStr("RECAP_VLM_MODEL", "Qwen/Qwen2.5-VL-3B-Instruct"),
+      vlmMaxShotsPerEvent: dto.engineConfig.vlmMaxShotsPerEvent ?? RecapService.envNum("RECAP_VLM_MAX_SHOTS", 6),
+      vlmMaxNewTokens: RecapService.envNum("RECAP_VLM_MAX_NEW_TOKENS", 128),
       recapStepProgress: emptyRecapStepProgress(),
     };
 
@@ -184,6 +210,10 @@ export class RecapService {
     if (history.status === QueueJobStatus.PENDING || history.status === QueueJobStatus.RUNNING) {
       throw new BadRequestException("Recap job is busy");
     }
+
+    this.modelsService.assertInstalled(
+      this.modelsService.requiredModelsForRecap(history.engineConfig, step),
+    );
 
     const nextProgress: RecapStepProgress = {
       ...progress,
@@ -259,7 +289,10 @@ export class RecapService {
       step,
       workDir,
       (filePath) => this.readJsonRawIfExists(filePath),
-      { resultPath: extras?.resultPath ?? history.resultPath },
+      {
+        resultPath: extras?.resultPath ?? history.resultPath,
+        readText: (filePath) => this.readTextIfExists(filePath),
+      },
     );
 
     if (summary) {
@@ -363,15 +396,22 @@ export class RecapService {
       summaries[step] ??
       buildRecapStepSummary(step, workDir, (filePath) => this.readJsonRawIfExists(filePath), {
         resultPath: history.resultPath,
+        readText: (filePath) => this.readTextIfExists(filePath),
       });
     const playUrl = history.resultPath
       ? `/api/tools/recap/artifact?recapHistoryId=${history.id}&type=video`
       : null;
-    const payload = buildRecapStepArtifactPayload(step, workDir, (filePath) => this.readJsonRawIfExists(filePath), {
-      id: history.id,
-      resultPath: history.resultPath,
-      playUrl,
-    });
+    const payload = buildRecapStepArtifactPayload(
+      step,
+      workDir,
+      (filePath) => this.readJsonRawIfExists(filePath),
+      {
+        id: history.id,
+        resultPath: history.resultPath,
+        playUrl,
+      },
+      { readText: (filePath) => this.readTextIfExists(filePath) },
+    );
     return { step, summary: summary ?? null, payload };
   }
 
@@ -541,6 +581,16 @@ export class RecapService {
       return JSON.parse(readFileSync(filePath, "utf-8")) as unknown;
     } catch (error) {
       this.logger.warn(`Failed to parse JSON ${filePath}: ${error}`);
+      return null;
+    }
+  }
+
+  readTextIfExists(filePath: string): string | null {
+    if (!existsSync(filePath)) return null;
+    try {
+      return readFileSync(filePath, "utf-8");
+    } catch (error) {
+      this.logger.warn(`Failed to read ${filePath}: ${error}`);
       return null;
     }
   }
