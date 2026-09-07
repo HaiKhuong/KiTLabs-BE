@@ -15,7 +15,7 @@ from clip_embeddings import (
     load_shot_extra_embeddings,
     save_shot_embeddings,
 )
-from diversity import cosine, mmr_select, order_by_story_flow, score_text_overlap
+from diversity import cosine, mmr_select, score_text_overlap
 from gemini_recap import PICKS_SELECTED_SHOTS
 from progress_log import progress
 from ranking import final_score, quality_score, ranking_config, shot_mid, temporal_score
@@ -97,6 +97,27 @@ def _prefer_fresh_pool(
     return diverse if len(diverse) >= 2 else source
 
 
+def _prefer_forward_pool(
+    pool: list[dict[str, Any]],
+    *,
+    cursor: int,
+    slack: int = 0,
+) -> list[dict[str, Any]]:
+    """Keep shots that continue the movie timeline (higher shot id)."""
+    if cursor <= 0 or not pool:
+        return pool
+    strict = [c for c in pool if int(c["id"]) > cursor]
+    if len(strict) >= 2:
+        return strict
+    if strict:
+        return strict
+    if slack > 0:
+        loose = [c for c in pool if int(c["id"]) > cursor - slack]
+        if loose:
+            return loose
+    return pool
+
+
 def _enrich_candidates(
     candidates: list[dict[str, Any]],
     shots_by_id: dict[int, dict[str, Any]],
@@ -131,6 +152,91 @@ def _enrich_candidates(
     return out
 
 
+def _shot_duration(shot: dict[str, Any]) -> float:
+    if shot.get("durationSec") is not None:
+        return max(0.1, float(shot["durationSec"]))
+    return max(0.1, float(shot.get("endSec") or 0) - float(shot.get("startSec") or 0))
+
+
+def _shot_id_bounds(shots: list[dict[str, Any]]) -> tuple[int, int, list[int]]:
+    ids = sorted(int(s["id"]) for s in shots if isinstance(s, dict) and s.get("id") is not None)
+    if not ids:
+        return 0, 0, []
+    return ids[0], ids[-1], ids
+
+
+def _walk_shot_window(
+    shots: list[dict[str, Any]],
+    *,
+    audio_dur: float,
+    min_id: int,
+    max_id: int,
+    used: set[int],
+    cfg: dict[str, Any] | None = None,
+) -> list[int]:
+    """Walk shot ids in order inside [min_id, max_id], skipping as little as possible."""
+    rc = ranking_config(cfg)
+    max_gap = max(1, int(rc["openingMaxGap"]))
+    qmin = float(rc["openingMinQuality"])
+    by_id = {int(s["id"]): s for s in shots if isinstance(s, dict) and s.get("id") is not None}
+    ordered_ids = [sid for sid in sorted(by_id) if min_id <= sid <= max_id and sid not in used]
+    picked: list[int] = []
+    total = 0.0
+    skipped = 0
+    need = max(2, int(round(float(audio_dur) / 4.0)))
+    for sid in ordered_ids:
+        shot = by_id[sid]
+        q = quality_score(shot.get("quality") if isinstance(shot.get("quality"), dict) else None)
+        if picked and q < qmin and skipped < max_gap:
+            skipped += 1
+            continue
+        skipped = 0
+        picked.append(sid)
+        total += _shot_duration(shot)
+        if total >= float(audio_dur) * 0.85 and len(picked) >= 2:
+            break
+        if len(picked) >= need + 2:
+            break
+    return picked
+
+
+def plan_opening_shots(
+    shots: list[dict[str, Any]],
+    *,
+    audio_dur: float,
+    cursor: int,
+    used: set[int],
+    cfg: dict[str, Any] | None = None,
+) -> list[int]:
+    """Cover the movie intro: walk shot ids in order, skip as little as possible."""
+    rc = ranking_config(cfg)
+    frac = min(0.35, max(0.04, float(rc["openingShotFrac"])))
+    lo, hi, all_ids = _shot_id_bounds(shots)
+    if not all_ids:
+        return []
+    min_id = int(cursor) + 1 if int(cursor or 0) > 0 else lo
+    cap = max(min_id + 20, lo + int((hi - lo + 1) * frac), int(cursor) + 48)
+    return _walk_shot_window(shots, audio_dur=audio_dur, min_id=min_id, max_id=cap, used=used, cfg=cfg)
+
+
+def plan_ending_shots(
+    shots: list[dict[str, Any]],
+    *,
+    audio_dur: float,
+    cursor: int,
+    used: set[int],
+    ending_floor: int,
+    cfg: dict[str, Any] | None = None,
+) -> list[int]:
+    """Cover the movie climax/ending: walk the reserved tail of shot ids."""
+    lo, hi, all_ids = _shot_id_bounds(shots)
+    if not all_ids:
+        return []
+    start = ending_floor if int(cursor or 0) < ending_floor else int(cursor) + 1
+    start = max(start, lo)
+    return _walk_shot_window(shots, audio_dur=audio_dur, min_id=start, max_id=hi, used=used, cfg=cfg)
+
+
 def plan_shots_for_segment(
     segment: dict[str, Any],
     candidates: list[dict[str, Any]],
@@ -145,10 +251,16 @@ def plan_shots_for_segment(
     debug_rows: list[dict[str, Any]] | None = None,
     avoid_ids: set[int] | None = None,
     avoid_groups: set[Any] | None = None,
+    story_cursor: int = 0,
+    id_max: int | None = None,
 ) -> list[int]:
     """Match visualBeats → diverse ordered shot ids covering ~audio_dur."""
     shots_by_id = {int(s["id"]): s for s in shots}
     pool = _enrich_candidates(candidates, shots_by_id)
+    if id_max is not None:
+        capped = [c for c in pool if int(c["id"]) <= int(id_max)]
+        if capped:
+            pool = capped
     if not pool:
         return []
 
@@ -156,6 +268,11 @@ def plan_shots_for_segment(
     blocked_ids = _expand_near_ids(set(avoid_ids or ()), int(rc["nearShotRadius"]))
     blocked_groups = set(avoid_groups or ())
     pool = _prefer_fresh_pool(pool, blocked_ids=blocked_ids, blocked_groups=blocked_groups)
+    pool = _prefer_forward_pool(
+        pool,
+        cursor=int(story_cursor or 0),
+        slack=int(rc["storyCursorSlack"]),
+    )
     shot_to_scene = semantic.get("shotToScene") or {}
     group_of = semantic.get("shotToGroup") or {}
     beats = segment.get("visualBeats") or []
@@ -176,6 +293,11 @@ def plan_shots_for_segment(
     picked: list[dict[str, Any]] = []
     relevance: dict[int, float] = {}
     score_debug: dict[int, dict[str, float]] = {}
+
+    def floor_id() -> int:
+        if picked:
+            return max(int(p["id"]) for p in picked)
+        return int(story_cursor or 0)
 
     def score_candidate(c: dict[str, Any], beat_i: int, desc: str, last: dict[str, Any] | None) -> float:
         sid = int(c["id"])
@@ -206,6 +328,9 @@ def plan_shots_for_segment(
             score *= 0.18
         elif c.get("sceneGroupId") in blocked_groups:
             score *= 0.5
+        floor = floor_id()
+        if floor > 0 and sid <= floor:
+            score *= 0.12
         score_debug[sid] = {
             "clip": round(clip_s, 3),
             "temporal": round(temp, 3),
@@ -220,10 +345,10 @@ def plan_shots_for_segment(
         best: dict[str, Any] | None = None
         best_score = -1.0
         last = picked[-1] if picked else None
-        for c in pool:
+        unused = [c for c in pool if int(c["id"]) not in used]
+        work = _prefer_forward_pool(unused, cursor=floor_id(), slack=0) or unused
+        for c in work:
             sid = int(c["id"])
-            if sid in used:
-                continue
             score = score_candidate(c, bi, desc, last)
             if score > best_score:
                 best_score = score
@@ -234,6 +359,7 @@ def plan_shots_for_segment(
             picked.append(best)
 
     remaining = [c for c in pool if int(c["id"]) not in used]
+    remaining = _prefer_forward_pool(remaining, cursor=floor_id(), slack=int(rc["storyCursorSlack"])) or remaining
     for c in remaining:
         relevance[int(c["id"])] = score_candidate(c, 0, beat_texts[0] if beat_texts else "", picked[-1] if picked else None)
 
@@ -274,6 +400,7 @@ def plan_shots_for_segment(
             picked.append(e)
             total_dur += float(e.get("durationSec") or 0)
             remaining = [c for c in remaining if int(c["id"]) != sid]
+        remaining = _prefer_forward_pool(remaining, cursor=floor_id(), slack=int(rc["storyCursorSlack"])) or remaining
         need_more -= 1
         if need_more <= 0 and total_dur >= audio_dur * 0.85:
             break
@@ -298,7 +425,7 @@ def plan_shots_for_segment(
             used.add(sid)
             picked.append(e)
 
-    ordered = order_by_story_flow(picked)
+    ordered = sorted(picked, key=lambda s: (int(s["id"]), float(s.get("startSec") or 0)))
     out_ids: list[int] = []
     acc = 0.0
     for s in ordered:
@@ -354,7 +481,18 @@ def plan_all_segments(
     global_used: set[int] = set()
     recent_groups: list[set[Any]] = []
     cooldown = max(0, int(ranking_config(cfg)["sceneCooldownSegments"]))
+    rc = ranking_config(cfg)
+    opening_n = min(total, max(0, int(rc["openingSegments"])))
+    ending_n = min(total, max(0, int(rc["endingSegments"])))
+    if opening_n + ending_n > total:
+        ending_n = min(ending_n, max(1, total // 3) if total >= 2 else 0)
+        opening_n = min(opening_n, max(0, total - ending_n))
+    ending_start = total - ending_n if ending_n else total
+    lo, hi, _all_ids = _shot_id_bounds(shots)
+    end_frac = min(0.35, max(0.04, float(rc["endingShotFrac"])))
+    ending_floor = min(hi, max(lo, hi - int((hi - lo + 1) * end_frac) + 1)) if hi > lo else hi
     shots_by_id = {int(s["id"]): s for s in shots}
+    story_cursor = 0
     for i, seg in enumerate(segments):
         progress(LOG, "CallB segment", i, total, every=10)
         cands = segment_candidates[i] if i < len(segment_candidates) else []
@@ -372,30 +510,77 @@ def plan_all_segments(
         for prior in recent_groups[-cooldown:]:
             avoid_groups.update(prior)
         dbg: list[dict[str, Any]] = []
-        ids = plan_shots_for_segment(
-            seg,
-            cands,
-            audio_dur=audio_dur,
-            shots=shots,
-            semantic=semantic,
-            embeddings=embeddings or None,
-            extras=extras or None,
-            cfg=cfg,
-            event_mid=event_mid,
-            debug_rows=dbg,
-            avoid_ids=global_used,
-            avoid_groups=avoid_groups,
-        )
-        if not ids and cands:
+        if i < opening_n:
+            ids = plan_opening_shots(
+                shots,
+                audio_dur=audio_dur,
+                cursor=story_cursor,
+                used=global_used,
+                cfg=cfg,
+            )
+            debug_all.append(
+                {
+                    "segmentIndex": i,
+                    "mode": "opening",
+                    "narration": str(seg.get("narration") or "")[:240],
+                    "selected": ids,
+                }
+            )
+        elif i >= ending_start:
+            ids = plan_ending_shots(
+                shots,
+                audio_dur=audio_dur,
+                cursor=story_cursor,
+                used=global_used,
+                ending_floor=ending_floor,
+                cfg=cfg,
+            )
+            debug_all.append(
+                {
+                    "segmentIndex": i,
+                    "mode": "ending",
+                    "narration": str(seg.get("narration") or "")[:240],
+                    "selected": ids,
+                }
+            )
+        else:
+            ids = plan_shots_for_segment(
+                seg,
+                cands,
+                audio_dur=audio_dur,
+                shots=shots,
+                semantic=semantic,
+                embeddings=embeddings or None,
+                extras=extras or None,
+                cfg=cfg,
+                event_mid=event_mid,
+                debug_rows=dbg,
+                avoid_ids=global_used,
+                avoid_groups=avoid_groups,
+                story_cursor=story_cursor,
+                id_max=ending_floor - 1 if ending_n else None,
+            )
+        if not ids and cands and opening_n <= i < ending_start:
+            mid_max = ending_floor - 1 if ending_n else 10**9
             ids = [
                 int(c.get("id", c.get("shot_id")))
                 for c in cands
                 if int(c.get("id", c.get("shot_id") or -1)) not in global_used
+                and story_cursor < int(c.get("id", c.get("shot_id") or -1)) <= mid_max
             ][: max(1, int(audio_dur / 3))]
             if not ids:
+                ids = [
+                    int(c.get("id", c.get("shot_id")))
+                    for c in cands
+                    if int(c.get("id", c.get("shot_id") or -1)) not in global_used
+                ][: max(1, int(audio_dur / 3))]
+            if not ids:
                 ids = [int(c.get("id", c.get("shot_id"))) for c in cands[: max(1, int(audio_dur / 3))]]
+        ids = sorted({int(x) for x in ids})
         selected.append(ids)
         global_used.update(ids)
+        if ids:
+            story_cursor = max(story_cursor, max(ids))
         groups = {shots_by_id.get(sid, {}).get("sceneGroupId") for sid in ids}
         recent_groups.append({g for g in groups if g is not None})
         if dbg:
@@ -425,10 +610,11 @@ def sanitize_picks(
     tts_meta: list[dict[str, Any]],
     narrations: list[str],
 ) -> list[list[int]]:
-    """Keep only shortlisted shot ids; fill gaps from candidate pool without repeating used shots."""
+    """Keep shortlisted ids, chronological (increasing), no global repeats."""
     sanitized = raw or []
     fixed: list[list[int]] = []
     used: set[int] = set()
+    cursor = 0
     for i, chosen in enumerate(sanitized):
         allow = {int(c["id"]) for c in segment_candidates[i]} if i < len(segment_candidates) else set()
         row = [int(x) for x in (chosen or []) if int(x) in allow] if allow else [int(x) for x in (chosen or [])]
@@ -439,24 +625,38 @@ def sanitize_picks(
                 continue
             seen_row.add(sid)
             unique_row.append(sid)
-        row = unique_row
+        unique_row.sort()
+        forward = [sid for sid in unique_row if sid > cursor]
+        row = list(forward)
         if not row and i < len(segment_candidates) and segment_candidates[i]:
             need = float((tts_meta[i] if i < len(tts_meta) else {}).get("durationSec") or 28)
             take = max(1, int(need / 3))
-            row = [int(c["id"]) for c in segment_candidates[i] if int(c["id"]) not in used][:take]
+            cands = segment_candidates[i]
+            row = [int(c["id"]) for c in cands if int(c["id"]) not in used and int(c["id"]) > cursor][:take]
             if not row:
-                row = [int(c["id"]) for c in segment_candidates[i][:take]]
+                row = [int(c["id"]) for c in cands if int(c["id"]) not in used][:take]
+            if not row:
+                row = [int(c["id"]) for c in cands[:take]]
+            row = sorted(set(row))
         used.update(row)
+        if row:
+            cursor = max(cursor, max(row))
         fixed.append(row)
     while len(fixed) < len(narrations):
         i = len(fixed)
         if i < len(segment_candidates) and segment_candidates[i]:
             need = float((tts_meta[i] if i < len(tts_meta) else {}).get("durationSec") or 28)
             take = max(1, int(need / 3))
-            row = [int(c["id"]) for c in segment_candidates[i] if int(c["id"]) not in used][:take]
+            cands = segment_candidates[i]
+            row = [int(c["id"]) for c in cands if int(c["id"]) not in used and int(c["id"]) > cursor][:take]
             if not row:
-                row = [int(c["id"]) for c in segment_candidates[i][:take]]
+                row = [int(c["id"]) for c in cands if int(c["id"]) not in used][:take]
+            if not row:
+                row = [int(c["id"]) for c in cands[:take]]
+            row = sorted(set(row))
             used.update(row)
+            if row:
+                cursor = max(cursor, max(row))
             fixed.append(row)
         else:
             fixed.append([])

@@ -37,6 +37,13 @@ def ranking_config(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
         "sceneCooldownSegments": int(
             raw.get("sceneCooldownSegments", _env_float("RECAP_RANK_SCENE_COOLDOWN", 2))
         ),
+        "storyCursorSlack": int(raw.get("storyCursorSlack", _env_float("RECAP_RANK_STORY_SLACK", 0))),
+        "openingSegments": int(raw.get("openingSegments", _env_float("RECAP_RANK_OPENING_SEGMENTS", 3))),
+        "openingShotFrac": float(raw.get("openingShotFrac", _env_float("RECAP_RANK_OPENING_FRAC", 0.12))),
+        "openingMaxGap": int(raw.get("openingMaxGap", _env_float("RECAP_RANK_OPENING_MAX_GAP", 6))),
+        "openingMinQuality": float(raw.get("openingMinQuality", _env_float("RECAP_RANK_OPENING_MIN_Q", 0.28))),
+        "endingSegments": int(raw.get("endingSegments", _env_float("RECAP_RANK_ENDING_SEGMENTS", 3))),
+        "endingShotFrac": float(raw.get("endingShotFrac", _env_float("RECAP_RANK_ENDING_FRAC", 0.12))),
         "minShotSecForSecondary": float(
             raw.get("minShotSecForSecondary", _env_float("RECAP_RANK_MIN_SHOT_SEC", 3.5))
         ),
