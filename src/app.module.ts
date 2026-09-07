@@ -10,6 +10,7 @@ import { AntiSpamModule } from "./anti-spam/anti-spam.module";
 import { AppController } from "./app.controller";
 import { HttpExceptionFilter } from "./common/filters/http-exception.filter";
 import { AntiSpamInterceptor } from "./common/interceptors/anti-spam.interceptor";
+import { KitLabsPlatformInterceptor } from "./common/interceptors/kitlabs-platform.interceptor";
 import { ResponseTransformInterceptor } from "./common/interceptors/response-transform.interceptor";
 import { AppConfigModule } from "./common/config/app-config.module";
 import { DatabaseModule } from "./database/database.module";
@@ -134,6 +135,10 @@ import { HistoriesModule } from "./tools/histories/histories.module";
     {
       provide: APP_GUARD,
       useClass: ThrottlerGuard,
+    },
+    {
+      provide: APP_INTERCEPTOR,
+      useClass: KitLabsPlatformInterceptor,
     },
     {
       provide: APP_INTERCEPTOR,

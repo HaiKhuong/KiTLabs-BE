@@ -6,6 +6,7 @@ import { BadRequestException, HttpException, HttpStatus, Injectable, Logger } fr
 
 import { AppConfigService } from "../../common/config/app-config.service";
 import { pythonBinExists, resolvePythonBin } from "../../common/desktop/python-path";
+import { isAppPlatform } from "../../common/desktop/request-platform";
 import { ToolsRealtimeGateway } from "../realtime/tools-realtime.gateway";
 import { resolveConfiguredPath } from "../../common/desktop/data-path";
 
@@ -110,6 +111,8 @@ export class ModelsService {
   }
 
   assertInstalled(ids: AiModelId[]): void {
+    // Web/cloud workers already have models; local HF download is App-only.
+    if (!isAppPlatform()) return;
     const missing = ids.filter((id) => !this.isInstalled(id));
     if (missing.length === 0) return;
     throw new HttpException(

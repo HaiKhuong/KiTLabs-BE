@@ -20,10 +20,14 @@ export function defaultKitLabsPlatform(): KitLabsPlatform {
   return process.env.KITLABS_DESKTOP === "1" ? "App" : "Web";
 }
 
+export function runWithKitLabsPlatform<T>(platform: KitLabsPlatform, fn: () => T): T {
+  return store.run({ platform }, fn);
+}
+
 export function kitLabsPlatformMiddleware(req: Request, _res: Response, next: NextFunction): void {
   const fromHeader = parseKitLabsPlatform(req.headers[PLATFORM_HEADER]);
   const platform = fromHeader ?? defaultKitLabsPlatform();
-  store.run({ platform }, next);
+  runWithKitLabsPlatform(platform, () => next());
 }
 
 export function getRequestPlatform(): KitLabsPlatform {
