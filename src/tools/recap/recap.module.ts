@@ -2,6 +2,7 @@ import { Module } from "@nestjs/common";
 import { BullModule } from "@nestjs/bullmq";
 import { TypeOrmModule } from "@nestjs/typeorm";
 
+import { AudioModule } from "../audio/audio.module";
 import { CreditHistory } from "../credits/credit-history.entity";
 import { LogsModule } from "../logs/logs.module";
 import { NotificationsModule } from "../notifications/notifications.module";
@@ -17,6 +18,7 @@ import { RECAP_QUEUE_NAME, RecapService } from "./recap.service";
     TypeOrmModule.forFeature([RecapHistory, User, CreditHistory], "tool"),
     LogsModule,
     NotificationsModule,
+    AudioModule,
   ],
   controllers: [RecapController],
   providers: [RecapService, RecapProcessor],

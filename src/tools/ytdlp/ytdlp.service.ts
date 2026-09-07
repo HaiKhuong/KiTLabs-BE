@@ -61,6 +61,27 @@ export class YtdlpService {
     return this.appConfig.get("YTDLP_SERVICE_URL", "http://localhost:8100");
   }
 
+  private sidecarErrorMessage(error: unknown, fallback: string): string {
+    if (axios.isAxiosError(error)) {
+      const data = error.response?.data as { detail?: unknown; message?: unknown } | undefined;
+      const detail = data?.detail ?? data?.message;
+      if (typeof detail === "string" && detail.trim()) return detail.trim();
+      if (Array.isArray(detail)) {
+        const parts = detail.map((item) => {
+          if (typeof item === "string") return item;
+          if (item && typeof item === "object" && "msg" in item) return String((item as { msg: unknown }).msg);
+          return JSON.stringify(item);
+        });
+        if (parts.length) return parts.join("; ");
+      }
+      if (error.code === "ECONNREFUSED") {
+        return "yt-dlp service is not running. Check Settings → Runtime.";
+      }
+      return error.message || fallback;
+    }
+    return error instanceof Error ? error.message : fallback;
+  }
+
   private heightToLabel(height: number | null): string {
     if (!height) return "Unknown";
     if (height >= 4320) return "8K";
@@ -121,13 +142,9 @@ export class YtdlpService {
         formats: this.mapFormats(data.formats ?? []),
       };
     } catch (error) {
-      const message = axios.isAxiosError(error)
-        ? error.response?.data?.detail ?? error.message
-        : error instanceof Error
-          ? error.message
-          : "Extract failed";
+      const message = this.sidecarErrorMessage(error, "Extract failed");
       this.logger.warn(`yt-dlp info failed: ${message}`);
-      throw new BadRequestException(typeof message === "string" ? message : "Extract failed");
+      throw new BadRequestException(message);
     }
   }
 
@@ -140,13 +157,9 @@ export class YtdlpService {
       );
       return response.data.urls ?? [];
     } catch (error) {
-      const message = axios.isAxiosError(error)
-        ? error.response?.data?.detail ?? error.message
-        : error instanceof Error
-          ? error.message
-          : "Playlist extract failed";
+      const message = this.sidecarErrorMessage(error, "Playlist extract failed");
       this.logger.warn(`yt-dlp playlist failed: ${message}`);
-      throw new BadRequestException(typeof message === "string" ? message : "Playlist extract failed");
+      throw new BadRequestException(message);
     }
   }
 
@@ -166,13 +179,9 @@ export class YtdlpService {
         { timeout: 600_000, responseType: "stream" },
       );
     } catch (error) {
-      const message = axios.isAxiosError(error)
-        ? error.response?.data?.detail ?? error.message
-        : error instanceof Error
-          ? error.message
-          : "Download failed";
+      const message = this.sidecarErrorMessage(error, "Download failed");
       this.logger.warn(`yt-dlp download failed: ${message}`);
-      throw new BadRequestException(typeof message === "string" ? message : "Download failed");
+      throw new BadRequestException(message);
     }
   }
 }

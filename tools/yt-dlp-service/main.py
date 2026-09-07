@@ -3,6 +3,7 @@ import logging
 import os
 import glob
 import subprocess
+import sys
 import traceback
 import uuid
 from contextlib import asynccontextmanager
@@ -19,6 +20,22 @@ TEMP_DIR = os.environ.get("TEMP_DIR") or os.path.join(
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("ytdlp-service")
+
+_YTDLP_BIN_DIR = os.path.join(
+    os.path.dirname(sys.executable),
+    "Scripts" if os.name == "nt" else "bin",
+)
+if os.path.isdir(_YTDLP_BIN_DIR):
+    os.environ["PATH"] = _YTDLP_BIN_DIR + os.pathsep + os.environ.get("PATH", "")
+
+
+def _ytdlp_argv() -> list[str]:
+    """Run yt-dlp via the same Python that hosts this service (desktop venv)."""
+    return [sys.executable, "-m", "yt_dlp"]
+
+
+def _youtube_extractor_args() -> list[str]:
+    return ["--extractor-args", "youtube:player_client=android,web_safari"]
 
 
 @asynccontextmanager
@@ -75,7 +92,8 @@ def _cleanup(path: Optional[str]):
 
 def _extract_via_cli(url: str, cookie_path: Optional[str], extra: Optional[list] = None) -> dict:
     """Fallback: call yt-dlp CLI with --dump-json."""
-    cmd = ["yt-dlp", "--dump-json", "--no-check-certificates", "--no-warnings", "--no-playlist"]
+    cmd = [*_ytdlp_argv(), "--dump-json", "--no-check-certificates", "--no-warnings", "--no-playlist"]
+    cmd += _youtube_extractor_args()
     if extra:
         cmd += extra
     if cookie_path:
@@ -165,7 +183,12 @@ def extract_video(req: ExtractRequest):
         logger.error("Extract error: %s\n%s", str(e), traceback.format_exc())
         detail = str(e)
         status = 500
-        if "Fresh cookies" in detail or "DownloadError" in detail:
+        if (
+            "Fresh cookies" in detail
+            or "DownloadError" in detail
+            or "HTTP Error 400" in detail
+            or "Unable to extract" in detail
+        ):
             status = 400
         raise HTTPException(status_code=status, detail=detail)
     finally:
@@ -178,10 +201,12 @@ def extract_profile(req: ExtractProfileRequest):
     cookie_path = _write_cookies_temp(req.cookie_content)
     try:
         cmd = [
-            "yt-dlp", "--dump-json",
+            *_ytdlp_argv(),
+            "--dump-json",
             "--no-check-certificates", "--no-warnings",
             "--playlist-end", str(req.max_videos),
         ]
+        cmd += _youtube_extractor_args()
         if cookie_path:
             cmd += ["--cookies", cookie_path]
         cmd.append(req.url)
@@ -262,12 +287,13 @@ def extract_playlist(req: PlaylistRequest):
     cookie_path = _write_cookies_temp(req.cookie_content)
     try:
         cmd = [
-            "yt-dlp",
+            *_ytdlp_argv(),
             "--flat-playlist",
             "--print", "url",
             "--no-check-certificates",
             "--no-warnings",
         ]
+        cmd += _youtube_extractor_args()
         if cookie_path:
             cmd += ["--cookies", cookie_path]
         cmd.append(req.url)
@@ -320,11 +346,12 @@ def download_video(req: DownloadRequest):
 
     try:
         cmd = [
-            "yt-dlp",
+            *_ytdlp_argv(),
             "--no-check-certificates", "--no-warnings",
             "--no-playlist",
             "-o", os.path.join(out_dir, "%(title).80s.%(ext)s"),
         ]
+        cmd += _youtube_extractor_args()
         if media_format == "audio":
             cmd += ["-x", "--audio-format", "mp3", "-f", "bestaudio/best"]
         else:

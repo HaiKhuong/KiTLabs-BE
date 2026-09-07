@@ -7,7 +7,6 @@ import {
   IsObject,
   IsOptional,
   IsString,
-  IsUUID,
   Max,
   Min,
   ValidateNested,
@@ -133,15 +132,19 @@ export class RecapEngineConfigDto {
   workDirSlug?: string;
 }
 
+export class RunRecapStepDto {
+  @ApiProperty({
+    example: "asr",
+    description: "Pipeline step id: asr | scenes | cluster | call_a1 | candidates | call_a2 | tts | call_b | render",
+  })
+  @IsString()
+  step!: string;
+}
+
 export class CreateRecapJobDto {
   @ApiProperty({ example: "user-uuid" })
   @IsString()
   userId!: string;
-
-  @ApiPropertyOptional({ description: "YouTube Kho phim movie id" })
-  @IsOptional()
-  @IsUUID()
-  movieId?: string;
 
   @ApiPropertyOptional({ example: "Recap — Movie Name" })
   @IsOptional()

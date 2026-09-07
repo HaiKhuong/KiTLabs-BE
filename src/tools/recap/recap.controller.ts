@@ -16,8 +16,9 @@ import { createReadStream, existsSync, statSync } from "fs";
 import { extname } from "path";
 
 import { Public } from "../../common/decorators/public.decorator";
-import { CreateRecapJobDto, UpdateRecapScriptDto } from "./dto/create-recap-job.dto";
+import { CreateRecapJobDto, RunRecapStepDto, UpdateRecapScriptDto } from "./dto/create-recap-job.dto";
 import { RecapService } from "./recap.service";
+import { isRecapStepId } from "./recap-steps.constants";
 
 @ApiTags("Recap")
 @ApiBearerAuth("bearer")
@@ -25,7 +26,7 @@ import { RecapService } from "./recap.service";
 export class RecapController {
   constructor(private readonly recapService: RecapService) {}
 
-  @ApiOperation({ summary: "Enqueue a movie recap job" })
+  @ApiOperation({ summary: "Create a recap project (upload config, no auto-run)" })
   @Public()
   @Post()
   async create(@Body() dto: CreateRecapJobDto) {
@@ -34,7 +35,26 @@ export class RecapController {
       recapHistoryId: created.id,
       status: created.status,
       displayName: created.displayName,
-      movieId: created.movieId,
+      stepProgress: created.engineConfig?.recapStepProgress ?? null,
+    };
+  }
+
+  @ApiOperation({ summary: "Run a single recap pipeline step" })
+  @Public()
+  @Post("histories/:id/run-step")
+  async runStep(@Param("id") id: string, @Body() dto: RunRecapStepDto) {
+    const step = String(dto.step || "").trim();
+    if (!isRecapStepId(step)) {
+      throw new NotFoundException(
+        "Invalid step. Use: asr, scenes, cluster, call_a1, candidates, call_a2, tts, call_b, render",
+      );
+    }
+    const queued = await this.recapService.enqueueStep(id, step);
+    return {
+      recapHistoryId: queued.id,
+      status: queued.status,
+      step,
+      stepProgress: queued.engineConfig?.recapStepProgress ?? null,
     };
   }
 
@@ -74,6 +94,21 @@ export class RecapController {
     const row = await this.recapService.getById(recapHistoryId);
     if (!row) throw new NotFoundException("Recap job not found");
     return { log: this.recapService.getRuntimeLog(row) };
+  }
+
+  @ApiOperation({ summary: "Get step artifact payload for review UI" })
+  @Public()
+  @Get("histories/:id/step-artifact")
+  async stepArtifact(@Param("id") id: string, @Query("step") stepRaw?: string) {
+    const step = String(stepRaw || "").trim();
+    if (!isRecapStepId(step)) {
+      throw new NotFoundException(
+        "Invalid step. Use: asr, scenes, cluster, call_a1, candidates, call_a2, tts, call_b, render",
+      );
+    }
+    const row = await this.recapService.getById(id);
+    if (!row) throw new NotFoundException("Recap job not found");
+    return this.recapService.getStepArtifact(row, step);
   }
 
   @ApiOperation({ summary: "Stream recap artifact (video / script / timeline)" })

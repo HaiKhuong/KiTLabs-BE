@@ -37,6 +37,7 @@ import { ImagesModule } from "./tools/images/images.module";
 import { VideosModule } from "./tools/videos/videos.module";
 import { ModelsModule } from "./tools/models/models.module";
 import { YouTubeModule } from "./tools/youtube/youtube.module";
+import { HistoriesModule } from "./tools/histories/histories.module";
 
 @Module({
   imports: [
@@ -122,6 +123,7 @@ import { YouTubeModule } from "./tools/youtube/youtube.module";
     WorkflowModule,
     ImagesModule,
     VideosModule,
+    HistoriesModule,
   ],
   controllers: [AppController],
   providers: [

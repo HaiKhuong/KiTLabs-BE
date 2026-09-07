@@ -94,7 +94,7 @@ EDGE_TTS_PITCH = "+20Hz"
 STEP3_TTS_ENGINE = "edge"
 # OmniVoice (k2-fsa/OmniVoice): ref_text nên là transcript khớp ref_audio.
 OMNIVOICE_MODEL_ID = "k2-fsa/OmniVoice"
-OMNIVOICE_REF_WAV = str(SCRIPT_DIR / "voice" / "sample.wav")
+OMNIVOICE_REF_WAV = str(SCRIPT_DIR / "voice" / "RongConVietsub.wav")
 OMNIVOICE_REF_TEXT = "Chào bạn, tôi đang thực hiện một thử nghiệm để tạo ra bản sao kỹ thuật số cho giọng nói của mình. Quá trình này đòi hỏi sự rõ ràng, nhịp điệu tự nhiên và một chút cảm xúc trong từng câu chữ."
 OMNIVOICE_DEVICE_MAP = ""  # rỗng = tự chọn cuda:0 hoặc cpu
 OMNIVOICE_DTYPE = "float16"  # float16 | float32 | bfloat16
@@ -4455,7 +4455,7 @@ def parse_cli_args():
         default="",
         help=(
             "Giọng mẫu OmniVoice/VoxCPM2: absolute path, hoặc đường dẫn tương đối "
-            "dưới voice/ (vd: sample.wav hoặc {userId}/clone.wav)."
+            "dưới voice/ (vd: RongConVietsub.wav hoặc {userId}/clone.wav)."
         ),
     )
     parser.add_argument(

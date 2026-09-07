@@ -5,7 +5,7 @@ import { ChildProcess, spawn } from "child_process";
 import { Queue } from "bullmq";
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "fs";
 import { unlink } from "fs/promises";
-import { basename, extname, isAbsolute, join, resolve } from "path";
+import { basename, dirname, extname, isAbsolute, join, resolve } from "path";
 import { Repository, SelectQueryBuilder } from "typeorm";
 
 import { QueueJobStatus } from "../../common/enums/domain.enums";
@@ -24,11 +24,13 @@ import {
   AUDIO_OUTPUT_DIR,
   AUDIO_PREVIEW_CACHE_DIR,
   AUDIO_PRESET_VOICES,
+  pipelineVoiceSearchDirs,
   resolvePipelineVoiceDir,
   VIDEO_PIPELINE_DIR,
   findPresetVoice,
   resolveOmnivoiceLanguage,
   resolveOmnivoiceLanguageValue,
+  resolvePipelineVoiceFileName,
   resolvePreviewTtsText,
 } from "./audio.constants";
 import { AudioCloneVoice } from "./audio-clone-voice.entity";
@@ -461,18 +463,27 @@ export class AudioService {
     return { outWav, meta };
   }
 
-  /** Tìm file trong voice dir (khớp tên không phân biệt hoa thường). */
-  private findVoiceFileOnDisk(fileName: string): string | null {
-    const dir = this.resolvePipelineVoiceDir();
-    const safeName = basename(fileName);
-    if (!safeName || !existsSync(dir)) return null;
-
-    const exact = join(dir, safeName);
-    if (existsSync(exact)) return exact;
-
+  /** Tìm file giọng trên disk: clone user, dataRoot/voice, rồi sample đóng gói BE. */
+  private findVoiceFileOnDisk(fileName: string, ownerUserId?: string): string | null {
+    const raw = String(fileName || "").trim();
+    if (!raw) return null;
+    if (isAbsolute(raw) && existsSync(raw) && statSync(raw).isFile()) {
+      return raw;
+    }
+    const safeName = basename(resolvePipelineVoiceFileName(raw));
+    if (!safeName) return null;
     const target = safeName.toLowerCase();
-    const found = readdirSync(dir).find((name) => name.toLowerCase() === target);
-    return found ? join(dir, found) : null;
+    for (const dir of pipelineVoiceSearchDirs(ownerUserId)) {
+      if (!existsSync(dir)) continue;
+      const exact = join(dir, safeName);
+      if (existsSync(exact) && statSync(exact).isFile()) return exact;
+      const found = readdirSync(dir).find((name) => name.toLowerCase() === target);
+      if (found) {
+        const abs = join(dir, found);
+        if (existsSync(abs) && statSync(abs).isFile()) return abs;
+      }
+    }
+    return null;
   }
 
   listPresetVoices() {
@@ -484,6 +495,9 @@ export class AudioService {
       gender: voice.gender,
       avatar: voice.avatar,
       previewUrl: `/api/tools/audio/voices/${voice.id}/preview`,
+      refWav: voice.refWav,
+      refText: voice.refText,
+      omnivoiceLanguage: resolveOmnivoiceLanguage(voice),
     }));
   }
 
@@ -605,30 +619,33 @@ export class AudioService {
     const rootDir = this.resolvePipelineVoiceDir();
     let voiceDir = rootDir;
     let absolutePath = join(rootDir, fileName);
+    const rawPath = String(refWav || "").trim();
 
-    if (row) {
+    if (isAbsolute(rawPath) && existsSync(rawPath) && statSync(rawPath).isFile()) {
+      absolutePath = rawPath;
+      voiceDir = dirname(rawPath);
+    } else if (row) {
       const resolved = this.resolvePipelineVoiceAbsolutePath(row, fileName, owner);
       voiceDir = resolved.voiceDir;
       absolutePath = resolved.absolutePath;
-    } else if (owner) {
-      const ownedPath = join(rootDir, owner, fileName);
-      if (existsSync(ownedPath)) {
-        voiceDir = join(rootDir, owner);
-        absolutePath = ownedPath;
-      } else if (!existsSync(absolutePath)) {
-        throw new BadRequestException(
-          `Voice sample not found or not owned by this user: ${fileName}. Upload via Clone Voice menu.`,
-        );
+      if (!existsSync(absolutePath)) {
+        const fallback = this.findVoiceFileOnDisk(fileName, owner);
+        if (fallback) {
+          absolutePath = fallback;
+          voiceDir = dirname(fallback);
+        }
       }
-    } else if (!existsSync(absolutePath)) {
-      throw new BadRequestException(
-        `Voice sample not found: ${fileName}. Expected under ${rootDir.replace(/\\/g, "/")}.`,
-      );
+    } else {
+      const found = this.findVoiceFileOnDisk(fileName, owner || undefined);
+      if (found) {
+        absolutePath = found;
+        voiceDir = dirname(found);
+      }
     }
 
     if (!existsSync(absolutePath)) {
       throw new BadRequestException(
-        `Voice sample not found: ${fileName}. Expected under ${voiceDir.replace(/\\/g, "/")}. Upload via Clone Voice menu.`,
+        `Voice sample not found: ${fileName}. Expected under ${rootDir.replace(/\\/g, "/")} or bundled tools/video-pipeline/voice.`,
       );
     }
 

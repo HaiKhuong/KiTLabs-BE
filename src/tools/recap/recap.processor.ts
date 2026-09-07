@@ -7,6 +7,7 @@ import { dirname, isAbsolute, join, resolve } from "path";
 
 import { ToolsRealtimeGateway } from "../realtime/tools-realtime.gateway";
 import { RECAP_QUEUE_NAME, RecapService } from "./recap.service";
+import { RECAP_STEP_SCRIPTS, type RecapStepId } from "./recap-steps.constants";
 
 const MAX_LOG_BUFFER = 8 * 1024 * 1024;
 
@@ -34,19 +35,28 @@ export class RecapProcessor extends WorkerHost {
     );
   }
 
-  private resolveScriptPath(): string {
-    const raw = process.env.RECAP_PYTHON_SCRIPT ?? "tools/video-pipeline/recap/run_recap.py";
+  private resolveRecapScriptDir(): string {
+    const raw = process.env.RECAP_PYTHON_DIR ?? "tools/video-pipeline/recap";
     return isAbsolute(raw) ? raw : resolve(process.cwd(), raw);
+  }
+
+  private resolveStepScriptPath(step: RecapStepId): string {
+    const scriptDir = this.resolveRecapScriptDir();
+    return join(scriptDir, RECAP_STEP_SCRIPTS[step]);
   }
 
   private resolveTimeoutMs(): number {
     return Number(process.env.RECAP_CMD_TIMEOUT_MS ?? 3_600_000);
   }
 
-  async process(job: Job<{ recapHistoryId: string }>): Promise<void> {
+  async process(job: Job<{ recapHistoryId: string; step: RecapStepId }>): Promise<void> {
     const recapHistoryId = job.data?.recapHistoryId;
+    const step = job.data?.step;
     if (!recapHistoryId) {
       throw new UnrecoverableError("recapHistoryId is required");
+    }
+    if (!step || !RECAP_STEP_SCRIPTS[step]) {
+      throw new UnrecoverableError(`Invalid recap step: ${String(step)}`);
     }
 
     const history = await this.recapService.getById(recapHistoryId);
@@ -55,18 +65,15 @@ export class RecapProcessor extends WorkerHost {
     }
 
     try {
-      await this.recapService.processStarted(recapHistoryId);
-      await this.recapService.updateRuntimeMessage(
-        recapHistoryId,
-        "[STEP 0/9] Queue — spawning Python pipeline",
-      );
+      await this.recapService.markStepStarted(recapHistoryId, step);
+      await this.recapService.updateRuntimeMessage(recapHistoryId, `[STEP] ${step} — spawning Python`);
 
       const workDir = this.recapService.prepareWorkDir(history);
       this.recapService.syncScriptToWorkDir(history);
       const configPath = this.recapService.writeJobConfig(workDir, history);
-      const scriptPath = this.resolveScriptPath();
+      const scriptPath = this.resolveStepScriptPath(step);
       if (!existsSync(scriptPath)) {
-        throw new UnrecoverableError(`Recap python script not found: ${scriptPath}`);
+        throw new UnrecoverableError(`Recap step script not found: ${scriptPath}`);
       }
 
       const videoPath = String(history.engineConfig?.localVideoPath ?? "");
@@ -74,8 +81,9 @@ export class RecapProcessor extends WorkerHost {
         throw new UnrecoverableError(`Source video missing: ${videoPath}`);
       }
 
-      const resultPath = await this.spawnPipeline({
+      const resultPath = await this.spawnStep({
         recapHistoryId,
+        step,
         scriptPath,
         videoPath,
         workDir,
@@ -85,55 +93,62 @@ export class RecapProcessor extends WorkerHost {
       const scriptPayload = this.recapService.readJsonIfExists(join(workDir, "script.json"));
       const timelinePayload = this.recapService.readJsonIfExists(join(workDir, "timeline.json"));
 
-      await this.recapService.processCompleted(recapHistoryId, resultPath, {
-        scriptPayload,
-        timelinePayload,
+      await this.recapService.markStepCompleted(recapHistoryId, step, {
+        resultPath: step === "render" ? resultPath : undefined,
+        scriptPayload: scriptPayload ?? undefined,
+        timelinePayload: timelinePayload ?? undefined,
       });
 
       const completed = await this.recapService.getById(recapHistoryId);
       const mapped = completed ? this.recapService.mapHistoryForClient(completed) : null;
       this.realtimeGateway.notifyUser(completed?.userId ?? "all", "recap.completed", {
         recapHistoryId,
-        resultPath,
+        step,
+        resultPath: resultPath ?? null,
         resultFileName: mapped?.resultFileName ?? null,
         playUrl: mapped?.playUrl ?? null,
         downloadUrl: mapped?.downloadUrl ?? null,
         scriptPayload: mapped?.scriptPayload ?? null,
         timelinePayload: mapped?.timelinePayload ?? null,
+        stepProgress: mapped?.stepProgress ?? null,
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       const maxAttempts = job.opts.attempts != null ? Number(job.opts.attempts) : 1;
       const attemptsMade = job.attemptsMade != null ? Number(job.attemptsMade) : 0;
       const isUnrecoverable =
-        error instanceof UnrecoverableError || (error instanceof Error && error.name === "UnrecoverableError");
+        error instanceof UnrecoverableError ||
+        (error instanceof Error && error.name === "UnrecoverableError");
       const willRetry = !isUnrecoverable && attemptsMade + 1 < maxAttempts;
 
       if (willRetry) {
         this.logger.warn(
-          `Recap job ${job.id} failed (attempt ${attemptsMade + 1}/${maxAttempts}), will retry: ${message}`,
+          `Recap step ${step} job ${job.id} failed (attempt ${attemptsMade + 1}/${maxAttempts}), will retry: ${message}`,
         );
         throw error;
       }
 
-      await this.recapService.processFailed(recapHistoryId, message);
+      await this.recapService.markStepFailed(recapHistoryId, step, message);
       const failed = await this.recapService.getById(recapHistoryId);
       this.realtimeGateway.notifyUser(failed?.userId ?? "all", "recap.failed", {
         recapHistoryId,
+        step,
         errorMessage: message,
         terminal: true,
+        stepProgress: failed ? this.recapService.mapHistoryForClient(failed).stepProgress : null,
       });
       throw error;
     }
   }
 
-  private spawnPipeline(input: {
+  private spawnStep(input: {
     recapHistoryId: string;
+    step: RecapStepId;
     scriptPath: string;
     videoPath: string;
     workDir: string;
     configPath: string;
-  }): Promise<string> {
+  }): Promise<string | undefined> {
     const pythonBin = this.resolvePythonBin();
     const scriptDir = dirname(input.scriptPath);
     const timeoutMs = this.resolveTimeoutMs();
@@ -147,9 +162,9 @@ export class RecapProcessor extends WorkerHost {
       input.configPath,
     ];
 
-    this.logger.log(`Spawning recap pipeline: ${pythonBin} ${args.join(" ")}`);
+    this.logger.log(`Spawning recap step ${input.step}: ${pythonBin} ${args.join(" ")}`);
 
-    return new Promise<string>((resolvePromise, rejectPromise) => {
+    return new Promise<string | undefined>((resolvePromise, rejectPromise) => {
       let stdoutBuf = "";
       let stderrBuf = "";
       let settled = false;
@@ -162,17 +177,16 @@ export class RecapProcessor extends WorkerHost {
           ...process.env,
           PYTHONUNBUFFERED: "1",
           PYTHONIOENCODING: "utf-8",
-          // Nest often runs as www-data without writable ~/.config
           MPLCONFIGDIR: mplDir,
           XDG_CACHE_HOME: join(input.workDir, ".cache"),
           TF_CPP_MIN_LOG_LEVEL: process.env.TF_CPP_MIN_LOG_LEVEL ?? "2",
         },
       });
 
-      this.logger.log(`Recap child pid=${child.pid} history=${input.recapHistoryId}`);
+      this.logger.log(`Recap step child pid=${child.pid} history=${input.recapHistoryId} step=${input.step}`);
       void this.recapService.updateRuntimeMessage(
         input.recapHistoryId,
-        `[STEP 0/9] Python started pid=${child.pid}`,
+        `[STEP] ${input.step} — Python pid=${child.pid}`,
       );
 
       const timer = setTimeout(() => {
@@ -181,7 +195,7 @@ export class RecapProcessor extends WorkerHost {
         setTimeout(() => {
           if (!child.killed) child.kill("SIGKILL");
         }, 8_000).unref();
-        settleReject(new Error(`Recap pipeline timeout after ${timeoutMs}ms`));
+        settleReject(new Error(`Recap step timeout after ${timeoutMs}ms`));
       }, timeoutMs);
 
       const append = (target: "out" | "err", chunk: Buffer | string) => {
@@ -195,16 +209,12 @@ export class RecapProcessor extends WorkerHost {
           .split(/\r?\n/)
           .map((l) => l.trim())
           .filter(Boolean);
-        // Prefer high-level markers for FE status (avoid FFmpeg noise)
         const stepLine = [...lines]
           .reverse()
           .find((l) => l.includes("[STEP ") || l.includes("[RECAP]"));
         const line = stepLine || lines[lines.length - 1];
         if (line) {
-          void this.recapService.updateRuntimeMessage(
-            input.recapHistoryId,
-            line.slice(0, 500),
-          );
+          void this.recapService.updateRuntimeMessage(input.recapHistoryId, line.slice(0, 500));
         }
       };
 
@@ -218,7 +228,7 @@ export class RecapProcessor extends WorkerHost {
         rejectPromise(err);
       };
 
-      const settleResolve = (path: string) => {
+      const settleResolve = (path?: string) => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
@@ -229,23 +239,29 @@ export class RecapProcessor extends WorkerHost {
       child.on("close", (code) => {
         const combined = `${stdoutBuf}\n${stderrBuf}`;
         const doneMatch = combined.match(/DONE:\s*(.+)/);
-        if (code === 0 && doneMatch?.[1]) {
-          const outPath = doneMatch[1].trim();
-          if (existsSync(outPath)) {
-            settleResolve(outPath);
-            return;
+        if (code === 0) {
+          if (doneMatch?.[1]) {
+            const outPath = doneMatch[1].trim();
+            if (outPath.endsWith(".mp4") && existsSync(outPath)) {
+              settleResolve(outPath);
+              return;
+            }
           }
-        }
-        const fallback = join(input.workDir, "output", "recap.mp4");
-        if (code === 0 && existsSync(fallback)) {
-          settleResolve(fallback);
+          if (input.step === "render") {
+            const fallback = join(input.workDir, "output", "recap.mp4");
+            if (existsSync(fallback)) {
+              settleResolve(fallback);
+              return;
+            }
+          }
+          settleResolve(undefined);
           return;
         }
         const failMatch = combined.match(/\[RECAP_FAILED]\s*(.+)/);
         settleReject(
           new Error(
             failMatch?.[1]?.trim() ||
-              `Recap pipeline exited with code ${code}. Tail: ${combined.slice(-2000)}`,
+              `Recap step ${input.step} exited with code ${code}. Tail: ${combined.slice(-2000)}`,
           ),
         );
       });

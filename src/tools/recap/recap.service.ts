@@ -11,10 +11,28 @@ import { resolveConfiguredPath } from "../../common/desktop/data-path";
 import { CreditHistory } from "../credits/credit-history.entity";
 import { LogsService } from "../logs/logs.service";
 import { NotificationsService } from "../notifications/notifications.service";
+import { AudioService } from "../audio/audio.service";
 import { User } from "../users/user.entity";
 import { CreateRecapJobDto } from "./dto/create-recap-job.dto";
 import { RecapHistory } from "./recap-history.entity";
-import { normalizeWorkDirSlug, slugFromVideoPath, toVideoSnakeCaseSlug } from "./recap-slug.util";
+import {
+  emptyRecapStepProgress,
+  isRecapStepId,
+  readRecapStepProgress,
+  type RecapStepId,
+  type RecapStepProgress,
+} from "./recap-steps.constants";
+import {
+  normalizeWorkDirSlug,
+  slugFromVideoPath,
+  toVideoSnakeCaseSlug,
+} from "./recap-slug.util";
+import {
+  buildRecapStepArtifactPayload,
+  buildRecapStepSummary,
+  readRecapStepSummaries,
+  type RecapStepSummaries,
+} from "./recap-step-artifacts.util";
 
 export const RECAP_QUEUE_NAME = "video-recap";
 
@@ -33,6 +51,7 @@ export class RecapService {
     private readonly creditHistoryRepository: Repository<CreditHistory>,
     private readonly logsService: LogsService,
     private readonly notificationsService: NotificationsService,
+    private readonly audioService: AudioService,
   ) {}
 
   static resolveQueueLockDurationMs(): number {
@@ -101,49 +120,196 @@ export class RecapService {
       edgeTtsRatePercent: dto.engineConfig.edgeTtsRatePercent ?? 0,
       videoSpeed: dto.engineConfig.videoSpeed ?? 1,
       keepDebugArtifacts: dto.engineConfig.keepDebugArtifacts ?? true,
+      recapStepProgress: emptyRecapStepProgress(),
     };
+
+    const ttsEngine = String(engineConfig.ttsEngine ?? "omnivoice").toLowerCase();
+    if (ttsEngine === "omnivoice" || ttsEngine === "voxcpm2") {
+      const refWav = String(engineConfig.omnivoiceRefWav ?? "").trim();
+      const verified = await this.audioService.assertPipelineVoiceReady(
+        refWav,
+        String(engineConfig.omnivoiceRefText ?? "").trim() || undefined,
+        dto.userId,
+      );
+      engineConfig.omnivoiceRefWav = verified.absolutePath.replace(/\\/g, "/");
+      if (!String(engineConfig.omnivoiceRefText ?? "").trim() && verified.refText) {
+        engineConfig.omnivoiceRefText = verified.refText;
+      }
+    }
 
     const workDir = join(this.resolveWorkRoot(), workDirSlug);
     const existingScript = this.readJsonIfExists(join(workDir, "script.json"));
+    mkdirSync(workDir, { recursive: true });
+    mkdirSync(join(workDir, "logs"), { recursive: true });
 
     const history = this.recapRepository.create({
       userId: dto.userId,
       displayName: title,
-      movieId: dto.movieId ?? null,
+      movieId: null,
       engineConfig,
       scriptPayload: existingScript,
       timelinePayload: null,
-      status: QueueJobStatus.PENDING,
+      status: QueueJobStatus.COMPLETED,
       cost: estimatedCost.toFixed(2),
       queueJobId: null,
       resultPath: null,
       resultFileName: null,
       errorMessage: null,
     });
-    const created = await this.recapRepository.save(history);
+    const saved = await this.recapRepository.save(history);
 
-    const queueJob = await this.recapQueue.add(
-      RECAP_QUEUE_NAME,
-      { recapHistoryId: created.id },
-      { attempts: 1, removeOnComplete: true, removeOnFail: 50 },
-    );
-
-    created.queueJobId = queueJob.id ? String(queueJob.id) : null;
-    const saved = await this.recapRepository.save(created);
+    this.writeJobConfig(workDir, saved);
 
     await this.logsService.createLog({
       userId: user.id,
-      action: "recap.queued",
+      action: "recap.created",
       payload: {
         recapHistoryId: saved.id,
-        queueJobId: saved.queueJobId,
-        movieId: saved.movieId,
         displayName: saved.displayName,
       },
       ip: user.ip,
     });
 
     return saved;
+  }
+
+  async enqueueStep(recapHistoryId: string, step: RecapStepId): Promise<RecapHistory> {
+    const history = await this.recapRepository.findOne({ where: { id: recapHistoryId } });
+    if (!history) throw new NotFoundException("Recap job not found");
+
+    const progress = readRecapStepProgress(history.engineConfig);
+    if (progress.runningStep) {
+      throw new BadRequestException(`Step ${progress.runningStep} is already running`);
+    }
+    if (history.status === QueueJobStatus.PENDING || history.status === QueueJobStatus.RUNNING) {
+      throw new BadRequestException("Recap job is busy");
+    }
+
+    const nextProgress: RecapStepProgress = {
+      ...progress,
+      runningStep: step,
+      failedStep: null,
+    };
+    history.engineConfig = { ...(history.engineConfig ?? {}), recapStepProgress: nextProgress };
+    history.status = QueueJobStatus.PENDING;
+    history.errorMessage = null;
+    await this.recapRepository.save(history);
+
+    const queueJob = await this.recapQueue.add(
+      RECAP_QUEUE_NAME,
+      { recapHistoryId, step },
+      { attempts: 1, removeOnComplete: true, removeOnFail: 50 },
+    );
+
+    history.queueJobId = queueJob.id ? String(queueJob.id) : null;
+    return this.recapRepository.save(history);
+  }
+
+  async markStepStarted(recapHistoryId: string, step: RecapStepId): Promise<void> {
+    const history = await this.recapRepository.findOne({ where: { id: recapHistoryId } });
+    if (!history) return;
+    const progress = readRecapStepProgress(history.engineConfig);
+    history.engineConfig = {
+      ...(history.engineConfig ?? {}),
+      recapStepProgress: { ...progress, runningStep: step, failedStep: null },
+    };
+    history.status = QueueJobStatus.RUNNING;
+    history.errorMessage = `[STEP] ${step} — running`;
+    await this.recapRepository.save(history);
+  }
+
+  async markStepCompleted(
+    recapHistoryId: string,
+    step: RecapStepId,
+    extras?: {
+      resultPath?: string;
+      scriptPayload?: Record<string, unknown> | null;
+      timelinePayload?: Record<string, unknown> | null;
+    },
+  ): Promise<void> {
+    const history = await this.recapRepository.findOne({ where: { id: recapHistoryId } });
+    if (!history) return;
+
+    const progress = readRecapStepProgress(history.engineConfig);
+    const completedSteps = progress.completedSteps.includes(step)
+      ? progress.completedSteps
+      : [...progress.completedSteps, step];
+
+    history.engineConfig = {
+      ...(history.engineConfig ?? {}),
+      recapStepProgress: {
+        completedSteps,
+        runningStep: null,
+        failedStep: null,
+      },
+    };
+    history.status = QueueJobStatus.COMPLETED;
+    history.errorMessage = null;
+    history.queueJobId = null;
+
+    if (extras?.scriptPayload) history.scriptPayload = extras.scriptPayload;
+    if (extras?.timelinePayload) history.timelinePayload = extras.timelinePayload;
+    if (extras?.resultPath) {
+      history.resultPath = extras.resultPath;
+      history.resultFileName = basename(extras.resultPath);
+    }
+
+    const workDir = this.resolveWorkDir(history);
+    const summary = buildRecapStepSummary(
+      step,
+      workDir,
+      (filePath) => this.readJsonRawIfExists(filePath),
+      { resultPath: extras?.resultPath ?? history.resultPath },
+    );
+
+    if (summary) {
+      const existingSummaries = readRecapStepSummaries(history.engineConfig);
+      history.engineConfig = {
+        ...(history.engineConfig ?? {}),
+        recapStepSummaries: { ...existingSummaries, [step]: summary },
+      };
+    }
+
+    await this.recapRepository.save(history);
+
+    if (step === "render" && extras?.resultPath) {
+      const user = await this.userRepository.findOne({ where: { id: history.userId } });
+      if (user) {
+        await this.notificationsService.pushSuccess(
+          user.id,
+          "Recap hoàn tất",
+          `Video recap đã sẵn sàng${history.resultFileName ? `: ${history.resultFileName}` : ""}.`,
+        );
+      }
+    }
+  }
+
+  async markStepFailed(recapHistoryId: string, step: RecapStepId, errorMessage: string): Promise<void> {
+    const history = await this.recapRepository.findOne({ where: { id: recapHistoryId } });
+    if (!history) return;
+
+    const progress = readRecapStepProgress(history.engineConfig);
+    history.engineConfig = {
+      ...(history.engineConfig ?? {}),
+      recapStepProgress: {
+        ...progress,
+        runningStep: null,
+        failedStep: step,
+      },
+    };
+    history.status = QueueJobStatus.FAILED;
+    history.errorMessage = errorMessage;
+    history.queueJobId = null;
+    await this.recapRepository.save(history);
+
+    if (history.userId) {
+      await this.notificationsService.pushError(
+        history.userId,
+        "Recap step lỗi",
+        errorMessage,
+        `Step ${step} thất bại. Kiểm tra log và thử lại.`,
+      );
+    }
   }
 
   async getById(id: string): Promise<RecapHistory | null> {
@@ -162,6 +328,7 @@ export class RecapService {
     const playUrl = row.resultPath
       ? `/api/tools/recap/artifact?recapHistoryId=${row.id}&type=video`
       : null;
+    const stepProgress = readRecapStepProgress(row.engineConfig);
     return {
       id: row.id,
       userId: row.userId,
@@ -181,7 +348,31 @@ export class RecapService {
       playUrl,
       downloadUrl: playUrl,
       workDirSlug: this.resolveWorkDirSlug(row),
+      stepProgress,
+      recapStepSummaries: readRecapStepSummaries(row.engineConfig),
     };
+  }
+
+  getStepArtifact(
+    history: RecapHistory,
+    step: RecapStepId,
+  ): { step: RecapStepId; summary: RecapStepSummaries[RecapStepId] | null; payload: Record<string, unknown> } {
+    const workDir = this.resolveWorkDir(history);
+    const summaries = readRecapStepSummaries(history.engineConfig);
+    const summary =
+      summaries[step] ??
+      buildRecapStepSummary(step, workDir, (filePath) => this.readJsonRawIfExists(filePath), {
+        resultPath: history.resultPath,
+      });
+    const playUrl = history.resultPath
+      ? `/api/tools/recap/artifact?recapHistoryId=${history.id}&type=video`
+      : null;
+    const payload = buildRecapStepArtifactPayload(step, workDir, (filePath) => this.readJsonRawIfExists(filePath), {
+      id: history.id,
+      resultPath: history.resultPath,
+      playUrl,
+    });
+    return { step, summary: summary ?? null, payload };
   }
 
   async processStarted(recapHistoryId: string): Promise<void> {
@@ -337,9 +528,17 @@ export class RecapService {
   }
 
   readJsonIfExists(filePath: string): Record<string, unknown> | null {
+    const raw = this.readJsonRawIfExists(filePath);
+    if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+      return raw as Record<string, unknown>;
+    }
+    return null;
+  }
+
+  readJsonRawIfExists(filePath: string): unknown | null {
     if (!existsSync(filePath)) return null;
     try {
-      return JSON.parse(readFileSync(filePath, "utf-8")) as Record<string, unknown>;
+      return JSON.parse(readFileSync(filePath, "utf-8")) as unknown;
     } catch (error) {
       this.logger.warn(`Failed to parse JSON ${filePath}: ${error}`);
       return null;

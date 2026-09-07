@@ -25,6 +25,11 @@ export const AUDIO_CLONE_UPLOAD_DIR = join(AUDIO_DATA_ROOT, "audio-clone");
 export const AUDIO_OUTPUT_DIR = join(AUDIO_DATA_ROOT, "audio-tts");
 export const AUDIO_PREVIEW_CACHE_DIR = join(AUDIO_DATA_ROOT, "audio-previews");
 
+/** Voice mẫu đóng gói cùng BE (`tools/video-pipeline/voice`). */
+export function resolveBundledVoiceSamplesDir(): string {
+  return resolve(process.cwd(), VOICE_SAMPLES_DIR);
+}
+
 /** Voice mẫu pipeline — App: `$KITLABS_DATA_ROOT/voice`; Web: `tools/video-pipeline/voice`. */
 export function resolvePipelineVoiceDir(): string {
   const raw = (process.env.PIPELINE_VOICE_DIR ?? process.env.AUDIO_PIPELINE_VOICE_DIR ?? "").trim();
@@ -35,7 +40,23 @@ export function resolvePipelineVoiceDir(): string {
   if (dataRoot) {
     return resolve(dataRoot, "voice");
   }
-  return resolve(process.cwd(), VOICE_SAMPLES_DIR);
+  return resolveBundledVoiceSamplesDir();
+}
+
+/** Thứ tự tìm file giọng: clone user → dataRoot/voice → sample đóng gói trong BE. */
+export function pipelineVoiceSearchDirs(userId?: string): string[] {
+  const dirs: string[] = [];
+  const root = resolvePipelineVoiceDir();
+  const owner = userId?.trim();
+  if (owner) {
+    dirs.push(join(root, owner));
+  }
+  dirs.push(root);
+  const bundled = resolveBundledVoiceSamplesDir();
+  if (resolve(bundled) !== resolve(root)) {
+    dirs.push(bundled);
+  }
+  return dirs;
 }
 
 export const AUDIO_MAX_TEXT_CHARS = 2000;
@@ -69,18 +90,18 @@ export const AUDIO_PRESET_VOICES: AudioPresetVoice[] = [
     language: "vi",
     gender: "female",
     avatar: "👩",
-    refWav: "sample.wav",
+    refWav: "RongConVietsub.wav",
     refText:
       "Chào bạn, tôi đang thực hiện một thử nghiệm để tạo ra bản sao kỹ thuật số cho giọng nói của mình. Quá trình này đòi hỏi sự rõ ràng, nhịp điệu tự nhiên và một chút cảm xúc trong từng câu chữ.",
   },
   {
     id: "giai-tri",
-    name: "Ngọc Huyền ",
+    name: "Ngọc Huyền",
     tags: ["Nữ", "Giải trí", "MP3"],
     language: "vi",
     gender: "male",
     avatar: "📰",
-    refWav: "sample.mp3",
+    refWav: "Ngoc_Huyen.mp3",
     refText:
       "Capybara, còn được gọi là chuột lang nước, được mệnh danh là bộ trưởng bộ ngoại giao trong thế giới động vật vì tính cách hiền lành, thân thiện và khả năng hòa đồng. Chúng thường sống hòa bình với các loài động vật khác, kể cả những loài săn mồi, và được yêu thích bởi sự gần gũi, thân thiện với con người.",
   },
@@ -91,7 +112,7 @@ export const AUDIO_PRESET_VOICES: AudioPresetVoice[] = [
     language: "vi",
     gender: "female",
     avatar: "👩",
-    refWav: "sample_edge_tts.mp3",
+    refWav: "Ngoc_My.mp3",
     refText:
       "Chào bạn, tôi đang thực hiện một thử nghiệm để tạo ra bản sao kỹ thuật số cho giọng nói của mình. Quá trình này đòi hỏi sự rõ ràng, nhịp điệu tự nhiên và một chút cảm xúc trong từng câu chữ.",
   },
@@ -144,6 +165,20 @@ export function resolveOmnivoiceLanguageValue(raw?: string | null): OmnivoiceLan
 
 export function findPresetVoice(voiceId: string): AudioPresetVoice | undefined {
   return AUDIO_PRESET_VOICES.find((v) => v.id === voiceId);
+}
+
+/** Tên file cũ → tên file theo catalog (giữ job/setting cũ vẫn resolve được). */
+export const LEGACY_PIPELINE_VOICE_FILES: Record<string, string> = {
+  "sample.wav": "RongConVietsub.wav",
+  "sample.mp3": "Ngoc_Huyen.mp3",
+  "sample_edge_tts.mp3": "Ngoc_My.mp3",
+};
+
+export function resolvePipelineVoiceFileName(fileName: string): string {
+  const raw = String(fileName || "").trim();
+  if (!raw) return raw;
+  const base = raw.replace(/^.*[/\\]/, "");
+  return LEGACY_PIPELINE_VOICE_FILES[base] ?? LEGACY_PIPELINE_VOICE_FILES[base.toLowerCase()] ?? raw;
 }
 
 export function resolveOmnivoiceLanguage(voice: AudioPresetVoice): OmnivoiceLanguage {

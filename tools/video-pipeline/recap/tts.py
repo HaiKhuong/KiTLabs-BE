@@ -56,12 +56,17 @@ def _resolve_ref_audio(ref_wav: str | None) -> Path:
     if not name:
         raise ValueError("omnivoiceRefWav is required for OmniVoice / VoxCPM2")
     p = Path(name).expanduser()
-    if not p.is_absolute():
-        p = _resolve_voice_dir() / name
-    p = p.resolve()
-    if not p.is_file():
-        raise FileNotFoundError(f"TTS ref audio not found: {p}")
-    return p
+    if p.is_absolute() and p.is_file():
+        return p.resolve()
+    candidates = [
+        _resolve_voice_dir() / (p.name if p.is_absolute() else name),
+        _PIPELINE_DIR / "voice" / Path(name).name,
+    ]
+    for candidate in candidates:
+        resolved = candidate.expanduser().resolve()
+        if resolved.is_file():
+            return resolved
+    raise FileNotFoundError(f"TTS ref audio not found: {name}")
 
 
 def _probe_duration(path: Path) -> float:

@@ -22,7 +22,7 @@ import { Public } from "../../common/decorators/public.decorator";
 import { CreateAudioFromSrtDto } from "./dto/create-audio-from-srt.dto";
 import { CreateAudioJobDto } from "./dto/create-audio-job.dto";
 import { AudioService } from "./audio.service";
-import { AUDIO_CLONE_UPLOAD_DIR } from "./audio.constants";
+import { AUDIO_CLONE_UPLOAD_DIR, resolveOmnivoiceLanguage } from "./audio.constants";
 
 const CLONE_ALLOWED_EXT = new Set([".mp3", ".wav", ".m4a"]);
 
@@ -68,6 +68,9 @@ export class AudioController {
       gender: voice.gender,
       avatar: voice.avatar,
       previewUrl: `/api/tools/audio/voices/${voice.id}/preview`,
+      refWav: voice.refWav,
+      refText: voice.refText,
+      omnivoiceLanguage: resolveOmnivoiceLanguage(voice),
     };
   }
 
