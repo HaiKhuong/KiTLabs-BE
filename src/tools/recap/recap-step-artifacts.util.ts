@@ -23,6 +23,20 @@ function asRecord(value: unknown): Record<string, unknown> {
     : {};
 }
 
+/** Pipeline writes tts.json as a list of segment rows (not `{ files: [] }`). */
+function readTtsRows(readJson: (path: string) => unknown | null, workDir: string): unknown[] {
+  const raw = readJson(join(workDir, "tts.json"));
+  if (Array.isArray(raw)) return raw;
+  const rec = asRecord(raw);
+  return asArray(rec.files ?? rec.segments ?? rec.audio);
+}
+
+/** CallB writes `selectedShotsBySegment` (number[][]). */
+function readCallBSelected(picks: Record<string, unknown> | null): unknown[] {
+  if (!picks) return [];
+  return asArray(picks.selectedShotsBySegment ?? picks.selected_shots ?? picks.selectedShots);
+}
+
 function readJsonFile(readJson: (path: string) => unknown | null, fileName: string): JsonValue | null {
   const data = readJson(fileName);
   if (data == null) return null;
@@ -239,9 +253,8 @@ export function buildRecapStepSummary(
       };
     }
     case "tts": {
-      const tts = readJsonRecord(readJson, join(workDir, "tts.json"));
-      const files = asArray(tts?.files ?? tts);
-      const audioFileCount = files.length || Object.keys(asRecord(tts)).length;
+      const files = readTtsRows(readJson, workDir);
+      const audioFileCount = files.length;
       if (!audioFileCount) return null;
       return {
         label: `${audioFileCount} audio files`,
@@ -250,7 +263,7 @@ export function buildRecapStepSummary(
     }
     case "call_b": {
       const picks = readJsonRecord(readJson, join(workDir, "picks.json"));
-      const selected = asArray(picks?.selected_shots ?? picks?.selectedShots);
+      const selected = readCallBSelected(picks);
       const pickedSegmentCount = selected.length;
       if (!pickedSegmentCount) return null;
       return {
@@ -347,13 +360,19 @@ export function buildRecapStepArtifactPayload(
       return { script, segments };
     }
     case "tts": {
-      const tts = readJsonRecord(readJson, join(workDir, "tts.json")) ?? readJson(join(workDir, "tts.json"));
-      return { tts };
+      const files = readTtsRows(readJson, workDir);
+      return { tts: { files } };
     }
     case "call_b": {
       const picks = readJsonRecord(readJson, join(workDir, "picks.json"));
       const timeline = readJsonRecord(readJson, join(workDir, "timeline.json"));
-      return { picks, timeline };
+      return {
+        picks: {
+          ...(picks ?? {}),
+          selectedShotsBySegment: readCallBSelected(picks),
+        },
+        timeline,
+      };
     }
     case "render": {
       return {

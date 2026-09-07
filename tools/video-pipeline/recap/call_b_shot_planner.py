@@ -72,6 +72,31 @@ def _load_shot_embeddings(
         return {}, {}
 
 
+def _expand_near_ids(ids: set[int], radius: int) -> set[int]:
+    if radius <= 0:
+        return set(ids)
+    out: set[int] = set()
+    for sid in ids:
+        for delta in range(-radius, radius + 1):
+            out.add(sid + delta)
+    return out
+
+
+def _prefer_fresh_pool(
+    pool: list[dict[str, Any]],
+    *,
+    blocked_ids: set[int],
+    blocked_groups: set[Any],
+) -> list[dict[str, Any]]:
+    """Drop globally used shots / recent scene groups unless the pool would be empty."""
+    unused = [c for c in pool if int(c["id"]) not in blocked_ids]
+    source = unused if unused else pool
+    if not blocked_groups:
+        return source
+    diverse = [c for c in source if c.get("sceneGroupId") not in blocked_groups]
+    return diverse if len(diverse) >= 2 else source
+
+
 def _enrich_candidates(
     candidates: list[dict[str, Any]],
     shots_by_id: dict[int, dict[str, Any]],
@@ -118,6 +143,8 @@ def plan_shots_for_segment(
     cfg: dict[str, Any] | None = None,
     event_mid: float | None = None,
     debug_rows: list[dict[str, Any]] | None = None,
+    avoid_ids: set[int] | None = None,
+    avoid_groups: set[Any] | None = None,
 ) -> list[int]:
     """Match visualBeats → diverse ordered shot ids covering ~audio_dur."""
     shots_by_id = {int(s["id"]): s for s in shots}
@@ -126,6 +153,9 @@ def plan_shots_for_segment(
         return []
 
     rc = ranking_config(cfg)
+    blocked_ids = _expand_near_ids(set(avoid_ids or ()), int(rc["nearShotRadius"]))
+    blocked_groups = set(avoid_groups or ())
+    pool = _prefer_fresh_pool(pool, blocked_ids=blocked_ids, blocked_groups=blocked_groups)
     shot_to_scene = semantic.get("shotToScene") or {}
     group_of = semantic.get("shotToGroup") or {}
     beats = segment.get("visualBeats") or []
@@ -172,6 +202,10 @@ def plan_shots_for_segment(
         )
         if last is not None and _shot_mid(c) + 0.5 < _shot_mid(last):
             score *= 0.85
+        if sid in blocked_ids:
+            score *= 0.18
+        elif c.get("sceneGroupId") in blocked_groups:
+            score *= 0.5
         score_debug[sid] = {
             "clip": round(clip_s, 3),
             "temporal": round(temp, 3),
@@ -317,6 +351,10 @@ def plan_all_segments(
     selected: list[list[int]] = []
     details: list[list[dict[str, Any]]] = []
     debug_all: list[dict[str, Any]] = []
+    global_used: set[int] = set()
+    recent_groups: list[set[Any]] = []
+    cooldown = max(0, int(ranking_config(cfg)["sceneCooldownSegments"]))
+    shots_by_id = {int(s["id"]): s for s in shots}
     for i, seg in enumerate(segments):
         progress(LOG, "CallB segment", i, total, every=10)
         cands = segment_candidates[i] if i < len(segment_candidates) else []
@@ -330,6 +368,9 @@ def plan_all_segments(
             win = ev.get("window") or {}
             mids.append((float(win.get("from") or 0) + float(win.get("to") or 0)) / 2.0)
         event_mid = sum(mids) / len(mids) if mids else None
+        avoid_groups: set[Any] = set()
+        for prior in recent_groups[-cooldown:]:
+            avoid_groups.update(prior)
         dbg: list[dict[str, Any]] = []
         ids = plan_shots_for_segment(
             seg,
@@ -342,13 +383,23 @@ def plan_all_segments(
             cfg=cfg,
             event_mid=event_mid,
             debug_rows=dbg,
+            avoid_ids=global_used,
+            avoid_groups=avoid_groups,
         )
         if not ids and cands:
-            ids = [int(c.get("id", c.get("shot_id"))) for c in cands[: max(1, int(audio_dur / 3))]]
+            ids = [
+                int(c.get("id", c.get("shot_id")))
+                for c in cands
+                if int(c.get("id", c.get("shot_id") or -1)) not in global_used
+            ][: max(1, int(audio_dur / 3))]
+            if not ids:
+                ids = [int(c.get("id", c.get("shot_id"))) for c in cands[: max(1, int(audio_dur / 3))]]
         selected.append(ids)
+        global_used.update(ids)
+        groups = {shots_by_id.get(sid, {}).get("sceneGroupId") for sid in ids}
+        recent_groups.append({g for g in groups if g is not None})
         if dbg:
             debug_all.append({"segmentIndex": i, **dbg[0]})
-        shots_by_id = {int(s["id"]): s for s in shots}
         row = []
         for sid in ids:
             s = shots_by_id.get(sid) or {}
@@ -374,21 +425,39 @@ def sanitize_picks(
     tts_meta: list[dict[str, Any]],
     narrations: list[str],
 ) -> list[list[int]]:
-    """Keep only shortlisted shot ids; fill gaps from candidate pool."""
+    """Keep only shortlisted shot ids; fill gaps from candidate pool without repeating used shots."""
     sanitized = raw or []
     fixed: list[list[int]] = []
+    used: set[int] = set()
     for i, chosen in enumerate(sanitized):
         allow = {int(c["id"]) for c in segment_candidates[i]} if i < len(segment_candidates) else set()
         row = [int(x) for x in (chosen or []) if int(x) in allow] if allow else [int(x) for x in (chosen or [])]
+        seen_row: set[int] = set()
+        unique_row: list[int] = []
+        for sid in row:
+            if sid in seen_row:
+                continue
+            seen_row.add(sid)
+            unique_row.append(sid)
+        row = unique_row
         if not row and i < len(segment_candidates) and segment_candidates[i]:
             need = float((tts_meta[i] if i < len(tts_meta) else {}).get("durationSec") or 28)
-            row = [int(c["id"]) for c in segment_candidates[i][: max(1, int(need / 3))]]
+            take = max(1, int(need / 3))
+            row = [int(c["id"]) for c in segment_candidates[i] if int(c["id"]) not in used][:take]
+            if not row:
+                row = [int(c["id"]) for c in segment_candidates[i][:take]]
+        used.update(row)
         fixed.append(row)
     while len(fixed) < len(narrations):
         i = len(fixed)
         if i < len(segment_candidates) and segment_candidates[i]:
             need = float((tts_meta[i] if i < len(tts_meta) else {}).get("durationSec") or 28)
-            fixed.append([int(c["id"]) for c in segment_candidates[i][: max(1, int(need / 3))]])
+            take = max(1, int(need / 3))
+            row = [int(c["id"]) for c in segment_candidates[i] if int(c["id"]) not in used][:take]
+            if not row:
+                row = [int(c["id"]) for c in segment_candidates[i][:take]]
+            used.update(row)
+            fixed.append(row)
         else:
             fixed.append([])
     return fixed

@@ -33,6 +33,10 @@ def ranking_config(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
         "consecutivePenalty": float(
             raw.get("consecutivePenalty", _env_float("RECAP_RANK_CONSECUTIVE", 0.82))
         ),
+        "nearShotRadius": int(raw.get("nearShotRadius", _env_float("RECAP_RANK_NEAR_SHOT", 1))),
+        "sceneCooldownSegments": int(
+            raw.get("sceneCooldownSegments", _env_float("RECAP_RANK_SCENE_COOLDOWN", 2))
+        ),
         "minShotSecForSecondary": float(
             raw.get("minShotSecForSecondary", _env_float("RECAP_RANK_MIN_SHOT_SEC", 3.5))
         ),

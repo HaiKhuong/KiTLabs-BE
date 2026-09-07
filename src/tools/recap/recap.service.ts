@@ -20,6 +20,7 @@ import {
   emptyRecapStepProgress,
   isRecapStepId,
   readRecapStepProgress,
+  RECAP_STEP_IDS,
   type RecapStepId,
   type RecapStepProgress,
 } from "./recap-steps.constants";
@@ -382,8 +383,23 @@ export class RecapService {
       downloadUrl: playUrl,
       workDirSlug: this.resolveWorkDirSlug(row),
       stepProgress,
-      recapStepSummaries: readRecapStepSummaries(row.engineConfig),
+      recapStepSummaries: this.resolveStepSummaries(row),
     };
+  }
+
+  private resolveStepSummaries(row: RecapHistory): RecapStepSummaries {
+    const stored = readRecapStepSummaries(row.engineConfig);
+    const workDir = this.resolveWorkDir(row);
+    const out: RecapStepSummaries = { ...stored };
+    for (const step of RECAP_STEP_IDS) {
+      if (out[step]?.label) continue;
+      const built = buildRecapStepSummary(step, workDir, (filePath) => this.readJsonRawIfExists(filePath), {
+        resultPath: row.resultPath,
+        readText: (filePath) => this.readTextIfExists(filePath),
+      });
+      if (built) out[step] = built;
+    }
+    return out;
   }
 
   getStepArtifact(
