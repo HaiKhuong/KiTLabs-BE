@@ -140,7 +140,8 @@ Output only the narration body.
 
 MATCH_SYSTEM = (
     "You are an editor who understands film rhythm. Output strict JSON only. "
-    "Match the reviewed narration to the best original subtitle timestamps."
+    "Match the reviewed narration to the best original subtitle timestamps. "
+    "Always emit a complete JSON object; never cut a string or array mid-value."
 )
 
 MATCH_TEMPLATE = """# Task
@@ -211,7 +212,7 @@ ${original_sound_ratio}%
 - OST: 0 voice-over (mute source), 1 original audio only
 
 ## Output
-Strict JSON only:
+Strict complete JSON only. Close every quote, object, and array. Prefer fewer items over truncated JSON.
 {"items":[{"_id":1,"video_id":1,"video_name":"1.mp4","timestamp":"00:00:01,000-00:00:06,000","picture":"...","narration":"...","OST":0}]}
 """
 
