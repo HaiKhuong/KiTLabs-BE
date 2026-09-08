@@ -29,6 +29,7 @@ import { SettingsModule } from "./tools/settings/settings.module";
 import { AudioModule } from "./tools/audio/audio.module";
 import { ToolsRealtimeModule } from "./tools/realtime/tools-realtime.module";
 import { RecapModule } from "./tools/recap/recap.module";
+import { NarratoModule } from "./tools/narrato/narrato.module";
 import { ShortVideoModule } from "./tools/shortvideo/shortvideo.module";
 import { WhiteboardModule } from "./tools/whiteboard/whiteboard.module";
 import { TranslateModule } from "./tools/translate/translate.module";
@@ -110,6 +111,7 @@ import { HistoriesModule } from "./tools/histories/histories.module";
     ToolsRealtimeModule,
     TranslateModule,
     RecapModule,
+    NarratoModule,
     ShortVideoModule,
     WhiteboardModule,
     AudioModule,

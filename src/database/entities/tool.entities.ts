@@ -11,6 +11,7 @@ import { AudioHistory } from "../../tools/audio/audio-history.entity";
 import { ImageHistory } from "../../tools/images/image-history.entity";
 import { VideoHistory } from "../../tools/videos/video-history.entity";
 import { RecapHistory } from "../../tools/recap/recap-history.entity";
+import { NarratoHistory } from "../../tools/narrato/narrato-history.entity";
 import { ShortVideoHistory } from "../../tools/shortvideo/shortvideo-history.entity";
 import { TranslateHistory } from "../../tools/translate/translate-history.entity";
 import { User } from "../../tools/users/user.entity";
@@ -41,6 +42,7 @@ export const TOOL_DB_ENTITIES = [
   AudioCloneVoice,
   TranslateHistory,
   RecapHistory,
+  NarratoHistory,
   ShortVideoHistory,
   DownloadHistory,
   VideoDownload,

@@ -39,6 +39,7 @@ from cluster import cluster_semantic_scenes
 from gemini_recap import (
     PICKS_SELECTED_SHOTS,
     SCRIPT_DURATION_SEC,
+    SCRIPT_MOVIE_WINDOWS,
     SCRIPT_NARRATIONS,
     canonicalize_script,
     validate_script,
@@ -628,14 +629,16 @@ def run_step_call_b(ctx: RecapContext) -> None:
     script_path = ctx.work_dir / "script.json"
     if artifact_fresh(picks_path, tts_path, segments_path, script_path):
         picks = load_json(picks_path)
+        cached_rows = picks.get(PICKS_SELECTED_SHOTS) if isinstance(picks, dict) else None
         cached_ok = (
             isinstance(picks, dict)
             and picks.get("planVersion") == PICKS_PLAN_VERSION
-            and (picks.get(PICKS_SELECTED_SHOTS) or [])
+            and isinstance(cached_rows, list)
+            and len(cached_rows) == len(narrations)
+            and all(isinstance(row, list) and len(row) > 0 for row in cached_rows)
         )
         if cached_ok:
-            fixed = picks.get(PICKS_SELECTED_SHOTS) or []
-            step_done(n, "CallB", f"cache hit ({len(fixed)} segments)")
+            step_done(n, "CallB", f"cache hit ({len(cached_rows)} segments)")
             return
 
     picks = plan_all_segments(
@@ -647,6 +650,7 @@ def run_step_call_b(ctx: RecapContext) -> None:
         work_dir=ctx.work_dir,
         cfg=ctx.cfg,
         knowledge=knowledge,
+        movie_windows=script.get(SCRIPT_MOVIE_WINDOWS) or [],
     )
     debug_rank = picks.pop("_debugRanking", None)
     fixed = sanitize_picks(
@@ -654,6 +658,11 @@ def run_step_call_b(ctx: RecapContext) -> None:
         segment_candidates=segment_candidates,
         tts_meta=tts_meta,
         narrations=narrations,
+        shots=shots,
+        cfg=ctx.cfg,
+        movie_windows=script.get(SCRIPT_MOVIE_WINDOWS) or [],
+        segments=segments,
+        knowledge=knowledge,
     )
     out_picks = {PICKS_SELECTED_SHOTS: fixed, "planVersion": PICKS_PLAN_VERSION}
     if ctx.keep_debug:
