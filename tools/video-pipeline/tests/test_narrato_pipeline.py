@@ -209,5 +209,39 @@ class TestTtsEngineSwitch(unittest.TestCase):
         vx.assert_not_called()
 
 
+class TestOst0ClipDuration(unittest.TestCase):
+    def test_follows_tts_not_timestamp(self) -> None:
+        from render import ost0_clip_duration
+
+        self.assertAlmostEqual(ost0_clip_duration(8.4, 2.0), 8.4)
+        self.assertAlmostEqual(ost0_clip_duration(0.0, 5.0), 0.04)
+
+
+class TestNarratoMergeTimeline(unittest.TestCase):
+    def test_tts_overlay_skips_ost1_gaps(self) -> None:
+        from audio_merger import tts_overlay_timeline
+
+        work = Path(__file__).resolve().parent / "_tmp_narrato_work"
+        work.mkdir(exist_ok=True)
+        tts = work / "a.wav"
+        tts.write_bytes(b"RIFF")
+        total, overlays = tts_overlay_timeline(
+            [
+                {"_id": 1, "OST": 0, "duration": 8.0, "audio": str(tts)},
+                {"_id": 2, "OST": 1, "duration": 3.0, "audio": ""},
+                {"_id": 3, "OST": 0, "duration": 5.0, "audio": str(tts)},
+            ]
+        )
+        self.assertAlmostEqual(total, 16.0)
+        self.assertEqual(len(overlays), 2)
+        self.assertAlmostEqual(overlays[0][0], 0.0)
+        self.assertAlmostEqual(overlays[1][0], 11.0)
+
+    def test_calculate_end_time_from_tts_duration(self) -> None:
+        from clip_video import calculate_end_time
+
+        self.assertEqual(calculate_end_time("00:00:10,000", 8.5, extra_seconds=0), "00:00:18,500")
+
+
 if __name__ == "__main__":
     unittest.main()
