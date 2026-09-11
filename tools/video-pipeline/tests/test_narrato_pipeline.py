@@ -76,6 +76,8 @@ class TestPromptsEnglish(unittest.TestCase):
         self.assertNotRegex(blob, r"[\u4e00-\u9fff]")
         self.assertNotRegex(blob, r"[\u3040-\u30ff]")
         self.assertIn("ORIG", MATCH_TEMPLATE)
+        self.assertIn("Closing wrap", COPY_TEMPLATE)
+        self.assertIn("last 1–2 items MUST be OST=0", MATCH_TEMPLATE)
 
 
 class TestWhisperLanguage(unittest.TestCase):

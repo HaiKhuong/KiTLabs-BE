@@ -64,6 +64,7 @@ The input may contain one or more video subtitle files, and may also include web
 - Core conflict: ...
 - Emotional turns / reversals: ...
 - Signature scenes / dialogue: ...
+- Closing beat (what the recap should wrap, without inventing a finale absent from subtitles): ...
 - Open questions: ...
 - Suggested original-audio clips:
   1. [video_id + video_name + timestamp]: [why keep original audio, or None]
@@ -78,6 +79,7 @@ ${subtitle_content}
 
 COPY_SYSTEM = (
     "You write film/TV commentary narration. Output only reviewable spoken prose. "
+    "Always end with a short spoken closing wrap. "
     "No JSON, timestamps, numbering, titles, explanations, or Markdown."
 )
 
@@ -125,14 +127,27 @@ Use "character pressure + abnormal information + a question":
 2. A fact that breaks common sense, a relationship shock, or a danger spike.
 3. A question the viewer wants answered.
 
+## Closing wrap (required)
+After the last story beat, add 1–2 spoken sentences that close the recap like a host signing off.
+This is meta wrap-up, not a new plot event. Do not invent a film finale that is not in the plot notes / subtitles.
+If the covered footage already reaches a resolution, acknowledge that close. If it does not, close the recap's journey only.
+Write the wrap in ${narration_language}. Match this tone (adapt, do not copy verbatim unless it fits):
+- "Đến đây, hành trình của nhân vật chính cũng chính thức khép lại."
+- "Vậy là chúng ta đã đi hết câu chuyện này. Nếu là bạn, bạn sẽ lựa chọn như thế nào?"
+- "Một hành trình đầy biến cố cuối cùng cũng đi đến hồi kết."
+- "Và đó chính là toàn bộ câu chuyện. Một cú plot twist mà có lẽ không ai ngờ tới."
+- "Câu chuyện đến đây là hết, nhưng liệu bạn có đoán được kết cục này ngay từ đầu?"
+Use a twist/question closer only when the covered plot actually has a twist or unresolved choice. Otherwise pick a quieter close.
+The wrap must be the final sentences of the narration body.
+
 ## Writing rules
 1. Write in ${narration_language}.
-2. Stay inside plot notes and subtitle facts. Do not invent core plot, identity, or ending.
+2. Stay inside plot notes and subtitle facts. Do not invent core plot, identity, or a film ending absent from the input.
 3. Motives and cause-and-effect first; punchy lines second.
 4. One idea per sentence so later matching can split by sentence.
 5. Keep sentences short.
 6. Every 2-3 sentences, bridge why we moved from the previous beat.
-7. Aim for ${narration_word_count} words (±10%). CJK counts non-whitespace characters; other languages count words.
+7. Aim for ${narration_word_count} words (±10%), including the closing wrap. CJK counts non-whitespace characters; other languages count words.
 8. No numbered lists, bullets, headings, or parenthetical stage directions.
 
 Output only the narration body.
@@ -192,8 +207,9 @@ ${original_sound_ratio}%
 9. timestamp is local to video_id. Do not convert to a concatenated timeline.
 10. Ranges inside one video_id must not overlap.
 11. Item 1 MUST be OST=0 (hook). Never start on original audio.
-12. Total OST=1 duration should approach ${original_sound_ratio}% of summed timestamp durations (not clip count).
-13. picture and matching must serve ${drama_genre}.
+12. The last 1–2 items MUST be OST=0 voice-over for the closing wrap (host sign-off / "the story ends here"). Never put the wrap on OST=1. Match those lines to a late-story shot that already exists in the subtitles; do not invent timestamps.
+13. Total OST=1 duration should approach ${original_sound_ratio}% of summed timestamp durations (not clip count).
+14. picture and matching must serve ${drama_genre}.
 
 ## Original-audio ratio
 - 0%: no OST=1.
