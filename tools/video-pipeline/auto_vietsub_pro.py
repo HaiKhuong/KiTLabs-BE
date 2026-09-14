@@ -3860,6 +3860,16 @@ def _remove_cached_voice_before_step3():
         log_step3("Step3: removed tts_chunks checkpoint", important=True)
 
 
+def _remove_cached_ass_for_rerender():
+    """Rerender Step5/6: xóa sub.ass cũ rồi tạo lại. Render xong không xóa."""
+    ass = SUBTITLE_DIR / "sub.ass"
+    if ass.is_file():
+        ass.unlink()
+        log("removed cached sub.ass for rerender")
+        return True
+    return False
+
+
 def parse_cli_args():
     parser = argparse.ArgumentParser(
         description="Auto translate + TTS narration + subtitle render pipeline."
@@ -5096,12 +5106,24 @@ def _cleanup_vse_artifacts_after_step7():
         log(f"Step7 cleanup: đã xóa step1_vse ({path}).")
 
 
-def _run_step6_and_finalize(ass, tm_video, video_path, skip_voice_step, voice_path=None):
+def _run_step6_and_finalize(
+    ass,
+    tm_video,
+    video_path,
+    skip_voice_step,
+    voice_path=None,
+    vi_srt=None,
+    rebuilt_ass_this_run=False,
+):
     """Unified single-pass render: audio mix + subtitle + logo + speed + resize + outro.
 
     voice_path – path to TTS .wav produced by Step3, or None.
     tm_video   – kept for signature compat; no longer used as encode source.
     """
+    if not rebuilt_ass_this_run:
+        _remove_cached_ass_for_rerender()
+        require_ready(vi_srt, "Step6 rebuild ASS input vi.srt")
+        ass = step5_convert_ass(vi_srt)
     require_ready(ass, "Unified render input sub.ass")
     # Re-apply subtitle style even when ASS is reused from cache.
     update_ass_default_style(ass)
@@ -5115,8 +5137,6 @@ def _run_step6_and_finalize(ass, tm_video, video_path, skip_voice_step, voice_pa
     _cleanup_easyocr_artifacts_after_step7()
     _cleanup_paddleocr_artifacts_after_step7()
     _cleanup_vse_artifacts_after_step7()
-    if ass.is_file():
-        ass.unlink()
     done_path = publish_deliverables(preferred=final) or final
     log(f"DONE: {done_path}")
     return done_path
@@ -5329,6 +5349,7 @@ def run_pipeline(video, step_arg=None):
             log("Step4: audio merge integrated into unified render (Step6). Skipping standalone pass.")
 
     if step_enabled(5):
+        _remove_cached_ass_for_rerender()
         ass = run_step(
             5,
             "Step5",
@@ -5349,6 +5370,8 @@ def run_pipeline(video, step_arg=None):
                 video_path=pipeline_video_path,
                 skip_voice_step=SKIP_VOICE_STEP,
                 voice_path=voice,
+                vi_srt=vi_srt,
+                rebuilt_ass_this_run=step_enabled(5),
             ),
         )
         last_output = final
