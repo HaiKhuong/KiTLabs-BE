@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, Logger, NotFoundException } from "@nestjs/common";
+import { BadRequestException, ConflictException, Injectable, Logger, NotFoundException } from "@nestjs/common";
 import { InjectQueue } from "@nestjs/bullmq";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Queue } from "bullmq";
@@ -8,6 +8,14 @@ import { Repository } from "typeorm";
 
 import { QueueJobStatus } from "../../common/enums/domain.enums";
 import { resolveConfiguredPath } from "../../common/desktop/data-path";
+import {
+  CANCELLED_BY_USER_MESSAGE,
+  type CancelRenderResult,
+  discardQueueJob,
+  RenderJobKeys,
+  shouldDeleteRenderFiles,
+} from "../../common/process/render-cancel";
+import { RenderProcessRegistry } from "../../common/process/render-process-registry";
 import { CreditHistory } from "../credits/credit-history.entity";
 import { LogsService } from "../logs/logs.service";
 import { NotificationsService } from "../notifications/notifications.service";
@@ -35,6 +43,10 @@ import {
   readRecapStepSummaries,
   type RecapStepSummaries,
 } from "./recap-step-artifacts.util";
+import {
+  cleanupRecapStepArtifacts,
+  truncatePipelineLog,
+} from "./recap-step-cleanup.util";
 
 export const RECAP_QUEUE_NAME = "video-recap";
 
@@ -55,6 +67,7 @@ export class RecapService {
     private readonly notificationsService: NotificationsService,
     private readonly audioService: AudioService,
     private readonly modelsService: ModelsService,
+    private readonly renderProcessRegistry: RenderProcessRegistry,
   ) {}
 
   static envStr(code: string, fallback: string): string {
@@ -226,6 +239,7 @@ export class RecapService {
     history.errorMessage = null;
     await this.recapRepository.save(history);
 
+    this.renderProcessRegistry.begin(RenderJobKeys.recap(recapHistoryId));
     const queueJob = await this.recapQueue.add(
       RECAP_QUEUE_NAME,
       { recapHistoryId, step },
@@ -234,6 +248,66 @@ export class RecapService {
 
     history.queueJobId = queueJob.id ? String(queueJob.id) : null;
     return this.recapRepository.save(history);
+  }
+
+  async cancel(id: string, userId: string): Promise<CancelRenderResult> {
+    const history = await this.recapRepository.findOne({ where: { id } });
+    if (!history) throw new NotFoundException("Recap job not found");
+    if (history.userId !== userId) throw new NotFoundException("Recap job not found");
+    if (history.status !== QueueJobStatus.PENDING && history.status !== QueueJobStatus.RUNNING) {
+      throw new ConflictException("Recap job is not running");
+    }
+
+    const progress = readRecapStepProgress(history.engineConfig);
+    const step = progress.runningStep;
+    this.renderProcessRegistry.requestCancel(RenderJobKeys.recap(id));
+    await discardQueueJob(this.recapQueue, history.queueJobId);
+
+    const deletedFiles = shouldDeleteRenderFiles();
+    if (deletedFiles && step) {
+      const workDir = this.resolveWorkDir(history);
+      cleanupRecapStepArtifacts(step, workDir);
+      truncatePipelineLog(workDir, `[CANCELLED] step=${step}`);
+    }
+    await this.markCancelled(id, step, deletedFiles);
+    return { status: "cancelled", cancelled: true, deletedFiles };
+  }
+
+  async markCancelled(
+    recapHistoryId: string,
+    step?: RecapStepId | null,
+    deletedFiles = shouldDeleteRenderFiles(),
+  ): Promise<void> {
+    const history = await this.recapRepository.findOne({ where: { id: recapHistoryId } });
+    if (!history) return;
+    if (history.status === QueueJobStatus.CANCELLED) return;
+
+    const progress = readRecapStepProgress(history.engineConfig);
+    const cancelledStep = step ?? progress.runningStep;
+    const summaries = { ...readRecapStepSummaries(history.engineConfig) };
+    if (deletedFiles && cancelledStep) {
+      delete summaries[cancelledStep];
+    }
+
+    history.engineConfig = {
+      ...(history.engineConfig ?? {}),
+      recapStepProgress: {
+        completedSteps: progress.completedSteps,
+        runningStep: null,
+        failedStep: null,
+      },
+      recapStepSummaries: summaries,
+    };
+    history.status = QueueJobStatus.CANCELLED;
+    history.errorMessage = CANCELLED_BY_USER_MESSAGE;
+    history.queueJobId = null;
+    if (deletedFiles && cancelledStep === "call_a2") history.scriptPayload = null;
+    if (deletedFiles && cancelledStep === "call_b") history.timelinePayload = null;
+    if (deletedFiles && cancelledStep === "render") {
+      history.resultPath = null;
+      history.resultFileName = null;
+    }
+    await this.recapRepository.save(history);
   }
 
   async markStepStarted(recapHistoryId: string, step: RecapStepId): Promise<void> {
@@ -320,7 +394,7 @@ export class RecapService {
 
   async markStepFailed(recapHistoryId: string, step: RecapStepId, errorMessage: string): Promise<void> {
     const history = await this.recapRepository.findOne({ where: { id: recapHistoryId } });
-    if (!history) return;
+    if (!history || history.status === QueueJobStatus.CANCELLED) return;
 
     const progress = readRecapStepProgress(history.engineConfig);
     history.engineConfig = {

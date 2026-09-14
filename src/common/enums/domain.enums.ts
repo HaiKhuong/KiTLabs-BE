@@ -8,6 +8,7 @@ export enum QueueJobStatus {
   RUNNING = "running",
   COMPLETED = "completed",
   FAILED = "failed",
+  CANCELLED = "cancelled",
 }
 
 export enum NotificationType {

@@ -8,6 +8,15 @@ import { dirname, isAbsolute, join, resolve } from "path";
 import { ToolsRealtimeGateway } from "../realtime/tools-realtime.gateway";
 import { NARRATO_QUEUE_NAME, NarratoService } from "./narrato.service";
 import { NARRATO_STEP_SCRIPTS, type NarratoStepId } from "./narrato-steps.constants";
+import { killProcessTree } from "../../common/process/kill-process-tree";
+import {
+  isRenderCancelledError,
+  RenderCancelledError,
+  RenderJobKeys,
+  shouldDeleteRenderFiles,
+} from "../../common/process/render-cancel";
+import { RenderProcessRegistry } from "../../common/process/render-process-registry";
+import { QueueJobStatus } from "../../common/enums/domain.enums";
 
 const MAX_LOG_BUFFER = 8 * 1024 * 1024;
 
@@ -23,6 +32,7 @@ export class NarratoProcessor extends WorkerHost {
   constructor(
     private readonly narratoService: NarratoService,
     private readonly realtimeGateway: ToolsRealtimeGateway,
+    private readonly renderProcessRegistry: RenderProcessRegistry,
   ) {
     super();
   }
@@ -60,7 +70,12 @@ export class NarratoProcessor extends WorkerHost {
       throw new UnrecoverableError(`Narrato history not found: ${narratoHistoryId}`);
     }
 
+    const key = RenderJobKeys.narrato(narratoHistoryId);
+
     try {
+      if (this.renderProcessRegistry.isCancelled(key)) {
+        throw new RenderCancelledError();
+      }
       await this.narratoService.markStepStarted(narratoHistoryId, step);
       await this.narratoService.updateRuntimeMessage(narratoHistoryId, `[STEP] ${step} — spawning Python`);
 
@@ -85,6 +100,10 @@ export class NarratoProcessor extends WorkerHost {
         workDir,
         configPath,
       });
+
+      if (this.renderProcessRegistry.isCancelled(key)) {
+        throw new RenderCancelledError();
+      }
 
       const scriptPayload = this.narratoService.readJsonIfExists(join(workDir, "script.json"));
       const plotText = this.narratoService.readTextIfExists(join(workDir, "plot.md"));
@@ -112,6 +131,22 @@ export class NarratoProcessor extends WorkerHost {
         stepProgress: mapped?.stepProgress ?? null,
       });
     } catch (error) {
+      if (this.renderProcessRegistry.isCancelled(key) || isRenderCancelledError(error)) {
+        const row = await this.narratoService.getById(narratoHistoryId);
+        if (row && row.status !== QueueJobStatus.CANCELLED) {
+          await this.narratoService.markCancelled(narratoHistoryId, step);
+        }
+        const cancelled = await this.narratoService.getById(narratoHistoryId);
+        this.realtimeGateway.notifyUser(cancelled?.userId ?? "all", "narrato.cancelled", {
+          narratoHistoryId,
+          step,
+          cancelled: true,
+          deletedFiles: shouldDeleteRenderFiles(),
+          terminal: true,
+          stepProgress: cancelled ? this.narratoService.mapHistoryForClient(cancelled).stepProgress : null,
+        });
+        throw new UnrecoverableError("Narrato cancelled by user");
+      }
       const message = error instanceof Error ? error.message : String(error);
       const maxAttempts = job.opts.attempts != null ? Number(job.opts.attempts) : 1;
       const attemptsMade = job.attemptsMade != null ? Number(job.attemptsMade) : 0;
@@ -137,6 +172,8 @@ export class NarratoProcessor extends WorkerHost {
         stepProgress: failed ? this.narratoService.mapHistoryForClient(failed).stepProgress : null,
       });
       throw error;
+    } finally {
+      this.renderProcessRegistry.release(key);
     }
   }
 
@@ -182,13 +219,11 @@ export class NarratoProcessor extends WorkerHost {
         input.narratoHistoryId,
         `[STEP] ${input.step} — Python pid=${child.pid}`,
       );
+      this.renderProcessRegistry.register(RenderJobKeys.narrato(input.narratoHistoryId), { child });
 
       const timer = setTimeout(() => {
         if (settled) return;
-        child.kill("SIGTERM");
-        setTimeout(() => {
-          if (!child.killed) child.kill("SIGKILL");
-        }, 8_000).unref();
+        killProcessTree(child.pid);
         settleReject(new Error(`Narrato step timeout after ${timeoutMs}ms`));
       }, timeoutMs);
 
@@ -226,6 +261,10 @@ export class NarratoProcessor extends WorkerHost {
 
       child.on("error", (err) => settleReject(err));
       child.on("close", (code) => {
+        if (this.renderProcessRegistry.isCancelled(RenderJobKeys.narrato(input.narratoHistoryId))) {
+          settleReject(new RenderCancelledError());
+          return;
+        }
         const combined = `${stdoutBuf}\n${stderrBuf}`;
         const doneMatch = combined.match(/DONE:\s*(.+)/);
         if (code === 0) {

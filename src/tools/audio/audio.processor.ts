@@ -4,6 +4,8 @@ import { Job, UnrecoverableError } from "bullmq";
 
 import { ToolsRealtimeGateway } from "../realtime/tools-realtime.gateway";
 import { AUDIO_QUEUE_NAME, AudioService } from "./audio.service";
+import { isRenderCancelledError } from "../../common/process/render-cancel";
+import { QueueJobStatus } from "../../common/enums/domain.enums";
 
 @Processor(AUDIO_QUEUE_NAME, {
   concurrency: 1,
@@ -56,6 +58,21 @@ export class AudioProcessor extends WorkerHost {
         durationSec: mapped?.durationSec ?? null,
       });
     } catch (error) {
+      if (this.audioService.isCancelled(audioHistoryId) || isRenderCancelledError(error)) {
+        const row = await this.audioService.getById(audioHistoryId);
+        if (row && row.status !== QueueJobStatus.CANCELLED) {
+          await this.audioService.markCancelled(audioHistoryId);
+        }
+        const cancelled = await this.audioService.getById(audioHistoryId);
+        if (cancelled) {
+          this.realtimeGateway.notifyUser(cancelled.userId ?? "all", "audio.cancelled", {
+            audioHistoryId,
+            cancelled: true,
+            terminal: true,
+          });
+        }
+        throw new UnrecoverableError("Audio cancelled by user");
+      }
       const message = error instanceof Error ? error.message : String(error);
       const maxAttempts = job.opts.attempts != null ? Number(job.opts.attempts) : 1;
       const attemptsMade = job.attemptsMade != null ? Number(job.attemptsMade) : 0;
@@ -83,6 +100,8 @@ export class AudioProcessor extends WorkerHost {
         this.logger.warn(`Audio job ${job.id} finished after history ${audioHistoryId} was deleted`);
       }
       throw error;
+    } finally {
+      this.audioService.releaseProcess(audioHistoryId);
     }
   }
 }

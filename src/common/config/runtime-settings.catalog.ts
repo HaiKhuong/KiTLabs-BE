@@ -38,6 +38,13 @@ export const RUNTIME_SETTING_FIELDS: RuntimeSettingField[] = [
   { code: "OMNIVOICE_BATCH_SIZE", group: "omnivoice", kind: "number", label: "OmniVoice batch size", defaultValue: "8" },
   { code: "STEP3_VERBOSE_LOG", group: "omnivoice", kind: "boolean", label: "Step3 verbose log", defaultValue: "false" },
   { code: "VOXCPM2_SEED", group: "voxcpm", kind: "string", label: "VoxCPM2 seed", defaultValue: "42" },
+  {
+    code: "RENDER_CANCEL_DELETE_FILES",
+    group: "jobs",
+    kind: "boolean",
+    label: "Xóa toàn bộ file khi hủy",
+    defaultValue: "true",
+  },
   { code: "TRANSLATE_CMD_TIMEOUT_MS", group: "translate", kind: "number", label: "Translate timeout (ms)", defaultValue: "1200000" },
   { code: "TRANSLATE_WORK_ROOT", group: "translate", kind: "string", label: "Translate output folder", defaultValue: "" },
   { code: "RECAP_CMD_TIMEOUT_MS", group: "recap", kind: "number", label: "Recap timeout (ms)", defaultValue: "3600000" },

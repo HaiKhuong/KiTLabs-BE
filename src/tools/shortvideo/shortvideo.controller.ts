@@ -25,6 +25,7 @@ import { GenerateShortVideoSpecDto } from "./dto/generate-shortvideo-spec.dto";
 import { RenderShortVideoUploadDto } from "./dto/render-shortvideo-upload.dto";
 import { ShortVideoGeminiService } from "./shortvideo-gemini.service";
 import { ShortVideoService } from "./shortvideo.service";
+import { ToolsRealtimeGateway } from "../realtime/tools-realtime.gateway";
 
 const IMAGE_MIME = new Set(["image/png", "image/jpeg", "image/jpg", "image/webp"]);
 const AUDIO_MIME = new Set([
@@ -45,6 +46,7 @@ export class ShortVideoController {
   constructor(
     private readonly shortVideoService: ShortVideoService,
     private readonly shortVideoGeminiService: ShortVideoGeminiService,
+    private readonly realtimeGateway: ToolsRealtimeGateway,
   ) {}
 
   @ApiOperation({ summary: "Generate an immediately usable ShortVideo JSON spec with Gemini" })
@@ -164,6 +166,23 @@ export class ShortVideoController {
   async deleteHistory(@Param("id") id: string, @Query("userId") userId: string) {
     if (!userId) throw new BadRequestException("userId is required");
     return this.shortVideoService.deleteHistory(id, userId);
+  }
+
+  @ApiOperation({ summary: "Cancel a running ShortVideo render" })
+  @ApiQuery({ name: "userId", required: true })
+  @Public()
+  @Post("history/:id/cancel")
+  async cancel(@Param("id") id: string, @Query("userId") userId: string) {
+    if (!userId) throw new BadRequestException("userId is required");
+    const result = await this.shortVideoService.cancel(id, userId);
+    this.realtimeGateway.notifyUser(userId, "workflow.job.cancelled", {
+      jobId: id,
+      type: "short_video",
+      cancelled: true,
+      deletedFiles: result.deletedFiles,
+      terminal: true,
+    });
+    return result;
   }
 
   @ApiOperation({ summary: "Stream a rendered ShortVideo mp4 (range requests supported)" })

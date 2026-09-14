@@ -30,6 +30,7 @@ import { WhiteboardIdeasService } from "./whiteboard-ideas.service";
 import { WhiteboardSamplesService } from "./whiteboard-samples.service";
 import { WhiteboardRecentsService } from "./whiteboard-recents.service";
 import { WhiteboardService } from "./whiteboard.service";
+import { ToolsRealtimeGateway } from "../realtime/tools-realtime.gateway";
 
 const IMAGE_MIME = new Set(["image/png", "image/jpeg", "image/jpg", "image/webp"]);
 
@@ -50,6 +51,7 @@ export class WhiteboardController {
     private readonly whiteboardIdeasService: WhiteboardIdeasService,
     private readonly whiteboardSamplesService: WhiteboardSamplesService,
     private readonly whiteboardRecentsService: WhiteboardRecentsService,
+    private readonly realtimeGateway: ToolsRealtimeGateway,
   ) {}
 
   @ApiOperation({
@@ -259,6 +261,23 @@ export class WhiteboardController {
   async deleteHistory(@Param("id") id: string, @Query("userId") userId: string) {
     if (!userId) throw new BadRequestException("userId is required");
     return this.whiteboardService.deleteHistory(id, userId);
+  }
+
+  @ApiOperation({ summary: "Cancel a running whiteboard render or merge" })
+  @ApiQuery({ name: "userId", required: true })
+  @Public()
+  @Post("history/:id/cancel")
+  async cancel(@Param("id") id: string, @Query("userId") userId: string) {
+    if (!userId) throw new BadRequestException("userId is required");
+    const result = await this.whiteboardService.cancel(id, userId);
+    this.realtimeGateway.notifyUser(userId, "workflow.job.cancelled", {
+      jobId: id,
+      type: "whiteboard",
+      cancelled: true,
+      deletedFiles: result.deletedFiles,
+      terminal: true,
+    });
+    return result;
   }
 
   @ApiOperation({ summary: "List sample images for a user" })

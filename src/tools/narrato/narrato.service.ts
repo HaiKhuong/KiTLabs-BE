@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, Logger, NotFoundException } from "@nestjs/common";
+import { BadRequestException, ConflictException, Injectable, Logger, NotFoundException } from "@nestjs/common";
 import { InjectQueue } from "@nestjs/bullmq";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Queue } from "bullmq";
@@ -8,6 +8,14 @@ import { Repository } from "typeorm";
 
 import { QueueJobStatus } from "../../common/enums/domain.enums";
 import { resolveConfiguredPath } from "../../common/desktop/data-path";
+import {
+  CANCELLED_BY_USER_MESSAGE,
+  type CancelRenderResult,
+  discardQueueJob,
+  RenderJobKeys,
+  shouldDeleteRenderFiles,
+} from "../../common/process/render-cancel";
+import { RenderProcessRegistry } from "../../common/process/render-process-registry";
 import { AudioService } from "../audio/audio.service";
 import { LogsService } from "../logs/logs.service";
 import { NotificationsService } from "../notifications/notifications.service";
@@ -22,6 +30,7 @@ import {
   type NarratoStepProgress,
 } from "./narrato-steps.constants";
 import { normalizeWorkDirSlug, slugFromVideoPath, toNarratoSnakeCaseSlug } from "./narrato-slug.util";
+import { cleanupNarratoStepArtifacts, truncateNarratoPipelineLog } from "./narrato-step-cleanup.util";
 
 export const NARRATO_QUEUE_NAME = "video-narrato";
 
@@ -40,6 +49,7 @@ export class NarratoService {
     private readonly notificationsService: NotificationsService,
     private readonly audioService: AudioService,
     private readonly modelsService: ModelsService,
+    private readonly renderProcessRegistry: RenderProcessRegistry,
   ) {}
 
   static resolveQueueLockDurationMs(): number {
@@ -205,6 +215,7 @@ export class NarratoService {
     history.errorMessage = null;
     await this.narratoRepository.save(history);
 
+    this.renderProcessRegistry.begin(RenderJobKeys.narrato(narratoHistoryId));
     const queueJob = await this.narratoQueue.add(
       NARRATO_QUEUE_NAME,
       { narratoHistoryId, step },
@@ -213,6 +224,59 @@ export class NarratoService {
 
     history.queueJobId = queueJob.id ? String(queueJob.id) : null;
     return this.narratoRepository.save(history);
+  }
+
+  async cancel(id: string, userId: string): Promise<CancelRenderResult> {
+    const history = await this.narratoRepository.findOne({ where: { id } });
+    if (!history) throw new NotFoundException("Narrato job not found");
+    if (history.userId !== userId) throw new NotFoundException("Narrato job not found");
+    if (history.status !== QueueJobStatus.PENDING && history.status !== QueueJobStatus.RUNNING) {
+      throw new ConflictException("Narrato job is not running");
+    }
+
+    const progress = readNarratoStepProgress(history.engineConfig);
+    const step = progress.runningStep;
+    this.renderProcessRegistry.requestCancel(RenderJobKeys.narrato(id));
+    await discardQueueJob(this.narratoQueue, history.queueJobId);
+
+    const deletedFiles = shouldDeleteRenderFiles();
+    if (deletedFiles && step) {
+      const workDir = this.resolveWorkDir(history);
+      cleanupNarratoStepArtifacts(step, workDir);
+      truncateNarratoPipelineLog(workDir, `[CANCELLED] step=${step}`);
+    }
+    await this.markCancelled(id, step, deletedFiles);
+    return { status: "cancelled", cancelled: true, deletedFiles };
+  }
+
+  async markCancelled(
+    narratoHistoryId: string,
+    step?: NarratoStepId | null,
+    deletedFiles = shouldDeleteRenderFiles(),
+  ): Promise<void> {
+    const history = await this.narratoRepository.findOne({ where: { id: narratoHistoryId } });
+    if (!history) return;
+    if (history.status === QueueJobStatus.CANCELLED) return;
+
+    const progress = readNarratoStepProgress(history.engineConfig);
+    const cancelledStep = step ?? progress.runningStep;
+    history.engineConfig = {
+      ...(history.engineConfig ?? {}),
+      narratoStepProgress: {
+        completedSteps: progress.completedSteps,
+        runningStep: null,
+        failedStep: null,
+      },
+    };
+    history.status = QueueJobStatus.CANCELLED;
+    history.errorMessage = CANCELLED_BY_USER_MESSAGE;
+    history.queueJobId = null;
+    if (deletedFiles && cancelledStep === "match") history.scriptPayload = null;
+    if (deletedFiles && cancelledStep === "render") {
+      history.resultPath = null;
+      history.resultFileName = null;
+    }
+    await this.narratoRepository.save(history);
   }
 
   async markStepStarted(narratoHistoryId: string, step: NarratoStepId): Promise<void> {
@@ -277,7 +341,7 @@ export class NarratoService {
 
   async markStepFailed(narratoHistoryId: string, step: NarratoStepId, errorMessage: string): Promise<void> {
     const history = await this.narratoRepository.findOne({ where: { id: narratoHistoryId } });
-    if (!history) return;
+    if (!history || history.status === QueueJobStatus.CANCELLED) return;
     const progress = readNarratoStepProgress(history.engineConfig);
     history.engineConfig = {
       ...(history.engineConfig ?? {}),

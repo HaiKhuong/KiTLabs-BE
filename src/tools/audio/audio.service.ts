@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, Logger, NotFoundException } from "@nestjs/common";
+import { BadRequestException, ConflictException, Injectable, Logger, NotFoundException } from "@nestjs/common";
 import { InjectQueue } from "@nestjs/bullmq";
 import { InjectRepository } from "@nestjs/typeorm";
 import { ChildProcess, spawn } from "child_process";
@@ -10,6 +10,16 @@ import { Repository, SelectQueryBuilder } from "typeorm";
 
 import { QueueJobStatus } from "../../common/enums/domain.enums";
 import { pythonSubprocessEnv } from "../../common/desktop/python-path";
+import { killProcessTree } from "../../common/process/kill-process-tree";
+import {
+  CANCELLED_BY_USER_MESSAGE,
+  type CancelRenderResult,
+  discardQueueJob,
+  RenderCancelledError,
+  RenderJobKeys,
+  shouldDeleteRenderFiles,
+} from "../../common/process/render-cancel";
+import { RenderProcessRegistry } from "../../common/process/render-process-registry";
 import {
   resolveOmnivoiceDeviceMapForPayload,
   resolveOmnivoiceDtypeForPayload,
@@ -71,8 +81,6 @@ export type PipelineVoiceDto = {
 @Injectable()
 export class AudioService {
   private readonly logger = new Logger(AudioService.name);
-  private readonly activeChildren = new Map<string, ChildProcess>();
-  private readonly cancelledJobs = new Set<string>();
 
   constructor(
     @InjectQueue(AUDIO_QUEUE_NAME)
@@ -87,6 +95,7 @@ export class AudioService {
     private readonly creditHistoryRepository: Repository<CreditHistory>,
     private readonly logsService: LogsService,
     private readonly notificationsService: NotificationsService,
+    private readonly renderProcessRegistry: RenderProcessRegistry,
   ) {}
 
   private static readonly OMNIVOICE_INLINE_PY = [
@@ -171,26 +180,19 @@ export class AudioService {
   }
 
   requestCancel(audioHistoryId: string): void {
-    this.cancelledJobs.add(audioHistoryId);
-    const child = this.activeChildren.get(audioHistoryId);
-    if (child && !child.killed) {
-      this.logger.warn(`Cancelling active OmniVoice process for audio ${audioHistoryId}`);
-      child.kill("SIGTERM");
-      setTimeout(() => {
-        if (!child.killed) {
-          child.kill("SIGKILL");
-        }
-      }, 5_000).unref();
-    }
+    this.renderProcessRegistry.requestCancel(RenderJobKeys.audio(audioHistoryId));
   }
 
   isCancelled(audioHistoryId: string): boolean {
-    return this.cancelledJobs.has(audioHistoryId);
+    return this.renderProcessRegistry.isCancelled(RenderJobKeys.audio(audioHistoryId));
+  }
+
+  releaseProcess(audioHistoryId: string): void {
+    this.renderProcessRegistry.release(RenderJobKeys.audio(audioHistoryId));
   }
 
   private clearCancel(audioHistoryId: string): void {
-    this.cancelledJobs.delete(audioHistoryId);
-    this.activeChildren.delete(audioHistoryId);
+    this.renderProcessRegistry.release(RenderJobKeys.audio(audioHistoryId));
   }
 
   private async spawnOmnivoiceTts(
@@ -206,7 +208,9 @@ export class AudioService {
       ttsEngine?: "omnivoice" | "voxcpm2";
     },
     audioHistoryId?: string,
+    processKey?: string,
   ): Promise<string> {
+    const key = processKey ?? (audioHistoryId ? RenderJobKeys.audio(audioHistoryId) : undefined);
     const refAudio = isAbsolute(opts.refAudio) ? opts.refAudio : resolve(process.cwd(), opts.refAudio);
     if (!existsSync(refAudio)) {
       throw new Error(`Reference audio not found: ${refAudio}`);
@@ -275,21 +279,18 @@ export class AudioService {
         env: pythonSubprocessEnv(),
       });
 
-      if (audioHistoryId) {
-        this.activeChildren.set(audioHistoryId, child);
+      if (key) {
+        this.renderProcessRegistry.register(key, { child });
       }
 
       let stderr = "";
       const timeoutHandle = setTimeout(() => {
-        child.kill("SIGTERM");
+        killProcessTree(child.pid);
         rejectPromise(new Error(`${engineLabel} TTS timed out after ${timeoutMs}ms`));
       }, timeoutMs);
 
       const cleanup = () => {
         clearTimeout(timeoutHandle);
-        if (audioHistoryId) {
-          this.activeChildren.delete(audioHistoryId);
-        }
       };
 
       child.stderr?.on("data", (buf: Buffer) => {
@@ -304,8 +305,8 @@ export class AudioService {
       });
       child.on("close", (code, signal) => {
         cleanup();
-        if (audioHistoryId && this.isCancelled(audioHistoryId)) {
-          rejectPromise(new Error("Audio generation cancelled"));
+        if (key && this.renderProcessRegistry.isCancelled(key)) {
+          rejectPromise(new RenderCancelledError());
           return;
         }
         if (code !== 0) {
@@ -338,7 +339,9 @@ export class AudioService {
       ttsEngine?: "omnivoice" | "voxcpm2";
     },
     audioHistoryId?: string,
+    processKey?: string,
   ): Promise<{ outWav: string; meta: Record<string, unknown> }> {
+    const key = processKey ?? (audioHistoryId ? RenderJobKeys.audio(audioHistoryId) : undefined);
     const refAudio = isAbsolute(opts.refAudio) ? opts.refAudio : resolve(process.cwd(), opts.refAudio);
     if (!existsSync(refAudio)) {
       throw new Error(`Reference audio not found: ${refAudio}`);
@@ -398,21 +401,18 @@ export class AudioService {
         env: pythonSubprocessEnv(),
       });
 
-      if (audioHistoryId) {
-        this.activeChildren.set(audioHistoryId, child);
+      if (key) {
+        this.renderProcessRegistry.register(key, { child });
       }
 
       let stderr = "";
       const timeoutHandle = setTimeout(() => {
-        child.kill("SIGTERM");
+        killProcessTree(child.pid);
         rejectPromise(new Error(`SRT timeline TTS timed out after ${timeoutMs}ms`));
       }, timeoutMs);
 
       const cleanup = () => {
         clearTimeout(timeoutHandle);
-        if (audioHistoryId) {
-          this.activeChildren.delete(audioHistoryId);
-        }
       };
 
       child.stdout?.on("data", (buf: Buffer) => {
@@ -433,8 +433,8 @@ export class AudioService {
       });
       child.on("close", (code, signal) => {
         cleanup();
-        if (audioHistoryId && this.isCancelled(audioHistoryId)) {
-          rejectPromise(new Error("Audio generation cancelled"));
+        if (key && this.renderProcessRegistry.isCancelled(key)) {
+          rejectPromise(new RenderCancelledError());
           return;
         }
         if (code !== 0) {
@@ -1043,6 +1043,7 @@ export class AudioService {
     });
     const created = await this.audioRepository.save(history);
 
+    this.renderProcessRegistry.begin(RenderJobKeys.audio(created.id));
     const queueJob = await this.audioQueue.add(
       AUDIO_QUEUE_NAME,
       { audioHistoryId: created.id },
@@ -1146,6 +1147,7 @@ export class AudioService {
     });
     const created = await this.audioRepository.save(history);
 
+    this.renderProcessRegistry.begin(RenderJobKeys.audio(created.id));
     const queueJob = await this.audioQueue.add(
       AUDIO_QUEUE_NAME,
       { audioHistoryId: created.id },
@@ -1246,6 +1248,7 @@ export class AudioService {
     cloneRefText?: string | null;
     language?: string | null;
     speed?: number | null;
+    processKey?: string;
   }): Promise<string> {
     const text = String(opts.text ?? "").trim();
     if (!text) {
@@ -1260,15 +1263,19 @@ export class AudioService {
     const rawSpeed = Number(opts.speed ?? 1);
     const playbackSpeed = Number.isFinite(rawSpeed) ? Math.min(2, Math.max(0.5, rawSpeed)) : 1;
 
-    await this.spawnOmnivoiceTts({
-      text,
-      outWav: opts.outWav,
-      refAudio: refAudioPath,
-      refText,
-      language,
-      playbackSpeed,
-      ttsEngine: this.resolveTtsEngine(opts.ttsEngine),
-    });
+    await this.spawnOmnivoiceTts(
+      {
+        text,
+        outWav: opts.outWav,
+        refAudio: refAudioPath,
+        refText,
+        language,
+        playbackSpeed,
+        ttsEngine: this.resolveTtsEngine(opts.ttsEngine),
+      },
+      undefined,
+      opts.processKey,
+    );
 
     return opts.outWav;
   }
@@ -1290,6 +1297,7 @@ export class AudioService {
     language?: string | null;
     speed?: number | null;
     gapSec?: number | null;
+    processKey?: string;
   }): Promise<{ outWav: string; totalSec: number; segments: { start: number; end: number }[] }> {
     const captions = (opts.captions ?? []).map((c) => String(c ?? "").trim()).filter(Boolean);
     if (captions.length === 0) {
@@ -1351,9 +1359,13 @@ export class AudioService {
         env: pythonSubprocessEnv(),
       });
 
+      if (opts.processKey) {
+        this.renderProcessRegistry.register(opts.processKey, { child });
+      }
+
       let stderr = "";
       const timeoutHandle = setTimeout(() => {
-        child.kill("SIGTERM");
+        killProcessTree(child.pid);
         rejectPromise(new Error(`Voice timeline TTS timed out after ${timeoutMs}ms`));
       }, timeoutMs);
 
@@ -1375,6 +1387,10 @@ export class AudioService {
       });
       child.on("close", (code, signal) => {
         clearTimeout(timeoutHandle);
+        if (opts.processKey && this.renderProcessRegistry.isCancelled(opts.processKey)) {
+          rejectPromise(new RenderCancelledError());
+          return;
+        }
         if (code !== 0) {
           const suffix = signal ? ` (signal ${signal})` : "";
           rejectPromise(new Error(stderr.trim() || `Voice timeline exited with code ${code}${suffix}`));
@@ -1519,6 +1535,51 @@ export class AudioService {
     return this.audioRepository.findOne({ where: { id } });
   }
 
+  async cancel(id: string, userId: string): Promise<CancelRenderResult> {
+    const row = await this.audioRepository.findOne({ where: { id, userId } });
+    if (!row) throw new NotFoundException("Job not found");
+    if (row.status !== QueueJobStatus.PENDING && row.status !== QueueJobStatus.RUNNING) {
+      throw new ConflictException("Audio job is not running");
+    }
+
+    this.requestCancel(id);
+    await discardQueueJob(this.audioQueue, row.queueJobId);
+
+    const deletedFiles = shouldDeleteRenderFiles();
+    if (deletedFiles) {
+      await this.unlinkResultFile(row.resultPath, id);
+    }
+    await this.markCancelled(id, deletedFiles);
+    return { status: "cancelled", cancelled: true, deletedFiles };
+  }
+
+  async markCancelled(audioHistoryId: string, deletedFiles = shouldDeleteRenderFiles()): Promise<void> {
+    await this.audioRepository.update(
+      { id: audioHistoryId },
+      {
+        status: QueueJobStatus.CANCELLED,
+        errorMessage: CANCELLED_BY_USER_MESSAGE,
+        queueJobId: null,
+        ...(deletedFiles ? { resultPath: null, resultFileName: null, durationSec: null } : {}),
+      },
+    );
+  }
+
+  private async unlinkResultFile(resultPath: string | null | undefined, id: string): Promise<void> {
+    if (!resultPath) return;
+    try {
+      const abs = isAbsolute(resultPath) ? resultPath : resolve(process.cwd(), resultPath);
+      if (existsSync(abs)) {
+        await unlink(abs);
+      }
+    } catch (err) {
+      this.logger.warn(
+        `Could not delete audio file for history ${id}`,
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+  }
+
   async deleteHistory(userId: string, id: string): Promise<void> {
     const row = await this.audioRepository.findOne({ where: { id, userId } });
     if (!row) {
@@ -1553,17 +1614,7 @@ export class AudioService {
     }
 
     if (row.resultPath) {
-      try {
-        const abs = isAbsolute(row.resultPath) ? row.resultPath : resolve(process.cwd(), row.resultPath);
-        if (existsSync(abs)) {
-          await unlink(abs);
-        }
-      } catch (err) {
-        this.logger.warn(
-          `Could not delete audio file for history ${id}`,
-          err instanceof Error ? err.message : String(err),
-        );
-      }
+      await this.unlinkResultFile(row.resultPath, id);
     }
 
     await this.audioRepository.delete({ id, userId });
@@ -1670,8 +1721,9 @@ export class AudioService {
   }
 
   async processFailed(audioHistoryId: string, errorMessage: string): Promise<void> {
-    this.logger.error(`Audio failed: historyId=${audioHistoryId} error=${errorMessage}`);
     const history = await this.audioRepository.findOne({ where: { id: audioHistoryId } });
+    if (!history || history.status === QueueJobStatus.CANCELLED) return;
+    this.logger.error(`Audio failed: historyId=${audioHistoryId} error=${errorMessage}`);
     await this.audioRepository.update(
       { id: audioHistoryId },
       { status: QueueJobStatus.FAILED, errorMessage },

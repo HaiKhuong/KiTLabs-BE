@@ -13,6 +13,7 @@ import { AntiSpamInterceptor } from "./common/interceptors/anti-spam.interceptor
 import { KitLabsPlatformInterceptor } from "./common/interceptors/kitlabs-platform.interceptor";
 import { ResponseTransformInterceptor } from "./common/interceptors/response-transform.interceptor";
 import { AppConfigModule } from "./common/config/app-config.module";
+import { RenderProcessModule } from "./common/process/render-process.module";
 import { DatabaseModule } from "./database/database.module";
 import { AUDIT_DB_ENTITIES } from "./database/entities/audit.entities";
 import { MAIN_DB_ENTITIES } from "./database/entities/main.entities";
@@ -103,6 +104,7 @@ import { HistoriesModule } from "./tools/histories/histories.module";
       },
     }),
     AppConfigModule,
+    RenderProcessModule,
     UsersModule,
     CreditsModule,
     LogsModule,

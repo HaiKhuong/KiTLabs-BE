@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, Logger, NotFoundException } from "@nestjs/common";
+import { BadRequestException, ConflictException, Injectable, Logger, NotFoundException } from "@nestjs/common";
 import { InjectQueue } from "@nestjs/bullmq";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Queue } from "bullmq";
@@ -9,6 +9,14 @@ import { Not, IsNull, Repository } from "typeorm";
 
 import { QueueJobStatus } from "../../common/enums/domain.enums";
 import { resolveConfiguredPath } from "../../common/desktop/data-path";
+import {
+  CANCELLED_BY_USER_MESSAGE,
+  type CancelRenderResult,
+  discardQueueJob,
+  RenderJobKeys,
+  shouldDeleteRenderFiles,
+} from "../../common/process/render-cancel";
+import { RenderProcessRegistry } from "../../common/process/render-process-registry";
 import { NotificationsService } from "../notifications/notifications.service";
 import { AnalyzeWhiteboardDto } from "./dto/analyze-whiteboard.dto";
 import { MergeWhiteboardDto } from "./dto/merge-whiteboard.dto";
@@ -60,6 +68,7 @@ export class WhiteboardService {
     private readonly repository: Repository<WhiteboardHistory>,
     private readonly notificationsService: NotificationsService,
     private readonly recentsService: WhiteboardRecentsService,
+    private readonly renderProcessRegistry: RenderProcessRegistry,
   ) {}
 
   static resolveQueueLockDurationMs(): number {
@@ -373,6 +382,7 @@ export class WhiteboardService {
     patch.engineConfig = nextEngineConfig as Record<string, unknown>;
     await this.repository.update({ id: analysisId }, patch as never);
 
+    this.renderProcessRegistry.begin(RenderJobKeys.whiteboard(analysisId));
     const queueJob = await this.queue.add(
       WHITEBOARD_QUEUE_NAME,
       { whiteboardHistoryId: analysisId },
@@ -501,6 +511,7 @@ export class WhiteboardService {
       }
     }
 
+    this.renderProcessRegistry.begin(RenderJobKeys.whiteboard(saved.id));
     const queueJob = await this.queue.add(
       WHITEBOARD_QUEUE_NAME,
       { whiteboardHistoryId: saved.id },
@@ -621,6 +632,47 @@ export class WhiteboardService {
     this.safeRemoveArtifacts(row);
     await this.repository.delete({ id, userId: userId.trim() });
     return { deleted: true, id };
+  }
+
+  async cancel(id: string, userId: string): Promise<CancelRenderResult> {
+    const row = await this.getOwnedById(id, userId);
+    if (row.status !== QueueJobStatus.PENDING && row.status !== QueueJobStatus.RUNNING) {
+      throw new ConflictException("Whiteboard job is not running");
+    }
+
+    this.renderProcessRegistry.requestCancel(RenderJobKeys.whiteboard(id));
+    await discardQueueJob(this.queue, row.queueJobId);
+
+    const deletedFiles = shouldDeleteRenderFiles();
+    if (deletedFiles) {
+      this.safeRemoveWorkDirOnly(row.id);
+    }
+    await this.markCancelled(id, deletedFiles);
+    return { status: "cancelled", cancelled: true, deletedFiles };
+  }
+
+  async markCancelled(id: string, deletedFiles = shouldDeleteRenderFiles()): Promise<void> {
+    const timing = await this.resolveRenderTiming(id);
+    await this.repository.update(
+      { id },
+      {
+        status: QueueJobStatus.CANCELLED,
+        errorMessage: CANCELLED_BY_USER_MESSAGE,
+        queueJobId: null,
+        ...timing,
+        ...(deletedFiles ? { resultPath: null, resultFileName: null } : {}),
+      },
+    );
+  }
+
+  /** Remove render work dir but keep uploaded source image. */
+  private safeRemoveWorkDirOnly(id: string): void {
+    const dir = join(this.resolveWorkRoot(), id);
+    try {
+      if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+    } catch (err) {
+      this.logger.warn(`Failed to remove work dir for ${id}: ${String(err)}`);
+    }
   }
 
   async deleteAllHistory(userId: string): Promise<{ deleted: number }> {
@@ -748,6 +800,8 @@ export class WhiteboardService {
   }
 
   async processFailed(id: string, errorMessage: string): Promise<void> {
+    const current = await this.repository.findOne({ where: { id }, select: { id: true, status: true } });
+    if (!current || current.status === QueueJobStatus.CANCELLED) return;
     const timing = await this.resolveRenderTiming(id);
     await this.repository.update({ id }, { status: QueueJobStatus.FAILED, errorMessage, ...timing });
   }

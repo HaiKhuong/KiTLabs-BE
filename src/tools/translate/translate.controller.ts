@@ -1,4 +1,4 @@
-import { BadRequestException, Body, Controller, Get, Post, Query, Res } from "@nestjs/common";
+import { BadRequestException, Body, Controller, Get, Param, Post, Query, Res } from "@nestjs/common";
 import { ApiBearerAuth, ApiBody, ApiOperation, ApiQuery, ApiTags } from "@nestjs/swagger";
 import { Response } from "express";
 
@@ -7,6 +7,7 @@ import { CreateTranslateJobDto } from "./dto/create-translate-job.dto";
 import { TranslateCompareSubtitleDto } from "./dto/translate-compare-subtitle.dto";
 import { GeminiSubtitleTranslateService } from "./gemini-subtitle-translate.service";
 import { TranslateService } from "./translate.service";
+import { ToolsRealtimeGateway } from "../realtime/tools-realtime.gateway";
 
 @ApiTags("Translates")
 @ApiBearerAuth("bearer")
@@ -15,6 +16,7 @@ export class TranslateController {
   constructor(
     private readonly translateService: TranslateService,
     private readonly geminiSubtitleTranslateService: GeminiSubtitleTranslateService,
+    private readonly realtimeGateway: ToolsRealtimeGateway,
   ) {}
 
   @ApiOperation({ summary: "Create translate queue job" })
@@ -50,6 +52,22 @@ export class TranslateController {
       throw new BadRequestException("userId is required");
     }
     return this.translateService.getHistory(userId);
+  }
+
+  @ApiOperation({ summary: "Cancel a running translate render" })
+  @ApiQuery({ name: "userId", required: true })
+  @Public()
+  @Post("histories/:id/cancel")
+  async cancel(@Param("id") id: string, @Query("userId") userId?: string) {
+    if (!userId) throw new BadRequestException("userId is required");
+    const result = await this.translateService.cancel(id, userId);
+    this.realtimeGateway.notifyUser(userId, "translate.cancelled", {
+      translateHistoryId: id,
+      cancelled: true,
+      deletedFiles: result.deletedFiles,
+      terminal: true,
+    });
+    return result;
   }
 
   @ApiOperation({ summary: "Get translate artifact by result path" })

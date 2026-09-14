@@ -9,6 +9,14 @@ import { AudioService } from "../audio/audio.service";
 import { ToolsRealtimeGateway } from "../realtime/tools-realtime.gateway";
 import { SHORTVIDEO_QUEUE_NAME, ShortVideoService } from "./shortvideo.service";
 import { ShortVideoHistory } from "./shortvideo-history.entity";
+import { killProcessTree } from "../../common/process/kill-process-tree";
+import {
+  isRenderCancelledError,
+  RenderCancelledError,
+  RenderJobKeys,
+} from "../../common/process/render-cancel";
+import { RenderProcessRegistry } from "../../common/process/render-process-registry";
+import { QueueJobStatus } from "../../common/enums/domain.enums";
 
 const MAX_LOG_BUFFER = 4 * 1024 * 1024;
 
@@ -25,6 +33,7 @@ export class ShortVideoProcessor extends WorkerHost {
     private readonly shortVideoService: ShortVideoService,
     private readonly realtimeGateway: ToolsRealtimeGateway,
     private readonly audioService: AudioService,
+    private readonly renderProcessRegistry: RenderProcessRegistry,
   ) {
     super();
   }
@@ -50,8 +59,12 @@ export class ShortVideoProcessor extends WorkerHost {
 
     const userId = history.userId;
     const nodeId = history.nodeId ?? "";
+    const key = RenderJobKeys.shortvideo(id);
 
     try {
+      if (this.renderProcessRegistry.isCancelled(key)) {
+        throw new RenderCancelledError();
+      }
       await this.shortVideoService.processStarted(id);
 
       const workDir = this.shortVideoService.prepareWorkDir(id);
@@ -63,6 +76,10 @@ export class ShortVideoProcessor extends WorkerHost {
       }
 
       const resultPath = await this.spawnPipeline({ id, scriptPath, workDir, configPath });
+
+      if (this.renderProcessRegistry.isCancelled(key)) {
+        throw new RenderCancelledError();
+      }
 
       await this.shortVideoService.processCompleted(id, resultPath);
       const completed = await this.shortVideoService.getById(id);
@@ -81,6 +98,20 @@ export class ShortVideoProcessor extends WorkerHost {
         },
       });
     } catch (error) {
+      if (this.renderProcessRegistry.isCancelled(key) || isRenderCancelledError(error)) {
+        const row = await this.shortVideoService.getById(id);
+        if (row && row.status !== QueueJobStatus.CANCELLED) {
+          await this.shortVideoService.markCancelled(id);
+        }
+        this.realtimeGateway.notifyUser(userId, "workflow.job.cancelled", {
+          jobId: id,
+          nodeId,
+          type: "short_video",
+          cancelled: true,
+          terminal: true,
+        });
+        throw new UnrecoverableError("ShortVideo cancelled by user");
+      }
       const message = error instanceof Error ? error.message : String(error);
       await this.shortVideoService.processFailed(id, message);
       this.realtimeGateway.notifyUser(userId, "workflow.job.failed", {
@@ -91,6 +122,8 @@ export class ShortVideoProcessor extends WorkerHost {
         terminal: true,
       });
       throw error;
+    } finally {
+      this.renderProcessRegistry.release(key);
     }
   }
 
@@ -133,6 +166,7 @@ export class ShortVideoProcessor extends WorkerHost {
       captions: captionList,
       outWav,
       gapSec: typeof vc.gapSec === "number" ? vc.gapSec : undefined,
+      processKey: RenderJobKeys.shortvideo(history.id),
     });
     this.applySyncedTimeline(
       spec,
@@ -260,12 +294,11 @@ export class ShortVideoProcessor extends WorkerHost {
         },
       });
 
+      this.renderProcessRegistry.register(RenderJobKeys.shortvideo(input.id), { child });
+
       const timer = setTimeout(() => {
         if (settled) return;
-        child.kill("SIGTERM");
-        setTimeout(() => {
-          if (!child.killed) child.kill("SIGKILL");
-        }, 8_000).unref();
+        killProcessTree(child.pid);
         settleReject(new Error(`ShortVideo pipeline timeout after ${timeoutMs}ms`));
       }, timeoutMs);
 
@@ -306,6 +339,10 @@ export class ShortVideoProcessor extends WorkerHost {
 
       child.on("error", (err) => settleReject(err));
       child.on("close", (code) => {
+        if (this.renderProcessRegistry.isCancelled(RenderJobKeys.shortvideo(input.id))) {
+          settleReject(new RenderCancelledError());
+          return;
+        }
         const combined = `${stdoutBuf}\n${stderrBuf}`;
         const doneMatch = combined.match(/DONE:\s*(.+)/);
         if (code === 0 && doneMatch?.[1]) {

@@ -24,12 +24,16 @@ import {
 } from "./dto/create-narrato-job.dto";
 import { NarratoService } from "./narrato.service";
 import { isNarratoStepId } from "./narrato-steps.constants";
+import { ToolsRealtimeGateway } from "../realtime/tools-realtime.gateway";
 
 @ApiTags("Narrato")
 @ApiBearerAuth("bearer")
 @Controller("tools/narrato")
 export class NarratoController {
-  constructor(private readonly narratoService: NarratoService) {}
+  constructor(
+    private readonly narratoService: NarratoService,
+    private readonly realtimeGateway: ToolsRealtimeGateway,
+  ) {}
 
   @ApiOperation({ summary: "Create a narrato project" })
   @Public()
@@ -59,6 +63,27 @@ export class NarratoController {
       step,
       stepProgress: queued.engineConfig?.narratoStepProgress ?? null,
     };
+  }
+
+  @ApiOperation({ summary: "Cancel the running narrato step" })
+  @ApiQuery({ name: "userId", required: true })
+  @Public()
+  @Post("histories/:id/cancel")
+  async cancel(@Param("id") id: string, @Query("userId") userId?: string) {
+    if (!userId) throw new NotFoundException("userId is required");
+    const before = await this.narratoService.getById(id);
+    const step = before ? this.narratoService.mapHistoryForClient(before).stepProgress?.runningStep : null;
+    const result = await this.narratoService.cancel(id, userId);
+    const row = await this.narratoService.getById(id);
+    this.realtimeGateway.notifyUser(userId, "narrato.cancelled", {
+      narratoHistoryId: id,
+      cancelled: true,
+      deletedFiles: result.deletedFiles,
+      terminal: true,
+      step,
+      stepProgress: row ? this.narratoService.mapHistoryForClient(row).stepProgress : null,
+    });
+    return result;
   }
 
   @ApiQuery({ name: "userId", required: true })

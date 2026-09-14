@@ -3,6 +3,10 @@ import { spawn } from "child_process";
 import { existsSync, mkdirSync } from "fs";
 import { join } from "path";
 
+import { killProcessTree } from "../../common/process/kill-process-tree";
+import { RenderCancelledError } from "../../common/process/render-cancel";
+import { RenderProcessRegistry } from "../../common/process/render-process-registry";
+
 export const MERGE_SLIDE_TRANSITIONS = [
   "slide_left",
   "slide_right",
@@ -24,6 +28,8 @@ const DEFAULT_TRANSITION_SEC = 0.5;
 @Injectable()
 export class WhiteboardMergeService {
   private readonly logger = new Logger(WhiteboardMergeService.name);
+
+  constructor(private readonly renderProcessRegistry: RenderProcessRegistry) {}
 
   isMergeSlideTransition(value: unknown): value is MergeSlideTransition {
     return (
@@ -79,6 +85,7 @@ export class WhiteboardMergeService {
     inputPaths: string[];
     transitions: MergeSlideTransition[];
     transitionSec?: number;
+    processKey?: string;
   }): Promise<string> {
     const inputs = opts.inputPaths;
     if (inputs.length < 2) {
@@ -160,7 +167,7 @@ export class WhiteboardMergeService {
     this.logger.log(
       `Merging ${inputs.length} clips (T=${transitionSec}s, audio=${useAudio}) → ${outputPath}`,
     );
-    await this.runCommand("ffmpeg", args, Number(process.env.WHITEBOARD_CMD_TIMEOUT_MS ?? 1_800_000));
+    await this.runCommand("ffmpeg", args, Number(process.env.WHITEBOARD_CMD_TIMEOUT_MS ?? 1_800_000), opts.processKey);
     if (!existsSync(outputPath)) {
       throw new BadRequestException("FFmpeg merge không tạo được output");
     }
@@ -174,6 +181,7 @@ export class WhiteboardMergeService {
     durationSec: number;
     width?: number;
     height?: number;
+    processKey?: string;
   }): Promise<string> {
     if (!existsSync(opts.imagePath)) {
       throw new BadRequestException(`Thiếu ảnh summary: ${opts.imagePath}`);
@@ -217,7 +225,7 @@ export class WhiteboardMergeService {
       opts.outputPath,
     ];
     this.logger.log(`Summary still → video (${duration}s) ${opts.outputPath}`);
-    await this.runCommand("ffmpeg", args, 180_000);
+    await this.runCommand("ffmpeg", args, 180_000, opts.processKey);
     if (!existsSync(opts.outputPath)) {
       throw new BadRequestException("FFmpeg không tạo được summary video");
     }
@@ -228,13 +236,17 @@ export class WhiteboardMergeService {
     bin: string,
     args: string[],
     timeoutMs = 120_000,
+    processKey?: string,
   ): Promise<{ stdout: string; stderr: string }> {
     return new Promise((resolve, reject) => {
       const child = spawn(bin, args, { windowsHide: true });
+      if (processKey) {
+        this.renderProcessRegistry.register(processKey, { child });
+      }
       let stdout = "";
       let stderr = "";
       const timer = setTimeout(() => {
-        child.kill("SIGKILL");
+        killProcessTree(child.pid);
         reject(new Error(`${bin} timed out after ${timeoutMs}ms`));
       }, timeoutMs);
 
@@ -250,6 +262,10 @@ export class WhiteboardMergeService {
       });
       child.on("close", (code) => {
         clearTimeout(timer);
+        if (processKey && this.renderProcessRegistry.isCancelled(processKey)) {
+          reject(new RenderCancelledError());
+          return;
+        }
         if (code === 0) resolve({ stdout, stderr });
         else reject(new Error(stderr.trim() || `${bin} exited ${code}`));
       });

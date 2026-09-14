@@ -19,12 +19,16 @@ import { Public } from "../../common/decorators/public.decorator";
 import { CreateRecapJobDto, RunRecapStepDto, UpdateRecapScriptDto } from "./dto/create-recap-job.dto";
 import { RecapService } from "./recap.service";
 import { isRecapStepId } from "./recap-steps.constants";
+import { ToolsRealtimeGateway } from "../realtime/tools-realtime.gateway";
 
 @ApiTags("Recap")
 @ApiBearerAuth("bearer")
 @Controller("tools/recap")
 export class RecapController {
-  constructor(private readonly recapService: RecapService) {}
+  constructor(
+    private readonly recapService: RecapService,
+    private readonly realtimeGateway: ToolsRealtimeGateway,
+  ) {}
 
   @ApiOperation({ summary: "Create a recap project (upload config, no auto-run)" })
   @Public()
@@ -56,6 +60,27 @@ export class RecapController {
       step,
       stepProgress: queued.engineConfig?.recapStepProgress ?? null,
     };
+  }
+
+  @ApiOperation({ summary: "Cancel the running recap step" })
+  @ApiQuery({ name: "userId", required: true })
+  @Public()
+  @Post("histories/:id/cancel")
+  async cancel(@Param("id") id: string, @Query("userId") userId?: string) {
+    if (!userId) throw new NotFoundException("userId is required");
+    const before = await this.recapService.getById(id);
+    const step = before ? this.recapService.mapHistoryForClient(before).stepProgress?.runningStep : null;
+    const result = await this.recapService.cancel(id, userId);
+    const row = await this.recapService.getById(id);
+    this.realtimeGateway.notifyUser(userId, "recap.cancelled", {
+      recapHistoryId: id,
+      cancelled: true,
+      deletedFiles: result.deletedFiles,
+      terminal: true,
+      step,
+      stepProgress: row ? this.recapService.mapHistoryForClient(row).stepProgress : null,
+    });
+    return result;
   }
 
   @ApiOperation({ summary: "List recap histories for a user" })

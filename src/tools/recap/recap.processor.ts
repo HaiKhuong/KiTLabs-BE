@@ -8,6 +8,15 @@ import { dirname, isAbsolute, join, resolve } from "path";
 import { ToolsRealtimeGateway } from "../realtime/tools-realtime.gateway";
 import { RECAP_QUEUE_NAME, RecapService } from "./recap.service";
 import { RECAP_STEP_SCRIPTS, type RecapStepId } from "./recap-steps.constants";
+import { killProcessTree } from "../../common/process/kill-process-tree";
+import {
+  isRenderCancelledError,
+  RenderCancelledError,
+  RenderJobKeys,
+  shouldDeleteRenderFiles,
+} from "../../common/process/render-cancel";
+import { RenderProcessRegistry } from "../../common/process/render-process-registry";
+import { QueueJobStatus } from "../../common/enums/domain.enums";
 
 const MAX_LOG_BUFFER = 8 * 1024 * 1024;
 
@@ -23,6 +32,7 @@ export class RecapProcessor extends WorkerHost {
   constructor(
     private readonly recapService: RecapService,
     private readonly realtimeGateway: ToolsRealtimeGateway,
+    private readonly renderProcessRegistry: RenderProcessRegistry,
   ) {
     super();
   }
@@ -64,7 +74,12 @@ export class RecapProcessor extends WorkerHost {
       throw new UnrecoverableError(`Recap history not found: ${recapHistoryId}`);
     }
 
+    const key = RenderJobKeys.recap(recapHistoryId);
+
     try {
+      if (this.renderProcessRegistry.isCancelled(key)) {
+        throw new RenderCancelledError();
+      }
       await this.recapService.markStepStarted(recapHistoryId, step);
       await this.recapService.updateRuntimeMessage(recapHistoryId, `[STEP] ${step} — spawning Python`);
 
@@ -90,6 +105,10 @@ export class RecapProcessor extends WorkerHost {
         configPath,
       });
 
+      if (this.renderProcessRegistry.isCancelled(key)) {
+        throw new RenderCancelledError();
+      }
+
       const scriptPayload = this.recapService.readJsonIfExists(join(workDir, "script.json"));
       const timelinePayload = this.recapService.readJsonIfExists(join(workDir, "timeline.json"));
 
@@ -113,6 +132,22 @@ export class RecapProcessor extends WorkerHost {
         stepProgress: mapped?.stepProgress ?? null,
       });
     } catch (error) {
+      if (this.renderProcessRegistry.isCancelled(key) || isRenderCancelledError(error)) {
+        const row = await this.recapService.getById(recapHistoryId);
+        if (row && row.status !== QueueJobStatus.CANCELLED) {
+          await this.recapService.markCancelled(recapHistoryId, step);
+        }
+        const cancelled = await this.recapService.getById(recapHistoryId);
+        this.realtimeGateway.notifyUser(cancelled?.userId ?? "all", "recap.cancelled", {
+          recapHistoryId,
+          step,
+          cancelled: true,
+          deletedFiles: shouldDeleteRenderFiles(),
+          terminal: true,
+          stepProgress: cancelled ? this.recapService.mapHistoryForClient(cancelled).stepProgress : null,
+        });
+        throw new UnrecoverableError("Recap cancelled by user");
+      }
       const message = error instanceof Error ? error.message : String(error);
       const maxAttempts = job.opts.attempts != null ? Number(job.opts.attempts) : 1;
       const attemptsMade = job.attemptsMade != null ? Number(job.attemptsMade) : 0;
@@ -138,6 +173,8 @@ export class RecapProcessor extends WorkerHost {
         stepProgress: failed ? this.recapService.mapHistoryForClient(failed).stepProgress : null,
       });
       throw error;
+    } finally {
+      this.renderProcessRegistry.release(key);
     }
   }
 
@@ -184,6 +221,7 @@ export class RecapProcessor extends WorkerHost {
       });
 
       this.logger.log(`Recap step child pid=${child.pid} history=${input.recapHistoryId} step=${input.step}`);
+      this.renderProcessRegistry.register(RenderJobKeys.recap(input.recapHistoryId), { child });
       void this.recapService.updateRuntimeMessage(
         input.recapHistoryId,
         `[STEP] ${input.step} — Python pid=${child.pid}`,
@@ -191,10 +229,7 @@ export class RecapProcessor extends WorkerHost {
 
       const timer = setTimeout(() => {
         if (settled) return;
-        child.kill("SIGTERM");
-        setTimeout(() => {
-          if (!child.killed) child.kill("SIGKILL");
-        }, 8_000).unref();
+        killProcessTree(child.pid);
         settleReject(new Error(`Recap step timeout after ${timeoutMs}ms`));
       }, timeoutMs);
 
@@ -237,6 +272,10 @@ export class RecapProcessor extends WorkerHost {
 
       child.on("error", (err) => settleReject(err));
       child.on("close", (code) => {
+        if (this.renderProcessRegistry.isCancelled(RenderJobKeys.recap(input.recapHistoryId))) {
+          settleReject(new RenderCancelledError());
+          return;
+        }
         const combined = `${stdoutBuf}\n${stderrBuf}`;
         const doneMatch = combined.match(/DONE:\s*(.+)/);
         if (code === 0) {

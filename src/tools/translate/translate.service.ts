@@ -1,8 +1,8 @@
-import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
+import { BadRequestException, ConflictException, Injectable, NotFoundException } from "@nestjs/common";
 import { InjectQueue } from "@nestjs/bullmq";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Queue } from "bullmq";
-import { existsSync, readFileSync, statSync } from "fs";
+import { existsSync, readFileSync, rmSync, statSync, writeFileSync } from "fs";
 import { basename, extname, isAbsolute, join, relative, resolve, sep } from "path";
 import { Repository } from "typeorm";
 
@@ -14,6 +14,14 @@ import { NotificationsService } from "../notifications/notifications.service";
 import { User } from "../users/user.entity";
 import { QueueJobStatus } from "../../common/enums/domain.enums";
 import { resolveConfiguredPath } from "../../common/desktop/data-path";
+import {
+  CANCELLED_BY_USER_MESSAGE,
+  type CancelRenderResult,
+  discardQueueJob,
+  RenderJobKeys,
+  shouldDeleteRenderFiles,
+} from "../../common/process/render-cancel";
+import { RenderProcessRegistry } from "../../common/process/render-process-registry";
 import { isAppPlatform } from "../../common/desktop/request-platform";
 import { ModelsService } from "../models/models.service";
 import { CreateTranslateJobDto } from "./dto/create-translate-job.dto";
@@ -46,6 +54,7 @@ export class TranslateService {
     private readonly notificationsService: NotificationsService,
     private readonly audioService: AudioService,
     private readonly modelsService: ModelsService,
+    private readonly renderProcessRegistry: RenderProcessRegistry,
   ) {}
 
   async enqueue(dto: CreateTranslateJobDto): Promise<TranslateHistory> {
@@ -87,6 +96,7 @@ export class TranslateService {
     });
     const created = await this.translateRepository.save(history);
 
+    this.renderProcessRegistry.begin(RenderJobKeys.translate(created.id));
     const queueJob = await this.translateQueue.add(
       TRANSLATE_QUEUE_NAME,
       { translateHistoryId: created.id },
@@ -158,6 +168,7 @@ export class TranslateService {
 
   async processFailed(translateHistoryId: string, errorMessage: string): Promise<void> {
     const history = await this.translateRepository.findOne({ where: { id: translateHistoryId } });
+    if (!history || history.status === QueueJobStatus.CANCELLED) return;
     await this.translateRepository.update(
       { id: translateHistoryId },
       {
@@ -201,6 +212,81 @@ export class TranslateService {
 
   async getById(id: string): Promise<TranslateHistory | null> {
     return this.translateRepository.findOne({ where: { id } });
+  }
+
+  async cancel(id: string, userId: string): Promise<CancelRenderResult> {
+    const history = await this.translateRepository.findOne({ where: { id } });
+    if (!history) throw new NotFoundException("Translate job not found");
+    if (history.userId !== userId) throw new NotFoundException("Translate job not found");
+    if (history.status !== QueueJobStatus.PENDING && history.status !== QueueJobStatus.RUNNING) {
+      throw new ConflictException("Translate job is not running");
+    }
+
+    const key = RenderJobKeys.translate(id);
+    this.renderProcessRegistry.requestCancel(key);
+    await discardQueueJob(this.translateQueue, history.queueJobId);
+
+    const deletedFiles = shouldDeleteRenderFiles();
+    if (deletedFiles) {
+      this.cleanupCancelledWorkspace(history);
+    }
+    await this.markCancelled(id, deletedFiles);
+    return { status: "cancelled", cancelled: true, deletedFiles };
+  }
+
+  async markCancelled(translateHistoryId: string, deletedFiles = shouldDeleteRenderFiles()): Promise<void> {
+    await this.translateRepository.update(
+      { id: translateHistoryId },
+      {
+        status: QueueJobStatus.CANCELLED,
+        errorMessage: CANCELLED_BY_USER_MESSAGE,
+        queueJobId: null,
+        ...(deletedFiles ? { resultPath: null, resultFileName: null } : {}),
+      },
+    );
+  }
+
+  private cleanupCancelledWorkspace(history: TranslateHistory): void {
+    const workspaceDir = this.resolveJobWorkspaceDir(history);
+    if (!workspaceDir) return;
+    try {
+      if (existsSync(workspaceDir)) {
+        rmSync(workspaceDir, { recursive: true, force: true });
+      }
+    } catch {
+      const logPath = this.tryRuntimeLogPath(history);
+      if (logPath) {
+        try {
+          writeFileSync(logPath, "[CANCELLED]\n", "utf-8");
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+  }
+
+  private resolveJobWorkspaceDir(history: TranslateHistory): string | null {
+    try {
+      if (history.resultPath) {
+        return this.resolveWorkspaceDir(this.normalizeResultPath(history.resultPath));
+      }
+    } catch {
+      /* fall through to engineConfig */
+    }
+    const engineConfig = history.engineConfig ?? {};
+    const localPath = this.pickConfigValue(engineConfig, ["localVideoPath", "local_video_path"]);
+    if (typeof localPath !== "string" || !localPath.trim()) return null;
+    const workName = basename(resolve(localPath.trim()), extname(resolve(localPath.trim())));
+    if (!workName) return null;
+    return join(this.translateWorkRoot(), workName);
+  }
+
+  private tryRuntimeLogPath(history: TranslateHistory): string | null {
+    try {
+      return this.resolveRuntimeLogPath(history);
+    } catch {
+      return null;
+    }
   }
 
   parseArtifactType(type?: string): TranslateArtifactType {

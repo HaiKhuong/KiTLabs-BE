@@ -4,9 +4,18 @@ import { Job, UnrecoverableError } from "bullmq";
 import { spawn } from "child_process";
 import { basename, dirname, extname, isAbsolute, join, resolve } from "path";
 
+import { QueueJobStatus } from "../../common/enums/domain.enums";
+
 import { TRANSLATE_QUEUE_NAME, TranslateService } from "./translate.service";
 import { ToolsRealtimeGateway } from "../realtime/tools-realtime.gateway";
 import { deleteUploadedSourceVideo } from "../files/files.service";
+import { killProcessTree } from "../../common/process/kill-process-tree";
+import {
+  isRenderCancelledError,
+  RenderCancelledError,
+  RenderJobKeys,
+} from "../../common/process/render-cancel";
+import { RenderProcessRegistry } from "../../common/process/render-process-registry";
 
 const MAX_PYTHON_LOG_BUFFER = 10 * 1024 * 1024;
 const PYTHON_INT_CLI_FLAGS = new Set(["--subtitle-margin-v", "--subtitle-alignment"]);
@@ -505,17 +514,22 @@ export class TranslateProcessor extends WorkerHost {
   constructor(
     private readonly translateService: TranslateService,
     private readonly realtimeGateway: ToolsRealtimeGateway,
+    private readonly renderProcessRegistry: RenderProcessRegistry,
   ) {
     super();
   }
 
   async process(job: Job<{ translateHistoryId: string }>): Promise<void> {
     const { translateHistoryId } = job.data;
+    const key = RenderJobKeys.translate(translateHistoryId);
 
     await this.translateService.processStarted(translateHistoryId);
     this.logger.log(`Translate job ${job.id} → ${translateHistoryId}`);
 
     try {
+      if (this.renderProcessRegistry.isCancelled(key)) {
+        throw new RenderCancelledError();
+      }
       const history = await this.translateService.getById(translateHistoryId);
       if (!history) {
         throw new Error(`Translate history ${translateHistoryId} not found`);
@@ -527,6 +541,10 @@ export class TranslateProcessor extends WorkerHost {
         translateHistoryId,
       });
 
+      if (this.renderProcessRegistry.isCancelled(key)) {
+        throw new RenderCancelledError();
+      }
+
       await this.translateService.processCompleted(translateHistoryId, resultPath);
       this.deleteSourceVideoAfterFinalize(history.stepNbr, history.engineConfig);
       const completedHistory = await this.translateService.getById(translateHistoryId);
@@ -536,6 +554,20 @@ export class TranslateProcessor extends WorkerHost {
         stepNbr: history.stepNbr,
       });
     } catch (error) {
+      if (this.renderProcessRegistry.isCancelled(key) || isRenderCancelledError(error)) {
+        const row = await this.translateService.getById(translateHistoryId);
+        if (row && row.status !== QueueJobStatus.CANCELLED) {
+          await this.translateService.markCancelled(translateHistoryId);
+        }
+        const cancelled = await this.translateService.getById(translateHistoryId);
+        this.realtimeGateway.notifyUser(cancelled?.userId ?? "all", "translate.cancelled", {
+          translateHistoryId,
+          cancelled: true,
+          deletedFiles: cancelled?.resultPath == null,
+          terminal: true,
+        });
+        throw new UnrecoverableError("Translate cancelled by user");
+      }
       const message = error instanceof Error ? error.message : "Unknown translation failure";
       const maxAttempts = job.opts.attempts != null ? Number(job.opts.attempts) : 1;
       const attemptsMade = job.attemptsMade != null ? Number(job.attemptsMade) : 0;
@@ -556,6 +588,8 @@ export class TranslateProcessor extends WorkerHost {
         terminal: true,
       });
       throw error;
+    } finally {
+      this.renderProcessRegistry.release(key);
     }
   }
 
@@ -602,12 +636,13 @@ export class TranslateProcessor extends WorkerHost {
         });
 
         this.logger.log(`Python pid=${child.pid ?? "?"}`);
+        this.renderProcessRegistry.register(RenderJobKeys.translate(input.translateHistoryId), { child });
 
         let stdout = "";
         let stderr = "";
         let timeoutHandle: NodeJS.Timeout | null = setTimeout(() => {
           this.logger.error(`Python process timed out after ${timeoutMs}ms, killing process...`);
-          child.kill("SIGTERM");
+          killProcessTree(child.pid);
         }, timeoutMs);
 
         const appendChunk = (target: "stdout" | "stderr", chunk: string) => {
@@ -664,6 +699,11 @@ export class TranslateProcessor extends WorkerHost {
 
           const elapsedMs = Date.now() - startedAt;
           this.logger.log(`Python done code=${code ?? "?"} ${elapsedMs}ms`);
+
+          if (this.renderProcessRegistry.isCancelled(RenderJobKeys.translate(input.translateHistoryId))) {
+            rejectPromise(new RenderCancelledError());
+            return;
+          }
 
           if (code !== 0) {
             const stepFailure = this.extractStepFailureMarker(stdout) ?? this.extractStepFailureMarker(stderr);

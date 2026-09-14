@@ -52,6 +52,7 @@ export class WhiteboardVoiceService {
     workDir: string;
     voice?: WhiteboardVoiceConfig | null;
     storyboards?: WhiteboardEngineStoryboard[] | null;
+    processKey?: string;
   }): Promise<{
     scene: WhiteboardSceneJson;
     voiceAssets: WhiteboardVoiceAsset[];
@@ -116,6 +117,7 @@ export class WhiteboardVoiceService {
         pipelineRefWav: voice.pipelineRefWav,
         cloneRefText: voice.cloneRefText,
         speed: voice.speed,
+        processKey: opts.processKey,
       });
       const durationSec = await this.measureWavDurationSec(outWav);
       voiceAssets.push({

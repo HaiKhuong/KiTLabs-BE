@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, Logger, NotFoundException } from "@nestjs/common";
+import { BadRequestException, ConflictException, Injectable, Logger, NotFoundException } from "@nestjs/common";
 import { InjectQueue } from "@nestjs/bullmq";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Queue } from "bullmq";
@@ -9,6 +9,14 @@ import { Repository } from "typeorm";
 
 import { QueueJobStatus } from "../../common/enums/domain.enums";
 import { resolveConfiguredPath } from "../../common/desktop/data-path";
+import {
+  CANCELLED_BY_USER_MESSAGE,
+  type CancelRenderResult,
+  discardQueueJob,
+  RenderJobKeys,
+  shouldDeleteRenderFiles,
+} from "../../common/process/render-cancel";
+import { RenderProcessRegistry } from "../../common/process/render-process-registry";
 import { isAppPlatform } from "../../common/desktop/request-platform";
 import { NotificationsService } from "../notifications/notifications.service";
 import { CreateShortVideoJobDto } from "./dto/create-shortvideo-job.dto";
@@ -47,6 +55,7 @@ export class ShortVideoService {
     @InjectRepository(ShortVideoHistory, "tool")
     private readonly repository: Repository<ShortVideoHistory>,
     private readonly notificationsService: NotificationsService,
+    private readonly renderProcessRegistry: RenderProcessRegistry,
   ) {}
 
   static resolveQueueLockDurationMs(): number {
@@ -114,6 +123,7 @@ export class ShortVideoService {
     });
     const created = await this.repository.save(history);
 
+    this.renderProcessRegistry.begin(RenderJobKeys.shortvideo(created.id));
     const queueJob = await this.shortVideoQueue.add(
       SHORTVIDEO_QUEUE_NAME,
       { shortVideoHistoryId: created.id },
@@ -267,6 +277,53 @@ export class ShortVideoService {
     this.safeRemoveWorkDir(id);
     await this.repository.delete({ id, userId: userId.trim() });
     return { deleted: true, id };
+  }
+
+  async cancel(id: string, userId: string): Promise<CancelRenderResult> {
+    if (!userId?.trim()) throw new BadRequestException("userId is required");
+    const row = await this.repository.findOne({ where: { id, userId: userId.trim() } });
+    if (!row) throw new NotFoundException("ShortVideo history not found");
+    if (row.status !== QueueJobStatus.PENDING && row.status !== QueueJobStatus.RUNNING) {
+      throw new ConflictException("ShortVideo job is not running");
+    }
+
+    this.renderProcessRegistry.requestCancel(RenderJobKeys.shortvideo(id));
+    await discardQueueJob(this.shortVideoQueue, row.queueJobId);
+
+    const deletedFiles = shouldDeleteRenderFiles();
+    if (deletedFiles) {
+      this.safeRemoveWorkDir(id);
+      this.safeRemoveUploads(row);
+    }
+    await this.markCancelled(id, deletedFiles);
+    return { status: "cancelled", cancelled: true, deletedFiles };
+  }
+
+  async markCancelled(id: string, deletedFiles = shouldDeleteRenderFiles()): Promise<void> {
+    const timing = await this.resolveRenderTiming(id);
+    await this.repository.update(
+      { id },
+      {
+        status: QueueJobStatus.CANCELLED,
+        errorMessage: CANCELLED_BY_USER_MESSAGE,
+        queueJobId: null,
+        ...timing,
+        ...(deletedFiles ? { resultPath: null, resultFileName: null } : {}),
+      },
+    );
+  }
+
+  private safeRemoveUploads(row: ShortVideoHistory): void {
+    const assetsDir = String((row.spec as Record<string, unknown> | null)?.assetsDir ?? "").trim();
+    if (!assetsDir) return;
+    const uploadsRoot = join(this.resolveWorkRoot(), "_uploads");
+    const normalized = resolve(assetsDir);
+    if (!normalized.startsWith(resolve(uploadsRoot))) return;
+    try {
+      if (existsSync(normalized)) rmSync(normalized, { recursive: true, force: true });
+    } catch (err) {
+      this.logger.warn(`Failed to remove uploads for ${row.id}: ${String(err)}`);
+    }
   }
 
   /** Delete every history entry (and work dirs) for a user. */
@@ -425,6 +482,8 @@ export class ShortVideoService {
   }
 
   async processFailed(id: string, errorMessage: string): Promise<void> {
+    const current = await this.repository.findOne({ where: { id }, select: { id: true, status: true } });
+    if (!current || current.status === QueueJobStatus.CANCELLED) return;
     const timing = await this.resolveRenderTiming(id);
     await this.repository.update({ id }, { status: QueueJobStatus.FAILED, errorMessage, ...timing });
   }

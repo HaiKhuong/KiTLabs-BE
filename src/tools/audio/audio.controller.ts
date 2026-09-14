@@ -22,6 +22,7 @@ import { Public } from "../../common/decorators/public.decorator";
 import { CreateAudioFromSrtDto } from "./dto/create-audio-from-srt.dto";
 import { CreateAudioJobDto } from "./dto/create-audio-job.dto";
 import { AudioService } from "./audio.service";
+import { ToolsRealtimeGateway } from "../realtime/tools-realtime.gateway";
 import { AUDIO_CLONE_UPLOAD_DIR, resolveOmnivoiceLanguage } from "./audio.constants";
 
 const CLONE_ALLOWED_EXT = new Set([".mp3", ".wav", ".m4a"]);
@@ -46,7 +47,10 @@ const resolveCloneDestination = (req: UploadRequest): string => {
 @ApiBearerAuth("bearer")
 @Controller("tools/audio")
 export class AudioController {
-  constructor(private readonly audioService: AudioService) {}
+  constructor(
+    private readonly audioService: AudioService,
+    private readonly realtimeGateway: ToolsRealtimeGateway,
+  ) {}
 
   @ApiOperation({ summary: "List OmniVoice preset voices" })
   @Public()
@@ -331,6 +335,22 @@ export class AudioController {
       throw new BadRequestException("Job not found");
     }
     return this.audioService.mapHistoryForClient(row);
+  }
+
+  @ApiOperation({ summary: "Cancel a running audio generation job" })
+  @ApiQuery({ name: "userId", required: true })
+  @Public()
+  @Post("jobs/:id/cancel")
+  async cancelJob(@Param("id") id: string, @Query("userId") userId?: string) {
+    if (!userId) throw new BadRequestException("userId is required");
+    const result = await this.audioService.cancel(id, userId);
+    this.realtimeGateway.notifyUser(userId, "audio.cancelled", {
+      audioHistoryId: id,
+      cancelled: true,
+      deletedFiles: result.deletedFiles,
+      terminal: true,
+    });
+    return result;
   }
 
   @ApiOperation({ summary: "Stream completed audio for in-browser playback" })

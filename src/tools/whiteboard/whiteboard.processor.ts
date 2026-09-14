@@ -16,6 +16,13 @@ import {
   type WhiteboardVoiceConfig,
 } from "./whiteboard-voice.service";
 import { readSceneObjects, WhiteboardObject, WhiteboardSceneJson } from "./whiteboard-scene";
+import {
+  isRenderCancelledError,
+  RenderCancelledError,
+  RenderJobKeys,
+} from "../../common/process/render-cancel";
+import { RenderProcessRegistry } from "../../common/process/render-process-registry";
+import { QueueJobStatus } from "../../common/enums/domain.enums";
 
 @Processor(WHITEBOARD_QUEUE_NAME, {
   concurrency: 1,
@@ -32,6 +39,7 @@ export class WhiteboardProcessor extends WorkerHost {
     private readonly rendererService: WhiteboardRendererService,
     private readonly voiceService: WhiteboardVoiceService,
     private readonly mergeService: WhiteboardMergeService,
+    private readonly renderProcessRegistry: RenderProcessRegistry,
   ) {
     super();
   }
@@ -45,8 +53,12 @@ export class WhiteboardProcessor extends WorkerHost {
 
     const userId = history.userId;
     const nodeId = history.nodeId ?? "";
+    const key = RenderJobKeys.whiteboard(id);
 
     try {
+      if (this.renderProcessRegistry.isCancelled(key)) {
+        throw new RenderCancelledError();
+      }
       await this.whiteboardService.processStarted(id);
 
       if (this.whiteboardService.isMergeJob(history)) {
@@ -90,6 +102,7 @@ export class WhiteboardProcessor extends WorkerHost {
         workDir,
         voice: voiceConfig,
         storyboards,
+        processKey: key,
       });
       scene = prepared.scene;
       if (prepared.voiceAssets.length > 0) {
@@ -173,6 +186,20 @@ export class WhiteboardProcessor extends WorkerHost {
         },
       });
     } catch (error) {
+      if (this.renderProcessRegistry.isCancelled(key) || isRenderCancelledError(error)) {
+        const row = await this.whiteboardService.getById(id);
+        if (row && row.status !== QueueJobStatus.CANCELLED) {
+          await this.whiteboardService.markCancelled(id);
+        }
+        this.realtimeGateway.notifyUser(userId, "workflow.job.cancelled", {
+          jobId: id,
+          nodeId,
+          type: "whiteboard",
+          cancelled: true,
+          terminal: true,
+        });
+        throw new UnrecoverableError("Whiteboard cancelled by user");
+      }
       const message = error instanceof Error ? error.message : String(error);
       await this.whiteboardService.processFailed(id, message);
       this.realtimeGateway.notifyUser(userId, "workflow.job.failed", {
@@ -183,6 +210,8 @@ export class WhiteboardProcessor extends WorkerHost {
         terminal: true,
       });
       throw error;
+    } finally {
+      this.renderProcessRegistry.release(key);
     }
   }
 
@@ -215,6 +244,7 @@ export class WhiteboardProcessor extends WorkerHost {
         durationSec: summary.durationSec,
         width: _history.imageWidth ?? 1920,
         height: _history.imageHeight ?? 1080,
+        processKey: RenderJobKeys.whiteboard(id),
       });
       inputPaths.push(summaryVideoPath);
       mergeTransitions.push(summary.transition);
@@ -226,6 +256,7 @@ export class WhiteboardProcessor extends WorkerHost {
       workDir,
       inputPaths,
       transitions: mergeTransitions,
+      processKey: RenderJobKeys.whiteboard(id),
     });
 
     await this.whiteboardService.processCompleted(id, resultPath);

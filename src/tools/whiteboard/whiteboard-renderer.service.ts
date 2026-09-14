@@ -5,6 +5,8 @@ import type { WhiteboardCameraPlan } from "./whiteboard-camera";
 import type { WhiteboardSceneJson } from "./whiteboard-scene";
 import type { WhiteboardPathPlan } from "./whiteboard-path-planner";
 import type { WhiteboardVoiceAsset, WhiteboardVoiceScheduleEntry } from "./whiteboard-voice.service";
+import { RenderJobKeys } from "../../common/process/render-cancel";
+import { RenderProcessRegistry } from "../../common/process/render-process-registry";
 
 export type WhiteboardAudioCue = {
   srcDataUrl: string;
@@ -30,8 +32,10 @@ export interface WhiteboardRenderInput {
 export class WhiteboardRendererService {
   private readonly logger = new Logger(WhiteboardRendererService.name);
 
+  constructor(private readonly renderProcessRegistry: RenderProcessRegistry) {}
+
   async render(input: WhiteboardRenderInput): Promise<string> {
-    const { bundle, renderMedia, selectComposition } = await this.importRemotion();
+    const { bundle, renderMedia, selectComposition, makeCancelSignal } = await this.importRemotion();
 
     const compositionEntryPoint = resolve(
       process.cwd(),
@@ -104,6 +108,9 @@ export class WhiteboardRendererService {
       browserExecutable,
     });
 
+    const { cancel, cancelSignal } = makeCancelSignal();
+    this.renderProcessRegistry.register(RenderJobKeys.whiteboard(input.historyId), { onCancel: cancel });
+
     await renderMedia({
       composition,
       serveUrl: bundleDir,
@@ -111,8 +118,12 @@ export class WhiteboardRendererService {
       outputLocation: outputPath,
       inputProps,
       browserExecutable,
+      cancelSignal,
       timeoutInMilliseconds: Number(process.env.WHITEBOARD_CMD_TIMEOUT_MS ?? 1_800_000),
       onProgress: ({ progress }: { progress: number }) => {
+        if (this.renderProcessRegistry.isCancelled(RenderJobKeys.whiteboard(input.historyId))) {
+          cancel();
+        }
         const pct = Math.round(progress * 100);
         if (pct % 10 === 0) this.logger.log(`[${input.historyId}] Render progress: ${pct}%`);
       },
@@ -224,6 +235,11 @@ export class WhiteboardRendererService {
   private async importRemotion() {
     const { bundle } = await import("@remotion/bundler");
     const rendererModule = await import("@remotion/renderer");
-    return { bundle, renderMedia: rendererModule.renderMedia, selectComposition: rendererModule.selectComposition };
+    return {
+      bundle,
+      renderMedia: rendererModule.renderMedia,
+      selectComposition: rendererModule.selectComposition,
+      makeCancelSignal: rendererModule.makeCancelSignal,
+    };
   }
 }
