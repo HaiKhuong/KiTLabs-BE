@@ -20,6 +20,8 @@ import os
 import sys
 from pathlib import Path
 
+import cuda_dlls  # noqa: F401 — Windows: torch/lib cublas64_12.dll for CTranslate2
+
 
 def _resolve_log_level() -> int:
     name = (os.getenv("OMNIVOICE_LOG_LEVEL") or "WARNING").strip().upper()

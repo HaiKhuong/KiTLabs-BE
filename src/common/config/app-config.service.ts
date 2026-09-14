@@ -55,6 +55,7 @@ export class AppConfigService implements OnModuleInit {
           const plain = decryptSecret(stored);
           this.secretCache.set(field.code, plain);
           process.env[field.code] = plain;
+          this.syncHfTokenEnv(field.code, plain);
         } catch {
           this.logger.error(`Failed to decrypt ${field.code}`);
         }
@@ -78,7 +79,24 @@ export class AppConfigService implements OnModuleInit {
       const storageCode = runtimeStorageCode(code, getRequestPlatform());
       return this.secretCache.get(storageCode) ?? "";
     }
+    if (code === "HF_TOKEN" || code === "HUGGING_FACE_HUB_TOKEN" || code === "HUGGINGFACE_HUB_TOKEN") {
+      return (
+        this.secretCache.get("HF_TOKEN") ??
+        process.env.HF_TOKEN ??
+        process.env.HUGGING_FACE_HUB_TOKEN ??
+        process.env.HUGGINGFACE_HUB_TOKEN ??
+        ""
+      );
+    }
     return this.secretCache.get(code) ?? process.env[code] ?? "";
+  }
+
+  /** One DB row (`HF_TOKEN`) feeds UI + Python Hugging Face clients. */
+  private syncHfTokenEnv(code: string, plain: string): void {
+    if (code !== "HF_TOKEN") return;
+    process.env.HF_TOKEN = plain;
+    process.env.HUGGING_FACE_HUB_TOKEN = plain;
+    process.env.HUGGINGFACE_HUB_TOKEN = plain;
   }
 
   private storageCodeFor(code: string): string {
@@ -118,7 +136,7 @@ export class AppConfigService implements OnModuleInit {
             plain = "";
           }
         } else if (!PLATFORM_SCOPED_SECRET_CODES.has(field.code)) {
-          plain = process.env[field.code] ?? "";
+          plain = field.code === "HF_TOKEN" ? this.getSecret("HF_TOKEN") : (process.env[field.code] ?? "");
         }
         const mask = this.maskSecret(field.code, plain);
         return {
@@ -149,6 +167,7 @@ export class AppConfigService implements OnModuleInit {
       this.secretCache.set(storageCode, value);
       if (!PLATFORM_SCOPED_SECRET_CODES.has(code)) {
         process.env[code] = value;
+        this.syncHfTokenEnv(code, value);
       }
     } else {
       process.env[code] = value;

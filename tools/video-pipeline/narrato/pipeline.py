@@ -134,7 +134,12 @@ def run_step_plot(ctx: NarratoContext) -> None:
     LOG.info("[STEP 2/6] plot")
     subtitle = ctx.subtitle_text()
     if ctx.mode == "short":
-        user = fill(MIX_PLOT_TEMPLATE, subtitle_content=subtitle, custom_clips=ctx.custom_clips)
+        user = fill(
+            MIX_PLOT_TEMPLATE,
+            subtitle_content=subtitle,
+            custom_clips=ctx.custom_clips,
+            narration_language=ctx.narration_language,
+        )
         data = generate_json(
             MIX_PLOT_SYSTEM,
             user,
@@ -145,7 +150,11 @@ def run_step_plot(ctx: NarratoContext) -> None:
         )
         plot = json.dumps(data, ensure_ascii=False, indent=2)
     else:
-        user = fill(PLOT_TEMPLATE, subtitle_content=subtitle)
+        user = fill(
+            PLOT_TEMPLATE,
+            subtitle_content=subtitle,
+            narration_language=ctx.narration_language,
+        )
         plot = generate_text(
             PLOT_SYSTEM,
             user,

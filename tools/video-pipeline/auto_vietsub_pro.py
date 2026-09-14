@@ -2150,6 +2150,11 @@ def _step1_transcribe_with_whisper(video_path):
     srt_path = get_zh_srt_path()
 
     try:
+        from cuda_dlls import ensure_windows_cuda_dlls
+
+        dll_dirs = ensure_windows_cuda_dlls()
+        if dll_dirs:
+            log(f"Step1: CUDA runtime DLLs → {dll_dirs[0]}")
         count, last_end_ms = _transcribe_with_device("cuda", srt_path)
         if count == 0:
             raise RuntimeError("CUDA produced no segments.")

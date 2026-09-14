@@ -14,6 +14,13 @@ _PIPELINE_DIR = Path(__file__).resolve().parent.parent
 _REPO_CACHE_ROOT = _PIPELINE_DIR / "cache"
 _configured = False
 
+if str(_PIPELINE_DIR) not in sys.path:
+    sys.path.insert(0, str(_PIPELINE_DIR))
+try:
+    import cuda_dlls  # noqa: F401
+except Exception:
+    pass
+
 
 def _is_writable(hub: Path) -> bool:
     try:

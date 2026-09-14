@@ -1,8 +1,10 @@
 import { BadRequestException, Injectable } from "@nestjs/common";
 import { InjectDataSource } from "@nestjs/typeorm";
 import { existsSync } from "fs";
+import { basename, join } from "path";
 import { DataSource } from "typeorm";
 
+import { resolveConfiguredPath } from "../../common/desktop/data-path";
 import {
   UNIFIED_HISTORY_DEFAULT_LIMIT,
   UNIFIED_HISTORY_MAX_LIMIT,
@@ -21,6 +23,7 @@ export type UnifiedHistoryItemDto = {
   mediaKind: UnifiedHistoryMediaKind;
   playable: boolean;
   playUrl: string | null;
+  previewText: string | null;
 };
 
 export type UnifiedHistoryPageDto = {
@@ -37,6 +40,7 @@ type UnifiedHistoryRawRow = {
   name: string;
   completed_at: Date | string;
   result_path: string | null;
+  preview_text: string | null;
 };
 
 @Injectable()
@@ -74,7 +78,7 @@ export class HistoriesService {
 
     const rows = await this.dataSource.query<UnifiedHistoryRawRow[]>(
       `
-        SELECT id, source, name, completed_at, result_path
+        SELECT id, source, name, completed_at, result_path, preview_text
         FROM (${UNIFIED_HISTORY_UNION_SQL}) AS unified
         WHERE ($2 = 'all' OR source = $2)
         ORDER BY completed_at DESC
@@ -103,11 +107,44 @@ export class HistoriesService {
     );
   }
 
+  private resolveExistingResultPath(resultPath: string): string {
+    const trimmed = resultPath.trim();
+    if (!trimmed) return "";
+    if (existsSync(trimmed)) return trimmed;
+
+    const slash = trimmed.replaceAll("\\", "/");
+    const workRoot = resolveConfiguredPath(
+      process.env.TRANSLATE_WORK_STAGING_ROOT?.trim() || process.env.TRANSLATE_WORK_ROOT,
+      "videos",
+    );
+    const workspaceMatch = slash.match(/\/workspace\/([^/]+)(\/.*)?$/i);
+    if (workspaceMatch?.[1]) {
+      const restParts = (workspaceMatch[2] || "").split("/").filter(Boolean);
+      const candidate =
+        restParts.length > 0
+          ? join(workRoot, workspaceMatch[1], ...restParts)
+          : join(workRoot, workspaceMatch[1], "videos", `${workspaceMatch[1]}_vs_tm.mp4`);
+      if (existsSync(candidate)) return candidate;
+    }
+
+    const fileName = basename(trimmed);
+    const parentName = basename(slash.replace(/\/[^/]+$/, ""));
+    if (fileName.toLowerCase().endsWith(".mp4")) {
+      const byName = join(workRoot, parentName, "videos", fileName);
+      if (existsSync(byName)) return byName;
+    }
+    return trimmed;
+  }
+
   private mapRow(row: UnifiedHistoryRawRow): UnifiedHistoryItemDto {
     const source = row.source as UnifiedHistorySource;
-    const resultPath = typeof row.result_path === "string" ? row.result_path.trim() : "";
+    const resultPath = this.resolveExistingResultPath(
+      typeof row.result_path === "string" ? row.result_path : "",
+    );
     const playable = resultPath.length > 0 && existsSync(resultPath);
     const mediaKind: UnifiedHistoryMediaKind = source === "voice" ? "audio" : "video";
+    const previewText =
+      source === "voice" && typeof row.preview_text === "string" ? row.preview_text.trim() : "";
 
     let playUrl: string | null = null;
     if (playable) {
@@ -144,6 +181,7 @@ export class HistoriesService {
       mediaKind,
       playable,
       playUrl,
+      previewText: previewText || null,
     };
   }
 }

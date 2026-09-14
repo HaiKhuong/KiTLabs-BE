@@ -7,6 +7,8 @@ from typing import Any
 PLOT_SYSTEM = (
     "You are a professional film-commentary planner and story analyst. "
     "Output restrained, structured plot notes for a downstream commentary script writer. "
+    "Write every prose field, bullet, table cell, beat title, and commentary note in the user's spoken language. "
+    "Do not translate character names, place names, technique names, quoted dialogue, or the work's title. "
     "Do not greet the user."
 )
 
@@ -28,14 +30,20 @@ The input may contain one or more video subtitle files, and may also include web
 4. Split key story beats in subtitle order with accurate video_id / video_name / timestamps.
 5. Extract commentary assets: opening hook, character dilemma, emotional turns, information reversals, signature scenes, suggested original-audio clips.
 
+## Spoken language
+<narration_language>
+${narration_language}
+</narration_language>
+
 # Hard rules
 1. No chatty openings.
 2. Do not invent events, dialogue, relationships, or endings absent from the subtitles.
 3. Timestamps must come from the matching video's subtitles; if unknown write "unclear from subtitles".
 4. In multi-video input, never mix same-looking timestamps from different files.
-5. Unify names: prefer official names from web search; keep subtitle aliases in the character table.
-6. Be concise and reusable. No literary padding.
-7. Follow the Markdown sections below. No extra chapters.
+5. Keep names as they appear in the subtitles. Do not Anglicize titles or names.
+6. All written content (facts, roles, motives, summaries, beat titles, what happens, commentary focus) MUST be in ${narration_language}. Keep the Markdown section headings below in English so the pipeline can find them. Confidence tags may stay: subtitle / web-assist / inference. Narrative-function tags may stay: setup / rising / character / reversal / suspense / climax.
+7. Be concise and reusable. No literary padding.
+8. Follow the Markdown sections below. No extra chapters.
 
 # Output format
 ## I. Basic identification
@@ -263,11 +271,18 @@ Output {"items":[...]} only.
 
 MIX_PLOT_SYSTEM = (
     "You are a senior short-drama editor. Extract a coherent storyline from subtitles. "
-    "Output strict JSON only."
+    "Output strict JSON only. All string values must be in the user's spoken language. "
+    "Do not translate character names or the work's title."
 )
 
 MIX_PLOT_TEMPLATE = """# Task
 Analyze short-drama subtitles and extract plot points that form a complete watchable mix-cut.
+
+## Spoken language
+${narration_language}
+
+Write every JSON string (summary, structure, titles, connections, analysis) in ${narration_language}.
+Keep character names as in the subtitles. Do not Anglicize names or titles.
 
 <subtitles>
 ${subtitle_content}

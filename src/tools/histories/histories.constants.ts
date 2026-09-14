@@ -11,7 +11,8 @@ export const UNIFIED_HISTORY_UNION_SQL = `
     'media'::text AS source,
     COALESCE(result_file_name, 'output.mp4') AS name,
     updated_at AS completed_at,
-    result_path AS result_path
+    result_path AS result_path,
+    NULL::text AS preview_text
   FROM translate_histories
   WHERE user_id = $1 AND status = 'completed'
 
@@ -22,7 +23,8 @@ export const UNIFIED_HISTORY_UNION_SQL = `
     'voice'::text AS source,
     display_name AS name,
     updated_at AS completed_at,
-    result_path AS result_path
+    result_path AS result_path,
+    input_text AS preview_text
   FROM audio_histories
   WHERE user_id = $1 AND status = 'completed'
 
@@ -33,7 +35,8 @@ export const UNIFIED_HISTORY_UNION_SQL = `
     'shortVideo'::text AS source,
     COALESCE(display_name, result_file_name, 'Short video') AS name,
     COALESCE(render_finished_at, updated_at) AS completed_at,
-    result_path AS result_path
+    result_path AS result_path,
+    NULL::text AS preview_text
   FROM short_video_histories
   WHERE user_id = $1 AND status = 'completed'
 
@@ -44,7 +47,8 @@ export const UNIFIED_HISTORY_UNION_SQL = `
     'whiteboard'::text AS source,
     COALESCE(display_name, result_file_name, 'Whiteboard') AS name,
     COALESCE(render_finished_at, updated_at) AS completed_at,
-    result_path AS result_path
+    result_path AS result_path,
+    NULL::text AS preview_text
   FROM whiteboard_histories
   WHERE user_id = $1 AND status = 'completed' AND queue_job_id IS NOT NULL
 `;

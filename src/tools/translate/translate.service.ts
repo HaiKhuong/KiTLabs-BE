@@ -3,7 +3,7 @@ import { InjectQueue } from "@nestjs/bullmq";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Queue } from "bullmq";
 import { existsSync, readFileSync, statSync } from "fs";
-import { basename, dirname, extname, isAbsolute, join, resolve, sep } from "path";
+import { basename, extname, isAbsolute, join, relative, resolve, sep } from "path";
 import { Repository } from "typeorm";
 
 import { CreditHistory } from "../credits/credit-history.entity";
@@ -255,14 +255,29 @@ export class TranslateService {
     return normalized;
   }
 
+  private translateWorkRoot(): string {
+    return resolveConfiguredPath(
+      process.env.TRANSLATE_WORK_STAGING_ROOT?.trim() || process.env.TRANSLATE_WORK_ROOT,
+      "videos",
+    );
+  }
+
+  private isInsideRoot(root: string, target: string): boolean {
+    const rel = relative(resolve(root), resolve(target));
+    return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+  }
+
   private normalizeResultPath(resultPath: string): string {
     if (!resultPath || resultPath.trim().length === 0) {
       throw new BadRequestException("resultPath is required");
     }
 
     const normalized = resolve(resultPath.trim());
-    if (!normalized.split(sep).includes("workspace")) {
-      throw new BadRequestException("resultPath must point to translate workspace");
+    const slash = normalized.replaceAll("\\", "/");
+    const inLegacyWorkspace = slash.split("/").includes("workspace");
+    const inWorkRoot = this.isInsideRoot(this.translateWorkRoot(), normalized);
+    if (!inLegacyWorkspace && !inWorkRoot) {
+      throw new BadRequestException("resultPath must point to translate work folder");
     }
 
     return normalized;
@@ -312,13 +327,21 @@ export class TranslateService {
 
   private resolveWorkspaceDir(normalizedResultPath: string): string {
     const normalizedSlashPath = normalizedResultPath.replaceAll("\\", "/");
-    const matched = normalizedSlashPath.match(/^(.*\/workspace\/[^/]+)(?:\/.*)?$/);
-
-    if (!matched || !matched[1]) {
-      throw new BadRequestException("resultPath must contain workspace/<workName>");
+    const workspaceMatch = normalizedSlashPath.match(/^(.*\/workspace\/[^/]+)(?:\/.*)?$/);
+    if (workspaceMatch?.[1]) {
+      return workspaceMatch[1].replaceAll("/", sep);
     }
 
-    return matched[1].replaceAll("/", sep);
+    const rootSlash = this.translateWorkRoot().replaceAll("\\", "/").replace(/\/+$/, "");
+    if (normalizedSlashPath.toLowerCase().startsWith(`${rootSlash.toLowerCase()}/`)) {
+      const rest = normalizedSlashPath.slice(rootSlash.length + 1);
+      const workName = rest.split("/")[0];
+      if (workName) {
+        return join(this.translateWorkRoot(), workName);
+      }
+    }
+
+    throw new BadRequestException("resultPath must contain a translate job folder");
   }
 
   private resolveRuntimeLogPath(history: TranslateHistory): string {

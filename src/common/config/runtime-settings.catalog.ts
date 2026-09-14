@@ -60,6 +60,7 @@ export const RUNTIME_SETTING_FIELDS: RuntimeSettingField[] = [
   { code: "DOUYIN_COOKIE_CONTENT", group: "douyin", kind: "secret", label: "Douyin cookies", defaultValue: "" },
   { code: "GEMINI_API_KEY", group: "gemini", kind: "secret", label: "Gemini API key (normal)", defaultValue: "" },
   { code: "GEMINI_API_KEY_VIP", group: "gemini", kind: "secret", label: "Gemini API key (VIP)", defaultValue: "" },
+  /** Shared by Cấu hình runtime + Model AI — one settings row, both UIs read/write this code. */
   { code: "HF_TOKEN", group: "gemini", kind: "secret", label: "Hugging Face token", defaultValue: "" },
 ];
 
