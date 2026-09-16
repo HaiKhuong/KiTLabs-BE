@@ -77,6 +77,13 @@ export class NarratoProcessor extends WorkerHost {
         throw new RenderCancelledError();
       }
       await this.narratoService.markStepStarted(narratoHistoryId, step);
+      const startLine = `[${step}] START — ${step}`;
+      this.realtimeGateway.notifyUser(history.userId, "narrato.log", {
+        narratoHistoryId,
+        step,
+        kind: "start",
+        line: startLine,
+      });
       await this.narratoService.updateRuntimeMessage(narratoHistoryId, `[STEP] ${step} — spawning Python`);
 
       const workDir = this.narratoService.prepareWorkDir(history);
@@ -118,6 +125,12 @@ export class NarratoProcessor extends WorkerHost {
 
       const completed = await this.narratoService.getById(narratoHistoryId);
       const mapped = completed ? this.narratoService.mapHistoryForClient(completed) : null;
+      this.realtimeGateway.notifyUser(completed?.userId ?? history.userId, "narrato.log", {
+        narratoHistoryId,
+        step,
+        kind: "success",
+        line: `[${step}] SUCCESS`,
+      });
       this.realtimeGateway.notifyUser(completed?.userId ?? "all", "narrato.completed", {
         narratoHistoryId,
         step,
@@ -164,6 +177,12 @@ export class NarratoProcessor extends WorkerHost {
 
       await this.narratoService.markStepFailed(narratoHistoryId, step, message);
       const failed = await this.narratoService.getById(narratoHistoryId);
+      this.realtimeGateway.notifyUser(failed?.userId ?? history.userId, "narrato.log", {
+        narratoHistoryId,
+        step,
+        kind: "error",
+        line: `[${step}] ERROR: ${message}`,
+      });
       this.realtimeGateway.notifyUser(failed?.userId ?? "all", "narrato.failed", {
         narratoHistoryId,
         step,
@@ -239,6 +258,9 @@ export class NarratoProcessor extends WorkerHost {
         const line = stepLine || lines[lines.length - 1];
         if (line) {
           void this.narratoService.updateRuntimeMessage(input.narratoHistoryId, line.slice(0, 500));
+        }
+        if (stepLine) {
+          void this.narratoService.appendAppLogById(input.narratoHistoryId, stepLine.slice(0, 500));
         }
       };
 

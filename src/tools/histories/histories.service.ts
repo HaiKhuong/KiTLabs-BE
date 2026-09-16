@@ -41,6 +41,7 @@ type UnifiedHistoryRawRow = {
   completed_at: Date | string;
   result_path: string | null;
   preview_text: string | null;
+  artifact_kind: string | null;
 };
 
 @Injectable()
@@ -78,7 +79,7 @@ export class HistoriesService {
 
     const rows = await this.dataSource.query<UnifiedHistoryRawRow[]>(
       `
-        SELECT id, source, name, completed_at, result_path, preview_text
+        SELECT id, source, name, completed_at, result_path, preview_text, artifact_kind
         FROM (${UNIFIED_HISTORY_UNION_SQL}) AS unified
         WHERE ($2 = 'all' OR source = $2)
         ORDER BY completed_at DESC
@@ -146,9 +147,10 @@ export class HistoriesService {
     const previewText =
       source === "voice" && typeof row.preview_text === "string" ? row.preview_text.trim() : "";
 
+    const artifactKind = (row.artifact_kind || source) as string;
     let playUrl: string | null = null;
     if (playable) {
-      switch (source) {
+      switch (artifactKind) {
         case "media":
           playUrl = `/api/tools/translates/artifact?${new URLSearchParams({
             resultPath,
@@ -166,6 +168,18 @@ export class HistoriesService {
         case "whiteboard":
           playUrl = `/api/tools/whiteboard/artifact?${new URLSearchParams({
             whiteboardHistoryId: row.id,
+          }).toString()}`;
+          break;
+        case "recap":
+          playUrl = `/api/tools/recap/artifact?${new URLSearchParams({
+            recapHistoryId: row.id,
+            type: "video",
+          }).toString()}`;
+          break;
+        case "narrato":
+          playUrl = `/api/tools/narrato/artifact?${new URLSearchParams({
+            narratoHistoryId: row.id,
+            type: "video",
           }).toString()}`;
           break;
         default:

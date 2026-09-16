@@ -136,6 +136,7 @@ def _build_engine(payload: dict[str, Any]) -> tuple[
         postprocess_output=postprocess_output,
         normalize_text=normalize_text,
         seed=int(seed) if seed not in (None, "") else None,
+        batch_size=batch_size,
     )
 
     def prepare(raw: str) -> str:
@@ -214,7 +215,6 @@ def run(payload: dict[str, Any]) -> dict[str, Any]:
             ]
             synthesize_many_to_wavs(
                 batch_jobs,
-                batch_size=batch_size,
                 **batch_kw,
             )
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import shutil
+import sys
 import traceback
 from pathlib import Path
 from typing import Any
@@ -59,16 +60,16 @@ def setup_logging(work_dir: Path) -> None:
     root.setLevel(logging.INFO)
     fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
     for handler in list(root.handlers):
-        if getattr(handler, "_narrato_file", False):
+        if getattr(handler, "_narrato_file", False) or getattr(handler, "_narrato_stream", False):
             root.removeHandler(handler)
     fh = logging.FileHandler(log_path, encoding="utf-8")
     fh.setFormatter(fmt)
     fh._narrato_file = True  # type: ignore[attr-defined]
     root.addHandler(fh)
-    if not any(isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler) for h in root.handlers):
-        sh = logging.StreamHandler()
-        sh.setFormatter(fmt)
-        root.addHandler(sh)
+    sh = logging.StreamHandler(sys.stdout)
+    sh.setFormatter(fmt)
+    sh._narrato_stream = True  # type: ignore[attr-defined]
+    root.addHandler(sh)
 
 
 class NarratoContext:
@@ -308,8 +309,14 @@ def run_single_step(step_id: str, video: Path, work_dir: Path, cfg: dict[str, An
     if not video.exists():
         raise FileNotFoundError(f"Video not found: {video}")
     ctx = NarratoContext(video, work_dir, cfg)
+    print(f"[NARRATO] [{step_id}] START mode={ctx.mode} title={ctx.title}", flush=True)
     LOG.info("[NARRATO] step=%s mode=%s title=%s work=%s", step_id, ctx.mode, ctx.title, work_dir)
-    result = STEP_RUNNERS[step_id](ctx)
+    try:
+        result = STEP_RUNNERS[step_id](ctx)
+    except Exception:
+        print(f"[NARRATO] [{step_id}] ERROR", flush=True)
+        raise
+    print(f"[NARRATO] [{step_id}] SUCCESS", flush=True)
     if step_id == "render":
         return result
     return None

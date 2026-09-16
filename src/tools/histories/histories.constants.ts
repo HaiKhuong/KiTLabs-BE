@@ -1,4 +1,10 @@
-export const UNIFIED_HISTORY_SOURCES = ["media", "voice", "shortVideo", "whiteboard"] as const;
+export const UNIFIED_HISTORY_SOURCES = [
+  "media",
+  "voice",
+  "shortVideo",
+  "whiteboard",
+  "recap",
+] as const;
 
 export type UnifiedHistorySource = (typeof UNIFIED_HISTORY_SOURCES)[number];
 
@@ -12,7 +18,8 @@ export const UNIFIED_HISTORY_UNION_SQL = `
     COALESCE(result_file_name, 'output.mp4') AS name,
     updated_at AS completed_at,
     result_path AS result_path,
-    NULL::text AS preview_text
+    NULL::text AS preview_text,
+    'media'::text AS artifact_kind
   FROM translate_histories
   WHERE user_id = $1 AND status = 'completed'
 
@@ -24,7 +31,8 @@ export const UNIFIED_HISTORY_UNION_SQL = `
     display_name AS name,
     updated_at AS completed_at,
     result_path AS result_path,
-    input_text AS preview_text
+    input_text AS preview_text,
+    'voice'::text AS artifact_kind
   FROM audio_histories
   WHERE user_id = $1 AND status = 'completed'
 
@@ -36,7 +44,8 @@ export const UNIFIED_HISTORY_UNION_SQL = `
     COALESCE(display_name, result_file_name, 'Short video') AS name,
     COALESCE(render_finished_at, updated_at) AS completed_at,
     result_path AS result_path,
-    NULL::text AS preview_text
+    NULL::text AS preview_text,
+    'shortVideo'::text AS artifact_kind
   FROM short_video_histories
   WHERE user_id = $1 AND status = 'completed'
 
@@ -48,7 +57,34 @@ export const UNIFIED_HISTORY_UNION_SQL = `
     COALESCE(display_name, result_file_name, 'Whiteboard') AS name,
     COALESCE(render_finished_at, updated_at) AS completed_at,
     result_path AS result_path,
-    NULL::text AS preview_text
+    NULL::text AS preview_text,
+    'whiteboard'::text AS artifact_kind
   FROM whiteboard_histories
   WHERE user_id = $1 AND status = 'completed' AND queue_job_id IS NOT NULL
+
+  UNION ALL
+
+  SELECT
+    id::text AS id,
+    'recap'::text AS source,
+    COALESCE(display_name, result_file_name, 'Recap') AS name,
+    updated_at AS completed_at,
+    result_path AS result_path,
+    NULL::text AS preview_text,
+    'recap'::text AS artifact_kind
+  FROM recap_histories
+  WHERE user_id = $1 AND status = 'completed' AND result_path IS NOT NULL AND result_path <> ''
+
+  UNION ALL
+
+  SELECT
+    id::text AS id,
+    'recap'::text AS source,
+    COALESCE(display_name, result_file_name, 'Narrato') AS name,
+    updated_at AS completed_at,
+    result_path AS result_path,
+    NULL::text AS preview_text,
+    'narrato'::text AS artifact_kind
+  FROM narrato_histories
+  WHERE user_id = $1 AND status = 'completed' AND result_path IS NOT NULL AND result_path <> ''
 `;

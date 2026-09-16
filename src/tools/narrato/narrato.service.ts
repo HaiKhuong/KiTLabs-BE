@@ -2,7 +2,7 @@ import { BadRequestException, ConflictException, Injectable, Logger, NotFoundExc
 import { InjectQueue } from "@nestjs/bullmq";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Queue } from "bullmq";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { basename, dirname, isAbsolute, join, resolve } from "path";
 import { Repository } from "typeorm";
 
@@ -25,6 +25,7 @@ import { CreateNarratoJobDto } from "./dto/create-narrato-job.dto";
 import { NarratoHistory } from "./narrato-history.entity";
 import {
   emptyNarratoStepProgress,
+  NARRATO_STEP_LABELS,
   readNarratoStepProgress,
   type NarratoStepId,
   type NarratoStepProgress,
@@ -277,6 +278,11 @@ export class NarratoService {
       history.resultFileName = null;
     }
     await this.narratoRepository.save(history);
+    const stepLabel = cancelledStep ? NARRATO_STEP_LABELS[cancelledStep] : "pipeline";
+    this.appendAppLog(
+      history,
+      `[${cancelledStep ?? "cancel"}] CANCELLED — ${stepLabel}${deletedFiles ? " (deleted files)" : ""}`,
+    );
   }
 
   async markStepStarted(narratoHistoryId: string, step: NarratoStepId): Promise<void> {
@@ -290,6 +296,7 @@ export class NarratoService {
     history.status = QueueJobStatus.RUNNING;
     history.errorMessage = `[STEP] ${step} — running`;
     await this.narratoRepository.save(history);
+    this.appendAppLog(history, `[${step}] START — ${NARRATO_STEP_LABELS[step]}`);
   }
 
   async markStepCompleted(
@@ -329,6 +336,7 @@ export class NarratoService {
       history.resultFileName = basename(extras.resultPath);
     }
     await this.narratoRepository.save(history);
+    this.appendAppLog(history, `[${step}] SUCCESS — ${NARRATO_STEP_LABELS[step]}`);
 
     if (step === "render" && extras?.resultPath && history.userId) {
       await this.notificationsService.pushSuccess(
@@ -351,6 +359,7 @@ export class NarratoService {
     history.errorMessage = errorMessage;
     history.queueJobId = null;
     await this.narratoRepository.save(history);
+    this.appendAppLog(history, `[${step}] ERROR — ${NARRATO_STEP_LABELS[step]}: ${errorMessage}`);
     if (history.userId) {
       await this.notificationsService.pushError(
         history.userId,
@@ -502,8 +511,27 @@ export class NarratoService {
     }
   }
 
+  appendAppLog(history: NarratoHistory, message: string): string {
+    const workDir = this.prepareWorkDir(history);
+    const stamp = new Date().toISOString().replace("T", " ").slice(0, 19);
+    const line = `${stamp} ${message}`.trim();
+    appendFileSync(join(workDir, "logs", "app.log"), `${line}\n`, "utf-8");
+    return line;
+  }
+
+  async appendAppLogById(narratoHistoryId: string, message: string): Promise<string | null> {
+    const history = await this.narratoRepository.findOne({ where: { id: narratoHistoryId } });
+    if (!history) return null;
+    return this.appendAppLog(history, message);
+  }
+
   getRuntimeLog(history: NarratoHistory): string {
-    const logPath = join(this.resolveWorkDir(history), "logs", "pipeline.log");
+    const workDir = this.resolveWorkDir(history);
+    const appLogPath = join(workDir, "logs", "app.log");
+    if (existsSync(appLogPath)) {
+      return readFileSync(appLogPath, "utf-8");
+    }
+    const logPath = join(workDir, "logs", "pipeline.log");
     if (existsSync(logPath)) return readFileSync(logPath, "utf-8");
     return "";
   }

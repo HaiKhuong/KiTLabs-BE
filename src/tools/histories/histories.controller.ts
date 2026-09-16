@@ -11,7 +11,7 @@ import { HistoriesService } from "./histories.service";
 export class HistoriesController {
   constructor(private readonly historiesService: HistoriesService) {}
 
-  @ApiOperation({ summary: "List unified completed histories across Media, Voice, ShortVideo, Whiteboard" })
+  @ApiOperation({ summary: "List unified completed histories across Media, Voice, ShortVideo, Whiteboard, Recap" })
   @ApiQuery({ name: "userId", required: true })
   @ApiQuery({ name: "page", required: false })
   @ApiQuery({ name: "limit", required: false })
