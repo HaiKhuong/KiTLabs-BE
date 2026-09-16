@@ -12,9 +12,6 @@ const ENUM_TYPES = [
 export class AddCancelledJobStatus1800000000002 implements MigrationInterface {
   name = "AddCancelledJobStatus1800000000002";
 
-  /** Postgres cannot ADD VALUE inside a transaction on older versions. */
-  transaction = false;
-
   public async up(queryRunner: QueryRunner): Promise<void> {
     for (const typeName of ENUM_TYPES) {
       await queryRunner.query(

@@ -66,6 +66,7 @@ import { HistoriesModule } from "./tools/histories/histories.module";
       autoLoadEntities: false,
       entities: MAIN_DB_ENTITIES,
       migrations: [join(__dirname, "database/migrations/main/*{.ts,.js}")],
+      migrationsTransactionMode: "each",
     }),
     TypeOrmModule.forRoot({
       name: "tool",
@@ -80,6 +81,7 @@ import { HistoriesModule } from "./tools/histories/histories.module";
       autoLoadEntities: false,
       entities: TOOL_DB_ENTITIES,
       migrations: [join(__dirname, "database/migrations/main/*{.ts,.js}")],
+      migrationsTransactionMode: "each",
     }),
     TypeOrmModule.forRoot({
       name: "audit",

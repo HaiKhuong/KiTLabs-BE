@@ -16,4 +16,6 @@ export default new DataSource({
   synchronize: false,
   entities: TOOL_DB_ENTITIES,
   migrations: [join(__dirname, "migrations/main/*{.ts,.js}")],
+  // "all" forbids per-migration `transaction = false` (needed for enum ADD VALUE).
+  migrationsTransactionMode: "each",
 });
