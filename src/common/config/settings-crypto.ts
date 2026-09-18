@@ -50,12 +50,18 @@ export function maskGeminiKeys(raw: string): { configured: boolean; keyCount: nu
   if (parts.length === 0) {
     return { configured: false, keyCount: 0, masked: "" };
   }
-  const first = parts[0];
-  const last4 = first.slice(-4);
-  const prefix = first.startsWith("AIza") ? "AIza" : first.slice(0, 4);
   return {
     configured: true,
     keyCount: parts.length,
-    masked: `${prefix}••••${last4}`,
+    masked: parts.map(maskOneGeminiKey).join(", "),
   };
+}
+
+function maskOneGeminiKey(key: string): string {
+  if (key.length <= 6) {
+    return `${key.slice(0, 1)}${".".repeat(10)}${key.slice(-1)}`;
+  }
+  const prefix = key.slice(0, 5);
+  const suffix = key.slice(-3);
+  return `${prefix}${".".repeat(14)}${suffix}`;
 }

@@ -18,10 +18,10 @@ describe("settings-crypto", () => {
     expect(decryptSecret(enc)).toBe(plain);
   });
 
-  it("masks gemini keys", () => {
-    const mask = maskGeminiKeys("AIzaSySecretKeyXXXX");
+  it("masks each gemini key with prefix, dots, and suffix", () => {
+    const mask = maskGeminiKeys("aaGBSsecretvalueGBX, sjnjdfsecretvalueHSHS");
     expect(mask.configured).toBe(true);
-    expect(mask.keyCount).toBe(1);
-    expect(mask.masked.includes("••••")).toBe(true);
+    expect(mask.keyCount).toBe(2);
+    expect(mask.masked).toBe("aaGBS..............GBX, sjnjd..............HSH");
   });
 });

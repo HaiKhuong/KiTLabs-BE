@@ -58,7 +58,7 @@ _active_key_index: int = 0
 def _parse_api_keys(raw_value: Optional[str]) -> List[str]:
     if not raw_value:
         return []
-    parts = [p.strip() for p in re.split(r"[,\n;]+", str(raw_value)) if p and str(p).strip()]
+    parts = [p.strip() for p in re.split(r"[,;\n|]+", str(raw_value)) if p and str(p).strip()]
     return list(dict.fromkeys(parts))
 
 

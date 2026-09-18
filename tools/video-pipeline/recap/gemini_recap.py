@@ -225,7 +225,7 @@ def _load_keys(tier: str = "vip") -> list[str]:
         raw = os.environ.get("GEMINI_API_KEY") or ""
     else:
         raw = os.environ.get("GEMINI_API_KEY_VIP") or os.environ.get("GEMINI_API_KEY") or ""
-    return [k.strip() for k in raw.split(",") if k.strip()]
+    return [k.strip() for k in re.split(r"[,;\n|]+", raw) if k.strip()]
 
 
 def _model_name(override: str = "") -> str:

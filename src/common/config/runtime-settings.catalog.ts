@@ -65,8 +65,8 @@ export const RUNTIME_SETTING_FIELDS: RuntimeSettingField[] = [
   { code: "YTDLP_SERVICE_URL", group: "services", kind: "string", label: "yt-dlp service URL", defaultValue: "http://localhost:8100" },
   { code: "DOUYIN_PLAYWRIGHT_SERVICE_URL", group: "services", kind: "string", label: "Playwright service URL", defaultValue: "http://localhost:8101" },
   { code: "DOUYIN_COOKIE_CONTENT", group: "douyin", kind: "secret", label: "Douyin cookies", defaultValue: "" },
-  { code: "GEMINI_API_KEY", group: "gemini", kind: "secret", label: "Gemini API key (normal)", defaultValue: "" },
-  { code: "GEMINI_API_KEY_VIP", group: "gemini", kind: "secret", label: "Gemini API key (VIP)", defaultValue: "" },
+  { code: "GEMINI_API_KEY", group: "gemini", kind: "secret", label: "Gemini API key thường (nhiều key: cách nhau dấu phẩy)", defaultValue: "" },
+  { code: "GEMINI_API_KEY_VIP", group: "gemini", kind: "secret", label: "Gemini API key VIP (nhiều key: cách nhau dấu phẩy)", defaultValue: "" },
   /** Shared by Cấu hình runtime + Model AI — one settings row, both UIs read/write this code. */
   { code: "HF_TOKEN", group: "gemini", kind: "secret", label: "Hugging Face token", defaultValue: "" },
 ];

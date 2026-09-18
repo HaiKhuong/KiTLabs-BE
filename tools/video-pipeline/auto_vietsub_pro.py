@@ -515,7 +515,7 @@ def parse_api_keys(raw_value):
     if not raw_value:
         return []
     parts = [
-        p.strip() for p in re.split(r"[,\n;]+", str(raw_value)) if p and str(p).strip()
+        p.strip() for p in re.split(r"[,;\n|]+", str(raw_value)) if p and str(p).strip()
     ]
     # Deduplicate while preserving order.
     return list(dict.fromkeys(parts))
