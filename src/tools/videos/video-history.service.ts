@@ -3,6 +3,7 @@ import { InjectRepository } from "@nestjs/typeorm";
 import { Repository } from "typeorm";
 
 import { QueueJobStatus } from "../../common/enums/domain.enums";
+import { LogsService } from "../logs/logs.service";
 import { GenerateVeoVideoDto, VeoModel } from "./dto/generate-veo-video.dto";
 import { VideoHistory } from "./video-history.entity";
 
@@ -13,11 +14,12 @@ export class VideoHistoryService {
   constructor(
     @InjectRepository(VideoHistory, "tool")
     private readonly repository: Repository<VideoHistory>,
+    private readonly logsService: LogsService,
   ) {}
 
   async createPending(dto: GenerateVeoVideoDto, resolvedModel: VeoModel): Promise<VideoHistory> {
     const prompt = dto.prompt.trim();
-    return this.repository.save(
+    const saved = await this.repository.save(
       this.repository.create({
         userId: dto.userId.trim(),
         prompt,
@@ -36,6 +38,27 @@ export class VideoHistoryService {
         errorMessage: null,
       }),
     );
+    void this.logsService.logRender({
+      userId: saved.userId,
+      feature: "video",
+      historyId: saved.id,
+      displayName: saved.displayName,
+      data: {
+        prompt: saved.prompt,
+        model: saved.model,
+        aspectRatio: saved.aspectRatio,
+        durationSeconds: saved.durationSeconds,
+        resolution: saved.resolution,
+        personGeneration: saved.personGeneration,
+        seed: saved.seed,
+        apiKeyTier: saved.apiKeyTier,
+        hasFirstFrame: Boolean(dto.firstFrame),
+        hasLastFrame: Boolean(dto.lastFrame),
+        hasExtendVideo: Boolean(dto.extendVideo),
+        referenceImageCount: dto.referenceImages?.length ?? 0,
+      },
+    });
+    return saved;
   }
 
   async markRunning(id: string, operationName: string, apiKeyTier: string): Promise<void> {

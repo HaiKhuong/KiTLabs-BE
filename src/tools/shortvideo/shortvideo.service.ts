@@ -8,7 +8,7 @@ import { basename, extname, isAbsolute, join, resolve } from "path";
 import { Repository } from "typeorm";
 
 import { QueueJobStatus } from "../../common/enums/domain.enums";
-import { resolveConfiguredPath } from "../../common/desktop/data-path";
+import { resolveShortVideoWorkRoot } from "../../common/desktop/data-path";
 import {
   CANCELLED_BY_USER_MESSAGE,
   type CancelRenderResult,
@@ -19,6 +19,7 @@ import {
 import { RenderProcessRegistry } from "../../common/process/render-process-registry";
 import { isAppPlatform } from "../../common/desktop/request-platform";
 import { NotificationsService } from "../notifications/notifications.service";
+import { LogsService } from "../logs/logs.service";
 import { CreateShortVideoJobDto } from "./dto/create-shortvideo-job.dto";
 import { RenderShortVideoUploadDto } from "./dto/render-shortvideo-upload.dto";
 import { ShortVideoHistory } from "./shortvideo-history.entity";
@@ -55,6 +56,7 @@ export class ShortVideoService {
     @InjectRepository(ShortVideoHistory, "tool")
     private readonly repository: Repository<ShortVideoHistory>,
     private readonly notificationsService: NotificationsService,
+    private readonly logsService: LogsService,
     private readonly renderProcessRegistry: RenderProcessRegistry,
   ) {}
 
@@ -66,7 +68,7 @@ export class ShortVideoService {
   }
 
   private resolveWorkRoot(): string {
-    return resolveConfiguredPath(process.env.SHORTVIDEO_WORK_ROOT, "uploads/shortvideo");
+    return resolveShortVideoWorkRoot();
   }
 
   private parseSpec(raw: string): Record<string, unknown> {
@@ -131,7 +133,19 @@ export class ShortVideoService {
     );
 
     created.queueJobId = queueJob.id ? String(queueJob.id) : null;
-    return this.repository.save(created);
+    const saved = await this.repository.save(created);
+    void this.logsService.logRender({
+      userId,
+      feature: "short_video",
+      historyId: saved.id,
+      displayName: saved.displayName,
+      data: {
+        nodeId: saved.nodeId,
+        spec: saved.spec,
+        engineConfig: saved.engineConfig,
+      },
+    });
+    return saved;
   }
 
   /** Persist uploaded buffers and/or App local paths into a fresh dir. */

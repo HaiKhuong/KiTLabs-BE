@@ -8,13 +8,14 @@ import {
   Post,
   Query,
   Req,
+  Res,
   UploadedFile,
   UseInterceptors,
 } from "@nestjs/common";
+import { Request, Response } from "express";
 import { ApiBearerAuth, ApiBody, ApiConsumes, ApiHeader, ApiOperation, ApiQuery, ApiTags } from "@nestjs/swagger";
 import { SkipThrottle } from "@nestjs/throttler";
 import { FileInterceptor } from "@nestjs/platform-express";
-import { Request } from "express";
 import { existsSync, mkdirSync } from "fs";
 import { diskStorage } from "multer";
 import { basename, extname, join, resolve } from "path";
@@ -153,6 +154,19 @@ export class FilesController {
       mimeType: file.mimetype,
       size: file.size,
     };
+  }
+
+  @ApiOperation({ summary: "Serve a local image or outro video for Media preview" })
+  @ApiQuery({ name: "path", required: true, description: "Absolute or project-relative media path" })
+  @Public()
+  @Get("local-asset")
+  localAsset(@Query("path") rawPath: string, @Res() res: Response) {
+    const asset = this.filesService.resolveLocalPreviewAsset(rawPath);
+    const isVideo = asset.contentType.startsWith("video/");
+    res.setHeader("Content-Type", asset.contentType);
+    res.setHeader("Accept-Ranges", "bytes");
+    res.setHeader("Cache-Control", isVideo ? "private, max-age=0, must-revalidate" : "no-store");
+    return res.sendFile(asset.absolutePath);
   }
 
   @ApiOperation({ summary: "Upload logo image to tools/video-pipeline/logo" })

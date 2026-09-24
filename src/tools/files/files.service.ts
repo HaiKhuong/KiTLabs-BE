@@ -1,6 +1,8 @@
-import { Injectable, Logger } from "@nestjs/common";
-import { existsSync, mkdirSync, readdirSync, rmdirSync, unlinkSync } from "fs";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "path";
+import { BadRequestException, Injectable, Logger, NotFoundException } from "@nestjs/common";
+import { existsSync, mkdirSync, readdirSync, rmdirSync, statSync, unlinkSync } from "fs";
+import { dirname, extname, isAbsolute, join, relative, resolve, sep } from "path";
+
+import { isAppPlatform } from "../../common/desktop/request-platform";
 
 import { resolveConfiguredPath } from "../../common/desktop/data-path";
 
@@ -79,6 +81,20 @@ export function deleteUploadedSourceVideo(filePath: string): boolean {
   return true;
 }
 
+const PREVIEW_CONTENT_TYPES: Record<string, string> = {
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".webp": "image/webp",
+  ".svg": "image/svg+xml",
+  ".bmp": "image/bmp",
+  ".mp4": "video/mp4",
+  ".m4v": "video/mp4",
+  ".webm": "video/webm",
+  ".mov": "video/quicktime",
+};
+
 @Injectable()
 export class FilesService {
   ensureUploadFolder(folder?: string, userId?: string): string {
@@ -87,5 +103,54 @@ export class FilesService {
       mkdirSync(targetFolder, { recursive: true });
     }
     return targetFolder;
+  }
+
+  resolveLocalPreviewAsset(rawPath: string): { absolutePath: string; contentType: string } {
+    const trimmed = this.normalizePreviewPath(rawPath);
+    if (!trimmed) {
+      throw new BadRequestException("path is required");
+    }
+    const absolute = resolve(trimmed);
+    const ext = extname(absolute).toLowerCase();
+    const contentType = PREVIEW_CONTENT_TYPES[ext];
+    if (!contentType) {
+      throw new BadRequestException("Unsupported preview file type");
+    }
+    if (!existsSync(absolute) || !statSync(absolute).isFile()) {
+      throw new NotFoundException("Preview file not found");
+    }
+    if (!this.isAllowedPreviewPath(absolute)) {
+      throw new BadRequestException("Preview path is not allowed");
+    }
+    return { absolutePath: absolute, contentType };
+  }
+
+  private normalizePreviewPath(rawPath: string): string {
+    let trimmed = String(rawPath ?? "").trim();
+    if (!trimmed) return "";
+    if (/^file:\/\//i.test(trimmed)) {
+      try {
+        const parsed = new URL(trimmed);
+        trimmed = decodeURIComponent(parsed.pathname);
+      } catch {
+        trimmed = trimmed.replace(/^file:\/\//i, "");
+      }
+      if (/^\/[a-zA-Z]:/.test(trimmed)) {
+        trimmed = trimmed.slice(1);
+      }
+    }
+    return trimmed.replaceAll("\\", "/");
+  }
+
+  private isAllowedPreviewPath(absolute: string): boolean {
+    if (isAppPlatform()) {
+      return true;
+    }
+    const allowedRoots = [
+      resolve(process.cwd(), "tools", "video-pipeline", "logo"),
+      resolve(process.cwd(), "tools", "video-pipeline", "outro"),
+      resolveUploadRoot(),
+    ];
+    return allowedRoots.some((root) => isPathInside(root, absolute) || resolve(root) === absolute);
   }
 }

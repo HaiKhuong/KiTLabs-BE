@@ -47,7 +47,7 @@ export class SettingsController {
       if (!RUNTIME_CODE_SET.has(item.code)) {
         throw new BadRequestException(`Unknown runtime setting: ${item.code}`);
       }
-      await this.appConfigService.upsertRuntime(item.code, item.value ?? "");
+      await this.appConfigService.upsertRuntime(item.code, item.value ?? "", { clear: item.clear === true });
     }
     return this.appConfigService.listRuntime();
   }

@@ -119,6 +119,11 @@ export class MergeWhiteboardDto {
   @MaxLength(255)
   displayName?: string;
 
+  @ApiPropertyOptional({ description: "whiteboard_idea_histories id — reuse prior merge history when re-rendering" })
+  @IsOptional()
+  @IsString()
+  ideaHistoryId?: string;
+
   @ApiPropertyOptional({ type: MergeSummaryDto })
   @IsOptional()
   @ValidateNested()

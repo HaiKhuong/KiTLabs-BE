@@ -1,4 +1,4 @@
-import { Column, Entity, JoinColumn, ManyToOne } from "typeorm";
+import { Column, DeleteDateColumn, Entity, JoinColumn, ManyToOne } from "typeorm";
 import { BaseEntity } from "../../common/entities/base.entity";
 import { QueueJobStatus } from "../../common/enums/domain.enums";
 import { User } from "../users/user.entity";
@@ -72,4 +72,7 @@ export class WhiteboardHistory extends BaseEntity {
 
   @Column({ type: "integer", name: "render_duration_ms", nullable: true })
   renderDurationMs!: number | null;
+
+  @DeleteDateColumn({ name: "deleted_at", type: "timestamp", nullable: true })
+  deletedAt!: Date | null;
 }

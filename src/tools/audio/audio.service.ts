@@ -31,10 +31,10 @@ import { User } from "../users/user.entity";
 import {
   AUDIO_CLONE_UPLOAD_DIR,
   AUDIO_MAX_TEXT_CHARS,
-  AUDIO_OUTPUT_DIR,
   AUDIO_PREVIEW_CACHE_DIR,
   AUDIO_PRESET_VOICES,
   pipelineVoiceSearchDirs,
+  resolveAudioOutputDir,
   resolvePipelineVoiceDir,
   VIDEO_PIPELINE_DIR,
   findPresetVoice,
@@ -1063,6 +1063,18 @@ export class AudioService {
       },
       ip: user.ip,
     });
+    void this.logsService.logRender({
+      userId: user.id,
+      feature: "audio",
+      historyId: saved.id,
+      displayName: saved.displayName,
+      data: {
+        voiceMode: saved.voiceMode,
+        voiceId: saved.voiceId,
+        inputText: saved.inputText,
+        engineConfig: saved.engineConfig,
+      },
+    });
 
     return saved;
   }
@@ -1167,6 +1179,19 @@ export class AudioService {
         cueCount,
       },
       ip: user.ip,
+    });
+    void this.logsService.logRender({
+      userId: user.id,
+      feature: "audio",
+      historyId: saved.id,
+      displayName: saved.displayName,
+      data: {
+        kind: "srt",
+        voiceMode: saved.voiceMode,
+        voiceId: saved.voiceId,
+        cueCount,
+        engineConfig: saved.engineConfig,
+      },
     });
 
     return saved;
@@ -1456,7 +1481,21 @@ export class AudioService {
       resultFileName: null,
       errorMessage: null,
     });
-    return this.audioRepository.save(history);
+    const saved = await this.audioRepository.save(history);
+    void this.logsService.logRender({
+      userId: input.userId,
+      feature: "audio",
+      historyId: saved.id,
+      displayName: saved.displayName,
+      data: {
+        kind: "workflow_voice",
+        voiceMode: saved.voiceMode,
+        voiceId: saved.voiceId,
+        inputText: saved.inputText,
+        engineConfig: saved.engineConfig,
+      },
+    });
+    return saved;
   }
 
   async completeVideoVoiceHistory(audioHistoryId: string, resultPath: string): Promise<void> {
@@ -1795,7 +1834,7 @@ export class AudioService {
   }
 
   buildOutputPath(userId: string, audioHistoryId: string): string {
-    const dir = resolve(AUDIO_OUTPUT_DIR, userId);
+    const dir = resolve(resolveAudioOutputDir(), userId);
     mkdirSync(dir, { recursive: true });
     return join(dir, `${audioHistoryId}.wav`);
   }

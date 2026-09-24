@@ -7,7 +7,7 @@ import { basename, dirname, isAbsolute, join, resolve } from "path";
 import { Repository } from "typeorm";
 
 import { QueueJobStatus } from "../../common/enums/domain.enums";
-import { resolveConfiguredPath } from "../../common/desktop/data-path";
+import { resolveNarratoWorkRoot } from "../../common/desktop/data-path";
 import {
   CANCELLED_BY_USER_MESSAGE,
   type CancelRenderResult,
@@ -61,10 +61,7 @@ export class NarratoService {
   }
 
   private resolveWorkRoot(): string {
-    return resolveConfiguredPath(
-      process.env.NARRATO_WORK_ROOT ?? process.env.RECAP_WORK_ROOT ?? process.env.TRANSLATE_WORK_ROOT,
-      "uploads/narrato",
-    );
+    return resolveNarratoWorkRoot();
   }
 
   resolveVideoPath(localVideoPath: string): string {
@@ -224,7 +221,19 @@ export class NarratoService {
     );
 
     history.queueJobId = queueJob.id ? String(queueJob.id) : null;
-    return this.narratoRepository.save(history);
+    const saved = await this.narratoRepository.save(history);
+    void this.logsService.logRender({
+      userId: history.userId,
+      feature: "narrato",
+      historyId: saved.id,
+      displayName: saved.displayName,
+      data: {
+        step,
+        engineConfig: saved.engineConfig,
+        scriptPayload: saved.scriptPayload,
+      },
+    });
+    return saved;
   }
 
   async cancel(id: string, userId: string): Promise<CancelRenderResult> {

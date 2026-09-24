@@ -6,6 +6,7 @@ import { isAbsolute, resolve } from "path";
 import { Repository } from "typeorm";
 
 import { QueueJobStatus } from "../../common/enums/domain.enums";
+import { LogsService } from "../logs/logs.service";
 import { GenerateGeminiImageDto, GeminiImageModel } from "./dto/generate-gemini-image.dto";
 import { GenerateStudioImageDto } from "./dto/generate-studio-image.dto";
 import { ImageHistory } from "./image-history.entity";
@@ -18,6 +19,7 @@ export class ImagesHistoryService {
   constructor(
     @InjectRepository(ImageHistory, "tool")
     private readonly imageHistoryRepository: Repository<ImageHistory>,
+    private readonly logsService: LogsService,
   ) {}
 
   private buildDisplayName(prompt: string): string {
@@ -43,12 +45,29 @@ export class ImagesHistoryService {
       resultFileName: null,
       errorMessage: null,
     });
-    return this.imageHistoryRepository.save(history);
+    const saved = await this.imageHistoryRepository.save(history);
+    void this.logsService.logRender({
+      userId: saved.userId,
+      feature: "image",
+      historyId: saved.id,
+      displayName: saved.displayName,
+      data: {
+        provider: "studio",
+        prompt: saved.prompt,
+        negativePrompt: saved.negativePrompt,
+        style: saved.style,
+        aspectRatio: saved.aspectRatio,
+        model: saved.model,
+        numInferenceSteps: saved.numInferenceSteps,
+        seed: saved.seed,
+      },
+    });
+    return saved;
   }
 
   async createGeminiPending(dto: GenerateGeminiImageDto, model: GeminiImageModel): Promise<ImageHistory> {
     const prompt = dto.prompt.trim();
-    return this.imageHistoryRepository.save(
+    const saved = await this.imageHistoryRepository.save(
       this.imageHistoryRepository.create({
         userId: dto.userId.trim(),
         prompt,
@@ -71,6 +90,22 @@ export class ImagesHistoryService {
         errorMessage: null,
       }),
     );
+    void this.logsService.logRender({
+      userId: saved.userId,
+      feature: "image",
+      historyId: saved.id,
+      displayName: saved.displayName,
+      data: {
+        provider: "gemini",
+        prompt: saved.prompt,
+        aspectRatio: saved.aspectRatio,
+        model: saved.model,
+        imageSize: saved.imageSize,
+        apiKeyTier: saved.apiKeyTier,
+        useGoogleSearch: saved.useGoogleSearch,
+      },
+    });
+    return saved;
   }
 
   async markGeminiCompleted(

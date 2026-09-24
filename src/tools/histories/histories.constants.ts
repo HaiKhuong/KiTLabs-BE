@@ -8,6 +8,14 @@ export const UNIFIED_HISTORY_SOURCES = [
 
 export type UnifiedHistorySource = (typeof UNIFIED_HISTORY_SOURCES)[number];
 
+export const HISTORY_SOFT_DELETE_TABLES: Record<UnifiedHistorySource, readonly string[]> = {
+  media: ["translate_histories"],
+  voice: ["audio_histories"],
+  shortVideo: ["short_video_histories"],
+  whiteboard: ["whiteboard_histories"],
+  recap: ["recap_histories", "narrato_histories"],
+};
+
 export const UNIFIED_HISTORY_DEFAULT_LIMIT = 20;
 export const UNIFIED_HISTORY_MAX_LIMIT = 50;
 
@@ -21,7 +29,7 @@ export const UNIFIED_HISTORY_UNION_SQL = `
     NULL::text AS preview_text,
     'media'::text AS artifact_kind
   FROM translate_histories
-  WHERE user_id = $1 AND status = 'completed'
+  WHERE user_id = $1 AND status = 'completed' AND deleted_at IS NULL
 
   UNION ALL
 
@@ -34,7 +42,7 @@ export const UNIFIED_HISTORY_UNION_SQL = `
     input_text AS preview_text,
     'voice'::text AS artifact_kind
   FROM audio_histories
-  WHERE user_id = $1 AND status = 'completed'
+  WHERE user_id = $1 AND status = 'completed' AND deleted_at IS NULL
 
   UNION ALL
 
@@ -47,7 +55,7 @@ export const UNIFIED_HISTORY_UNION_SQL = `
     NULL::text AS preview_text,
     'shortVideo'::text AS artifact_kind
   FROM short_video_histories
-  WHERE user_id = $1 AND status = 'completed'
+  WHERE user_id = $1 AND status = 'completed' AND deleted_at IS NULL
 
   UNION ALL
 
@@ -60,7 +68,7 @@ export const UNIFIED_HISTORY_UNION_SQL = `
     NULL::text AS preview_text,
     'whiteboard'::text AS artifact_kind
   FROM whiteboard_histories
-  WHERE user_id = $1 AND status = 'completed' AND queue_job_id IS NOT NULL
+  WHERE user_id = $1 AND status = 'completed' AND queue_job_id IS NOT NULL AND deleted_at IS NULL
 
   UNION ALL
 
@@ -73,7 +81,7 @@ export const UNIFIED_HISTORY_UNION_SQL = `
     NULL::text AS preview_text,
     'recap'::text AS artifact_kind
   FROM recap_histories
-  WHERE user_id = $1 AND status = 'completed' AND result_path IS NOT NULL AND result_path <> ''
+  WHERE user_id = $1 AND status = 'completed' AND result_path IS NOT NULL AND result_path <> '' AND deleted_at IS NULL
 
   UNION ALL
 
@@ -86,5 +94,5 @@ export const UNIFIED_HISTORY_UNION_SQL = `
     NULL::text AS preview_text,
     'narrato'::text AS artifact_kind
   FROM narrato_histories
-  WHERE user_id = $1 AND status = 'completed' AND result_path IS NOT NULL AND result_path <> ''
+  WHERE user_id = $1 AND status = 'completed' AND result_path IS NOT NULL AND result_path <> '' AND deleted_at IS NULL
 `;

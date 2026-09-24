@@ -1,5 +1,7 @@
 import { join, resolve } from "path";
 
+import { resolveConfiguredPath } from "../../common/desktop/data-path";
+
 export const VIDEO_PIPELINE_DIR = join("tools", "video-pipeline");
 export const VOICE_SAMPLES_DIR = join(VIDEO_PIPELINE_DIR, "voice");
 
@@ -22,8 +24,23 @@ function resolveAudioDataRoot(): string {
 
 export const AUDIO_DATA_ROOT = resolveAudioDataRoot();
 export const AUDIO_CLONE_UPLOAD_DIR = join(AUDIO_DATA_ROOT, "audio-clone");
-export const AUDIO_OUTPUT_DIR = join(AUDIO_DATA_ROOT, "audio-tts");
 export const AUDIO_PREVIEW_CACHE_DIR = join(AUDIO_DATA_ROOT, "audio-previews");
+
+/**
+ * Thư mục xuất WAV khi tạo giọng trên page Voice.
+ * Runtime `AUDIO_WORK_ROOT` (đọc lúc generate, không cache lúc boot).
+ * Mặc định: `{AUDIO_DATA_ROOT}/audio-tts`.
+ */
+export function resolveAudioOutputDir(): string {
+  const configured = process.env.AUDIO_WORK_ROOT?.trim();
+  if (configured) {
+    return resolveConfiguredPath(configured, "uploads/audio-tts");
+  }
+  return join(resolveAudioDataRoot(), "audio-tts");
+}
+
+/** @deprecated Dùng resolveAudioOutputDir() — giá trị lúc import module, không theo runtime. */
+export const AUDIO_OUTPUT_DIR = join(AUDIO_DATA_ROOT, "audio-tts");
 
 /** Voice mẫu đóng gói cùng BE (`tools/video-pipeline/voice`). */
 export function resolveBundledVoiceSamplesDir(): string {

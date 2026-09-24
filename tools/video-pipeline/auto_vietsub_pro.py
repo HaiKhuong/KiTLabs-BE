@@ -59,13 +59,14 @@ from subtitle.voice_sync import (
     resolve_effective_tail_pad_ms,
 )
 from subtitle.audio_segment_cut import (
-    build_output_ranges,
     build_step7c_segment_cut_command,
+    get_deleted_output_windows,
     needs_audio_segment_cut,
     parse_audio_segments_json,
 )
 from subtitle.logo_motion import (
     build_logo_overlay_filter,
+    build_overlay_text_overlay_filter,
     normalize_logo_motion,
     normalize_overlay_text_motion,
 )
@@ -187,13 +188,20 @@ def _resolve_work_root_env(var_name: str, fallback: str) -> Path:
     return Path(fallback).expanduser().resolve()
 
 
+def _current_work_roots() -> tuple[Path, Path]:
+    """Output folder from TRANSLATE_WORK_ROOT. Desktop: all steps write there (no AppData staging split)."""
+    output = _resolve_work_root_env("TRANSLATE_WORK_ROOT", _DEFAULT_WORK_OUTPUT_ROOT)
+    staging = _resolve_work_root_env(
+        "TRANSLATE_WORK_STAGING_ROOT",
+        os.getenv("TRANSLATE_WORK_ROOT") or _DEFAULT_WORK_OUTPUT_ROOT,
+    )
+    if (os.getenv("KITLABS_DESKTOP") or "").strip() == "1":
+        staging = output
+    return output, staging
+
+
 # Kết quả cuối (deliverables) — logic cũ, thường /mnt/c trên WSL.
-WORK_OUTPUT_ROOT = _resolve_work_root_env("TRANSLATE_WORK_ROOT", _DEFAULT_WORK_OUTPUT_ROOT)
-# Workspace xử lý (log, file tạm) — WSL: đặt /home/... để tránh /mnt/c.
-WORK_STAGING_ROOT = _resolve_work_root_env(
-    "TRANSLATE_WORK_STAGING_ROOT",
-    os.getenv("TRANSLATE_WORK_ROOT") or _DEFAULT_WORK_OUTPUT_ROOT,
-)
+WORK_OUTPUT_ROOT, WORK_STAGING_ROOT = _current_work_roots()
 
 WORK_NAME = "default"
 WORK_OUTPUT_DIR = WORK_OUTPUT_ROOT / WORK_NAME
@@ -1824,17 +1832,32 @@ def _overlay_scale_width(ratio, fallback_px, ref_w):
     return max(16, int(fallback_px))
 
 
-def _append_image_overlays(cur_v, fc, logo_slot, overlay_text_slot, ref_w, out_pad="[vout]"):
+def _append_image_overlays(
+    cur_v, fc, logo_slot, overlay_text_slot, ref_w, out_pad="[vout]", ref_h=None, overlay_text_path=None
+):
     """Ticker first (motion), then static logo on top."""
     if overlay_text_slot is not None:
         ot_w = _overlay_scale_width(OVERLAY_TEXT_WIDTH_RATIO, 480, ref_w)
+        ot_h = max(1, int(round(ot_w / 4)))
+        src_path = overlay_text_path or OVERLAY_TEXT_FILE
+        try:
+            from PIL import Image
+
+            with Image.open(str(src_path)) as im:
+                nw, nh = im.size
+            if nw > 0 and nh > 0:
+                ot_h = max(1, int(round(ot_w * nh / nw)))
+        except Exception:
+            pass
         fc.append(
             f"[{overlay_text_slot}:v]format=rgba,scale={ot_w}:-1,"
             f"colorchannelmixer=aa={float(OVERLAY_TEXT_OPACITY):.4f}[otxt]"
         )
         next_pad = "[votxt]" if logo_slot is not None else out_pad
+        frame_w = int(ref_w) if ref_w else None
+        frame_h = int(ref_h) if ref_h else None
         fc.append(
-            build_logo_overlay_filter(
+            build_overlay_text_overlay_filter(
                 cur_v,
                 "[otxt]",
                 next_pad,
@@ -1842,6 +1865,10 @@ def _append_image_overlays(cur_v, fc, logo_slot, overlay_text_slot, ref_w, out_p
                 OVERLAY_TEXT_SPEED,
                 0,
                 int(OVERLAY_TEXT_MARGIN_Y),
+                frame_w=frame_w,
+                frame_h=frame_h,
+                overlay_w=ot_w if frame_w and frame_h else None,
+                overlay_h=ot_h if frame_w and frame_h else None,
             )
         )
         cur_v = next_pad
@@ -1867,7 +1894,7 @@ def _append_image_overlays(cur_v, fc, logo_slot, overlay_text_slot, ref_w, out_p
 
 
 def build_step6_render_command(
-    video_path, out_path, subtitle_filter, use_gpu, logo_path=None, overlay_text_path=None, video_width=None
+    video_path, out_path, subtitle_filter, use_gpu, logo_path=None, overlay_text_path=None, video_width=None, video_height=None
 ):
     input_args = ["-i", str(video_path)]
     has_img = logo_path is not None or overlay_text_path is not None
@@ -1897,7 +1924,13 @@ def build_step6_render_command(
             logo_slot = next_i
         overlay_filters = []
         _append_image_overlays(
-            "[vsub]", overlay_filters, logo_slot, overlay_text_slot, video_width
+            "[vsub]",
+            overlay_filters,
+            logo_slot,
+            overlay_text_slot,
+            video_width,
+            ref_h=video_height,
+            overlay_text_path=overlay_text_path,
         )
         filter_arg_key = "-filter_complex"
         filter_arg_value = f"{filter_arg_value};{';'.join(overlay_filters)}"
@@ -3362,7 +3395,7 @@ def step7_merge_outro(main_video_path):
 
 
 def step7c_segment_cut(main_video_path):
-    """Step7c: trim+concat kept segments on finalized *_vs_tm*.mp4 (post unified render)."""
+    """Step7c: mute+black deleted ranges on *_vs_tm*.mp4, keep duration for SRT/voice."""
     output_duration_ms = get_media_duration_ms(main_video_path)
     if not output_duration_ms:
         log("Step7c: cannot read output duration — skip segment cut.")
@@ -3377,17 +3410,18 @@ def step7c_segment_cut(main_video_path):
     if not needs_audio_segment_cut(
         segments, source_duration_sec, PREPROCESS_SPEED, SPEED_VIDEO
     ):
-        log("Step7c: no segment cut needed — skip.")
+        log("Step7c: no deleted ranges — skip.")
         return main_video_path
 
-    ranges = build_output_ranges(
+    windows = get_deleted_output_windows(
         segments,
         PREPROCESS_SPEED,
         SPEED_VIDEO,
         output_duration_sec,
     )
-    if not ranges:
-        raise RuntimeError("Step7c: all segments deleted — nothing to export.")
+    if not windows:
+        log("Step7c: deleted ranges too short — skip.")
+        return main_video_path
 
     base_out = Path(main_video_path).resolve()
     part = base_out.with_suffix(".part.mp4")
@@ -3396,7 +3430,7 @@ def step7c_segment_cut(main_video_path):
     common = dict(
         video_path=str(base_out),
         part_path=str(part),
-        ranges=ranges,
+        ranges=windows,
         has_audio=has_audio,
         ffmpeg_bin=FFMPEG_BIN,
         output_metadata_args=meta,
@@ -3408,7 +3442,7 @@ def step7c_segment_cut(main_video_path):
         video_encode_args=ffmpeg_video_encode_args(True),
     )
     try:
-        run_command(gpu_cmd, "Step7c segment cut (GPU)")
+        run_command(gpu_cmd, "Step7c keep-duration mute (GPU)")
     except Exception as e:
         log(f"Step7c: GPU failed → CPU fallback: {e}")
         cpu_cmd = build_step7c_segment_cut_command(
@@ -3416,7 +3450,7 @@ def step7c_segment_cut(main_video_path):
             use_gpu=False,
             video_encode_args=ffmpeg_video_encode_args(False),
         )
-        run_command(cpu_cmd, "Step7c segment cut (CPU)")
+        run_command(cpu_cmd, "Step7c keep-duration mute (CPU)")
 
     try:
         os.replace(part, base_out)
@@ -3426,9 +3460,9 @@ def step7c_segment_cut(main_video_path):
         raise
 
     if not file_ready(base_out):
-        raise RuntimeError("Step7c segment cut output is missing or empty.")
+        raise RuntimeError("Step7c keep-duration mute output is missing or empty.")
 
-    log(f"Step7c: segment cut applied ({len(ranges)} kept ranges) → {base_out}")
+    log(f"Step7c: muted {len(windows)} deleted range(s), duration kept → {base_out}")
     return base_out
 
 
@@ -3529,9 +3563,16 @@ def build_unified_render_command(
 
     # Overlay text (motion) then static logo
     if overlay_text_path or logo_path:
-        ref_w = source_wh[0] if source_wh else 1920
+        ref_w = int(target_wh[0]) if (apply_resize and target_wh) else (source_wh[0] if source_wh else 1920)
+        ref_h = int(target_wh[1]) if (apply_resize and target_wh) else (source_wh[1] if source_wh else 1080)
         cur_v = _append_image_overlays(
-            cur_v, fc, logo_slot, overlay_text_slot, ref_w
+            cur_v,
+            fc,
+            logo_slot,
+            overlay_text_slot,
+            ref_w,
+            ref_h=ref_h,
+            overlay_text_path=overlay_text_path,
         )
 
     # Apply playback speed after subtitle burn (main video only; outro stays native speed).
@@ -3801,11 +3842,12 @@ def step6_render(video_path, ass_path):
     probe_wh = None
     need_probe_wh = (
         STEP6_VISUAL_TRANSFORM_ENABLED and float(STEP6_ZOOM_PERCENT) > 0.01
-    ) or LOGO_WIDTH_RATIO > 0
+    ) or LOGO_WIDTH_RATIO > 0 or OVERLAY_TEXT_ENABLED
     if need_probe_wh:
         probe_wh = get_ffprobe_video_dimensions(video_path)
     subtitle_filter = build_subtitle_filter(ass_path, probe_wh)
     video_width = probe_wh[0] if probe_wh else None
+    video_height = probe_wh[1] if probe_wh else None
     logo_path = _resolve_optional_image(LOGO_ENABLED, LOGO_FILE)
     overlay_text_path = _resolve_optional_image(OVERLAY_TEXT_ENABLED, OVERLAY_TEXT_FILE)
 
@@ -3817,6 +3859,7 @@ def step6_render(video_path, ass_path):
         logo_path=logo_path,
         overlay_text_path=overlay_text_path,
         video_width=video_width,
+        video_height=video_height,
     )
     try:
         run_command(gpu_cmd, "Render ASS subtitles (GPU)")
@@ -3830,6 +3873,7 @@ def step6_render(video_path, ass_path):
             logo_path=logo_path,
             overlay_text_path=overlay_text_path,
             video_width=video_width,
+            video_height=video_height,
         )
         run_command(cpu_cmd, "Render ASS subtitles (CPU fallback)")
     return out
@@ -5106,6 +5150,22 @@ def _cleanup_vse_artifacts_after_step7():
         log(f"Step7 cleanup: đã xóa step1_vse ({path}).")
 
 
+def _cleanup_voice_wav_after_step7():
+    """Sau Step7 xong: xóa videos/{WORK_NAME}_voice.wav — TTS đã mux vào video cuối."""
+    voice_path = VIDEO_DIR / f"{WORK_NAME}_voice.wav"
+    if not voice_path.is_file():
+        return
+    try:
+        voice_path.unlink()
+    except OSError as exc:
+        log(f"Step7 cleanup: không xóa được {voice_path.name}: {exc}")
+        return
+    if voice_path.exists():
+        log(f"Step7 cleanup: không xóa hết được {voice_path}")
+        return
+    log(f"Step7 cleanup: đã xóa {voice_path.name}")
+
+
 def _run_step6_and_finalize(
     ass,
     tm_video,
@@ -5137,6 +5197,7 @@ def _run_step6_and_finalize(
     _cleanup_easyocr_artifacts_after_step7()
     _cleanup_paddleocr_artifacts_after_step7()
     _cleanup_vse_artifacts_after_step7()
+    _cleanup_voice_wav_after_step7()
     done_path = publish_deliverables(preferred=final) or final
     log(f"DONE: {done_path}")
     return done_path
@@ -5147,9 +5208,11 @@ def work_roots_use_staging_split() -> bool:
 
 
 def _init_work_paths(work_name: str) -> None:
-    global WORK_NAME, WORK_OUTPUT_DIR, WORK_STAGING_DIR, WORK_DIR
+    global WORK_NAME, WORK_OUTPUT_ROOT, WORK_STAGING_ROOT
+    global WORK_OUTPUT_DIR, WORK_STAGING_DIR, WORK_DIR
     global VIDEO_DIR, SUBTITLE_DIR, LOG_DIR, LOG_PATH
 
+    WORK_OUTPUT_ROOT, WORK_STAGING_ROOT = _current_work_roots()
     WORK_NAME = work_name
     WORK_OUTPUT_DIR = WORK_OUTPUT_ROOT / work_name
     WORK_STAGING_DIR = WORK_STAGING_ROOT / work_name

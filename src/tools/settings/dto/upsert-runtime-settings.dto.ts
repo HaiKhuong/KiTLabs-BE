@@ -1,6 +1,6 @@
-import { IsArray, IsString, ValidateNested } from "class-validator";
-import { ApiProperty } from "@nestjs/swagger";
-import { Type } from "class-transformer";
+import { IsArray, IsBoolean, IsOptional, IsString, ValidateNested } from "class-validator";
+import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
+import { Transform, Type } from "class-transformer";
 
 export class UpsertRuntimeSettingItemDto {
   @ApiProperty()
@@ -10,6 +10,12 @@ export class UpsertRuntimeSettingItemDto {
   @ApiProperty()
   @IsString()
   value!: string;
+
+  @ApiPropertyOptional({ description: "When true, delete a secret even if value is empty" })
+  @IsOptional()
+  @Transform(({ value }) => value === true || value === "true")
+  @IsBoolean()
+  clear?: boolean;
 }
 
 export class UpsertRuntimeSettingsDto {

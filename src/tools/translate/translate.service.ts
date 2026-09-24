@@ -2,7 +2,7 @@ import { BadRequestException, ConflictException, Injectable, NotFoundException }
 import { InjectQueue } from "@nestjs/bullmq";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Queue } from "bullmq";
-import { existsSync, readFileSync, rmSync, statSync, writeFileSync } from "fs";
+import { existsSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "fs";
 import { basename, extname, isAbsolute, join, relative, resolve, sep } from "path";
 import { Repository } from "typeorm";
 
@@ -13,7 +13,7 @@ import { LogsService } from "../logs/logs.service";
 import { NotificationsService } from "../notifications/notifications.service";
 import { User } from "../users/user.entity";
 import { QueueJobStatus } from "../../common/enums/domain.enums";
-import { resolveConfiguredPath } from "../../common/desktop/data-path";
+import { resolveTranslateWorkRoot } from "../../common/desktop/data-path";
 import {
   CANCELLED_BY_USER_MESSAGE,
   type CancelRenderResult,
@@ -82,18 +82,42 @@ export class TranslateService {
       );
     }
 
-    const history = this.translateRepository.create({
-      userId: dto.userId,
-      stepNbr: normalizedSteps,
-      functionUsed,
-      engineConfig: dto.engineConfig ? (dto.engineConfig as any) : null,
-      status: QueueJobStatus.PENDING,
-      cost: estimatedCost.toFixed(2),
-      queueJobId: null,
-      resultPath: null,
-      resultFileName: null,
-      errorMessage: null,
-    });
+    const engineConfig = dto.engineConfig ? ({ ...dto.engineConfig } as Record<string, unknown>) : null;
+    const reusable = engineConfig
+      ? await this.findReusableHistory(dto.userId, engineConfig)
+      : null;
+    if (reusable && (reusable.status === QueueJobStatus.PENDING || reusable.status === QueueJobStatus.RUNNING)) {
+      throw new ConflictException("Video này đang được render. Hủy job cũ trước khi render lại.");
+    }
+
+    if (reusable?.queueJobId) {
+      await discardQueueJob(this.translateQueue, reusable.queueJobId);
+    }
+
+    const history = reusable
+      ? this.translateRepository.merge(reusable, {
+          stepNbr: normalizedSteps,
+          functionUsed,
+          engineConfig: engineConfig as any,
+          status: QueueJobStatus.PENDING,
+          cost: estimatedCost.toFixed(2),
+          queueJobId: null,
+          resultPath: null,
+          resultFileName: null,
+          errorMessage: null,
+        })
+      : this.translateRepository.create({
+          userId: dto.userId,
+          stepNbr: normalizedSteps,
+          functionUsed,
+          engineConfig: engineConfig as any,
+          status: QueueJobStatus.PENDING,
+          cost: estimatedCost.toFixed(2),
+          queueJobId: null,
+          resultPath: null,
+          resultFileName: null,
+          errorMessage: null,
+        });
     const created = await this.translateRepository.save(history);
 
     this.renderProcessRegistry.begin(RenderJobKeys.translate(created.id));
@@ -116,6 +140,18 @@ export class TranslateService {
         functionUsed: saved.functionUsed,
       },
       ip: user.ip,
+    });
+    void this.logsService.logRender({
+      userId: user.id,
+      feature: "translate",
+      historyId: saved.id,
+      displayName: String((saved.engineConfig as Record<string, unknown> | null)?.localVideoPath ?? "translate"),
+      data: {
+        stepNbr: saved.stepNbr,
+        functionUsed: saved.functionUsed,
+        cost: saved.cost,
+        engineConfig: saved.engineConfig,
+      },
     });
     return saved;
   }
@@ -316,11 +352,121 @@ export class TranslateService {
       absolutePath = join(workspaceDir, "videos", `${workName}_vs_tm.mp4`);
     }
 
-    if (!existsSync(absolutePath)) {
+    if (!existsSync(absolutePath) || !statSync(absolutePath).isFile()) {
       throw new NotFoundException(`Artifact not found for type ${type}`);
     }
 
     return { absolutePath, contentType };
+  }
+
+  resolvePlayableVideoPath(history: TranslateHistory): string | null {
+    const candidates: string[] = [];
+    const raw = history.resultPath?.trim() ?? "";
+    if (raw) {
+      try {
+        candidates.push(this.resolveArtifact(raw, "video").absolutePath);
+      } catch {
+        /* try fallbacks below */
+      }
+      candidates.push(raw);
+    }
+    const workDir = this.resolveJobWorkspaceDir(history);
+    if (workDir) {
+      const workName = basename(workDir);
+      candidates.push(
+        join(workDir, "videos", `${workName}_vs_tm.mp4`),
+        join(workDir, "videos", `${workName}_vs_tm_outro.mp4`),
+        join(workDir, `${workName}_vs_tm.mp4`),
+      );
+    }
+    const seen = new Set<string>();
+    for (const candidate of candidates) {
+      const resolved = candidate.trim();
+      if (!resolved || seen.has(resolved)) continue;
+      seen.add(resolved);
+      if (existsSync(resolved) && statSync(resolved).isFile() && extname(resolved).toLowerCase() === ".mp4") {
+        return resolved;
+      }
+    }
+    return null;
+  }
+
+  private resolveWorkNameFromFile(fileName: string): string {
+    const base = basename(String(fileName ?? "").trim());
+    const workName = basename(base, extname(base)).trim();
+    if (!workName || workName === "." || workName === ".." || /[\\/]/.test(workName)) {
+      throw new BadRequestException("fileName is invalid");
+    }
+    return workName;
+  }
+
+  private resolveWorkspaceLocation(fileName: string): { workName: string; workDir: string; exists: boolean } {
+    const workName = this.resolveWorkNameFromFile(fileName);
+    const workDir = join(this.translateWorkRoot(), workName);
+    const exists = existsSync(workDir) && statSync(workDir).isDirectory();
+    return { workName, workDir, exists };
+  }
+
+  statWorkspaceByFileName(fileName: string): { workName: string; workDir: string; exists: boolean } {
+    return this.resolveWorkspaceLocation(fileName);
+  }
+
+  loadWorkspaceByFileName(fileName: string): {
+    workName: string;
+    workDir: string;
+    exists: boolean;
+    zhSrt: string;
+    viSrt: string;
+    voiceIndices: number[];
+  } {
+    const { workName, workDir, exists } = this.resolveWorkspaceLocation(fileName);
+    if (!exists) {
+      throw new NotFoundException(`Không tìm thấy folder render cho file ${workName}`);
+    }
+
+    const readSrt = (type: "zh" | "vi"): string => {
+      const preferred = join(workDir, "subtitles", `${workName}.${type}.srt`);
+      const legacy = join(workDir, "subtitles", `${type}.srt`);
+      const path = existsSync(preferred) ? preferred : existsSync(legacy) ? legacy : null;
+      if (!path) return "";
+      return readFileSync(path, "utf8");
+    };
+
+    const voiceIndices = new Set<number>();
+    const chunkDir = join(workDir, "logs", "tts_chunks");
+    if (existsSync(chunkDir) && statSync(chunkDir).isDirectory()) {
+      for (const name of readdirSync(chunkDir)) {
+        const match = /^(?:part|empty)_(\d{4})\.wav$/i.exec(name);
+        if (!match) continue;
+        voiceIndices.add(Number(match[1]));
+      }
+    }
+
+    return {
+      workName,
+      workDir,
+      exists: true,
+      zhSrt: readSrt("zh"),
+      viSrt: readSrt("vi"),
+      voiceIndices: [...voiceIndices].sort((a, b) => a - b),
+    };
+  }
+
+  resolveCueVoice(fileName: string, index: number): { absolutePath: string; contentType: string } {
+    const workName = this.resolveWorkNameFromFile(fileName);
+    const workDir = join(this.translateWorkRoot(), workName);
+    if (!this.isInsideRoot(this.translateWorkRoot(), workDir)) {
+      throw new BadRequestException("Invalid work folder");
+    }
+    const padded = String(Math.max(0, Math.floor(index))).padStart(4, "0");
+    const chunkDir = join(workDir, "logs", "tts_chunks");
+    const partPath = join(chunkDir, `part_${padded}.wav`);
+    const emptyPath = join(chunkDir, `empty_${padded}.wav`);
+    const absolutePath = existsSync(partPath) ? partPath : emptyPath;
+    if (!existsSync(absolutePath)) {
+      throw new NotFoundException("Chưa có file voice cho dòng này");
+    }
+    return { absolutePath, contentType: "audio/wav" };
   }
 
   private normalizeSteps(stepNbr: number[]): number[] {
@@ -342,10 +488,7 @@ export class TranslateService {
   }
 
   private translateWorkRoot(): string {
-    return resolveConfiguredPath(
-      process.env.TRANSLATE_WORK_STAGING_ROOT?.trim() || process.env.TRANSLATE_WORK_ROOT,
-      "videos",
-    );
+    return resolveTranslateWorkRoot();
   }
 
   private isInsideRoot(root: string, target: string): boolean {
@@ -370,7 +513,8 @@ export class TranslateService {
   }
 
   async readRuntimeLog(input: {
-    translateHistoryId: string;
+    translateHistoryId?: string;
+    fileName?: string;
     tailLines?: number;
   }): Promise<{
     exists: boolean;
@@ -379,16 +523,35 @@ export class TranslateService {
     content: string;
   }> {
     const historyId = String(input.translateHistoryId || "").trim();
-    if (!historyId) {
-      throw new BadRequestException("translateHistoryId is required");
+    const fileName = String(input.fileName || "").trim();
+    if (!historyId && !fileName) {
+      throw new BadRequestException("translateHistoryId or fileName is required");
     }
 
-    const history = await this.getById(historyId);
-    if (!history) {
-      throw new NotFoundException(`Translate history ${historyId} not found`);
+    let logPath: string;
+    if (historyId) {
+      const history = await this.getById(historyId);
+      if (!history) {
+        throw new NotFoundException(`Translate history ${historyId} not found`);
+      }
+      logPath = this.resolveRuntimeLogPath(history);
+    } else {
+      const { workDir } = this.resolveWorkspaceLocation(fileName);
+      logPath = join(workDir, "logs", "pipeline.log");
     }
 
-    const logPath = this.resolveRuntimeLogPath(history);
+    return this.readPipelineLogFile(logPath, input.tailLines);
+  }
+
+  private readPipelineLogFile(
+    logPath: string,
+    tailLinesRaw?: number,
+  ): {
+    exists: boolean;
+    logPath: string;
+    updatedAt: string | null;
+    content: string;
+  } {
     const publicLogPath = this.toPublicWorkspacePath(logPath);
     if (!existsSync(logPath)) {
       return {
@@ -399,7 +562,7 @@ export class TranslateService {
       };
     }
 
-    const tailLines = this.normalizeTailLines(input.tailLines);
+    const tailLines = this.normalizeTailLines(tailLinesRaw);
     const text = readFileSync(logPath, "utf8");
     const content = this.tailTextByLines(text, tailLines);
     const stats = statSync(logPath);
@@ -443,10 +606,7 @@ export class TranslateService {
       throw new BadRequestException("Cannot resolve runtime log path: engineConfig.localVideoPath is missing");
     }
 
-    const workRoot = resolveConfiguredPath(
-      process.env.TRANSLATE_WORK_STAGING_ROOT?.trim() || process.env.TRANSLATE_WORK_ROOT,
-      "videos",
-    );
+    const workRoot = resolveTranslateWorkRoot();
     const workName = basename(resolve(localPath.trim()), extname(resolve(localPath.trim())));
     return join(workRoot, workName, "logs", "pipeline.log");
   }
@@ -554,5 +714,47 @@ export class TranslateService {
       }
     }
     return undefined;
+  }
+
+  private normalizeFsPath(raw: string): string {
+    return resolve(raw.trim()).replaceAll("\\", "/").toLowerCase();
+  }
+
+  private expectedTranslateResultName(localVideoPath: string): string {
+    const abs = resolve(localVideoPath.trim());
+    return `${basename(abs, extname(abs))}_vs_tm.mp4`.toLowerCase();
+  }
+
+  private async findReusableHistory(
+    userId: string,
+    engineConfig: Record<string, unknown>,
+  ): Promise<TranslateHistory | null> {
+    const localPathRaw = this.pickConfigValue(engineConfig, ["localVideoPath", "local_video_path"]);
+    if (typeof localPathRaw !== "string" || !localPathRaw.trim()) {
+      return null;
+    }
+    const normPath = this.normalizeFsPath(localPathRaw);
+    const expectedName = this.expectedTranslateResultName(localPathRaw);
+    const sourceName = basename(resolve(localPathRaw.trim())).toLowerCase();
+
+    const rows = await this.translateRepository
+      .createQueryBuilder("h")
+      .where("h.user_id = :userId", { userId })
+      .andWhere("h.deleted_at IS NULL")
+      .andWhere(
+        `
+        LOWER(REPLACE(COALESCE(h.engine_config->>'localVideoPath', h.engine_config->>'local_video_path', ''), chr(92), '/')) = :normPath
+        AND (
+          LOWER(COALESCE(h.result_file_name, '')) = :expectedName
+          OR COALESCE(h.result_file_name, '') = ''
+          OR LOWER(COALESCE(h.result_file_name, '')) = :sourceName
+        )
+        `,
+        { normPath, expectedName, sourceName },
+      )
+      .orderBy("h.updated_at", "DESC")
+      .getMany();
+
+    return rows[0] ?? null;
   }
 }

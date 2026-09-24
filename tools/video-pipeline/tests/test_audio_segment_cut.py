@@ -1,4 +1,4 @@
-"""Unit tests for subtitle/audio_segment_cut.py (Step7c)."""
+"""Unit tests for subtitle/audio_segment_cut.py (Step7c keep-duration mute)."""
 
 from __future__ import annotations
 
@@ -13,8 +13,8 @@ if str(_ROOT) not in sys.path:
 
 from subtitle.audio_segment_cut import (  # noqa: E402
     AudioSegment,
-    build_output_ranges,
     build_step7c_filter_complex,
+    get_deleted_output_windows,
     map_source_time_to_output,
     needs_audio_segment_cut,
     parse_audio_segments_json,
@@ -54,30 +54,46 @@ class TestNeedsAudioSegmentCut(unittest.TestCase):
         ]
         self.assertTrue(needs_audio_segment_cut(segments, 10.0, 1.0, 1.0))
 
-    def test_cut_when_multiple_active(self):
+    def test_skip_when_multiple_active_no_deleted(self):
         segments = [
             AudioSegment("a", 0.0, 5.0, False),
             AudioSegment("b", 5.0, 10.0, False),
         ]
-        self.assertTrue(needs_audio_segment_cut(segments, 10.0, 1.0, 1.0))
+        self.assertFalse(needs_audio_segment_cut(segments, 10.0, 1.0, 1.0))
 
 
-class TestBuildOutputRanges(unittest.TestCase):
-    def test_maps_and_filters_deleted(self):
+class TestDeletedWindows(unittest.TestCase):
+    def test_maps_deleted_only_and_merges(self):
         segments = [
             AudioSegment("a", 0.0, 6.0, False),
             AudioSegment("b", 6.0, 12.0, True),
             AudioSegment("c", 12.0, 20.0, False),
         ]
-        ranges = build_output_ranges(segments, 2.0, 0.5, 20.0)
-        self.assertEqual(ranges, [(0.0, 6.0), (12.0, 20.0)])
+        windows = get_deleted_output_windows(segments, 2.0, 0.5, 20.0)
+        self.assertEqual(windows, [(6.0, 12.0)])
+
+    def test_all_deleted_keeps_full_span(self):
+        segments = [AudioSegment("a", 0.0, 10.0, True)]
+        windows = get_deleted_output_windows(segments, 1.0, 1.0, 10.0)
+        self.assertEqual(windows, [(0.0, 10.0)])
 
 
 class TestFilterComplex(unittest.TestCase):
-    def test_builds_concat_with_audio(self):
+    def test_builds_keep_duration_mute_with_audio(self):
         fc = build_step7c_filter_complex([(0.0, 2.0), (4.0, 6.0)], True)
-        self.assertIn("concat=n=2:v=1:a=1[outv][outa]", fc)
-        self.assertIn("trim=start=0.000:end=2.000", fc)
+        self.assertNotIn("concat=", fc)
+        self.assertNotIn("trim=", fc)
+        self.assertIn("eq=brightness=-1", fc)
+        self.assertIn("volume=0", fc)
+        self.assertIn("gte(t,0.000)*lte(t,2.000)", fc)
+        self.assertIn("gte(t,4.000)*lte(t,6.000)", fc)
+        self.assertIn("[outv]", fc)
+        self.assertIn("[outa]", fc)
+
+    def test_video_only(self):
+        fc = build_step7c_filter_complex([(1.0, 3.0)], False)
+        self.assertIn("[outv]", fc)
+        self.assertNotIn("[outa]", fc)
 
 
 if __name__ == "__main__":

@@ -31,3 +31,32 @@ export function resolveDataSubdir(...segments: string[]): string {
   }
   return join(process.cwd(), ...segments);
 }
+
+/**
+ * Folder for every translate step (logs, srt, video, Open Folder).
+ * Runtime "Translate work folder" (`TRANSLATE_WORK_ROOT`) wins over the desktop staging default.
+ */
+export function resolveTranslateWorkRoot(): string {
+  const output = process.env.TRANSLATE_WORK_ROOT?.trim();
+  const staging = process.env.TRANSLATE_WORK_STAGING_ROOT?.trim();
+  return resolveConfiguredPath(output || staging, "videos");
+}
+
+export function resolveRecapWorkRoot(): string {
+  return resolveConfiguredPath(process.env.RECAP_WORK_ROOT?.trim(), "uploads/recap");
+}
+
+export function resolveShortVideoWorkRoot(): string {
+  return resolveConfiguredPath(process.env.SHORTVIDEO_WORK_ROOT?.trim(), "uploads/shortvideo");
+}
+
+export function resolveWhiteboardWorkRoot(): string {
+  return resolveConfiguredPath(process.env.WHITEBOARD_WORK_ROOT?.trim(), "uploads/whiteboard");
+}
+
+export function resolveNarratoWorkRoot(): string {
+  return resolveConfiguredPath(
+    process.env.NARRATO_WORK_ROOT?.trim() || process.env.RECAP_WORK_ROOT?.trim(),
+    "uploads/narrato",
+  );
+}

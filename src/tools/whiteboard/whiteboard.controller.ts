@@ -125,6 +125,8 @@ export class WhiteboardController {
         userId: { type: "string" },
         nodeId: { type: "string" },
         displayName: { type: "string" },
+        ideaHistoryId: { type: "string" },
+        sceneIndex: { type: "number" },
         image: { type: "string", format: "binary" },
       },
     },

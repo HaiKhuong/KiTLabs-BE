@@ -1,4 +1,4 @@
-import { Column, Entity, JoinColumn, ManyToOne } from "typeorm";
+import { Column, DeleteDateColumn, Entity, JoinColumn, ManyToOne } from "typeorm";
 
 import { BaseEntity } from "../../common/entities/base.entity";
 import { QueueJobStatus } from "../../common/enums/domain.enums";
@@ -47,4 +47,7 @@ export class TranslateHistory extends BaseEntity {
 
   @Column({ type: "varchar", name: "queue_job_id", nullable: true })
   queueJobId!: string | null;
+
+  @DeleteDateColumn({ name: "deleted_at", type: "timestamp", nullable: true })
+  deletedAt!: Date | null;
 }

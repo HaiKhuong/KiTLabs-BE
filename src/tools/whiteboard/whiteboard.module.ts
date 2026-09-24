@@ -3,6 +3,7 @@ import { BullModule } from "@nestjs/bullmq";
 import { TypeOrmModule } from "@nestjs/typeorm";
 
 import { AudioModule } from "../audio/audio.module";
+import { LogsModule } from "../logs/logs.module";
 import { NotificationsModule } from "../notifications/notifications.module";
 import { ToolsRealtimeModule } from "../realtime/tools-realtime.module";
 import { WhiteboardController } from "./whiteboard.controller";
@@ -34,6 +35,7 @@ import { WhiteboardVoiceService } from "./whiteboard-voice.service";
     ToolsRealtimeModule,
     NotificationsModule,
     AudioModule,
+    LogsModule,
   ],
   controllers: [WhiteboardController],
   providers: [

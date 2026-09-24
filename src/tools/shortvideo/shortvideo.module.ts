@@ -3,6 +3,7 @@ import { BullModule } from "@nestjs/bullmq";
 import { TypeOrmModule } from "@nestjs/typeorm";
 
 import { AudioModule } from "../audio/audio.module";
+import { LogsModule } from "../logs/logs.module";
 import { NotificationsModule } from "../notifications/notifications.module";
 import { ToolsRealtimeModule } from "../realtime/tools-realtime.module";
 import { ShortVideoController } from "./shortvideo.controller";
@@ -18,6 +19,7 @@ import { SHORTVIDEO_QUEUE_NAME, ShortVideoService } from "./shortvideo.service";
     ToolsRealtimeModule,
     AudioModule,
     NotificationsModule,
+    LogsModule,
   ],
   controllers: [ShortVideoController],
   providers: [ShortVideoService, ShortVideoProcessor, ShortVideoGeminiService],

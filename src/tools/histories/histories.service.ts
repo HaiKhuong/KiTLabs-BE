@@ -1,11 +1,12 @@
-import { BadRequestException, Injectable } from "@nestjs/common";
+import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
 import { InjectDataSource } from "@nestjs/typeorm";
-import { existsSync } from "fs";
-import { basename, join } from "path";
+import { existsSync, statSync } from "fs";
+import { basename, dirname, extname, join } from "path";
 import { DataSource } from "typeorm";
 
-import { resolveConfiguredPath } from "../../common/desktop/data-path";
+import { resolveTranslateWorkRoot } from "../../common/desktop/data-path";
 import {
+  HISTORY_SOFT_DELETE_TABLES,
   UNIFIED_HISTORY_DEFAULT_LIMIT,
   UNIFIED_HISTORY_MAX_LIMIT,
   UNIFIED_HISTORY_SOURCES,
@@ -23,6 +24,7 @@ export type UnifiedHistoryItemDto = {
   mediaKind: UnifiedHistoryMediaKind;
   playable: boolean;
   playUrl: string | null;
+  folderPath: string | null;
   previewText: string | null;
 };
 
@@ -97,6 +99,37 @@ export class HistoriesService {
     };
   }
 
+  async softDeleteHistory(userId: string, source: string, id: string): Promise<{ deleted: true }> {
+    const trimmedUserId = userId?.trim();
+    const trimmedId = id?.trim();
+    if (!trimmedUserId) {
+      throw new BadRequestException("userId is required");
+    }
+    if (!trimmedId) {
+      throw new BadRequestException("id is required");
+    }
+    const sourceKey = this.resolveSourceFilter(source);
+    if (sourceKey === "all") {
+      throw new BadRequestException("source is required");
+    }
+
+    const tables = HISTORY_SOFT_DELETE_TABLES[sourceKey];
+    for (const table of tables) {
+      const updated = await this.dataSource.query<{ id: string }[]>(
+        `UPDATE "${table}"
+         SET deleted_at = NOW()
+         WHERE id = $1::uuid AND user_id = $2::uuid AND deleted_at IS NULL
+         RETURNING id`,
+        [trimmedId, trimmedUserId],
+      );
+      if (Array.isArray(updated) && updated.length > 0) {
+        return { deleted: true };
+      }
+    }
+
+    throw new NotFoundException("History not found");
+  }
+
   private resolveSourceFilter(raw: string): "all" | UnifiedHistorySource {
     const key = String(raw ?? "all").trim();
     if (key === "all" || !key) return "all";
@@ -114,10 +147,7 @@ export class HistoriesService {
     if (existsSync(trimmed)) return trimmed;
 
     const slash = trimmed.replaceAll("\\", "/");
-    const workRoot = resolveConfiguredPath(
-      process.env.TRANSLATE_WORK_STAGING_ROOT?.trim() || process.env.TRANSLATE_WORK_ROOT,
-      "videos",
-    );
+    const workRoot = resolveTranslateWorkRoot();
     const workspaceMatch = slash.match(/\/workspace\/([^/]+)(\/.*)?$/i);
     if (workspaceMatch?.[1]) {
       const restParts = (workspaceMatch[2] || "").split("/").filter(Boolean);
@@ -137,12 +167,42 @@ export class HistoriesService {
     return trimmed;
   }
 
+  private isMp4File(path: string): boolean {
+    return Boolean(path) && existsSync(path) && statSync(path).isFile() && extname(path).toLowerCase() === ".mp4";
+  }
+
+  private resolveMediaVideoPath(rawPath: string): string {
+    const remapped = this.resolveExistingResultPath(rawPath);
+    if (this.isMp4File(remapped)) return remapped;
+    if (this.isMp4File(rawPath)) return rawPath;
+
+    const anchors = [remapped, rawPath].filter((value) => value.trim().length > 0);
+    for (const anchor of anchors) {
+      const isDir = existsSync(anchor) && statSync(anchor).isDirectory();
+      const dir = isDir ? anchor : dirname(anchor);
+      const workName = basename(dir).toLowerCase() === "videos" ? basename(dirname(dir)) : basename(dir);
+      const stem = basename(anchor, extname(anchor))
+        .replace(/_voice$/i, "")
+        .replace(/_tm$/i, "")
+        .replace(/_vs_tm(_outro)?$/i, "");
+      const names = [`${workName}_vs_tm.mp4`, `${workName}_vs_tm_outro.mp4`, `${stem}_vs_tm.mp4`];
+      const dirs = [dir, join(dir, "videos"), dirname(dir), join(dirname(dir), "videos")];
+      for (const folder of dirs) {
+        for (const name of names) {
+          const candidate = join(folder, name);
+          if (this.isMp4File(candidate)) return candidate;
+        }
+      }
+    }
+    return remapped || rawPath;
+  }
+
   private mapRow(row: UnifiedHistoryRawRow): UnifiedHistoryItemDto {
     const source = row.source as UnifiedHistorySource;
-    const resultPath = this.resolveExistingResultPath(
-      typeof row.result_path === "string" ? row.result_path : "",
-    );
-    const playable = resultPath.length > 0 && existsSync(resultPath);
+    const rawPath = typeof row.result_path === "string" ? row.result_path.trim() : "";
+    const resultPath = source === "media" ? this.resolveMediaVideoPath(rawPath) : this.resolveExistingResultPath(rawPath);
+    const playable =
+      resultPath.length > 0 && existsSync(resultPath) && statSync(resultPath).isFile();
     const mediaKind: UnifiedHistoryMediaKind = source === "voice" ? "audio" : "video";
     const previewText =
       source === "voice" && typeof row.preview_text === "string" ? row.preview_text.trim() : "";
@@ -152,10 +212,7 @@ export class HistoriesService {
     if (playable) {
       switch (artifactKind) {
         case "media":
-          playUrl = `/api/tools/translates/artifact?${new URLSearchParams({
-            resultPath,
-            type: "video",
-          }).toString()}`;
+          playUrl = `/api/tools/translates/histories/${encodeURIComponent(row.id)}/video`;
           break;
         case "voice":
           playUrl = `/api/tools/audio/jobs/${encodeURIComponent(row.id)}/stream`;
@@ -195,6 +252,7 @@ export class HistoriesService {
       mediaKind,
       playable,
       playUrl,
+      folderPath: (resultPath || rawPath) ? dirname(resultPath || rawPath) : null,
       previewText: previewText || null,
     };
   }

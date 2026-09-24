@@ -62,6 +62,7 @@ export class AppConfigService implements OnModuleInit {
         continue;
       }
       process.env[field.code] = stored;
+      this.syncTranslateWorkRoots(field.code, stored);
     }
   }
 
@@ -152,15 +153,32 @@ export class AppConfigService implements OnModuleInit {
     });
   }
 
-  async upsertRuntime(code: string, value: string): Promise<void> {
+  async upsertRuntime(code: string, value: string, options?: { clear?: boolean }): Promise<void> {
     const field = RUNTIME_SETTING_FIELDS.find((f) => f.code === code);
     if (!field) {
       return;
     }
+    const storageCode = this.storageCodeFor(code);
     if (field.kind === "secret" && !value.trim()) {
+      if (!options?.clear) {
+        return;
+      }
+      this.secretCache.delete(storageCode);
+      if (!PLATFORM_SCOPED_SECRET_CODES.has(code)) {
+        delete process.env[code];
+        if (code === "HF_TOKEN") {
+          delete process.env.HUGGING_FACE_HUB_TOKEN;
+          delete process.env.HUGGINGFACE_HUB_TOKEN;
+        }
+      }
+      const existed = await this.settingRepository.findOne({
+        where: { type: RUNTIME_SETTING_TYPE, code: storageCode },
+      });
+      if (existed) {
+        await this.settingRepository.remove(existed);
+      }
       return;
     }
-    const storageCode = this.storageCodeFor(code);
     let stored = value;
     if (field.kind === "secret") {
       stored = encryptSecret(value);
@@ -171,6 +189,7 @@ export class AppConfigService implements OnModuleInit {
       }
     } else {
       process.env[code] = value;
+      this.syncTranslateWorkRoots(code, value);
     }
     const existed = await this.settingRepository.findOne({
       where: { type: RUNTIME_SETTING_TYPE, code: storageCode },
@@ -183,6 +202,14 @@ export class AppConfigService implements OnModuleInit {
     await this.settingRepository.save(
       this.settingRepository.create({ type: RUNTIME_SETTING_TYPE, code: storageCode, value: stored }),
     );
+  }
+
+  /** One UI folder: all translate steps + Open Folder use TRANSLATE_WORK_ROOT (not AppData staging). */
+  private syncTranslateWorkRoots(code: string, value: string): void {
+    if (code !== "TRANSLATE_WORK_ROOT") return;
+    const trimmed = value.trim();
+    if (!trimmed) return;
+    process.env.TRANSLATE_WORK_STAGING_ROOT = trimmed;
   }
 
   isEncryptedRow(value: string): boolean {

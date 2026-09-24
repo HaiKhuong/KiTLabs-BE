@@ -8,7 +8,7 @@ import { basename, extname, join, resolve } from "path";
 import { Not, IsNull, Repository } from "typeorm";
 
 import { QueueJobStatus } from "../../common/enums/domain.enums";
-import { resolveConfiguredPath } from "../../common/desktop/data-path";
+import { resolveWhiteboardWorkRoot } from "../../common/desktop/data-path";
 import {
   CANCELLED_BY_USER_MESSAGE,
   type CancelRenderResult,
@@ -18,6 +18,7 @@ import {
 } from "../../common/process/render-cancel";
 import { RenderProcessRegistry } from "../../common/process/render-process-registry";
 import { NotificationsService } from "../notifications/notifications.service";
+import { LogsService } from "../logs/logs.service";
 import { AnalyzeWhiteboardDto } from "./dto/analyze-whiteboard.dto";
 import { MergeWhiteboardDto } from "./dto/merge-whiteboard.dto";
 import { RenderWhiteboardDto } from "./dto/render-whiteboard.dto";
@@ -55,6 +56,10 @@ export interface WhiteboardEngineConfig {
   cameraZooms?: Array<{ storyboardIndices: number[] }>;
   /** Recent-image ids placed on this scene (copied under assetsDir/selected). */
   selectedRecentIds?: string[];
+  /** whiteboard_idea_histories id — used to overwrite the same project scene/merge. */
+  ideaHistoryId?: string;
+  sceneIndex?: number;
+  kind?: "scene" | "merge";
 }
 
 @Injectable()
@@ -69,6 +74,7 @@ export class WhiteboardService {
     private readonly notificationsService: NotificationsService,
     private readonly recentsService: WhiteboardRecentsService,
     private readonly renderProcessRegistry: RenderProcessRegistry,
+    private readonly logsService: LogsService,
   ) {}
 
   static resolveQueueLockDurationMs(): number {
@@ -79,7 +85,7 @@ export class WhiteboardService {
   }
 
   resolveWorkRoot(): string {
-    return resolveConfiguredPath(process.env.WHITEBOARD_WORK_ROOT, "uploads/whiteboard");
+    return resolveWhiteboardWorkRoot();
   }
 
   prepareWorkDir(id: string): string {
@@ -182,10 +188,46 @@ export class WhiteboardService {
     return { assetsDir, fileName };
   }
 
+  private async findReusableHistory(opts: {
+    userId: string;
+    ideaHistoryId: string;
+    kind: "scene" | "merge";
+    sceneIndex?: number;
+  }): Promise<WhiteboardHistory | null> {
+    const qb = this.repository
+      .createQueryBuilder("h")
+      .where("h.user_id = :userId", { userId: opts.userId })
+      .andWhere("h.engine_config->>'ideaHistoryId' = :ideaHistoryId", {
+        ideaHistoryId: opts.ideaHistoryId,
+      });
+
+    if (opts.kind === "merge") {
+      qb.andWhere("h.engine_config->>'kind' = 'merge'");
+    } else {
+      qb.andWhere("COALESCE(h.engine_config->>'kind', 'scene') <> 'merge'");
+      qb.andWhere("(h.engine_config->>'sceneIndex')::int = :sceneIndex", {
+        sceneIndex: opts.sceneIndex ?? 0,
+      });
+    }
+
+    return qb.orderBy("h.updated_at", "DESC").getOne();
+  }
+
+  private assertHistoryIdleForReuse(row: WhiteboardHistory): void {
+    if (row.status === QueueJobStatus.RUNNING) {
+      throw new ConflictException(
+        "Dự án này đang render — đợi xong hoặc hủy trước khi render lại",
+      );
+    }
+  }
+
   /**
    * Step 1 of the review flow: persist the upload and open a draft row. The draft
    * stays out of the render queue (and out of history) until the reviewer accepts
    * the detected scene and calls `enqueueReviewed`.
+   *
+   * When `ideaHistoryId` + `sceneIndex` are set, reuse the existing scene row so
+   * a re-render of the same project overwrites the previous history.
    */
   async createAnalysisDraft(
     dto: AnalyzeWhiteboardDto,
@@ -197,6 +239,56 @@ export class WhiteboardService {
     const { assetsDir, fileName } = this.saveSourceImage(file);
     const displayName =
       dto.displayName?.trim() || `Whiteboard — ${new Date().toISOString().slice(0, 10)}`;
+    const ideaHistoryId = dto.ideaHistoryId?.trim() || "";
+    const sceneIndex = Number.isFinite(Number(dto.sceneIndex)) ? Number(dto.sceneIndex) : 0;
+    const identityConfig = ideaHistoryId
+      ? { ideaHistoryId, sceneIndex, kind: "scene" as const }
+      : {};
+
+    if (ideaHistoryId) {
+      const existing = await this.findReusableHistory({
+        userId,
+        ideaHistoryId,
+        kind: "scene",
+        sceneIndex,
+      });
+      if (existing) {
+        this.assertHistoryIdleForReuse(existing);
+        await discardQueueJob(this.queue, existing.queueJobId);
+        if (existing.assetsDir && existing.assetsDir !== assetsDir) {
+          try {
+            rmSync(existing.assetsDir, { recursive: true, force: true });
+          } catch {
+            // ignore leftover upload dir
+          }
+        }
+        await this.repository.update(
+          { id: existing.id },
+          {
+            nodeId: dto.nodeId?.trim() || null,
+            displayName,
+            assetsDir,
+            sourceImageFileName: fileName,
+            imageWidth: null,
+            imageHeight: null,
+            sceneJson: null,
+            pathPlan: null,
+            analyzedAt: null,
+            engineConfig: identityConfig as never,
+            status: QueueJobStatus.PENDING,
+            resultPath: null,
+            resultFileName: null,
+            errorMessage: null,
+            queueJobId: null,
+            renderStartedAt: null,
+            renderFinishedAt: null,
+            renderDurationMs: null,
+          } as never,
+        );
+        const reused = await this.repository.findOne({ where: { id: existing.id } });
+        return reused as WhiteboardHistory;
+      }
+    }
 
     const draft = this.repository.create({
       userId,
@@ -205,6 +297,7 @@ export class WhiteboardService {
       assetsDir,
       sourceImageFileName: fileName,
       status: QueueJobStatus.PENDING,
+      engineConfig: Object.keys(identityConfig).length > 0 ? (identityConfig as never) : null,
     } as Partial<WhiteboardHistory>);
 
     return (await this.repository.save(draft)) as WhiteboardHistory;
@@ -359,6 +452,8 @@ export class WhiteboardService {
       );
     }
 
+    await discardQueueJob(this.queue, history.queueJobId);
+
     const patch: Partial<WhiteboardHistory> = {
       status: QueueJobStatus.PENDING,
       resultPath: null,
@@ -369,6 +464,7 @@ export class WhiteboardService {
       renderDurationMs: null,
     };
     if (dto.displayName?.trim()) patch.displayName = dto.displayName.trim();
+    const priorConfig = (history.engineConfig ?? {}) as WhiteboardEngineConfig;
     const nextEngineConfig = {
       ...(history.engineConfig ?? {}),
       ...(dto.engineConfig ?? {}),
@@ -378,6 +474,9 @@ export class WhiteboardService {
         : selectedRecentIds.length > 0
           ? { selectedRecentIds }
           : {}),
+      ...(priorConfig.ideaHistoryId
+        ? { ideaHistoryId: priorConfig.ideaHistoryId, sceneIndex: priorConfig.sceneIndex, kind: priorConfig.kind ?? "scene" }
+        : {}),
     };
     patch.engineConfig = nextEngineConfig as Record<string, unknown>;
     await this.repository.update({ id: analysisId }, patch as never);
@@ -394,6 +493,20 @@ export class WhiteboardService {
     );
 
     const queued = await this.repository.findOne({ where: { id: analysisId } });
+    void this.logsService.logRender({
+      userId,
+      feature: "whiteboard",
+      historyId: analysisId,
+      displayName: queued?.displayName ?? dto.displayName ?? null,
+      data: {
+        kind: "scene",
+        analysisId,
+        objects: dto.objects,
+        engineConfig: queued?.engineConfig ?? nextEngineConfig,
+        imageWidth: queued?.imageWidth ?? history.imageWidth,
+        imageHeight: queued?.imageHeight ?? history.imageHeight,
+      },
+    });
     return queued as WhiteboardHistory;
   }
 
@@ -450,42 +563,108 @@ export class WhiteboardService {
         ? dto.summary.transition
         : ("slide_left" as MergeSlideTransition);
 
-    const draft = this.repository.create({
-      userId,
-      nodeId: null,
-      displayName,
-      assetsDir: null,
-      sourceImageFileName: null,
-      imageWidth: sources[0]?.imageWidth ?? 1920,
-      imageHeight: sources[0]?.imageHeight ?? 1080,
-      sceneJson: {
-        imageWidth: sources[0]?.imageWidth ?? 1920,
-        imageHeight: sources[0]?.imageHeight ?? 1080,
-        objects: [],
-      } as never,
-      analyzedAt: new Date(),
-      engineConfig: {
-        kind: "merge",
-        sourceHistoryIds: historyIds,
-        transitions,
-        ...(summaryEnabled
-          ? {
-              summary: {
-                enabled: true,
-                durationSec: summaryDurationSec,
-                transition: summaryTransition,
-                frames: dto.summary?.frames ?? [],
-              },
-            }
-          : {}),
-      } as never,
-      status: QueueJobStatus.PENDING,
-      resultPath: null,
-      resultFileName: null,
-      errorMessage: null,
-    } as Partial<WhiteboardHistory>);
+    const ideaHistoryId = dto.ideaHistoryId?.trim() || "";
+    const mergeEngineConfig = {
+      kind: "merge" as const,
+      ...(ideaHistoryId ? { ideaHistoryId } : {}),
+      sourceHistoryIds: historyIds,
+      transitions,
+      ...(summaryEnabled
+        ? {
+            summary: {
+              enabled: true,
+              durationSec: summaryDurationSec,
+              transition: summaryTransition,
+              frames: dto.summary?.frames ?? [],
+            },
+          }
+        : {}),
+    };
 
-    const saved = (await this.repository.save(draft)) as WhiteboardHistory;
+    let saved: WhiteboardHistory;
+    if (ideaHistoryId) {
+      const existing = await this.findReusableHistory({
+        userId,
+        ideaHistoryId,
+        kind: "merge",
+      });
+      if (existing) {
+        this.assertHistoryIdleForReuse(existing);
+        await discardQueueJob(this.queue, existing.queueJobId);
+        await this.repository.update(
+          { id: existing.id },
+          {
+            displayName,
+            assetsDir: null,
+            sourceImageFileName: null,
+            imageWidth: sources[0]?.imageWidth ?? 1920,
+            imageHeight: sources[0]?.imageHeight ?? 1080,
+            sceneJson: {
+              imageWidth: sources[0]?.imageWidth ?? 1920,
+              imageHeight: sources[0]?.imageHeight ?? 1080,
+              objects: [],
+            } as never,
+            analyzedAt: new Date(),
+            engineConfig: mergeEngineConfig as never,
+            status: QueueJobStatus.PENDING,
+            resultPath: null,
+            resultFileName: null,
+            errorMessage: null,
+            queueJobId: null,
+            renderStartedAt: null,
+            renderFinishedAt: null,
+            renderDurationMs: null,
+          } as never,
+        );
+        saved = (await this.repository.findOne({ where: { id: existing.id } })) as WhiteboardHistory;
+      } else {
+        saved = (await this.repository.save(
+          this.repository.create({
+            userId,
+            nodeId: null,
+            displayName,
+            assetsDir: null,
+            sourceImageFileName: null,
+            imageWidth: sources[0]?.imageWidth ?? 1920,
+            imageHeight: sources[0]?.imageHeight ?? 1080,
+            sceneJson: {
+              imageWidth: sources[0]?.imageWidth ?? 1920,
+              imageHeight: sources[0]?.imageHeight ?? 1080,
+              objects: [],
+            } as never,
+            analyzedAt: new Date(),
+            engineConfig: mergeEngineConfig as never,
+            status: QueueJobStatus.PENDING,
+            resultPath: null,
+            resultFileName: null,
+            errorMessage: null,
+          } as Partial<WhiteboardHistory>),
+        )) as WhiteboardHistory;
+      }
+    } else {
+      saved = (await this.repository.save(
+        this.repository.create({
+          userId,
+          nodeId: null,
+          displayName,
+          assetsDir: null,
+          sourceImageFileName: null,
+          imageWidth: sources[0]?.imageWidth ?? 1920,
+          imageHeight: sources[0]?.imageHeight ?? 1080,
+          sceneJson: {
+            imageWidth: sources[0]?.imageWidth ?? 1920,
+            imageHeight: sources[0]?.imageHeight ?? 1080,
+            objects: [],
+          } as never,
+          analyzedAt: new Date(),
+          engineConfig: mergeEngineConfig as never,
+          status: QueueJobStatus.PENDING,
+          resultPath: null,
+          resultFileName: null,
+          errorMessage: null,
+        } as Partial<WhiteboardHistory>),
+      )) as WhiteboardHistory;
+    }
 
     if (summaryEnabled && dto.summary?.imageDataUrl) {
       const workDir = this.prepareWorkDir(saved.id);
@@ -523,6 +702,26 @@ export class WhiteboardService {
     );
 
     const queued = await this.repository.findOne({ where: { id: saved.id } });
+    void this.logsService.logRender({
+      userId,
+      feature: "whiteboard",
+      historyId: saved.id,
+      displayName: queued?.displayName ?? displayName,
+      data: {
+        kind: "merge",
+        historyIds,
+        transitions,
+        summary: dto.summary
+          ? {
+              enabled: dto.summary.enabled,
+              durationSec: dto.summary.durationSec,
+              transition: dto.summary.transition,
+              frames: dto.summary.frames,
+            }
+          : null,
+        engineConfig: queued?.engineConfig ?? mergeEngineConfig,
+      },
+    });
     return queued as WhiteboardHistory;
   }
 

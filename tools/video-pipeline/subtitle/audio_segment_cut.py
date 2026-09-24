@@ -1,10 +1,9 @@
-"""Step7c: trim+concat audio/video segments on finalized output."""
+"""Step7c: mute+black deleted ranges on finalized output, keeping duration."""
 
 from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import Any
 
 
 MIN_SEGMENT_SEC = 0.5
@@ -86,84 +85,55 @@ def needs_audio_segment_cut(
     preprocess_speed: float,
     speed_video: float,
 ) -> bool:
-    if not segments:
-        return False
-
-    active = get_active_segments(segments)
-    if not active:
-        return True
-
-    if len(active) > 1:
-        return True
-
-    if any(segment.deleted for segment in segments):
-        return True
-
-    duration = max(0.0, float(source_duration_sec))
-    output_duration = map_source_time_to_output(duration, preprocess_speed, speed_video)
-    only = active[0]
-    out_start = map_source_time_to_output(only.start_sec, preprocess_speed, speed_video)
-    out_end = map_source_time_to_output(only.end_sec, preprocess_speed, speed_video)
-
-    if out_start > MIN_SEGMENT_SEC / 2:
-        return True
-    if abs(out_end - output_duration) > MIN_SEGMENT_SEC / 2:
-        return True
-    return False
+    del source_duration_sec, preprocess_speed, speed_video
+    return any(segment.deleted for segment in segments)
 
 
-def build_output_ranges(
+def get_deleted_output_windows(
     segments: list[AudioSegment],
     preprocess_speed: float,
     speed_video: float,
     output_duration_sec: float,
 ) -> list[tuple[float, float]]:
-    active = get_active_segments(segments)
-    if not active:
-        return []
-
     output_duration = max(0.0, float(output_duration_sec))
-    ranges: list[tuple[float, float]] = []
-    for segment in active:
+    windows: list[tuple[float, float]] = []
+    for segment in segments:
+        if not segment.deleted:
+            continue
         start = map_source_time_to_output(segment.start_sec, preprocess_speed, speed_video)
         end = map_source_time_to_output(segment.end_sec, preprocess_speed, speed_video)
         start = max(0.0, min(output_duration, start))
         end = max(start, min(output_duration, end))
         if end - start >= MIN_SEGMENT_SEC:
-            ranges.append((start, end))
-    return ranges
+            windows.append((start, end))
+
+    windows.sort(key=lambda item: item[0])
+    merged: list[tuple[float, float]] = []
+    for start, end in windows:
+        if not merged or start > merged[-1][1]:
+            merged.append((start, end))
+        else:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+    return merged
+
+
+def _enable_expr(windows: list[tuple[float, float]]) -> str:
+    return "+".join(
+        f"gte(t,{start:.3f})*lte(t,{end:.3f})" for start, end in windows
+    )
 
 
 def build_step7c_filter_complex(
-    ranges: list[tuple[float, float]],
+    windows: list[tuple[float, float]],
     has_audio: bool,
 ) -> str:
-    if not ranges:
-        raise ValueError("No output ranges for Step7c segment cut")
+    if not windows:
+        raise ValueError("No deleted windows for Step7c keep-duration mute")
 
-    parts: list[str] = []
-    concat_inputs: list[str] = []
-
-    for index, (start, end) in enumerate(ranges):
-        v_label = f"v{index}"
-        parts.append(
-            f"[0:v]trim=start={start:.3f}:end={end:.3f},setpts=PTS-STARTPTS[{v_label}]"
-        )
-        if has_audio:
-            a_label = f"a{index}"
-            parts.append(
-                f"[0:a]atrim=start={start:.3f}:end={end:.3f},asetpts=PTS-STARTPTS[{a_label}]"
-            )
-            concat_inputs.append(f"[{v_label}][{a_label}]")
-        else:
-            concat_inputs.append(f"[{v_label}]")
-
-    n = len(ranges)
+    enable = _enable_expr(windows)
+    parts = [f"[0:v]eq=brightness=-1:enable='{enable}'[outv]"]
     if has_audio:
-        parts.append(f"{''.join(concat_inputs)}concat=n={n}:v=1:a=1[outv][outa]")
-    else:
-        parts.append(f"{''.join(concat_inputs)}concat=n={n}:v=1:a=0[outv]")
-
+        parts.append(f"[0:a]volume=0:enable='{enable}'[outa]")
     return ";".join(parts)
 
 
@@ -177,6 +147,7 @@ def build_step7c_segment_cut_command(
     video_encode_args: list[str],
     output_metadata_args: list[str],
 ) -> list[str]:
+    del use_gpu
     filter_complex = build_step7c_filter_complex(ranges, has_audio)
     maps = ["-map", "[outv]"]
     audio_args: list[str] = []

@@ -2,11 +2,12 @@ import { Module } from "@nestjs/common";
 import { TypeOrmModule } from "@nestjs/typeorm";
 
 import { LogsController } from "./logs.controller";
+import { RenderLog } from "./render-log.entity";
 import { UserActionLog } from "./user-action-log.entity";
 import { LogsService } from "./logs.service";
 
 @Module({
-  imports: [TypeOrmModule.forFeature([UserActionLog], "tool")],
+  imports: [TypeOrmModule.forFeature([UserActionLog, RenderLog], "tool")],
   controllers: [LogsController],
   providers: [LogsService],
   exports: [LogsService],
