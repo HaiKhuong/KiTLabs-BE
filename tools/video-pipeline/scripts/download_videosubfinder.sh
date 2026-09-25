@@ -94,8 +94,21 @@ case "${TARGET}" in
     chmod +x VideoSubFinderCli || true
     ;;
   windows)
-    REPO_RAW="https://raw.githubusercontent.com/YaoFANGUK/video-subtitle-extractor/main/backend/subfinder"
-    download "${REPO_RAW}/windows/VideoSubFinderWXW.exe" "VideoSubFinderWXW.exe"
+    REPO_RAW="https://raw.githubusercontent.com/YaoFANGUK/video-subtitle-extractor/main/backend/subfinder/windows"
+    # Full runtime — .exe alone crashes with Windows 0xC0000135 (missing DLL).
+    for f in \
+      VideoSubFinderWXW.exe \
+      avcodec-58.dll avdevice-58.dll avfilter-7.dll avformat-58.dll avutil-56.dll \
+      concrt140.dll cudart64_110.dll finished.wav msvcp140.dll \
+      nppc64_11.dll nppicc64_11.dll nppig64_11.dll \
+      opencv_videoio_ffmpeg430_64.dll opencv_world430.dll postproc-55.dll \
+      previous_video.inf swresample-3.dll swscale-5.dll \
+      vcruntime140.dll vcruntime140_1.dll; do
+      download "${REPO_RAW}/${f}" "${f}"
+    done
+    mkdir -p settings/eng
+    download "${REPO_RAW}/settings/general.cfg" "settings/general.cfg"
+    download "${REPO_RAW}/settings/eng/locale.cfg" "settings/eng/locale.cfg"
     ;;
   *)
     echo "Unknown target: ${TARGET}"

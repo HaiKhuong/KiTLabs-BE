@@ -71,18 +71,7 @@ export class AuthService {
       ip: dto.ip ?? user.ip,
     });
 
-    return {
-      user: {
-        id: user.id,
-        authType: user.authType,
-        userName: user.userName,
-        credit: user.credit,
-        deviceId: user.deviceId,
-        ip: user.ip,
-        mac: user.mac,
-        isActive: user.isActive,
-      },
-    };
+    return this.generateAuthTokens(user);
   }
 
   async refreshToken(refreshToken: string): Promise<Record<string, unknown>> {
@@ -140,6 +129,10 @@ export class AuthService {
         authType: user.authType,
         userName: user.userName,
         credit: user.credit,
+        deviceId: user.deviceId,
+        ip: user.ip,
+        mac: user.mac,
+        isActive: user.isActive,
       },
       accessToken,
       refreshToken,

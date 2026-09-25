@@ -9,7 +9,6 @@ import { AudioService } from "../audio/audio.service";
 import { ToolsRealtimeGateway } from "../realtime/tools-realtime.gateway";
 import { SHORTVIDEO_QUEUE_NAME, ShortVideoService } from "./shortvideo.service";
 import { ShortVideoHistory } from "./shortvideo-history.entity";
-import { killProcessTree } from "../../common/process/kill-process-tree";
 import {
   isRenderCancelledError,
   RenderCancelledError,
@@ -44,10 +43,6 @@ export class ShortVideoProcessor extends WorkerHost {
       process.env.TRANSLATE_PYTHON_BIN ??
       (process.platform === "win32" ? "py" : "python3")
     );
-  }
-
-  private resolveTimeoutMs(): number {
-    return Number(process.env.SHORTVIDEO_CMD_TIMEOUT_MS ?? 1_800_000);
   }
 
   async process(job: Job<{ shortVideoHistoryId: string }>): Promise<void> {
@@ -268,7 +263,6 @@ export class ShortVideoProcessor extends WorkerHost {
   }): Promise<string> {
     const pythonBin = this.resolvePythonBin();
     const scriptDir = dirname(input.scriptPath);
-    const timeoutMs = this.resolveTimeoutMs();
     const args = [
       input.scriptPath,
       "--config",
@@ -296,12 +290,6 @@ export class ShortVideoProcessor extends WorkerHost {
 
       this.renderProcessRegistry.register(RenderJobKeys.shortvideo(input.id), { child });
 
-      const timer = setTimeout(() => {
-        if (settled) return;
-        killProcessTree(child.pid);
-        settleReject(new Error(`ShortVideo pipeline timeout after ${timeoutMs}ms`));
-      }, timeoutMs);
-
       const append = (target: "out" | "err", chunk: Buffer | string) => {
         const text = chunk.toString();
         if (target === "out") {
@@ -326,14 +314,12 @@ export class ShortVideoProcessor extends WorkerHost {
       const settleReject = (err: Error) => {
         if (settled) return;
         settled = true;
-        clearTimeout(timer);
         rejectPromise(err);
       };
 
       const settleResolve = (path: string) => {
         if (settled) return;
         settled = true;
-        clearTimeout(timer);
         resolvePromise(path);
       };
 

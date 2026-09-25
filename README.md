@@ -135,7 +135,6 @@ Translate worker calls Python command from `TranslateProcessor`:
 
 - `TRANSLATE_PYTHON_BIN` (default: `python`)
 - `TRANSLATE_PYTHON_SCRIPT` (recommended: `tools/video-pipeline/auto_vietsub_pro.py`)
-- `TRANSLATE_CMD_TIMEOUT_MS` (default: `600000`)
 
 ### Setup Python video pipeline (Windows)
 

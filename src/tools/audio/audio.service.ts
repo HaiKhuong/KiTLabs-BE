@@ -10,7 +10,6 @@ import { Repository, SelectQueryBuilder } from "typeorm";
 
 import { QueueJobStatus } from "../../common/enums/domain.enums";
 import { pythonSubprocessEnv } from "../../common/desktop/python-path";
-import { killProcessTree } from "../../common/process/kill-process-tree";
 import {
   CANCELLED_BY_USER_MESSAGE,
   type CancelRenderResult,
@@ -165,18 +164,13 @@ export class AudioService {
     };
   }
 
-  private resolveCmdTimeoutMs(): number {
-    return Number(process.env.AUDIO_CMD_TIMEOUT_MS ?? process.env.TRANSLATE_CMD_TIMEOUT_MS ?? 600_000);
-  }
-
-  /** BullMQ lock must outlive the Python TTS subprocess (default 30s is too short). */
+  /** BullMQ lock while the worker runs TTS. Cancel ends the job. */
   static resolveQueueLockDurationMs(): number {
     const explicit = Number(process.env.AUDIO_QUEUE_LOCK_MS ?? 0);
     if (Number.isFinite(explicit) && explicit > 0) {
       return explicit;
     }
-    const cmdTimeout = Number(process.env.AUDIO_CMD_TIMEOUT_MS ?? process.env.TRANSLATE_CMD_TIMEOUT_MS ?? 600_000);
-    return cmdTimeout + 120_000;
+    return 720_000;
   }
 
   requestCancel(audioHistoryId: string): void {
@@ -219,7 +213,6 @@ export class AudioService {
     const outWav = isAbsolute(opts.outWav) ? opts.outWav : resolve(process.cwd(), opts.outWav);
 
     const scriptDir = resolve(process.cwd(), VIDEO_PIPELINE_DIR);
-    const timeoutMs = this.resolveCmdTimeoutMs();
     const engine = this.resolveTtsEngine(opts.ttsEngine);
     const language = opts.language
       ? resolveOmnivoiceLanguageValue(opts.language)
@@ -284,14 +277,6 @@ export class AudioService {
       }
 
       let stderr = "";
-      const timeoutHandle = setTimeout(() => {
-        killProcessTree(child.pid);
-        rejectPromise(new Error(`${engineLabel} TTS timed out after ${timeoutMs}ms`));
-      }, timeoutMs);
-
-      const cleanup = () => {
-        clearTimeout(timeoutHandle);
-      };
 
       child.stderr?.on("data", (buf: Buffer) => {
         stderr += buf.toString("utf8");
@@ -300,11 +285,9 @@ export class AudioService {
         }
       });
       child.on("error", (err) => {
-        cleanup();
         rejectPromise(err);
       });
       child.on("close", (code, signal) => {
-        cleanup();
         if (key && this.renderProcessRegistry.isCancelled(key)) {
           rejectPromise(new RenderCancelledError());
           return;
@@ -353,7 +336,6 @@ export class AudioService {
       throw new Error(`Missing script: ${scriptPath}`);
     }
 
-    const timeoutMs = Math.max(this.resolveCmdTimeoutMs(), 30 * 60_000);
     const engine = this.resolveTtsEngine(opts.ttsEngine);
     const language = resolveOmnivoiceLanguageValue(opts.language);
     const seed = engine === "voxcpm2" ? this.resolveVoxcpm2Seed() : this.resolveOmnivoiceSeed();
@@ -406,14 +388,6 @@ export class AudioService {
       }
 
       let stderr = "";
-      const timeoutHandle = setTimeout(() => {
-        killProcessTree(child.pid);
-        rejectPromise(new Error(`SRT timeline TTS timed out after ${timeoutMs}ms`));
-      }, timeoutMs);
-
-      const cleanup = () => {
-        clearTimeout(timeoutHandle);
-      };
 
       child.stdout?.on("data", (buf: Buffer) => {
         stdout += buf.toString("utf8");
@@ -428,11 +402,9 @@ export class AudioService {
         }
       });
       child.on("error", (err) => {
-        cleanup();
         rejectPromise(err);
       });
       child.on("close", (code, signal) => {
-        cleanup();
         if (key && this.renderProcessRegistry.isCancelled(key)) {
           rejectPromise(new RenderCancelledError());
           return;
@@ -1339,7 +1311,6 @@ export class AudioService {
     }
 
     const engine = this.resolveTtsEngine(opts.ttsEngine);
-    const timeoutMs = Math.max(this.resolveCmdTimeoutMs(), 30 * 60_000);
     const seed = engine === "voxcpm2" ? this.resolveVoxcpm2Seed() : this.resolveOmnivoiceSeed();
     const rawSpeed = Number(opts.speed ?? 1);
     const playbackSpeed = Number.isFinite(rawSpeed) ? Math.min(2, Math.max(0.5, rawSpeed)) : 1;
@@ -1389,10 +1360,6 @@ export class AudioService {
       }
 
       let stderr = "";
-      const timeoutHandle = setTimeout(() => {
-        killProcessTree(child.pid);
-        rejectPromise(new Error(`Voice timeline TTS timed out after ${timeoutMs}ms`));
-      }, timeoutMs);
 
       child.stdout?.on("data", (buf: Buffer) => {
         stdout += buf.toString("utf8");
@@ -1407,11 +1374,9 @@ export class AudioService {
         }
       });
       child.on("error", (err) => {
-        clearTimeout(timeoutHandle);
         rejectPromise(err);
       });
       child.on("close", (code, signal) => {
-        clearTimeout(timeoutHandle);
         if (opts.processKey && this.renderProcessRegistry.isCancelled(opts.processKey)) {
           rejectPromise(new RenderCancelledError());
           return;

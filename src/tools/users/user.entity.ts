@@ -9,6 +9,8 @@ import { Notification } from "../notifications/notification.entity";
 import { TranslateHistory } from "../translate/translate-history.entity";
 import { UserSettingProfile } from "../settings/user-setting-profile.entity";
 import { UserSetting } from "../settings/user-setting.entity";
+import { TikTokAccount } from "../tiktok/tiktok-account.entity";
+import { TikTokVideo } from "../tiktok/tiktok-video.entity";
 
 export enum UserAuthType {
   ACCOUNT = "account",
@@ -67,4 +69,10 @@ export class User extends BaseEntity {
 
   @OneToMany(() => UserSettingProfile, (profile) => profile.user)
   userSettingProfiles!: UserSettingProfile[];
+
+  @OneToMany(() => TikTokAccount, (account) => account.user)
+  tiktokAccounts!: TikTokAccount[];
+
+  @OneToMany(() => TikTokVideo, (video) => video.user)
+  tiktokVideos!: TikTokVideo[];
 }

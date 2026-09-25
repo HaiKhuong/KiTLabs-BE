@@ -167,7 +167,7 @@ export class WhiteboardMergeService {
     this.logger.log(
       `Merging ${inputs.length} clips (T=${transitionSec}s, audio=${useAudio}) → ${outputPath}`,
     );
-    await this.runCommand("ffmpeg", args, Number(process.env.WHITEBOARD_CMD_TIMEOUT_MS ?? 1_800_000), opts.processKey);
+    await this.runCommand("ffmpeg", args, 0, opts.processKey);
     if (!existsSync(outputPath)) {
       throw new BadRequestException("FFmpeg merge không tạo được output");
     }
@@ -245,10 +245,13 @@ export class WhiteboardMergeService {
       }
       let stdout = "";
       let stderr = "";
-      const timer = setTimeout(() => {
-        killProcessTree(child.pid);
-        reject(new Error(`${bin} timed out after ${timeoutMs}ms`));
-      }, timeoutMs);
+      const timer =
+        timeoutMs > 0
+          ? setTimeout(() => {
+              killProcessTree(child.pid);
+              reject(new Error(`${bin} timed out after ${timeoutMs}ms`));
+            }, timeoutMs)
+          : null;
 
       child.stdout.on("data", (chunk: Buffer) => {
         stdout += chunk.toString();
@@ -257,11 +260,11 @@ export class WhiteboardMergeService {
         stderr += chunk.toString();
       });
       child.on("error", (error) => {
-        clearTimeout(timer);
+        if (timer) clearTimeout(timer);
         reject(error);
       });
       child.on("close", (code) => {
-        clearTimeout(timer);
+        if (timer) clearTimeout(timer);
         if (processKey && this.renderProcessRegistry.isCancelled(processKey)) {
           reject(new RenderCancelledError());
           return;

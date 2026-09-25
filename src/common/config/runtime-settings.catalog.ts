@@ -15,6 +15,7 @@ export const SECRET_SETTING_CODES = new Set([
   "GEMINI_API_KEY_VIP",
   "HF_TOKEN",
   "DOUYIN_COOKIE_CONTENT",
+  "TIKTOK_CLIENT_SECRET",
 ]);
 
 /** Stored as `${code}__App` / `${code}__Web` so one Nest can keep both cookies. */
@@ -45,9 +46,7 @@ export const RUNTIME_SETTING_FIELDS: RuntimeSettingField[] = [
     label: "Xóa toàn bộ file khi hủy",
     defaultValue: "true",
   },
-  { code: "TRANSLATE_CMD_TIMEOUT_MS", group: "translate", kind: "number", label: "Translate timeout (ms)", defaultValue: "1200000" },
   { code: "TRANSLATE_WORK_ROOT", group: "translate", kind: "string", label: "Translate work folder", defaultValue: "" },
-  { code: "RECAP_CMD_TIMEOUT_MS", group: "recap", kind: "number", label: "Recap timeout (ms)", defaultValue: "3600000" },
   { code: "RECAP_WORK_ROOT", group: "recap", kind: "string", label: "Recap work folder", defaultValue: "" },
   { code: "RECAP_WHISPER_MODEL", group: "recap", kind: "string", label: "Recap Whisper model", defaultValue: "base" },
   { code: "RECAP_WHISPER_DEVICE", group: "recap", kind: "string", label: "Recap Whisper device", defaultValue: "cpu" },
@@ -60,15 +59,21 @@ export const RUNTIME_SETTING_FIELDS: RuntimeSettingField[] = [
   { code: "RECAP_GEMINI_RETRY_MAX", group: "recap", kind: "number", label: "Recap Gemini retry max", defaultValue: "1" },
   { code: "RECAP_GEMINI_RETRY_DEBOUNCE_SEC", group: "recap", kind: "number", label: "Recap Gemini retry debounce (s)", defaultValue: "3" },
   { code: "RECAP_TRANSCRIPT_MAX_CHARS", group: "recap", kind: "number", label: "Recap transcript max chars", defaultValue: "120000" },
-  { code: "SHORTVIDEO_CMD_TIMEOUT_MS", group: "shortvideo", kind: "number", label: "ShortVideo timeout (ms)", defaultValue: "1800000" },
   { code: "SHORTVIDEO_WORK_ROOT", group: "shortvideo", kind: "string", label: "ShortVideo work folder", defaultValue: "" },
-  { code: "AUDIO_CMD_TIMEOUT_MS", group: "audio", kind: "number", label: "Voice timeout (ms)", defaultValue: "600000" },
   { code: "AUDIO_WORK_ROOT", group: "audio", kind: "string", label: "Voice work folder", defaultValue: "" },
-  { code: "WHITEBOARD_CMD_TIMEOUT_MS", group: "whiteboard", kind: "number", label: "Whiteboard timeout (ms)", defaultValue: "1800000" },
   { code: "WHITEBOARD_WORK_ROOT", group: "whiteboard", kind: "string", label: "Whiteboard work folder", defaultValue: "" },
   { code: "YTDLP_SERVICE_URL", group: "services", kind: "string", label: "yt-dlp service URL", defaultValue: "http://localhost:8100" },
   { code: "DOUYIN_PLAYWRIGHT_SERVICE_URL", group: "services", kind: "string", label: "Playwright service URL", defaultValue: "http://localhost:8101" },
   { code: "DOUYIN_COOKIE_CONTENT", group: "douyin", kind: "secret", label: "Douyin cookies", defaultValue: "" },
+  { code: "TIKTOK_CLIENT_KEY", group: "tiktok", kind: "string", label: "TikTok Client Key", defaultValue: "" },
+  { code: "TIKTOK_CLIENT_SECRET", group: "tiktok", kind: "secret", label: "TikTok Client Secret", defaultValue: "" },
+  {
+    code: "TIKTOK_REDIRECT_URI",
+    group: "tiktok",
+    kind: "string",
+    label: "TikTok Redirect URI",
+    defaultValue: "http://127.0.0.1:13002/api/tiktok/callback",
+  },
   { code: "GEMINI_API_KEY", group: "gemini", kind: "secret", label: "Gemini API key thường (nhiều key: cách nhau dấu phẩy)", defaultValue: "" },
   { code: "GEMINI_API_KEY_VIP", group: "gemini", kind: "secret", label: "Gemini API key VIP (nhiều key: cách nhau dấu phẩy)", defaultValue: "" },
   /** Shared by Cấu hình runtime + Model AI — one settings row, both UIs read/write this code. */

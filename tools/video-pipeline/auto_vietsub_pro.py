@@ -446,11 +446,11 @@ PADDLEOCR_WATERMARK_BLACKLIST = "腾讯视频,优酷,爱奇艺,芒果TV,bilibili
 PADDLEOCR_WATERMARK_MIN_FRAMES = 0  # 0=auto (80% of total scanned frames); >0=fixed threshold
 
 # VSE = VideoSubFinder (frame detect) + PaddleOCR (STEP1_SUBTITLE_SOURCE = "vse")
-# ROI reuse PaddleOCR crop band / h-trim. Native host binary often segfaults → default Docker.
+# ROI reuse PaddleOCR crop band / h-trim. Default native binary; enable Docker on Linux if host segfaults.
 VSE_USE_CUDA = False
 VSE_CPU_CORES = 0  # 0 = auto (cpu_count - 2)
 VSE_BINARY_PATH = ""  # optional override; empty = auto-resolve under subfinder/
-VSE_USE_DOCKER = True  # recommended: docker build -t kitools-videosubfinder tools/video-pipeline/subfinder
+VSE_USE_DOCKER = False  # Windows/macOS: subfinder/windows/VideoSubFinderWXW.exe; Linux: --vse-use-docker on
 VSE_DOCKER_IMAGE = "kitools-videosubfinder"
 VSE_CLEANUP_DEBUG_AFTER_STEP7 = True
 
@@ -4174,7 +4174,7 @@ def parse_cli_args():
         "--vse-use-docker",
         choices=["on", "off"],
         default="on" if VSE_USE_DOCKER else "off",
-        help="Run VideoSubFinder inside Docker image (default on; host binaries often segfault).",
+        help="Run VideoSubFinder inside Docker image (default off; use on Linux if host binary segfaults).",
     )
     parser.add_argument(
         "--vse-docker-image",

@@ -41,6 +41,7 @@ import { VideosModule } from "./tools/videos/videos.module";
 import { ModelsModule } from "./tools/models/models.module";
 import { YouTubeModule } from "./tools/youtube/youtube.module";
 import { HistoriesModule } from "./tools/histories/histories.module";
+import { TikTokModule } from "./tools/tiktok/tiktok.module";
 
 @Module({
   imports: [
@@ -131,6 +132,7 @@ import { HistoriesModule } from "./tools/histories/histories.module";
     ImagesModule,
     VideosModule,
     HistoriesModule,
+    TikTokModule,
   ],
   controllers: [AppController],
   providers: [

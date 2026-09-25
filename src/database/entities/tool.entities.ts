@@ -32,6 +32,8 @@ import {
   Recommendation,
 } from "../../tools/youtube/entities";
 import { AiChatHistory } from "../../tools/youtube/entities/ai-chat-history.entity";
+import { TikTokAccount } from "../../tools/tiktok/tiktok-account.entity";
+import { TikTokVideo } from "../../tools/tiktok/tiktok-video.entity";
 
 export const TOOL_DB_ENTITIES = [
   User,
@@ -66,4 +68,6 @@ export const TOOL_DB_ENTITIES = [
   WhiteboardIdeaHistory,
   WhiteboardSampleImage,
   WhiteboardRecentImage,
+  TikTokAccount,
+  TikTokVideo,
 ];

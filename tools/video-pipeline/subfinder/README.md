@@ -1,8 +1,16 @@
 # VideoSubFinder (VSE Step1)
 
-Host `VideoSubFinderCli` often **segfaults** on modern Ubuntu. Use **Docker** (default).
+Host `VideoSubFinderCli` often **segfaults** on modern Ubuntu. Default is **native binary**; use Docker on Linux if needed (`--vse-use-docker on`).
 
-### 1. Build image (one-time)
+Windows: copy the **entire** `backend/subfinder/windows/` folder from video-subtitle-extractor
+(`.exe` + ffmpeg/opencv/VC runtime DLLs + `settings/`). Copying only `VideoSubFinderWXW.exe`
+fails with exit code `3221225781` (`0xC0000135` missing DLL).
+
+```bash
+bash tools/video-pipeline/scripts/download_videosubfinder.sh windows
+```
+
+### 1. Build image (one-time, Linux only)
 
 ```bash
 cd /home/haikhuong/sources/KiTLabs-BE
@@ -12,7 +20,7 @@ docker run --rm kitools-videosubfinder -h
 
 ### 2. Run VSE from FE
 
-Select **VSE** as Step1 source. Pipeline uses `--vse-use-docker on` by default.
+Select **VSE** as Step1 source. Pipeline uses native VideoSubFinder by default.
 
 ### 3. Diagnose host binary (optional)
 

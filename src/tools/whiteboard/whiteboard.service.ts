@@ -80,8 +80,7 @@ export class WhiteboardService {
   static resolveQueueLockDurationMs(): number {
     const explicit = Number(process.env.WHITEBOARD_QUEUE_LOCK_MS ?? 0);
     if (Number.isFinite(explicit) && explicit > 0) return explicit;
-    const cmdTimeout = Number(process.env.WHITEBOARD_CMD_TIMEOUT_MS ?? 1_800_000);
-    return cmdTimeout + 120_000;
+    return 1_920_000;
   }
 
   resolveWorkRoot(): string {

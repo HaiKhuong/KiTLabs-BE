@@ -56,8 +56,7 @@ export class NarratoService {
   static resolveQueueLockDurationMs(): number {
     const explicit = Number(process.env.NARRATO_QUEUE_LOCK_MS ?? process.env.RECAP_QUEUE_LOCK_MS ?? 0);
     if (Number.isFinite(explicit) && explicit > 0) return explicit;
-    const cmdTimeout = Number(process.env.NARRATO_CMD_TIMEOUT_MS ?? process.env.RECAP_CMD_TIMEOUT_MS ?? 3_600_000);
-    return cmdTimeout + 180_000;
+    return 3_780_000;
   }
 
   private resolveWorkRoot(): string {

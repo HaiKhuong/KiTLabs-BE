@@ -170,10 +170,6 @@ export class WorkflowVoiceService {
     );
   }
 
-  private resolveCmdTimeoutMs(): number {
-    return Number(process.env.VIDEOS_VOICE_CMD_TIMEOUT_MS ?? process.env.AUDIO_CMD_TIMEOUT_MS ?? 600_000);
-  }
-
   private resolveVideoVoiceScript(): string {
     return resolve(process.cwd(), "tools/video-pipeline/video_voice_tts.py");
   }
@@ -186,7 +182,6 @@ export class WorkflowVoiceService {
     const pythonBin = this.resolvePythonBin();
     const scriptPath = this.resolveVideoVoiceScript();
     const scriptDir = resolve(process.cwd(), VIDEO_PIPELINE_DIR);
-    const timeoutMs = this.resolveCmdTimeoutMs();
 
     return new Promise((resolvePromise, rejectPromise) => {
       const child: ChildProcess = spawn(pythonBin, [scriptPath], {
@@ -198,10 +193,6 @@ export class WorkflowVoiceService {
 
       let stdout = "";
       let stderr = "";
-      const timeoutHandle = setTimeout(() => {
-        child.kill("SIGTERM");
-        rejectPromise(new Error(`Video voice TTS timed out after ${timeoutMs}ms`));
-      }, timeoutMs);
 
       child.stdout?.on("data", (buf: Buffer) => {
         stdout += buf.toString("utf8");
@@ -210,11 +201,9 @@ export class WorkflowVoiceService {
         stderr += buf.toString("utf8");
       });
       child.on("error", (err) => {
-        clearTimeout(timeoutHandle);
         rejectPromise(err);
       });
       child.on("close", (code) => {
-        clearTimeout(timeoutHandle);
         if (code !== 0) {
           rejectPromise(new Error(stderr.trim() || `video_voice_tts exited with code ${code}`));
           return;
@@ -236,7 +225,6 @@ export class WorkflowVoiceService {
     const pythonBin = this.resolvePythonBin();
     const scriptPath = this.resolveVideoVoiceMergeScript();
     const scriptDir = resolve(process.cwd(), VIDEO_PIPELINE_DIR);
-    const timeoutMs = this.resolveCmdTimeoutMs();
 
     return new Promise((resolvePromise, rejectPromise) => {
       const child: ChildProcess = spawn(pythonBin, [scriptPath], {
@@ -248,10 +236,6 @@ export class WorkflowVoiceService {
 
       let stdout = "";
       let stderr = "";
-      const timeoutHandle = setTimeout(() => {
-        child.kill("SIGTERM");
-        rejectPromise(new Error(`Video voice merge timed out after ${timeoutMs}ms`));
-      }, timeoutMs);
 
       child.stdout?.on("data", (buf: Buffer) => {
         stdout += buf.toString("utf8");
@@ -260,11 +244,9 @@ export class WorkflowVoiceService {
         stderr += buf.toString("utf8");
       });
       child.on("error", (err) => {
-        clearTimeout(timeoutHandle);
         rejectPromise(err);
       });
       child.on("close", (code) => {
-        clearTimeout(timeoutHandle);
         if (code !== 0) {
           rejectPromise(new Error(stderr.trim() || `video_voice_merge exited with code ${code}`));
           return;

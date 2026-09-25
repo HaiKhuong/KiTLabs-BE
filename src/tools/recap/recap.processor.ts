@@ -8,7 +8,6 @@ import { dirname, isAbsolute, join, resolve } from "path";
 import { ToolsRealtimeGateway } from "../realtime/tools-realtime.gateway";
 import { RECAP_QUEUE_NAME, RecapService } from "./recap.service";
 import { RECAP_STEP_SCRIPTS, type RecapStepId } from "./recap-steps.constants";
-import { killProcessTree } from "../../common/process/kill-process-tree";
 import {
   isRenderCancelledError,
   RenderCancelledError,
@@ -53,10 +52,6 @@ export class RecapProcessor extends WorkerHost {
   private resolveStepScriptPath(step: RecapStepId): string {
     const scriptDir = this.resolveRecapScriptDir();
     return join(scriptDir, RECAP_STEP_SCRIPTS[step]);
-  }
-
-  private resolveTimeoutMs(): number {
-    return Number(process.env.RECAP_CMD_TIMEOUT_MS ?? 3_600_000);
   }
 
   async process(job: Job<{ recapHistoryId: string; step: RecapStepId }>): Promise<void> {
@@ -188,7 +183,6 @@ export class RecapProcessor extends WorkerHost {
   }): Promise<string | undefined> {
     const pythonBin = this.resolvePythonBin();
     const scriptDir = dirname(input.scriptPath);
-    const timeoutMs = this.resolveTimeoutMs();
     const args = [
       input.scriptPath,
       "--video",
@@ -227,12 +221,6 @@ export class RecapProcessor extends WorkerHost {
         `[STEP] ${input.step} — Python pid=${child.pid}`,
       );
 
-      const timer = setTimeout(() => {
-        if (settled) return;
-        killProcessTree(child.pid);
-        settleReject(new Error(`Recap step timeout after ${timeoutMs}ms`));
-      }, timeoutMs);
-
       const append = (target: "out" | "err", chunk: Buffer | string) => {
         const text = chunk.toString();
         if (target === "out") {
@@ -259,14 +247,12 @@ export class RecapProcessor extends WorkerHost {
       const settleReject = (err: Error) => {
         if (settled) return;
         settled = true;
-        clearTimeout(timer);
         rejectPromise(err);
       };
 
       const settleResolve = (path?: string) => {
         if (settled) return;
         settled = true;
-        clearTimeout(timer);
         resolvePromise(path);
       };
 

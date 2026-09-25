@@ -8,7 +8,6 @@ import { dirname, isAbsolute, join, resolve } from "path";
 import { ToolsRealtimeGateway } from "../realtime/tools-realtime.gateway";
 import { NARRATO_QUEUE_NAME, NarratoService } from "./narrato.service";
 import { NARRATO_STEP_SCRIPTS, type NarratoStepId } from "./narrato-steps.constants";
-import { killProcessTree } from "../../common/process/kill-process-tree";
 import {
   isRenderCancelledError,
   RenderCancelledError,
@@ -49,10 +48,6 @@ export class NarratoProcessor extends WorkerHost {
   private resolveScriptDir(): string {
     const raw = process.env.NARRATO_PYTHON_DIR ?? "tools/video-pipeline/narrato";
     return isAbsolute(raw) ? raw : resolve(process.cwd(), raw);
-  }
-
-  private resolveTimeoutMs(): number {
-    return Number(process.env.NARRATO_CMD_TIMEOUT_MS ?? process.env.RECAP_CMD_TIMEOUT_MS ?? 3_600_000);
   }
 
   async process(job: Job<{ narratoHistoryId: string; step: NarratoStepId }>): Promise<void> {
@@ -206,7 +201,6 @@ export class NarratoProcessor extends WorkerHost {
   }): Promise<string | undefined> {
     const pythonBin = this.resolvePythonBin();
     const scriptDir = dirname(input.scriptPath);
-    const timeoutMs = this.resolveTimeoutMs();
     const args = [
       input.scriptPath,
       "--video",
@@ -240,12 +234,6 @@ export class NarratoProcessor extends WorkerHost {
       );
       this.renderProcessRegistry.register(RenderJobKeys.narrato(input.narratoHistoryId), { child });
 
-      const timer = setTimeout(() => {
-        if (settled) return;
-        killProcessTree(child.pid);
-        settleReject(new Error(`Narrato step timeout after ${timeoutMs}ms`));
-      }, timeoutMs);
-
       const append = (target: "out" | "err", chunk: Buffer | string) => {
         const text = chunk.toString();
         if (target === "out") stdoutBuf = (stdoutBuf + text).slice(-MAX_LOG_BUFFER);
@@ -270,14 +258,12 @@ export class NarratoProcessor extends WorkerHost {
       const settleReject = (err: Error) => {
         if (settled) return;
         settled = true;
-        clearTimeout(timer);
         rejectPromise(err);
       };
 
       const settleResolve = (path?: string) => {
         if (settled) return;
         settled = true;
-        clearTimeout(timer);
         resolvePromise(path);
       };
 

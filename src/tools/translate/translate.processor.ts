@@ -9,7 +9,6 @@ import { QueueJobStatus } from "../../common/enums/domain.enums";
 import { TRANSLATE_QUEUE_NAME, TranslateService } from "./translate.service";
 import { ToolsRealtimeGateway } from "../realtime/tools-realtime.gateway";
 import { deleteUploadedSourceVideo } from "../files/files.service";
-import { killProcessTree } from "../../common/process/kill-process-tree";
 import {
   isRenderCancelledError,
   RenderCancelledError,
@@ -600,7 +599,6 @@ export class TranslateProcessor extends WorkerHost {
   }): Promise<string> {
     const pythonBin = process.env.TRANSLATE_PYTHON_BIN ?? (process.platform === "win32" ? "py" : "python3");
     const scriptPath = process.env.TRANSLATE_PYTHON_SCRIPT ?? "tools/video-pipeline/auto_vietsub_pro.py";
-    const timeoutMs = Number(process.env.TRANSLATE_CMD_TIMEOUT_MS ?? 600000);
     const absScriptPath = isAbsolute(scriptPath) ? scriptPath : resolve(scriptPath);
     const scriptDir = dirname(absScriptPath);
     const engineConfig = input.engineConfig ?? {};
@@ -640,10 +638,6 @@ export class TranslateProcessor extends WorkerHost {
 
         let stdout = "";
         let stderr = "";
-        let timeoutHandle: NodeJS.Timeout | null = setTimeout(() => {
-          this.logger.error(`Python process timed out after ${timeoutMs}ms, killing process...`);
-          killProcessTree(child.pid);
-        }, timeoutMs);
 
         const appendChunk = (target: "stdout" | "stderr", chunk: string) => {
           if (target === "stdout") {
@@ -684,19 +678,10 @@ export class TranslateProcessor extends WorkerHost {
         });
 
         child.on("error", (error) => {
-          if (timeoutHandle) {
-            clearTimeout(timeoutHandle);
-            timeoutHandle = null;
-          }
           rejectPromise(error);
         });
 
         child.on("close", (code, signal) => {
-          if (timeoutHandle) {
-            clearTimeout(timeoutHandle);
-            timeoutHandle = null;
-          }
-
           const elapsedMs = Date.now() - startedAt;
           this.logger.log(`Python done code=${code ?? "?"} ${elapsedMs}ms`);
 

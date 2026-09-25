@@ -119,7 +119,7 @@ export class WhiteboardRendererService {
       inputProps,
       browserExecutable,
       cancelSignal,
-      timeoutInMilliseconds: Number(process.env.WHITEBOARD_CMD_TIMEOUT_MS ?? 1_800_000),
+      timeoutInMilliseconds: 24 * 60 * 60 * 1000,
       onProgress: ({ progress }: { progress: number }) => {
         if (this.renderProcessRegistry.isCancelled(RenderJobKeys.whiteboard(input.historyId))) {
           cancel();

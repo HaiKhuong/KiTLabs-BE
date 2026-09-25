@@ -7,7 +7,7 @@ PaddleOCR reads those images and builds a .zh.srt timeline.
 Binary layout (download via scripts/download_videosubfinder.sh):
     tools/video-pipeline/subfinder/
       linux/VideoSubFinderCli(.run)
-      windows/VideoSubFinderWXW.exe
+      windows/VideoSubFinderWXW.exe + bundled DLLs (ffmpeg/opencv/VC runtime)
       macos/VideoSubFinderCli
 """
 
@@ -40,6 +40,16 @@ BUILTIN_SKIP_REGEXES = (
 
 _TIME_NAME_RE = re.compile(r"^(\d+)_(\d+)_(\d+)_(\d+)__")
 
+# Windows STATUS_DLL_NOT_FOUND (0xC0000135) — often only .exe copied without bundled DLLs.
+_WIN_DLL_NOT_FOUND_EXIT = 3221225781
+
+_WINDOWS_VSF_REQUIRED_DLLS = (
+    "opencv_world430.dll",
+    "avcodec-58.dll",
+    "msvcp140.dll",
+    "vcruntime140.dll",
+)
+
 
 def configure_step1_vse(
     *,
@@ -69,7 +79,7 @@ def configure_step1_vse(
     vsf_cpu_cores: int = 0,
     vsf_use_cuda: bool = False,
     vsf_binary_path: str = "",
-    vsf_use_docker: bool = True,
+    vsf_use_docker: bool = False,
     vsf_docker_image: str = "kitools-videosubfinder",
 ) -> None:
     _cfg.clear()
@@ -130,6 +140,48 @@ def _should_skip_merged_text(text: str) -> bool:
     return False
 
 
+def _validate_windows_vsf_runtime(binary: Path) -> None:
+    """Fail fast when only VideoSubFinderWXW.exe was copied without bundled DLLs."""
+    if platform.system() != "Windows":
+        return
+    bin_dir = binary.parent
+    missing = [name for name in _WINDOWS_VSF_REQUIRED_DLLS if not (bin_dir / name).is_file()]
+    if not missing:
+        return
+    raise RuntimeError(
+        "Step1 VSE: VideoSubFinder Windows runtime incomplete — missing DLL(s): "
+        f"{', '.join(missing)}\n"
+        f"  Folder: {bin_dir}\n"
+        "  Copy the entire backend/subfinder/windows/ folder from video-subtitle-extractor "
+        "(not only VideoSubFinderWXW.exe), or run:\n"
+        "    bash tools/video-pipeline/scripts/download_videosubfinder.sh windows"
+    )
+
+
+def _format_vsf_exit_error(code: int, binary: Path | None, tail: str) -> str:
+    msg = f"Step1 VSE: VideoSubFinder failed (code={code}).\n"
+    if code in (4294967295, -1):
+        msg += (
+            "Exit -1 often means an unsupported CLI flag (e.g. --verbose on Windows VideoSubFinderWXW.exe).\n"
+        )
+    if platform.system() == "Windows" and code in (_WIN_DLL_NOT_FOUND_EXIT, -1073741515):
+        bin_dir = binary.parent if binary else None
+        msg += (
+            "Windows exit 0xC0000135 = missing DLL (STATUS_DLL_NOT_FOUND).\n"
+            "Copy the full subfinder/windows package (ffmpeg + opencv + VC runtime DLLs), "
+            "not only VideoSubFinderWXW.exe.\n"
+        )
+        if bin_dir:
+            msg += f"  Expected alongside exe: {bin_dir}\n"
+        msg += (
+            "  Source: video-subtitle-extractor/backend/subfinder/windows/\n"
+            "  Or: bash tools/video-pipeline/scripts/download_videosubfinder.sh windows\n"
+        )
+    if tail.strip():
+        msg += tail
+    return msg
+
+
 def _resolve_vsf_binary() -> Path:
     override = _cfg.get("vsf_binary_path") or ""
     if override:
@@ -143,6 +195,7 @@ def _resolve_vsf_binary() -> Path:
     if system == "Windows":
         candidates = [
             script_dir / "subfinder" / "windows" / "VideoSubFinderWXW.exe",
+            script_dir / "subfinder" / "window" / "VideoSubFinderWXW.exe",
         ]
     elif system == "Darwin":
         candidates = [
@@ -357,10 +410,55 @@ def _run_subprocess_streaming(cmd: list[str], *, cwd: str, env: dict, out_dir: P
     log(f"Step1 VSE: process exit={code} elapsed={elapsed:.1f}s images={imgs}")
     if code != 0:
         tail = "\n".join(line_buf[-30:])
+        binary = None
+        if not _cfg.get("vsf_use_docker"):
+            try:
+                binary = _resolve_vsf_binary()
+            except RuntimeError:
+                pass
         raise RuntimeError(
-            f"Step1 VSE: VideoSubFinder failed (code={code}, {elapsed:.1f}s).\n{tail}"
+            _format_vsf_exit_error(code, binary, tail)
+            + (f"\n(elapsed={elapsed:.1f}s)" if elapsed else "")
         )
     return code
+
+
+def _build_vsf_args(
+    *,
+    top_end: float,
+    bottom_end: float,
+    left_end: float,
+    right_end: float,
+    cpu_count: int,
+    use_cuda: bool,
+    use_docker: bool,
+) -> list[str]:
+    """
+    Build VideoSubFinder CLI args.
+
+    Windows VideoSubFinderWXW.exe (YaoFANGUK) does NOT support --verbose (exit -1).
+    Match video-subtitle-extractor GUI flags on Windows native.
+    eritpchy Docker/Linux CLI accepts --verbose and -ovocv shorthand.
+    """
+    is_win_native = platform.system() == "Windows" and not use_docker
+    args: list[str] = ["-c", "-r"]
+    if use_cuda:
+        args.append("--use_cuda" if is_win_native else "-uc")
+    args += [
+        "-te", f"{top_end:.6f}",
+        "-be", f"{bottom_end:.6f}",
+        "-le", f"{left_end:.6f}",
+        "-re", f"{right_end:.6f}",
+        "-nthr", str(cpu_count),
+    ]
+    if is_win_native:
+        args += ["-nocrthr", str(cpu_count), "--open_video_opencv"]
+    else:
+        if use_docker:
+            args.insert(0, "--verbose")
+        args.append("-ovocv")
+    # Do NOT pass -dsi: PaddleOCR needs ClearedTXTImages/RGBImages on disk.
+    return args
 
 
 def _run_videosubfinder(video_path: Path, out_dir: Path, empty_srt: Path) -> None:
@@ -371,18 +469,15 @@ def _run_videosubfinder(video_path: Path, out_dir: Path, empty_srt: Path) -> Non
     use_cuda = bool(_cfg.get("vsf_use_cuda"))
     use_docker = bool(_cfg.get("vsf_use_docker"))
 
-    vsf_args: list[str] = ["--verbose", "-c", "-r"]
-    if use_cuda:
-        vsf_args.append("-uc")
-    vsf_args += [
-        "-te", f"{top_end:.6f}",
-        "-be", f"{bottom_end:.6f}",
-        "-le", f"{left_end:.6f}",
-        "-re", f"{right_end:.6f}",
-        "-nthr", str(cpu_count),
-        "-ovocv",
-    ]
-    # Do NOT pass -dsi: PaddleOCR needs ClearedTXTImages/RGBImages on disk.
+    vsf_args = _build_vsf_args(
+        top_end=top_end,
+        bottom_end=bottom_end,
+        left_end=left_end,
+        right_end=right_end,
+        cpu_count=cpu_count,
+        use_cuda=use_cuda,
+        use_docker=use_docker,
+    )
 
     log(
         f"Step1 VSE: VideoSubFinder ROI te={top_end:.3f} be={bottom_end:.3f} "
@@ -418,6 +513,7 @@ def _run_videosubfinder(video_path: Path, out_dir: Path, empty_srt: Path) -> Non
         )
     else:
         binary = _resolve_vsf_binary()
+        _validate_windows_vsf_runtime(binary)
         native_args = [
             *vsf_args,
             "-i", str(video_path),
