@@ -10,6 +10,7 @@ import { UserSetting } from "../../tools/settings/user-setting.entity";
 import { AudioCloneVoice } from "../../tools/audio/audio-clone-voice.entity";
 import { AudioHistory } from "../../tools/audio/audio-history.entity";
 import { ImageHistory } from "../../tools/images/image-history.entity";
+import { ImageEditHistory } from "../../tools/image-edit/image-edit-history.entity";
 import { VideoHistory } from "../../tools/videos/video-history.entity";
 import { RecapHistory } from "../../tools/recap/recap-history.entity";
 import { NarratoHistory } from "../../tools/narrato/narrato-history.entity";
@@ -42,6 +43,7 @@ export const TOOL_DB_ENTITIES = [
   RenderLog,
   AudioHistory,
   ImageHistory,
+  ImageEditHistory,
   VideoHistory,
   AudioCloneVoice,
   TranslateHistory,

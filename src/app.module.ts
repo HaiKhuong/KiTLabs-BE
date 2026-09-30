@@ -37,6 +37,7 @@ import { TranslateModule } from "./tools/translate/translate.module";
 import { UsersModule } from "./tools/users/users.module";
 import { WorkflowModule } from "./tools/workflow/workflow.module";
 import { ImagesModule } from "./tools/images/images.module";
+import { ImageEditModule } from "./tools/image-edit/image-edit.module";
 import { VideosModule } from "./tools/videos/videos.module";
 import { ModelsModule } from "./tools/models/models.module";
 import { YouTubeModule } from "./tools/youtube/youtube.module";
@@ -130,6 +131,7 @@ import { TikTokModule } from "./tools/tiktok/tiktok.module";
     YouTubeModule,
     WorkflowModule,
     ImagesModule,
+    ImageEditModule,
     VideosModule,
     HistoriesModule,
     TikTokModule,

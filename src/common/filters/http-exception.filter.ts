@@ -1,4 +1,4 @@
-import { ArgumentsHost, Catch, ExceptionFilter, HttpException, HttpStatus } from "@nestjs/common";
+import { ArgumentsHost, Catch, ExceptionFilter, HttpException, HttpStatus, Logger } from "@nestjs/common";
 import { Request, Response } from "express";
 
 type RequestWithId = Request & {
@@ -7,6 +7,8 @@ type RequestWithId = Request & {
 
 @Catch()
 export class HttpExceptionFilter implements ExceptionFilter {
+  private readonly logger = new Logger(HttpExceptionFilter.name);
+
   catch(exception: unknown, host: ArgumentsHost): void {
     const ctx = host.switchToHttp();
     const response = ctx.getResponse<Response>();
@@ -31,6 +33,14 @@ export class HttpExceptionFilter implements ExceptionFilter {
       exceptionResponse && typeof exceptionResponse === "object" && !Array.isArray(exceptionResponse)
         ? exceptionResponse
         : {};
+
+    if (status >= 500) {
+      const stack = exception instanceof Error ? exception.stack : undefined;
+      this.logger.error(
+        `${request.method} ${request.originalUrl ?? request.url} → ${status} ${message}`,
+        stack,
+      );
+    }
 
     response.status(status).json({
       success: false,

@@ -1,0 +1,9 @@
+# Image edit pipeline. Install into the same sidecar Python as tools/video-pipeline.
+# torch, torchvision, transformers, opencv-python-headless, and Pillow are already pinned there.
+
+ultralytics>=8.3.0
+# Package name on the repo is sam-2; the import name stays sam2.
+sam-2 @ https://github.com/facebookresearch/sam2/archive/refs/heads/main.zip
+realesrgan
+basicsr
+huggingface_hub
