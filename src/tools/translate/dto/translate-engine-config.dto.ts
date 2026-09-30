@@ -333,6 +333,62 @@ export class TranslateEngineConfigDto {
   @IsNumber()
   overlay_text_opacity?: number;
 
+  @IsOptional()
+  @IsIn(["on", "off"])
+  aiFilmEnabled?: string;
+
+  @IsOptional()
+  @IsIn(["on", "off"])
+  ai_film_enabled?: string;
+
+  @IsOptional()
+  @IsString()
+  aiFilmFile?: string;
+
+  @IsOptional()
+  @IsString()
+  ai_film_file?: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  aiFilmWidthRatio?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  ai_film_width_ratio?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  aiFilmMarginX?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  ai_film_margin_x?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  aiFilmMarginY?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  ai_film_margin_y?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  aiFilmOpacity?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  ai_film_opacity?: number;
+
   /** on = bỏ Step3/4 (chỉ sub, không TTS/mix narration). */
   @IsOptional()
   @IsString()

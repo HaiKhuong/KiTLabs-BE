@@ -70,6 +70,11 @@ from subtitle.logo_motion import (
     normalize_logo_motion,
     normalize_overlay_text_motion,
 )
+from subtitle.ass_export import (
+    normalize_ass_file,
+    resolve_ass_alignment,
+    write_ass_from_srt_blocks,
+)
 
 # ==============================
 # CONFIG
@@ -263,6 +268,13 @@ OVERLAY_TEXT_SPEED = 140.0
 OVERLAY_TEXT_WIDTH_RATIO = 0.40
 OVERLAY_TEXT_MARGIN_Y = 80
 OVERLAY_TEXT_OPACITY = 0.9
+# Static watermark "Phim AI" — same overlay model as logo (XY + size + opacity).
+AI_FILM_ENABLED = False
+AI_FILM_FILE = ""
+AI_FILM_WIDTH_RATIO = 0.13
+AI_FILM_MARGIN_X = 30
+AI_FILM_MARGIN_Y = 30
+AI_FILM_OPACITY = 0.5
 # Step 7: ghép clip outro sau video _vs_tm (tạo thêm *_vs_tm_outro.mp4).
 MERGE_OUTRO_ENABLED = False
 OUTRO_FILE = ""
@@ -932,8 +944,18 @@ def parse_srt(srt_text):
 
 
 def write_srt(blocks, out_path):
+    from subtitle.cue_text import strip_edge_ellipsis
+    from subtitle.merge import merge_exact_duplicate_srt_blocks
+
+    cleaned = [
+        {**b, "text": strip_edge_ellipsis(str(b.get("text") or ""))}
+        for b in blocks
+    ]
+    merged, merge_count = merge_exact_duplicate_srt_blocks(cleaned)
+    if merge_count:
+        log(f"SRT: gộp {merge_count} cặp cue trùng text 100%")
     with open(out_path, "w", encoding="utf8") as f:
-        for b in blocks:
+        for b in merged:
             f.write(f"{b['index']}\n")
             f.write(f"{b['time']}\n")
             f.write(f"{str(b['text'])}\n\n")
@@ -1833,9 +1855,19 @@ def _overlay_scale_width(ratio, fallback_px, ref_w):
 
 
 def _append_image_overlays(
-    cur_v, fc, logo_slot, overlay_text_slot, ref_w, out_pad="[vout]", ref_h=None, overlay_text_path=None
+    cur_v,
+    fc,
+    logo_slot,
+    overlay_text_slot,
+    ref_w,
+    out_pad="[vout]",
+    ref_h=None,
+    overlay_text_path=None,
+    ai_film_slot=None,
 ):
-    """Ticker first (motion), then static logo on top."""
+    """Ticker first (motion), then Phim AI, then static logo on top."""
+    has_ai_film = ai_film_slot is not None
+    has_logo = logo_slot is not None
     if overlay_text_slot is not None:
         ot_w = _overlay_scale_width(OVERLAY_TEXT_WIDTH_RATIO, 480, ref_w)
         ot_h = max(1, int(round(ot_w / 4)))
@@ -1853,7 +1885,7 @@ def _append_image_overlays(
             f"[{overlay_text_slot}:v]format=rgba,scale={ot_w}:-1,"
             f"colorchannelmixer=aa={float(OVERLAY_TEXT_OPACITY):.4f}[otxt]"
         )
-        next_pad = "[votxt]" if logo_slot is not None else out_pad
+        next_pad = "[votxt]" if (has_ai_film or has_logo) else out_pad
         frame_w = int(ref_w) if ref_w else None
         frame_h = int(ref_h) if ref_h else None
         fc.append(
@@ -1872,7 +1904,26 @@ def _append_image_overlays(
             )
         )
         cur_v = next_pad
-    if logo_slot is not None:
+    if has_ai_film:
+        ai_w = _overlay_scale_width(AI_FILM_WIDTH_RATIO, 250, ref_w)
+        fc.append(
+            f"[{ai_film_slot}:v]format=rgba,scale={ai_w}:-1,"
+            f"colorchannelmixer=aa={float(AI_FILM_OPACITY):.4f}[aifilm]"
+        )
+        next_pad = "[vaifilm]" if has_logo else out_pad
+        fc.append(
+            build_logo_overlay_filter(
+                cur_v,
+                "[aifilm]",
+                next_pad,
+                "static",
+                1.0,
+                int(AI_FILM_MARGIN_X),
+                int(AI_FILM_MARGIN_Y),
+            )
+        )
+        cur_v = next_pad
+    if has_logo:
         logo_w = _overlay_scale_width(LOGO_WIDTH_RATIO, LOGO_WIDTH, ref_w)
         fc.append(
             f"[{logo_slot}:v]format=rgba,scale={logo_w}:-1,"
@@ -1894,10 +1945,18 @@ def _append_image_overlays(
 
 
 def build_step6_render_command(
-    video_path, out_path, subtitle_filter, use_gpu, logo_path=None, overlay_text_path=None, video_width=None, video_height=None
+    video_path,
+    out_path,
+    subtitle_filter,
+    use_gpu,
+    logo_path=None,
+    overlay_text_path=None,
+    ai_film_path=None,
+    video_width=None,
+    video_height=None,
 ):
     input_args = ["-i", str(video_path)]
-    has_img = logo_path is not None or overlay_text_path is not None
+    has_img = logo_path is not None or overlay_text_path is not None or ai_film_path is not None
     use_complex = has_img or STEP6_VISUAL_TRANSFORM_ENABLED
     filter_arg_key = "-filter_complex" if use_complex else "-vf"
     filter_arg_value = subtitle_filter
@@ -1915,6 +1974,7 @@ def build_step6_render_command(
         next_i = 1
         overlay_text_slot = None
         logo_slot = None
+        ai_film_slot = None
         if overlay_text_path:
             extra_inputs.extend(["-i", str(overlay_text_path)])
             overlay_text_slot = next_i
@@ -1922,6 +1982,10 @@ def build_step6_render_command(
         if logo_path:
             extra_inputs.extend(["-i", str(logo_path)])
             logo_slot = next_i
+            next_i += 1
+        if ai_film_path:
+            extra_inputs.extend(["-i", str(ai_film_path)])
+            ai_film_slot = next_i
         overlay_filters = []
         _append_image_overlays(
             "[vsub]",
@@ -1931,6 +1995,7 @@ def build_step6_render_command(
             video_width,
             ref_h=video_height,
             overlay_text_path=overlay_text_path,
+            ai_film_slot=ai_film_slot,
         )
         filter_arg_key = "-filter_complex"
         filter_arg_value = f"{filter_arg_value};{';'.join(overlay_filters)}"
@@ -1955,52 +2020,17 @@ def build_step6_render_command(
 
 
 def update_ass_default_style(ass_path):
-    with open(ass_path, "r", encoding="utf8") as f:
-        lines = f.readlines()
-
-    style_updated = False
-    for idx, line in enumerate(lines):
-        if line.startswith("Style: Default,"):
-            parts = line.strip().split(",")
-            if len(parts) >= 23:
-                parts[1] = SUBTITLE_FONT
-                parts[2] = str(int(SUBTITLE_FONTSIZE))
-                parts[3] = SUBTITLE_PRIMARY_COLOUR
-                parts[5] = SUBTITLE_OUTLINE_COLOUR
-                parts[16] = str(int(SUBTITLE_OUTLINE))
-                parts[17] = str(int(SUBTITLE_SHADOW))
-                parts[18] = str(int(SUBTITLE_ALIGNMENT))
-                parts[21] = str(int(SUBTITLE_MARGIN_V))
-                lines[idx] = ",".join(parts) + "\n"
-                style_updated = True
-            break
-
-    if not style_updated:
-        log("Warning: could not update ASS style (Style: Default not found).")
-
-    # Strip residual ASS override tags ({\\an8}, {\\pos(x,y)}, etc.) and HTML tags
-    # from event Text fields. These may survive from the source subtitle even after
-    # the SRT clean step, and cause individual subtitles to override Default alignment.
-    in_events = False
-    for idx, line in enumerate(lines):
-        if line.strip() == "[Events]":
-            in_events = True
-            continue
-        if in_events and line.startswith("Dialogue:"):
-            # ASS Dialogue format: Dialogue: Layer,Start,End,Style,Name,ML,MR,MV,Effect,Text
-            # Text is everything after the 9th comma
-            comma_pos = [i for i, c in enumerate(line) if c == ","]
-            if len(comma_pos) >= 9:
-                text_start = comma_pos[8] + 1
-                raw_text = line[text_start:]
-                # Strip {override} blocks and <html> tags from event text
-                clean_text = re.sub(r"\{[^}]*\}", "", raw_text)
-                clean_text = re.sub(r"<[^>]+>", "", clean_text)
-                if clean_text != raw_text:
-                    lines[idx] = line[:text_start] + clean_text
-
-    with open(ass_path, "w", encoding="utf8") as f:
-        f.writelines(lines)
+    normalize_ass_file(
+        Path(ass_path),
+        font=SUBTITLE_FONT,
+        fontsize=int(SUBTITLE_FONTSIZE),
+        primary=SUBTITLE_PRIMARY_COLOUR,
+        outline_colour=SUBTITLE_OUTLINE_COLOUR,
+        outline=int(SUBTITLE_OUTLINE),
+        shadow=int(SUBTITLE_SHADOW),
+        alignment=resolve_ass_alignment(SUBTITLE_ALIGNMENT),
+        margin_v=int(SUBTITLE_MARGIN_V),
+    )
 
 
 # ==============================
@@ -2464,6 +2494,17 @@ def step2b_voice_sync_srt(vi_srt_path, video_duration_ms=None):
     if not blocks:
         log("VoiceSync: vi.srt rỗng, bỏ qua.")
         return vi_path
+
+    from subtitle.cue_text import strip_edge_ellipsis
+    from subtitle.merge import merge_exact_duplicate_srt_blocks
+
+    blocks = [
+        {**b, "text": strip_edge_ellipsis(str(b.get("text") or ""))}
+        for b in blocks
+    ]
+    blocks, merge_count = merge_exact_duplicate_srt_blocks(blocks)
+    if merge_count:
+        log(f"VoiceSync: gộp {merge_count} cặp cue trùng text 100%")
 
     optimized, report = optimize_subtitle_timings(
         blocks,
@@ -3492,6 +3533,7 @@ def build_unified_render_command(
     use_gpu,
     logo_path,
     overlay_text_path,
+    ai_film_path,
     outro_path,
     probe_wh,
     has_video_audio,
@@ -3523,6 +3565,7 @@ def build_unified_render_command(
     voice_slot = slot.claim() if voice_path else None
     logo_slot = slot.claim() if logo_path else None
     overlay_text_slot = slot.claim() if overlay_text_path else None
+    ai_film_slot = slot.claim() if ai_film_path else None
     outro_slot = slot.claim() if outro_path else None
 
     input_args = ["-i", str(video_path)]
@@ -3532,6 +3575,8 @@ def build_unified_render_command(
         input_args += ["-i", str(logo_path)]
     if overlay_text_path:
         input_args += ["-i", str(overlay_text_path)]
+    if ai_film_path:
+        input_args += ["-i", str(ai_film_path)]
     if outro_path:
         input_args += ["-i", str(outro_path)]
 
@@ -3561,8 +3606,8 @@ def build_unified_render_command(
         fc.append(f"{cur_v}{resize_f}[vresized]")
         cur_v = "[vresized]"
 
-    # Overlay text (motion) then static logo
-    if overlay_text_path or logo_path:
+    # Overlay text (motion) then Phim AI then static logo
+    if overlay_text_path or logo_path or ai_film_path:
         ref_w = int(target_wh[0]) if (apply_resize and target_wh) else (source_wh[0] if source_wh else 1920)
         ref_h = int(target_wh[1]) if (apply_resize and target_wh) else (source_wh[1] if source_wh else 1080)
         cur_v = _append_image_overlays(
@@ -3573,6 +3618,7 @@ def build_unified_render_command(
             ref_w,
             ref_h=ref_h,
             overlay_text_path=overlay_text_path,
+            ai_film_slot=ai_film_slot,
         )
 
     # Apply playback speed after subtitle burn (main video only; outro stays native speed).
@@ -3715,6 +3761,7 @@ def step_render_unified(video_path, ass_path, voice_path):
     # Resolve logo path
     logo_path = _resolve_optional_image(LOGO_ENABLED, LOGO_FILE)
     overlay_text_path = _resolve_optional_image(OVERLAY_TEXT_ENABLED, OVERLAY_TEXT_FILE)
+    ai_film_path = _resolve_optional_image(AI_FILM_ENABLED, AI_FILM_FILE)
 
     # Resolve outro path and probe its audio
     outro_path = None
@@ -3746,6 +3793,7 @@ def step_render_unified(video_path, ass_path, voice_path):
         voice_path=effective_voice_path,
         logo_path=logo_path,
         overlay_text_path=overlay_text_path,
+        ai_film_path=ai_film_path,
         outro_path=outro_path,
         probe_wh=probe_wh,
         has_video_audio=has_video_audio,
@@ -3798,34 +3846,44 @@ def step5_convert_ass(srt_path):
     log("Step5: SRT → ASS…")
     ass = SUBTITLE_DIR / "sub.ass"
 
-    # Always parse and rewrite to strip ASS/HTML override tags that survive from
-    # the source subtitle (e.g. {\an8}, {\pos(x,y)}, <i>). These tags override
-    # the configured Default style alignment/position and cause some subtitles to
-    # appear at unexpected positions (top of screen, wrong Y) regardless of text length.
+    # Write ASS directly (do not use ffmpeg SRT→ASS). FFmpeg leaves PlayRes 384x288
+    # with WrapStyle/Collisions defaults: long lines wrap at render (not visible as
+    # \\N in the file) and overlapping cues are shifted up by libass.
     with open(srt_path, encoding="utf8") as f:
         blocks = parse_srt(f.read())
+
+    from subtitle.cue_text import strip_edge_ellipsis
+    from subtitle.merge import merge_exact_duplicate_srt_blocks
+
+    blocks = [
+        {**b, "text": strip_edge_ellipsis(str(b.get("text") or ""))}
+        for b in blocks
+    ]
+    blocks, merge_count = merge_exact_duplicate_srt_blocks(blocks)
+    if merge_count:
+        log(f"Step5: gộp {merge_count} cặp cue trùng text 100%")
 
     cleaned_blocks = [
         {
             "index": b["index"],
             "time": b["time"],
-            "text": (
-                strip_subtitle_format_tags(str(b["text"])).upper()
-                if SUBTITLE_UPPERCASE
-                else strip_subtitle_format_tags(str(b["text"]))
-            ),
+            "text": strip_subtitle_format_tags(str(b["text"])),
         }
         for b in blocks
     ]
-
-    temp_srt = SUBTITLE_DIR / "__step5_clean_tmp.srt"
-    write_srt(cleaned_blocks, temp_srt)
-
-    run_command(
-        [FFMPEG_BIN, "-y", "-i", str(temp_srt), str(ass)], "Convert SRT to ASS"
+    write_ass_from_srt_blocks(
+        cleaned_blocks,
+        ass,
+        font=SUBTITLE_FONT,
+        fontsize=int(SUBTITLE_FONTSIZE),
+        primary=SUBTITLE_PRIMARY_COLOUR,
+        outline_colour=SUBTITLE_OUTLINE_COLOUR,
+        outline=int(SUBTITLE_OUTLINE),
+        shadow=int(SUBTITLE_SHADOW),
+        alignment=resolve_ass_alignment(SUBTITLE_ALIGNMENT),
+        margin_v=int(SUBTITLE_MARGIN_V),
+        uppercase=bool(SUBTITLE_UPPERCASE),
     )
-    if temp_srt.exists():
-        temp_srt.unlink()
     update_ass_default_style(ass)
     return ass
 
@@ -3842,7 +3900,7 @@ def step6_render(video_path, ass_path):
     probe_wh = None
     need_probe_wh = (
         STEP6_VISUAL_TRANSFORM_ENABLED and float(STEP6_ZOOM_PERCENT) > 0.01
-    ) or LOGO_WIDTH_RATIO > 0 or OVERLAY_TEXT_ENABLED
+    ) or LOGO_WIDTH_RATIO > 0 or OVERLAY_TEXT_ENABLED or AI_FILM_ENABLED
     if need_probe_wh:
         probe_wh = get_ffprobe_video_dimensions(video_path)
     subtitle_filter = build_subtitle_filter(ass_path, probe_wh)
@@ -3850,6 +3908,7 @@ def step6_render(video_path, ass_path):
     video_height = probe_wh[1] if probe_wh else None
     logo_path = _resolve_optional_image(LOGO_ENABLED, LOGO_FILE)
     overlay_text_path = _resolve_optional_image(OVERLAY_TEXT_ENABLED, OVERLAY_TEXT_FILE)
+    ai_film_path = _resolve_optional_image(AI_FILM_ENABLED, AI_FILM_FILE)
 
     gpu_cmd = build_step6_render_command(
         video_path,
@@ -3858,6 +3917,7 @@ def step6_render(video_path, ass_path):
         use_gpu=True,
         logo_path=logo_path,
         overlay_text_path=overlay_text_path,
+        ai_film_path=ai_film_path,
         video_width=video_width,
         video_height=video_height,
     )
@@ -3872,6 +3932,7 @@ def step6_render(video_path, ass_path):
             use_gpu=False,
             logo_path=logo_path,
             overlay_text_path=overlay_text_path,
+            ai_film_path=ai_film_path,
             video_width=video_width,
             video_height=video_height,
         )
@@ -4022,6 +4083,22 @@ def parse_cli_args():
     )
     parser.add_argument("--overlay-text-margin-y", type=int, default=OVERLAY_TEXT_MARGIN_Y)
     parser.add_argument("--overlay-text-opacity", type=float, default=OVERLAY_TEXT_OPACITY)
+    parser.add_argument(
+        "--ai-film-enabled",
+        choices=["on", "off"],
+        default="on" if AI_FILM_ENABLED else "off",
+        help="Static Phim AI image overlay. off = skip even if --ai-film-file exists.",
+    )
+    parser.add_argument("--ai-film-file", default=AI_FILM_FILE)
+    parser.add_argument(
+        "--ai-film-width-ratio",
+        type=float,
+        default=AI_FILM_WIDTH_RATIO,
+        help="Phim AI width as fraction of frame width.",
+    )
+    parser.add_argument("--ai-film-margin-x", type=int, default=AI_FILM_MARGIN_X)
+    parser.add_argument("--ai-film-margin-y", type=int, default=AI_FILM_MARGIN_Y)
+    parser.add_argument("--ai-film-opacity", type=float, default=AI_FILM_OPACITY)
     parser.add_argument(
         "--skip-voice-step",
         choices=["on", "off"],
@@ -4713,6 +4790,12 @@ def apply_cli_config(args):
     global OVERLAY_TEXT_WIDTH_RATIO
     global OVERLAY_TEXT_MARGIN_Y
     global OVERLAY_TEXT_OPACITY
+    global AI_FILM_ENABLED
+    global AI_FILM_FILE
+    global AI_FILM_WIDTH_RATIO
+    global AI_FILM_MARGIN_X
+    global AI_FILM_MARGIN_Y
+    global AI_FILM_OPACITY
     global SKIP_VOICE_STEP
     global REMOVE_CACHED_VOICE
     global STEP6_VISUAL_TRANSFORM_ENABLED
@@ -4835,7 +4918,7 @@ def apply_cli_config(args):
     SUBTITLE_OUTLINE_COLOUR = normalize_ass_colour(args.subtitle_outline_colour)
     SUBTITLE_OUTLINE = args.subtitle_outline
     SUBTITLE_SHADOW = args.subtitle_shadow
-    SUBTITLE_ALIGNMENT = args.subtitle_alignment
+    SUBTITLE_ALIGNMENT = resolve_ass_alignment(args.subtitle_alignment)
     SUBTITLE_MARGIN_V = args.subtitle_margin_v
     SUBTITLE_UPPERCASE = args.subtitle_uppercase == "on"
 
@@ -4865,6 +4948,12 @@ def apply_cli_config(args):
     OVERLAY_TEXT_WIDTH_RATIO = max(0.0, min(1.0, float(args.overlay_text_width_ratio)))
     OVERLAY_TEXT_MARGIN_Y = int(args.overlay_text_margin_y)
     OVERLAY_TEXT_OPACITY = float(args.overlay_text_opacity)
+    AI_FILM_ENABLED = args.ai_film_enabled == "on"
+    AI_FILM_FILE = str(args.ai_film_file or "").strip()
+    AI_FILM_WIDTH_RATIO = max(0.0, min(1.0, float(args.ai_film_width_ratio)))
+    AI_FILM_MARGIN_X = args.ai_film_margin_x
+    AI_FILM_MARGIN_Y = args.ai_film_margin_y
+    AI_FILM_OPACITY = float(args.ai_film_opacity)
     SKIP_VOICE_STEP = args.skip_voice_step == "on"
     REMOVE_CACHED_VOICE = getattr(args, "remove_cached_voice", "off") == "on"
     MERGE_OUTRO_ENABLED = args.merge_outro == "on"

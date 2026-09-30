@@ -785,6 +785,9 @@ def write_srt_cues(
     fmt_time: Callable[[float], str],
     min_duration_ms: int = 0,
 ) -> Path:
+    from subtitle.merge import merge_exact_duplicate_cues
+
+    cues, _merge_count = merge_exact_duplicate_cues(cues)
     min_dur = int(min_duration_ms or 0)
     with open(srt_path, "w", encoding="utf8") as f:
         for i, (start, end, text) in enumerate(cues, 1):

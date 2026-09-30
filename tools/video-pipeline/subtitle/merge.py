@@ -145,3 +145,105 @@ def segments_to_srt(
         for i, seg in enumerate(segments, 1):
             f.write(f"{i}\n{fmt_time(seg.start_sec)} --> {fmt_time(seg.end_sec)}\n{seg.text}\n\n")
     return srt_path
+
+
+def _srt_time_to_ms(time_str: str) -> int:
+    hms, ms = time_str.strip().split(",")
+    hours, minutes, seconds = hms.split(":")
+    return int(hours) * 3_600_000 + int(minutes) * 60_000 + int(seconds) * 1000 + int(ms)
+
+
+def _ms_to_srt_time(ms: int) -> str:
+    ms = max(0, int(ms))
+    hours = ms // 3_600_000
+    ms %= 3_600_000
+    minutes = ms // 60_000
+    ms %= 60_000
+    seconds = ms // 1000
+    ms %= 1000
+    return f"{hours:02}:{minutes:02}:{seconds:02},{ms:03}"
+
+
+def _srt_range_ms(time_range: str) -> tuple[int, int]:
+    start_str, end_str = [x.strip() for x in str(time_range).split("-->")]
+    return _srt_time_to_ms(start_str), _srt_time_to_ms(end_str)
+
+
+def canonical_subtitle_text(text: str) -> str:
+    """Visible subtitle text for 100% equality (strip + newline normalize only)."""
+    return str(text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+
+
+def merge_exact_duplicate_cues(
+    cues: list,
+    *,
+    max_gap_ms: int = 500,
+) -> tuple[list, int]:
+    """Merge consecutive cues whose text matches 100% and timelines touch/overlap.
+
+    Each cue is (start_sec, end_sec, text). Returns (cues, merge_count).
+    """
+    if not cues:
+        return [], 0
+    gap_ms = max(0, int(max_gap_ms))
+    merged = [list(cues[0])]
+    merges = 0
+    for start, end, text in cues[1:]:
+        prev = merged[-1]
+        same = canonical_subtitle_text(prev[2]) == canonical_subtitle_text(text)
+        same = same and bool(canonical_subtitle_text(text))
+        gap = (float(start) - float(prev[1])) * 1000.0
+        if same and gap <= gap_ms:
+            prev[1] = max(float(prev[1]), float(end))
+            merges += 1
+        else:
+            merged.append([float(start), float(end), text])
+    return [(a, b, t) for a, b, t in merged], merges
+
+
+def merge_exact_duplicate_srt_blocks(
+    blocks: list[dict],
+    *,
+    max_gap_ms: int = 500,
+) -> tuple[list[dict], int]:
+    """Merge consecutive SRT blocks with identical text and adjacent/overlapping times.
+
+    Keeps the first block's index; extends end time to the last merged cue.
+    """
+    if not blocks:
+        return [], 0
+    gap_ms = max(0, int(max_gap_ms))
+    merged: list[dict] = []
+    merges = 0
+    for block in blocks:
+        text = str(block.get("text") or "")
+        start_ms, end_ms = _srt_range_ms(block["time"])
+        if end_ms < start_ms:
+            end_ms = start_ms
+        if (
+            merged
+            and canonical_subtitle_text(merged[-1]["text"]) == canonical_subtitle_text(text)
+            and canonical_subtitle_text(text)
+            and (start_ms - merged[-1]["_end_ms"]) <= gap_ms
+        ):
+            merged[-1]["_end_ms"] = max(merged[-1]["_end_ms"], end_ms)
+            merges += 1
+            continue
+        merged.append(
+            {
+                "index": block.get("index"),
+                "text": text,
+                "_start_ms": start_ms,
+                "_end_ms": end_ms,
+            }
+        )
+    out: list[dict] = []
+    for item in merged:
+        out.append(
+            {
+                "index": item["index"],
+                "time": f"{_ms_to_srt_time(item['_start_ms'])} --> {_ms_to_srt_time(item['_end_ms'])}",
+                "text": item["text"],
+            }
+        )
+    return out, merges

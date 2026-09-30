@@ -161,6 +161,16 @@ const OPTION_MAPPINGS: Array<{
     keys: ["overlayTextOpacity", "overlay_text_opacity"],
     allowedTypes: ["number", "string"],
   },
+  { cliFlag: "--ai-film-enabled", keys: ["aiFilmEnabled", "ai_film_enabled"], allowedTypes: ["string"] },
+  { cliFlag: "--ai-film-file", keys: ["aiFilmFile", "ai_film_file"], allowedTypes: ["string"] },
+  {
+    cliFlag: "--ai-film-width-ratio",
+    keys: ["aiFilmWidthRatio", "ai_film_width_ratio"],
+    allowedTypes: ["number", "string"],
+  },
+  { cliFlag: "--ai-film-margin-x", keys: ["aiFilmMarginX", "ai_film_margin_x"], allowedTypes: ["number", "string"] },
+  { cliFlag: "--ai-film-margin-y", keys: ["aiFilmMarginY", "ai_film_margin_y"], allowedTypes: ["number", "string"] },
+  { cliFlag: "--ai-film-opacity", keys: ["aiFilmOpacity", "ai_film_opacity"], allowedTypes: ["number", "string"] },
   {
     cliFlag: "--skip-voice-step",
     keys: ["skipVoiceStep", "skip_voice_step"],
@@ -828,7 +838,12 @@ export class TranslateProcessor extends WorkerHost {
         if (!Number.isFinite(numeric)) {
           continue;
         }
-        value = String(Math.round(numeric));
+        const rounded = Math.round(numeric);
+        // ASS Alignment is numpad 1–9. UI MarginV sliders (0–100) must not leak here.
+        if (mapping.cliFlag === "--subtitle-alignment" && (rounded < 1 || rounded > 9)) {
+          continue;
+        }
+        value = String(rounded);
       }
       if (value.startsWith("-")) {
         // argparse can treat values like "-20%" as another option token.

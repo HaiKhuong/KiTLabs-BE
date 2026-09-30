@@ -230,6 +230,10 @@ def _build_translate_prompt(batch: list, payload_text: str, translation_context:
         "Write very concise, subtitle-friendly Vietnamese.\n",
         "Keep original meaning and emotional tone, but simplify phrasing.\n",
         "Preserve historical tone, titles, names, and relationships.\n",
+        "Drop leftover filler/junk that repeats and does not help the sentence (ASR artifacts). "
+        'Example: a trailing "Đây." with no role in the line — omit it in Vietnamese. '
+        "Still return every line id; never drop a whole cue.\n",
+        "If a cue is unusually long, translate more compactly than usual: short spoken Vietnamese, same meaning, no padding.\n",
     ]
 
     if translation_context and translation_context.strip():
@@ -243,7 +247,8 @@ def _build_translate_prompt(batch: list, payload_text: str, translation_context:
         "OUTPUT RULES (mandatory):\n"
         f"- Return exactly {line_count} lines with ids 0 to {last_id}, same order as input.\n"
         "- Translate each input line separately into exactly one output line.\n"
-        "- Do NOT merge, split, skip, deduplicate, summarize, or reorder lines.\n"
+        "- Do NOT merge, split, skip, drop, or reorder lines. Do not summarize across lines.\n"
+        "- Dropping filler words inside a line is allowed; compressing a long line is allowed.\n"
         "- Do NOT combine short consecutive lines into one translation.\n"
         "- Format each output line: id:|Vietnamese translation\n"
         "- Output ONLY translated lines. No notes, no markdown, no extra text.\n"
@@ -271,8 +276,10 @@ def _parse_response(text: str) -> dict[int, str]:
 
 
 def _normalize_skip_text(text: str) -> str:
-    """Gom khoảng trắng thừa."""
-    return " ".join(str(text or "").strip().split())
+    """Gom khoảng trắng thừa; bỏ ... / … ở đầu và cuối câu."""
+    from subtitle.cue_text import strip_edge_ellipsis
+
+    return strip_edge_ellipsis(" ".join(str(text or "").strip().split()))
 
 
 def _keyword_to_remove_pattern(keyword: str) -> str:
