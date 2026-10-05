@@ -53,6 +53,7 @@ from step3_edge import (
     prepare_speaker_reference,
     run_edge_tts_mp3_save,
 )
+from tts_text_normalize import apply_tts_acronym_rules, configure_tts_acronym_rules
 from subtitle.voice_sync import (
     append_tail_pad_wav,
     optimize_subtitle_timings,
@@ -67,6 +68,7 @@ from subtitle.audio_segment_cut import (
 from subtitle.logo_motion import (
     build_logo_overlay_filter,
     build_overlay_text_overlay_filter,
+    build_percent_static_overlay_filter,
     normalize_logo_motion,
     normalize_overlay_text_motion,
 )
@@ -268,12 +270,12 @@ OVERLAY_TEXT_SPEED = 140.0
 OVERLAY_TEXT_WIDTH_RATIO = 0.40
 OVERLAY_TEXT_MARGIN_Y = 80
 OVERLAY_TEXT_OPACITY = 0.9
-# Static watermark "Phim AI" — same overlay model as logo (XY + size + opacity).
+# Static watermark "Phim AI" — X/Y are percent of remaining space (0–100).
 AI_FILM_ENABLED = False
 AI_FILM_FILE = ""
 AI_FILM_WIDTH_RATIO = 0.13
-AI_FILM_MARGIN_X = 30
-AI_FILM_MARGIN_Y = 30
+AI_FILM_MARGIN_X = 3
+AI_FILM_MARGIN_Y = 3
 AI_FILM_OPACITY = 0.5
 # Step 7: ghép clip outro sau video _vs_tm (tạo thêm *_vs_tm_outro.mp4).
 MERGE_OUTRO_ENABLED = False
@@ -995,7 +997,7 @@ def sanitize_tts_text(text):
     # Strip common invisible/control chars that can make TTS return no audio.
     cleaned = re.sub(r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]", "", cleaned)
     cleaned = cleaned.replace("\u200b", "").replace("\ufeff", "").strip()
-    return cleaned
+    return apply_tts_acronym_rules(cleaned)
 
 
 def make_text_preview(text, max_len=80):
@@ -1912,14 +1914,12 @@ def _append_image_overlays(
         )
         next_pad = "[vaifilm]" if has_logo else out_pad
         fc.append(
-            build_logo_overlay_filter(
+            build_percent_static_overlay_filter(
                 cur_v,
                 "[aifilm]",
                 next_pad,
-                "static",
-                1.0,
-                int(AI_FILM_MARGIN_X),
-                int(AI_FILM_MARGIN_Y),
+                float(AI_FILM_MARGIN_X),
+                float(AI_FILM_MARGIN_Y),
             )
         )
         cur_v = next_pad
@@ -4096,8 +4096,18 @@ def parse_cli_args():
         default=AI_FILM_WIDTH_RATIO,
         help="Phim AI width as fraction of frame width.",
     )
-    parser.add_argument("--ai-film-margin-x", type=int, default=AI_FILM_MARGIN_X)
-    parser.add_argument("--ai-film-margin-y", type=int, default=AI_FILM_MARGIN_Y)
+    parser.add_argument(
+        "--ai-film-margin-x",
+        type=float,
+        default=AI_FILM_MARGIN_X,
+        help="Phim AI X as percent of remaining width (0–100).",
+    )
+    parser.add_argument(
+        "--ai-film-margin-y",
+        type=float,
+        default=AI_FILM_MARGIN_Y,
+        help="Phim AI Y as percent of remaining height (0–100).",
+    )
     parser.add_argument("--ai-film-opacity", type=float, default=AI_FILM_OPACITY)
     parser.add_argument(
         "--skip-voice-step",
@@ -4614,6 +4624,14 @@ def parse_cli_args():
         help="OmniVoice batch inference: số câu mỗi generate() (mặc định 8; 1=tuần tự).",
     )
     parser.add_argument(
+        "--tts-acronym-rules-json",
+        default=None,
+        help=(
+            "JSON array [{from, to, match}] cho viết tắt TTS (Step 3). "
+            "match=word|plain|regex. Bỏ trống = rule mặc định trong tts_text_normalize."
+        ),
+    )
+    parser.add_argument(
         "--auto-speed",
         choices=["on", "off"],
         default="on" if STEP3_AUTO_RATE_ENABLED else "off",
@@ -4985,6 +5003,17 @@ def apply_cli_config(args):
     EDGE_TTS_VOLUME = args.edge_tts_volume
     EDGE_TTS_PITCH = args.edge_tts_pitch
     STEP3_TTS_ENGINE = str(args.step3_tts_engine or "edge").strip().lower() or "edge"
+    raw_acronym_json = getattr(args, "tts_acronym_rules_json", None)
+    if raw_acronym_json is not None and str(raw_acronym_json).strip():
+        try:
+            parsed_acronym = json.loads(str(raw_acronym_json))
+            if not isinstance(parsed_acronym, list):
+                raise ValueError("must be a JSON array")
+            configure_tts_acronym_rules(parsed_acronym)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            configure_tts_acronym_rules(None)
+    else:
+        configure_tts_acronym_rules(None)
     step_start, step_end = parse_step_range(getattr(args, "step", None))
     runs_step3 = step_start <= 3 <= step_end
     omnivoice_ref_wav_name = str(getattr(args, "omnivoice_ref_wav", "") or "").strip()

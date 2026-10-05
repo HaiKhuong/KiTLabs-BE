@@ -34,6 +34,7 @@ const STEP3_ONLY_CLI_FLAGS = new Set([
   "--step3-auto-rate-bonus-percent",
   "--step3-tts-api-timeout-sec",
   "--step3-tts-max-retry-action",
+  "--tts-acronym-rules-json",
 ]);
 const OPTION_MAPPINGS: Array<{
   cliFlag: string;
@@ -236,6 +237,11 @@ const OPTION_MAPPINGS: Array<{
   {
     cliFlag: "--step3-tts-max-retry-action",
     keys: ["step3TtsMaxRetryAction", "step3_tts_max_retry_action"],
+    allowedTypes: ["string"],
+  },
+  {
+    cliFlag: "--tts-acronym-rules-json",
+    keys: ["ttsAcronymRulesJson", "tts_acronym_rules_json"],
     allowedTypes: ["string"],
   },
   { cliFlag: "--translation-context", keys: ["translationContext", "translation_context"], allowedTypes: ["string"] },

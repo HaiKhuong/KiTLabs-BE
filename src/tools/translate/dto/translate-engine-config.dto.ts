@@ -480,6 +480,15 @@ export class TranslateEngineConfigDto {
   @IsString()
   edge_tts_pitch?: string;
 
+  /** JSON array [{from, to, match}] — viết tắt TTS Step 3 */
+  @IsOptional()
+  @IsString()
+  ttsAcronymRulesJson?: string;
+
+  @IsOptional()
+  @IsString()
+  tts_acronym_rules_json?: string;
+
   /** edge | omnivoice | voxcpm2 */
   @IsOptional()
   @IsIn(["edge", "omnivoice", "voxcpm2"])

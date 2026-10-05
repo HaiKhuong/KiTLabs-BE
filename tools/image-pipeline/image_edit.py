@@ -263,6 +263,13 @@ def run_remove_bg(image_path: Path, out_dir: Path, device: str) -> dict:
     # briaai/RMBG-2.0 is a gated Hugging Face repo. BiRefNet is the public model RMBG-2.0 is built on.
     model_id = os.environ.get("IMAGE_EDIT_RMBG_MODEL", "ZhengPeng7/BiRefNet").strip() or "ZhengPeng7/BiRefNet"
     log(f"remove-bg model={model_id}")
+    try:
+        import kornia  # noqa: F401
+        import timm  # noqa: F401
+    except ImportError as exc:
+        raise RuntimeError(
+            "Tách nền cần kornia và timm. Mở Settings → Môi trường Python → Cài thư viện xử lý ảnh."
+        ) from exc
     model = AutoModelForImageSegmentation.from_pretrained(model_id, trust_remote_code=True)
     model.to(device)
     model.eval()
@@ -289,38 +296,9 @@ def run_remove_bg(image_path: Path, out_dir: Path, device: str) -> dict:
     return {"resultFile": result_name, "files": [{"name": result_name}], "detections": []}
 
 
-def build_upsampler(domain: str, models_dir: Path, device: str):
-    from realesrgan import RealESRGANer
-
-    half = device == "cuda"
-    if domain == "anime":
-        from basicsr.archs.srvgg_arch import SRVGGNetCompact
-
-        model = SRVGGNetCompact(num_in_ch=3, num_out_ch=3, num_feat=64, num_conv=32, upscale=4, act_type="prelu")
-        weight = ensure_weight(models_dir, "RealESRGAN_x4plus_anime_6B.pth")
-    else:
-        from basicsr.archs.rrdbnet_arch import RRDBNet
-
-        model = RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64, num_block=23, num_grow_ch=32, scale=4)
-        weight = ensure_weight(models_dir, "RealESRGAN_x4plus.pth")
-
-    kwargs = dict(
-        scale=4,
-        model_path=str(weight),
-        model=model,
-        tile=512,
-        tile_pad=10,
-        pre_pad=0,
-        half=half,
-    )
-    try:
-        return RealESRGANer(device=device, **kwargs)
-    except TypeError:
-        return RealESRGANer(**kwargs)
-
-
 def run_upscale(image_path: Path, out_dir: Path, models_dir: Path, device: str, scale: int, domain: str) -> dict:
     import cv2
+    from realesrgan_infer import build_model, enhance
 
     if scale not in (2, 4):
         raise RuntimeError("scale phải là 2 hoặc 4")
@@ -332,8 +310,16 @@ def run_upscale(image_path: Path, out_dir: Path, models_dir: Path, device: str, 
     if max(height, width) * scale > MAX_OUTPUT_EDGE:
         raise RuntimeError(f"Cạnh ảnh sau upscale vượt {MAX_OUTPUT_EDGE}px")
 
-    upsampler = build_upsampler(domain, models_dir, device)
-    output, _mode = upsampler.enhance(bgr, outscale=scale)
+    weight_name = "RealESRGAN_x4plus_anime_6B.pth" if domain == "anime" else "RealESRGAN_x4plus.pth"
+    weight = ensure_weight(models_dir, weight_name)
+    log(f"upscale domain={domain} scale={scale} weight={weight.name}")
+    model = build_model(domain, weight, device)
+    output = enhance(bgr, model, device, outscale=scale)
+    del model
+    if device == "cuda":
+        import torch
+
+        torch.cuda.empty_cache()
     result_name = "result.png"
     cv2.imwrite(str(out_dir / result_name), output)
     return {"resultFile": result_name, "files": [{"name": result_name}], "detections": []}

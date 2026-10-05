@@ -70,6 +70,13 @@ class TestLogoOverlayExpr(unittest.TestCase):
         self.assertTrue(clause.startswith("[vsub][logo]overlay=x='"))
         self.assertIn("':y='20'[vout]", clause)
 
+    def test_percent_static_allows_zero(self):
+        from subtitle.logo_motion import build_percent_static_overlay_filter
+
+        clause = build_percent_static_overlay_filter("[v]", "[aifilm]", "[out]", 0, 0)
+        self.assertIn("overlay=x='(W-w)*0'", clause)
+        self.assertIn("y='(H-h)*0'", clause)
+
 
 class TestOverlayTextMotion(unittest.TestCase):
     def test_rtl_randomizes_y_per_lap(self):

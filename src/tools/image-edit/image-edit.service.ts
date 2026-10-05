@@ -152,6 +152,7 @@ export class ImageEditService {
         env: pythonSubprocessEnv({
           HF_HOME: join(modelsDir, "hf"),
           HUGGINGFACE_HUB_CACHE: join(modelsDir, "hf", "hub"),
+          HF_HUB_DISABLE_SYMLINKS_WARNING: "1",
         }),
       });
 

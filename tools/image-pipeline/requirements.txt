@@ -1,9 +1,11 @@
 # Image edit pipeline. Install into the same sidecar Python as tools/video-pipeline.
 # torch, torchvision, transformers, opencv-python-headless, and Pillow are already pinned there.
+# Upscale runs RealESRGAN weights with torch only (tools/image-pipeline/realesrgan_infer.py).
 
 ultralytics>=8.3.0
 # Package name on the repo is sam-2; the import name stays sam2.
 sam-2 @ https://github.com/facebookresearch/sam2/archive/refs/heads/main.zip
-realesrgan
-basicsr
 huggingface_hub
+# ZhengPeng7/BiRefNet (trust_remote_code) imports kornia / timm.
+kornia
+timm

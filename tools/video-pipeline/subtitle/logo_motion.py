@@ -314,6 +314,21 @@ def logo_overlay_xy_expr(
     )
 
 
+def build_percent_static_overlay_filter(
+    main_pad: str,
+    overlay_pad: str,
+    out_pad: str,
+    x_pct: float,
+    y_pct: float,
+) -> str:
+    """Static overlay at X/Y percent of remaining space (0 = top-left, 100 = bottom-right)."""
+    xf = min(100.0, max(0.0, float(x_pct))) / 100.0
+    yf = min(100.0, max(0.0, float(y_pct))) / 100.0
+    x_expr = _esc(f"(W-w)*{xf:.6g}")
+    y_expr = _esc(f"(H-h)*{yf:.6g}")
+    return f"{main_pad}{overlay_pad}overlay=x='{x_expr}':y='{y_expr}'{out_pad}"
+
+
 def build_logo_overlay_filter(
     main_pad: str,
     logo_pad: str,

@@ -7,6 +7,7 @@ Pipeline tiếng Việt:
 
 from __future__ import annotations
 
+import json
 import re
 import unicodedata
 
@@ -68,26 +69,90 @@ def normalize_tts_text_for_audio(text: str) -> str:
     return ensure_tts_trailing_period(t)
 
 
-def apply_tts_acronym_rules(text: str) -> str:
-    """Thay viết tắt chữ cái → cách đọc tiếng Việt. Thứ tự: dài / có khoảng trắng trước."""
+# match: word = \b…\b IGNORECASE; regex = pattern IGNORECASE; plain = str.replace (giữ thứ tự).
+DEFAULT_TTS_ACRONYM_RULES: tuple[dict[str, str], ...] = (
+    {"from": r"\bS\s+S\s+S\b", "to": "Ba Ét", "match": "regex"},
+    {"from": r"\bSSS\b", "to": "Ba Ét", "match": "regex"},
+    {"from": r"\bS\s+S\b", "to": "Hai Ét", "match": "regex"},
+    {"from": r"\bSS\b", "to": "Hai Ét", "match": "regex"},
+    {"from": r"\bS\b", "to": "Ét", "match": "regex"},
+    {"from": r"\bHACK\b", "to": "Hách", "match": "regex"},
+    {"from": r"\bMecha\b", "to": "Mê cha", "match": "regex"},
+    {"from": r"\bHaiz+\b", "to": "Hài", "match": "regex"},
+    {"from": "A.I", "to": "Ây Ai", "match": "plain"},
+    {"from": "AI", "to": "Ây Ai", "match": "plain"},
+    {
+        "from": r"\bđi\s+thôi\s*[,.]\s*đi\s+thôi\b",
+        "to": "Đi thôi",
+        "match": "regex",
+    },
+)
+
+_MATCH_KINDS = frozenset({"word", "plain", "regex"})
+_active_acronym_rules: list[dict[str, str]] = [dict(r) for r in DEFAULT_TTS_ACRONYM_RULES]
+
+
+def _normalize_acronym_rule(raw: object) -> dict[str, str] | None:
+    if not isinstance(raw, dict):
+        return None
+    src = str(raw.get("from") or "").strip()
+    if not src:
+        return None
+    dest = str(raw.get("to") if raw.get("to") is not None else "")
+    kind = str(raw.get("match") or "word").strip().lower()
+    if kind not in _MATCH_KINDS:
+        kind = "word"
+    return {"from": src, "to": dest, "match": kind}
+
+
+def parse_tts_acronym_rules(raw: object) -> list[dict[str, str]]:
+    """Parse JSON list / list dict → rules. Phần tử lỗi bỏ qua."""
+    if isinstance(raw, str):
+        text = raw.strip()
+        if not text:
+            return []
+        try:
+            raw = json.loads(text)
+        except (TypeError, ValueError):
+            return []
+    if not isinstance(raw, list):
+        return []
+    out: list[dict[str, str]] = []
+    for item in raw:
+        rule = _normalize_acronym_rule(item)
+        if rule:
+            out.append(rule)
+    return out
+
+
+def configure_tts_acronym_rules(rules: object | None) -> None:
+    """None → mặc định pipeline. List (kể cả rỗng) → dùng đúng list đó."""
+    global _active_acronym_rules
+    if rules is None:
+        _active_acronym_rules = [dict(r) for r in DEFAULT_TTS_ACRONYM_RULES]
+        return
+    _active_acronym_rules = parse_tts_acronym_rules(rules)
+
+
+def apply_tts_acronym_rules(text: str, rules: object | None = None) -> str:
+    """Thay viết tắt → cách đọc tiếng Việt. Thứ tự theo list cấu hình."""
     t = str(text or "")
     if not t.strip():
         return t
-    t = re.sub(r"\bS\s+S\s+S\b", "Ba Ét", t, flags=re.IGNORECASE)
-    t = re.sub(r"\bSSS\b", "Ba Ét", t, flags=re.IGNORECASE)
-    t = re.sub(r"\bS\s+S\b", "Hai Ét", t, flags=re.IGNORECASE)
-    t = re.sub(r"\bSS\b", "Hai Ét", t, flags=re.IGNORECASE)
-    t = re.sub(r"\bS\b", "Ét", t, flags=re.IGNORECASE)
-    t = re.sub(r"\bHACK\b", "Hách", t, flags=re.IGNORECASE)
-    t = re.sub(r"\bMecha\b", "Mê cha", t, flags=re.IGNORECASE)
-    t = re.sub(r"\bHaiz+\b", "Hài", t, flags=re.IGNORECASE)
-    t = t.replace("A.I", "Ây Ai").replace("AI", "Ây Ai")
-    t = re.sub(
-        r"\bđi\s+thôi\s*[,.]\s*đi\s+thôi\b",
-        "Đi thôi",
-        t,
-        flags=re.IGNORECASE,
-    )
+    seq = _active_acronym_rules if rules is None else parse_tts_acronym_rules(rules)
+    for rule in seq:
+        src = rule["from"]
+        dest = rule["to"]
+        kind = rule["match"]
+        if kind == "plain":
+            t = t.replace(src, dest)
+            continue
+        pattern = src if kind == "regex" else rf"\b{re.escape(src)}\b"
+        try:
+            compiled = re.compile(pattern, flags=re.IGNORECASE)
+        except re.error:
+            continue
+        t = compiled.sub(lambda _m, replacement=dest: replacement, t)
     return t
 
 

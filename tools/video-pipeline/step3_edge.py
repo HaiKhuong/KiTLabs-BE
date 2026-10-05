@@ -37,6 +37,8 @@ def configure_step3_edge(
 
 def tts_normalize_vi(text, enabled: bool):
     """Alias — dùng pipeline chung ``tts_text_normalize``."""
+    from tts_text_normalize import prepare_tts_vi_text
+
     return prepare_tts_vi_text(str(text or ""), vinorm_enabled=bool(enabled))
 
 
@@ -93,6 +95,7 @@ async def edge_tts_save_mp3_async(text, out_path, rate: str) -> None:
 
 def run_edge_tts_mp3_save(text, out_path, rate: str) -> None:
     from omnivoice_tts import ensure_tts_trailing_period
+    from tts_text_normalize import apply_tts_acronym_rules
 
-    tts_text = ensure_tts_trailing_period(text)
+    tts_text = ensure_tts_trailing_period(apply_tts_acronym_rules(text))
     asyncio.run(edge_tts_save_mp3_async(tts_text, out_path, rate))
