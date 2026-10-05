@@ -234,6 +234,9 @@ def _build_translate_prompt(batch: list, payload_text: str, translation_context:
         'Example: a trailing "Đây." with no role in the line — omit it in Vietnamese. '
         "Still return every line id; never drop a whole cue.\n",
         "If a cue is unusually long, translate more compactly than usual: short spoken Vietnamese, same meaning, no padding.\n",
+        "NUMBERS: write every number in Vietnamese digit style. Thousands separator is a dot (.), never a comma.\n",
+        "Examples: 3000, 3,000, 三千 → 3.000; 15000 → 15.000; 1000000, 一百万 → 1.000.000.\n",
+        "Numbers below 1000 stay plain digits (12, 999). Decimal separator is a comma: 3.5 → 3,5; 12.25 → 12,25.\n",
     ]
 
     if translation_context and translation_context.strip():
@@ -246,12 +249,26 @@ def _build_translate_prompt(batch: list, payload_text: str, translation_context:
         f"{payload_text}\n\n"
         "OUTPUT RULES (mandatory):\n"
         f"- Return exactly {line_count} lines with ids 0 to {last_id}, same order as input.\n"
-        "- Translate each input line separately into exactly one output line.\n"
-        "- Do NOT merge, split, skip, drop, or reorder lines. Do not summarize across lines.\n"
-        "- Dropping filler words inside a line is allowed; compressing a long line is allowed.\n"
-        "- Do NOT combine short consecutive lines into one translation.\n"
+        "- ONE INPUT LINE = ONE OUTPUT LINE. Translate only the words on that line.\n"
+        "- NEVER merge lines. NEVER fold two or more source lines into one Vietnamese sentence.\n"
+        "- If a Chinese sentence is split across cues, keep the split. Leave each Vietnamese line incomplete if the source line is incomplete. Continue on the next id.\n"
+        "- Do NOT pull words from the next or previous line into the current line.\n"
+        "- Do NOT skip, drop, split, or reorder lines. Do not summarize across lines.\n"
+        "- Dropping filler words inside a single line is allowed; compressing a long line is allowed. Combining lines is not.\n"
         "- Format each output line: id:|Vietnamese translation\n"
         "- Output ONLY translated lines. No notes, no markdown, no extra text.\n"
+        "LINE LOCK EXAMPLE (pattern only — do not copy these ids; use the INPUT ids above):\n"
+        "Source stays split. Each id translates only itself.\n"
+        "436:|...(cue before)\n"
+        "437:|最空旷的地方了\n"
+        "438:|而且谁说容不下的\n"
+        "WRONG — several cues fused into one line, later words pulled upward:\n"
+        "436:|không gian này cũng không chứa nổi Hỗn Độn thế giới của chúng ta.\n"
+        "REQUIRED — same split, one Vietnamese line per source line:\n"
+        "436:|Chúng ta đang ở nơi rộng rãi nhất\n"
+        "437:|của Biển Giới này rồi.\n"
+        "438:|Mà ai bảo là không chứa nổi.\n"
+        "437 must not contain words from 438. 438 must not be swallowed into 436 or 437.\n"
     )
     return "".join(prompt_parts)
 
