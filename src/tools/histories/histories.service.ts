@@ -13,6 +13,7 @@ import {
   UNIFIED_HISTORY_UNION_SQL,
   type UnifiedHistorySource,
 } from "./histories.constants";
+import { readPipelineStepFromVideoPath } from "./read-pipeline-step";
 
 export type UnifiedHistoryMediaKind = "video" | "audio";
 
@@ -26,6 +27,10 @@ export type UnifiedHistoryItemDto = {
   playUrl: string | null;
   folderPath: string | null;
   previewText: string | null;
+  /** pending/running media jobs only. Completed rows omit this. */
+  status?: "pending" | "running" | "completed";
+  /** Latest Step N from pipeline.log while the job is still rendering. */
+  currentStep?: number | null;
 };
 
 export type UnifiedHistoryPageDto = {
@@ -44,6 +49,8 @@ type UnifiedHistoryRawRow = {
   result_path: string | null;
   preview_text: string | null;
   artifact_kind: string | null;
+  job_status: string | null;
+  video_path: string | null;
 };
 
 @Injectable()
@@ -81,7 +88,7 @@ export class HistoriesService {
 
     const rows = await this.dataSource.query<UnifiedHistoryRawRow[]>(
       `
-        SELECT id, source, name, completed_at, result_path, preview_text, artifact_kind
+        SELECT id, source, name, completed_at, result_path, preview_text, artifact_kind, job_status, video_path
         FROM (${UNIFIED_HISTORY_UNION_SQL}) AS unified
         WHERE ($2 = 'all' OR source = $2)
         ORDER BY completed_at DESC
@@ -244,6 +251,10 @@ export class HistoriesService {
       }
     }
 
+    const jobStatus = String(row.job_status ?? "completed").trim().toLowerCase();
+    const rendering = jobStatus === "pending" || jobStatus === "running";
+    const currentStep = rendering ? readPipelineStepFromVideoPath(row.video_path) : null;
+
     return {
       id: row.id,
       source,
@@ -254,6 +265,9 @@ export class HistoriesService {
       playUrl,
       folderPath: (resultPath || rawPath) ? dirname(resultPath || rawPath) : null,
       previewText: previewText || null,
+      status: rendering ? (jobStatus as "pending" | "running") : "completed",
+      currentStep,
     };
   }
+
 }

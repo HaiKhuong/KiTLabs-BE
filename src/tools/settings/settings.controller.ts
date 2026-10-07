@@ -20,6 +20,7 @@ import { SettingsService } from "./settings.service";
 import { AppConfigService } from "../../common/config/app-config.service";
 import { RUNTIME_CODE_SET } from "../../common/config/runtime-settings.catalog";
 import { UpsertRuntimeSettingsDto } from "./dto/upsert-runtime-settings.dto";
+import { RenderQueueResetService } from "./render-queue-reset.service";
 import { RuntimeHealthService } from "./runtime-health.service";
 
 @ApiTags("Settings")
@@ -30,6 +31,7 @@ export class SettingsController {
     private readonly settingsService: SettingsService,
     private readonly appConfigService: AppConfigService,
     private readonly runtimeHealthService: RuntimeHealthService,
+    private readonly renderQueueResetService: RenderQueueResetService,
   ) {}
 
   @Public()
@@ -57,6 +59,13 @@ export class SettingsController {
   @Get("runtime/health")
   async runtimeHealth() {
     return this.runtimeHealthService.checkAll();
+  }
+
+  @Public()
+  @ApiOperation({ summary: "Drop pending render jobs before the desktop app relaunches" })
+  @Post("runtime/clear-render-queues")
+  async clearRenderQueues() {
+    return this.renderQueueResetService.clearForRelaunch();
   }
 
   @ApiOperation({ summary: "List global settings" })

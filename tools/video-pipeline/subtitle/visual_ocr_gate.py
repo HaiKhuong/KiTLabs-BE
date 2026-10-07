@@ -10,11 +10,9 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Any, Callable
 
-from subtitle.normalize import clean_text, has_cjk, same_subtitle_line
+from subtitle.normalize import clean_text, same_subtitle_line
 from subtitle.watermark import should_skip_text
 
-# Giữ cue đếm ngược phim (3 → 2 → 1); lọc noise OCR ngắn.
-_COUNTDOWN_SINGLE_CHARS = frozenset({"1", "2", "3", "１", "２", "３"})
 _SHORT_ASCII_NOISE_MAX_LEN = 3
 _RE_ASCII_ALNUM = re.compile(r"^[A-Za-z0-9]+$")
 
@@ -660,18 +658,13 @@ def merge_cues_with_gap(
 
 def should_drop_short_noise_subtitle(text: str) -> bool:
     """
-    Drop OCR garbage on Chinese subs:
-    - Never drop text with CJK (including single-char Chinese like 人/我/好)
-    - Keep countdown 1/2/3
-    - Drop single non-CJK chars and <=3 ASCII alnum without CJK (CE, AUM, y, …)
+    Drop OCR garbage before the SRT is written:
+    - Drop every 1-character cue (n, y, 人, 1, …)
+    - Drop <=3 ASCII alnum without CJK (CE, AUM, …)
     """
     compact = clean_text(text)
     if not compact:
         return True
-    if compact in _COUNTDOWN_SINGLE_CHARS:
-        return False
-    if has_cjk(compact):
-        return False
     if len(compact) == 1:
         return True
     if (
@@ -698,7 +691,7 @@ def filter_short_noise_cues(
     if dropped:
         log(
             f"{label}: dropped {dropped} short noise cue(s) "
-            f"(kept countdown 3/2/1; removed ASCII/CJK-less junk)"
+            "(removed 1-character cues and short ASCII junk)"
         )
     return kept
 
@@ -787,6 +780,7 @@ def write_srt_cues(
 ) -> Path:
     from subtitle.merge import merge_exact_duplicate_cues
 
+    cues = [cue for cue in cues if not should_drop_short_noise_subtitle(cue[2])]
     cues, _merge_count = merge_exact_duplicate_cues(cues)
     min_dur = int(min_duration_ms or 0)
     with open(srt_path, "w", encoding="utf8") as f:

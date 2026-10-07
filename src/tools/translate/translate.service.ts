@@ -23,6 +23,7 @@ import {
 } from "../../common/process/render-cancel";
 import { RenderProcessRegistry } from "../../common/process/render-process-registry";
 import { isAppPlatform } from "../../common/desktop/request-platform";
+import { readPipelineStepFromVideoPath } from "../histories/read-pipeline-step";
 import { ModelsService } from "../models/models.service";
 import { CreateTranslateJobDto } from "./dto/create-translate-job.dto";
 import { TranslateEngineConfigDto } from "./dto/translate-engine-config.dto";
@@ -239,10 +240,18 @@ export class TranslateService {
     );
   }
 
-  async getHistory(userId: string): Promise<TranslateHistory[]> {
-    return this.translateRepository.find({
+  async getHistory(userId: string): Promise<Array<TranslateHistory & { currentStep: number | null }>> {
+    const rows = await this.translateRepository.find({
       where: { userId },
       order: { createdAt: "DESC" },
+    });
+    return rows.map((row) => {
+      const rendering = row.status === QueueJobStatus.RUNNING || row.status === QueueJobStatus.PENDING;
+      const engineConfig = (row.engineConfig ?? {}) as Record<string, unknown>;
+      const videoPath = engineConfig.localVideoPath ?? engineConfig.local_video_path;
+      const currentStep =
+        rendering && typeof videoPath === "string" ? readPipelineStepFromVideoPath(videoPath) : null;
+      return Object.assign(row, { currentStep });
     });
   }
 

@@ -108,52 +108,6 @@ def merge_overlapping(items: list[dict], iou_thresh: float = 0.45) -> list[dict]
     return kept
 
 
-def box_area(box: list[float]) -> float:
-    return max(0.0, box[2] - box[0]) * max(0.0, box[3] - box[1])
-
-
-def intersection_area(a: list[float], b: list[float]) -> float:
-    ix1, iy1 = max(a[0], b[0]), max(a[1], b[1])
-    ix2, iy2 = min(a[2], b[2]), min(a[3], b[3])
-    return max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
-
-
-def union_box(a: list[float], b: list[float]) -> list[float]:
-    return [min(a[0], b[0]), min(a[1], b[1]), max(a[2], b[2]), max(a[3], b[3])]
-
-
-def attach_held_accessories(items: list[dict]) -> list[dict]:
-    """A smaller box touching a character (weapon, prop, icon) is part of that character."""
-    hosts: list[dict] = []
-    for item in sorted(items, key=lambda row: box_area(row["box"]), reverse=True):
-        item_area = box_area(item["box"]) or 1.0
-        host = None
-        best = 0.0
-        for subject in hosts:
-            subject_area = box_area(subject["box"]) or 1.0
-            if item_area > subject_area * 0.65:
-                continue
-            width = subject["box"][2] - subject["box"][0]
-            height = subject["box"][3] - subject["box"][1]
-            pad = 0.18 * max(width, height)
-            expanded = [
-                subject["box"][0] - pad,
-                subject["box"][1] - pad,
-                subject["box"][2] + pad,
-                subject["box"][3] + pad,
-            ]
-            overlap = intersection_area(expanded, item["box"]) / item_area
-            if overlap > best:
-                best = overlap
-                host = subject
-        if host is not None and best >= 0.15:
-            host["box"] = union_box(host["box"], item["box"])
-            log(f"attach {item['label']} -> {host['label']}")
-        else:
-            hosts.append(item)
-    return hosts
-
-
 def run_subject_detect(image_path: Path, models_dir: Path, device: str):
     """People (man/woman/child/baby) and cartoon / anime icons via YOLO-World."""
     from ultralytics import YOLOWorld
@@ -177,7 +131,7 @@ def run_subject_detect(image_path: Path, models_dir: Path, device: str):
         cls_id = int(box.cls[0])
         label = str(names.get(cls_id, cls_id))
         found.append({"label": label, "confidence": round(conf, 4), "box": xyxy})
-    return merge_overlapping(attach_held_accessories(found))[:MAX_CUTOUTS]
+    return merge_overlapping(found)[:MAX_CUTOUTS]
 
 
 def run_detect(image_path: Path, out_dir: Path, models_dir: Path, device: str) -> dict:

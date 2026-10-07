@@ -50,4 +50,15 @@ export class RenderProcessRegistry {
   release(key: string): void {
     this.handles.delete(key);
   }
+
+  /** Kill live render processes without marking them as a user cancel. */
+  killAll(): void {
+    for (const list of this.handles.values()) {
+      for (const handle of list) {
+        if (handle.child?.pid) {
+          killProcessTree(handle.child.pid);
+        }
+      }
+    }
+  }
 }

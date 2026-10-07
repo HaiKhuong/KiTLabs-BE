@@ -23,13 +23,28 @@ export const UNIFIED_HISTORY_UNION_SQL = `
   SELECT
     id::text AS id,
     'media'::text AS source,
-    COALESCE(result_file_name, 'output.mp4') AS name,
+    COALESCE(
+      result_file_name,
+      NULLIF(
+        regexp_replace(
+          COALESCE(engine_config->>'localVideoPath', engine_config->>'local_video_path', ''),
+          '^.*[\\\\/]',
+          ''
+        ),
+        ''
+      ),
+      'output.mp4'
+    ) AS name,
     updated_at AS completed_at,
     result_path AS result_path,
     NULL::text AS preview_text,
-    'media'::text AS artifact_kind
+    'media'::text AS artifact_kind,
+    status::text AS job_status,
+    COALESCE(engine_config->>'localVideoPath', engine_config->>'local_video_path') AS video_path
   FROM translate_histories
-  WHERE user_id = $1 AND status = 'completed' AND deleted_at IS NULL
+  WHERE user_id = $1
+    AND status IN ('pending', 'running', 'completed')
+    AND deleted_at IS NULL
 
   UNION ALL
 
@@ -40,9 +55,13 @@ export const UNIFIED_HISTORY_UNION_SQL = `
     updated_at AS completed_at,
     result_path AS result_path,
     input_text AS preview_text,
-    'voice'::text AS artifact_kind
+    'voice'::text AS artifact_kind,
+    status::text AS job_status,
+    NULL::text AS video_path
   FROM audio_histories
-  WHERE user_id = $1 AND status = 'completed' AND deleted_at IS NULL
+  WHERE user_id = $1
+    AND status IN ('pending', 'running', 'completed')
+    AND deleted_at IS NULL
 
   UNION ALL
 
@@ -53,9 +72,13 @@ export const UNIFIED_HISTORY_UNION_SQL = `
     COALESCE(render_finished_at, updated_at) AS completed_at,
     result_path AS result_path,
     NULL::text AS preview_text,
-    'shortVideo'::text AS artifact_kind
+    'shortVideo'::text AS artifact_kind,
+    status::text AS job_status,
+    NULL::text AS video_path
   FROM short_video_histories
-  WHERE user_id = $1 AND status = 'completed' AND deleted_at IS NULL
+  WHERE user_id = $1
+    AND status IN ('pending', 'running', 'completed')
+    AND deleted_at IS NULL
 
   UNION ALL
 
@@ -66,9 +89,16 @@ export const UNIFIED_HISTORY_UNION_SQL = `
     COALESCE(render_finished_at, updated_at) AS completed_at,
     result_path AS result_path,
     NULL::text AS preview_text,
-    'whiteboard'::text AS artifact_kind
+    'whiteboard'::text AS artifact_kind,
+    status::text AS job_status,
+    NULL::text AS video_path
   FROM whiteboard_histories
-  WHERE user_id = $1 AND status = 'completed' AND queue_job_id IS NOT NULL AND deleted_at IS NULL
+  WHERE user_id = $1
+    AND deleted_at IS NULL
+    AND (
+      status IN ('pending', 'running')
+      OR (status = 'completed' AND queue_job_id IS NOT NULL)
+    )
 
   UNION ALL
 
@@ -79,9 +109,16 @@ export const UNIFIED_HISTORY_UNION_SQL = `
     updated_at AS completed_at,
     result_path AS result_path,
     NULL::text AS preview_text,
-    'recap'::text AS artifact_kind
+    'recap'::text AS artifact_kind,
+    status::text AS job_status,
+    NULL::text AS video_path
   FROM recap_histories
-  WHERE user_id = $1 AND status = 'completed' AND result_path IS NOT NULL AND result_path <> '' AND deleted_at IS NULL
+  WHERE user_id = $1
+    AND deleted_at IS NULL
+    AND (
+      status IN ('pending', 'running')
+      OR (status = 'completed' AND result_path IS NOT NULL AND result_path <> '')
+    )
 
   UNION ALL
 
@@ -92,7 +129,14 @@ export const UNIFIED_HISTORY_UNION_SQL = `
     updated_at AS completed_at,
     result_path AS result_path,
     NULL::text AS preview_text,
-    'narrato'::text AS artifact_kind
+    'narrato'::text AS artifact_kind,
+    status::text AS job_status,
+    NULL::text AS video_path
   FROM narrato_histories
-  WHERE user_id = $1 AND status = 'completed' AND result_path IS NOT NULL AND result_path <> '' AND deleted_at IS NULL
+  WHERE user_id = $1
+    AND deleted_at IS NULL
+    AND (
+      status IN ('pending', 'running')
+      OR (status = 'completed' AND result_path IS NOT NULL AND result_path <> '')
+    )
 `;

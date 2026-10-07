@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from subtitle.normalize import clean_text, same_subtitle_line
+from subtitle.visual_ocr_gate import filter_short_noise_cues, write_srt_cues
 from subtitle.watermark import filter_watermarks, DEFAULT_WATERMARK_BLACKLIST
 from subtitle.models import SubtitleSegment
 
@@ -158,11 +159,17 @@ def _validate_windows_vsf_runtime(binary: Path) -> None:
     )
 
 
+def _vsf_printed_usage(tail: str) -> bool:
+    return "Usage: VideoSubFinderWXW" in tail or "Supported command line options" in tail
+
+
 def _format_vsf_exit_error(code: int, binary: Path | None, tail: str) -> str:
     msg = f"Step1 VSE: VideoSubFinder failed (code={code}).\n"
-    if code in (4294967295, -1):
+    if code in (4294967295, -1) and _vsf_printed_usage(tail):
         msg += (
-            "Exit -1 often means an unsupported CLI flag (e.g. --verbose on Windows VideoSubFinderWXW.exe).\n"
+            "VideoSubFinder printed its usage text, so a CLI flag was rejected.\n"
+            "Windows VideoSubFinderWXW.exe accepts -c -r -ovocv -uc -te -be -le -re "
+            "-nthr -nocrthr -i -o -ces (not --verbose).\n"
         )
     if platform.system() == "Windows" and code in (_WIN_DLL_NOT_FOUND_EXIT, -1073741515):
         bin_dir = binary.parent if binary else None
@@ -408,6 +415,15 @@ def _run_subprocess_streaming(cmd: list[str], *, cwd: str, env: dict, out_dir: P
     elapsed = time.time() - t0
     imgs = _count_vsf_images(out_dir)
     log(f"Step1 VSE: process exit={code} elapsed={elapsed:.1f}s images={imgs}")
+    # VideoSubFinderWXW.exe returns 4294967295 (-1) after a normal CLI run,
+    # including when RGBImages were written. Only a usage dump means bad flags.
+    if code in (4294967295, -1):
+        tail = "\n".join(line_buf[-30:])
+        if not _vsf_printed_usage(tail):
+            log(
+                "Step1 VSE: VideoSubFinderWXW exit -1 is its normal CLI status; continuing"
+            )
+            return 0
     if code != 0:
         tail = "\n".join(line_buf[-30:])
         binary = None
@@ -436,14 +452,13 @@ def _build_vsf_args(
     """
     Build VideoSubFinder CLI args.
 
-    Windows VideoSubFinderWXW.exe (YaoFANGUK) does NOT support --verbose (exit -1).
-    Match video-subtitle-extractor GUI flags on Windows native.
-    eritpchy Docker/Linux CLI accepts --verbose and -ovocv shorthand.
+    Windows VideoSubFinderWXW.exe (Kosnitsky) returns exit -1 even after a
+    successful search. It accepts the short flags below and rejects --verbose.
     """
     is_win_native = platform.system() == "Windows" and not use_docker
     args: list[str] = ["-c", "-r"]
     if use_cuda:
-        args.append("--use_cuda" if is_win_native else "-uc")
+        args.append("-uc")
     args += [
         "-te", f"{top_end:.6f}",
         "-be", f"{bottom_end:.6f}",
@@ -452,7 +467,7 @@ def _build_vsf_args(
         "-nthr", str(cpu_count),
     ]
     if is_win_native:
-        args += ["-nocrthr", str(cpu_count), "--open_video_opencv"]
+        args += ["-nocrthr", str(cpu_count), "-ovocv"]
     else:
         if use_docker:
             args.insert(0, "--verbose")
@@ -717,13 +732,16 @@ def _ocr_with_vsf(video_path: Path) -> Path:
     if not kept:
         raise RuntimeError("Step1 VSE: tất cả block bị lọc bởi watermark filter.")
 
-    min_dur = int(_cfg["min_duration_ms"])
-    fmt_time = _cfg["fmt_time"]
+    kept = filter_short_noise_cues(kept, log=log, label="Step1 VSE")
+    if not kept:
+        raise RuntimeError("Step1 VSE: tất cả block bị lọc (cue 1 ký tự / noise).")
+
     srt_path = _cfg["get_zh_srt_path"]()
-    with open(srt_path, "w", encoding="utf8") as f:
-        for i, (start, end, text) in enumerate(kept, 1):
-            if (end - start) * 1000 < min_dur:
-                end = start + min_dur / 1000.0
-            f.write(f"{i}\n{fmt_time(start)} --> {fmt_time(end)}\n{text}\n\n")
+    write_srt_cues(
+        kept,
+        srt_path,
+        fmt_time=_cfg["fmt_time"],
+        min_duration_ms=int(_cfg["min_duration_ms"]),
+    )
     log(f"Step1 VSE: done — {len(kept)} blocks → {srt_path}")
     return srt_path
