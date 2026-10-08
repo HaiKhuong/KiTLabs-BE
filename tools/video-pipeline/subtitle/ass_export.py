@@ -9,8 +9,8 @@ still jumps some cues:
 - SRT multi-line becomes \\N (same visual jump, still easy to miss).
 
 This module writes ASS directly and normalizes headers/events so cues do not
-jump from collisions. Bottom alignment (1/2/3) is kept so wrapped lines grow
-*up* (libass) and stay on-screen when MarginV is small.
+jump from collisions. 1-line cues keep bottom Alignment+MarginV. 2-line cues
+use \\an5\\pos on the 1-line vertical center so the block is height-centered.
 """
 
 from __future__ import annotations
@@ -21,6 +21,8 @@ from pathlib import Path
 # Match ffmpeg Lavc ssa defaults + FE ASS_DEFAULT_PLAY_RES_Y.
 ASS_PLAY_RES_X = 384
 ASS_PLAY_RES_Y = 288
+ASS_MARGIN_L = 10
+ASS_MARGIN_R = 10
 
 _OVERRIDE_TAG_RE = re.compile(r"\{[^}]*\}")
 _HTML_TAG_RE = re.compile(r"<[^>]+>")
@@ -72,13 +74,7 @@ def resolve_ass_alignment(raw) -> int:
 
 
 def style_alignment_and_margin_v(alignment, margin_v, fontsize) -> tuple[int, int]:
-    """Return ASS Alignment + MarginV.
-
-    Keep 1/2/3 (bottom). Libass grows extra wrap lines *up*, so a 2-line cue
-    near the bottom stays inside the frame instead of clipping below.
-    Mapping to 7/8/9 would grow *down* from a top offset and clip the 2nd line
-    when MarginV is small.
-    """
+    """Style Alignment + MarginV for 1-line cues (bottom 1/2/3 stay as configured)."""
     del fontsize
     align = resolve_ass_alignment(alignment)
     try:
@@ -86,6 +82,67 @@ def style_alignment_and_margin_v(alignment, margin_v, fontsize) -> tuple[int, in
     except (TypeError, ValueError):
         mv = 0
     return align, mv
+
+
+def one_line_center_y(alignment, margin_v, fontsize) -> int:
+    """PlayRes Y of a 1-line cue's vertical center (matches configured MarginV)."""
+    align, mv = style_alignment_and_margin_v(alignment, margin_v, fontsize)
+    fs = max(1, int(fontsize) if fontsize is not None else 16)
+    if align in (1, 2, 3):
+        return ASS_PLAY_RES_Y - mv - fs // 2
+    if align in (7, 8, 9):
+        return mv + fs // 2
+    return ASS_PLAY_RES_Y // 2
+
+
+def estimate_line_width(text: str, fontsize: int) -> float:
+    fs = max(1, int(fontsize))
+    width = 0.0
+    for ch in text:
+        if ch == " ":
+            width += fs * 0.33
+        elif ord(ch) > 127:
+            width += fs * 0.62
+        else:
+            width += fs * 0.52
+    return width
+
+
+def wrap_subtitle_lines(text: str, fontsize: int, max_lines: int = 2) -> list[str]:
+    """Word-wrap to at most `max_lines` using PlayRes width (libass still paints glyphs)."""
+    normalized = flatten_subtitle_text(text)
+    if not normalized:
+        return []
+    limit = float(ASS_PLAY_RES_X - ASS_MARGIN_L - ASS_MARGIN_R)
+    if estimate_line_width(normalized, fontsize) <= limit or max_lines < 2:
+        return [normalized]
+    words = normalized.split(" ")
+    if len(words) == 1:
+        mid = max(1, len(normalized) // 2)
+        return [normalized[:mid], normalized[mid:]]
+    best_i = 1
+    best_score = 10**9
+    for i in range(1, len(words)):
+        left = " ".join(words[:i])
+        right = " ".join(words[i:])
+        score = max(estimate_line_width(left, fontsize), estimate_line_width(right, fontsize))
+        if score < best_score:
+            best_score = score
+            best_i = i
+    return [" ".join(words[:best_i]), " ".join(words[best_i:])]
+
+
+def format_dialogue_text(text: str, alignment, margin_v, fontsize) -> str:
+    """1 line: Default style (configured Y). 2 lines: middle-align on that 1-line center."""
+    lines = wrap_subtitle_lines(text, fontsize, max_lines=2)
+    if not lines:
+        return ""
+    if len(lines) == 1:
+        return lines[0]
+    body = "\\N".join(lines)
+    cx = ASS_PLAY_RES_X // 2
+    cy = one_line_center_y(alignment, margin_v, fontsize)
+    return f"{{\\an5\\pos({cx},{cy})\\q2}}{body}"
 
 
 def clamp_cue_ranges_cs(cues: list[tuple[int, int, str]]) -> list[tuple[int, int, str]]:
@@ -122,7 +179,7 @@ def _default_style_line(
     return (
         f"Style: Default,{font_name},{int(fontsize)},{primary},&H000000FF,"
         f"{outline_colour},&H00000000,0,0,0,0,100,100,0,0,1,"
-        f"{int(outline)},{int(shadow)},{align},10,10,{mv},1"
+        f"{int(outline)},{int(shadow)},{align},{ASS_MARGIN_L},{ASS_MARGIN_R},{mv},1"
     )
 
 
@@ -162,7 +219,7 @@ def build_ass_document(
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
     ]
     for start_cs, end_cs, text in clamped:
-        body = flatten_subtitle_text(text)
+        body = format_dialogue_text(text, alignment, margin_v, fontsize)
         if not body:
             continue
         lines.append(
@@ -257,7 +314,12 @@ def normalize_ass_file(
         alignment=alignment,
         margin_v=margin_v,
     )
-    lines = _sanitize_events(lines)
+    lines = _sanitize_events(
+        lines,
+        alignment=alignment,
+        margin_v=margin_v,
+        fontsize=fontsize,
+    )
     path.write_text("".join(lines), encoding="utf8")
 
 
@@ -315,7 +377,7 @@ def _replace_default_style(lines: list[str], **style_kw) -> list[str]:
     return lines
 
 
-def _sanitize_events(lines: list[str]) -> list[str]:
+def _sanitize_events(lines: list[str], *, alignment, margin_v, fontsize) -> list[str]:
     in_events = False
     parsed: list[tuple[str, str, str]] = []
     event_idx: list[int] = []
@@ -342,7 +404,7 @@ def _sanitize_events(lines: list[str]) -> list[str]:
         end_cs = ass_time_to_cs(line[second + 1 : comma_pos[2]])
         prefix = line[: first + 1]
         mid = line[comma_pos[2] : text_start]
-        text = flatten_subtitle_text(line[text_start:])
+        text = format_dialogue_text(line[text_start:], alignment, margin_v, fontsize)
         event_idx.append(idx)
         parsed.append((prefix, mid, text))
         cues.append((start_cs, end_cs, text))

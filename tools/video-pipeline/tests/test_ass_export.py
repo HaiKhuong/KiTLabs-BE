@@ -14,9 +14,12 @@ if str(_ROOT) not in sys.path:
 from subtitle.ass_export import (  # noqa: E402
     clamp_cue_ranges_cs,
     flatten_subtitle_text,
+    format_dialogue_text,
     normalize_ass_file,
+    one_line_center_y,
     resolve_ass_alignment,
     style_alignment_and_margin_v,
+    wrap_subtitle_lines,
     write_ass_from_srt_blocks,
 )
 
@@ -66,7 +69,29 @@ class TestAssExport(unittest.TestCase):
         self.assertEqual(out[0][1], 140)
         self.assertEqual(out[1][0], 140)
 
+    def test_short_line_keeps_style_anchor(self):
+        body = format_dialogue_text("Dong ngan", 2, 30, 16)
+        self.assertEqual(body, "Dong ngan")
+        self.assertNotIn("\\an5", body)
+
+    def test_long_line_is_two_lines_height_centered(self):
+        long = (
+            "Day la mot cau phu de tieng Viet rat dai de kiem tra wrap "
+            "va canh giua theo chieu cao"
+        )
+        lines = wrap_subtitle_lines(long, 16)
+        self.assertEqual(len(lines), 2)
+        body = format_dialogue_text(long, 2, 30, 16)
+        cy = one_line_center_y(2, 30, 16)
+        self.assertEqual(cy, 288 - 30 - 8)
+        self.assertTrue(body.startswith(f"{{\\an5\\pos(192,{cy})\\q2}}"))
+        self.assertIn("\\N", body)
+
     def test_write_from_srt_no_overlap_no_n(self):
+        long = (
+            "Day la mot cau phu de tieng Viet rat dai de kiem tra wrap "
+            "va canh giua theo chieu cao"
+        )
         blocks = [
             {"index": 1, "time": "00:00:00,000 --> 00:00:01,500", "text": "Dong ngan"},
             {
@@ -74,6 +99,7 @@ class TestAssExport(unittest.TestCase):
                 "time": "00:00:01,400 --> 00:00:03,000",
                 "text": "Cau dai\ndong hai",
             },
+            {"index": 3, "time": "00:00:03,000 --> 00:00:04,000", "text": long},
         ]
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "sub.ass"
@@ -93,9 +119,12 @@ class TestAssExport(unittest.TestCase):
         self.assertIn("WrapStyle: 0", body)
         self.assertIn("Alignment, MarginL, MarginR, MarginV", body)
         self.assertIn(",2,10,10,30,1", body)
-        self.assertNotIn("\\N", body)
+        self.assertIn("Dong ngan", body)
+        self.assertNotIn("{\\an5\\pos(192,250)\\q2}Dong ngan", body)
         self.assertIn("0:00:00.00,0:00:01.40,", body)
         self.assertIn("Cau dai dong hai", body)
+        self.assertIn("{\\an5\\pos(192,250)\\q2}", body)
+        self.assertIn("\\N", body)
 
     def test_normalize_ffmpeg_sample(self):
         with tempfile.TemporaryDirectory() as tmp:
