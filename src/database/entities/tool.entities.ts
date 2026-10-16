@@ -35,6 +35,12 @@ import {
 import { AiChatHistory } from "../../tools/youtube/entities/ai-chat-history.entity";
 import { TikTokAccount } from "../../tools/tiktok/tiktok-account.entity";
 import { TikTokVideo } from "../../tools/tiktok/tiktok-video.entity";
+import { FacebookAccount } from "../../tools/facebook/facebook-account.entity";
+import { FacebookPage } from "../../tools/facebook/facebook-page.entity";
+import { FacebookPost } from "../../tools/facebook/facebook-post.entity";
+import { FacebookAffiliateLink } from "../../tools/facebook/facebook-affiliate-link.entity";
+import { FacebookCommentSettings } from "../../tools/facebook/facebook-comment-settings.entity";
+import { FacebookTaskLog } from "../../tools/facebook/facebook-task-log.entity";
 
 export const TOOL_DB_ENTITIES = [
   User,
@@ -72,4 +78,10 @@ export const TOOL_DB_ENTITIES = [
   WhiteboardRecentImage,
   TikTokAccount,
   TikTokVideo,
+  FacebookAccount,
+  FacebookPage,
+  FacebookPost,
+  FacebookAffiliateLink,
+  FacebookCommentSettings,
+  FacebookTaskLog,
 ];

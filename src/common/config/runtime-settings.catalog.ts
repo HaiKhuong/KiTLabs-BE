@@ -16,6 +16,7 @@ export const SECRET_SETTING_CODES = new Set([
   "HF_TOKEN",
   "DOUYIN_COOKIE_CONTENT",
   "TIKTOK_CLIENT_SECRET",
+  "META_APP_SECRET",
 ]);
 
 /** Stored as `${code}__App` / `${code}__Web` so one Nest can keep both cookies. */
@@ -73,6 +74,15 @@ export const RUNTIME_SETTING_FIELDS: RuntimeSettingField[] = [
     kind: "string",
     label: "TikTok Redirect URI",
     defaultValue: "http://127.0.0.1:13002/api/tiktok/callback",
+  },
+  { code: "META_APP_ID", group: "facebook", kind: "string", label: "Meta App ID", defaultValue: "" },
+  { code: "META_APP_SECRET", group: "facebook", kind: "secret", label: "Meta App Secret", defaultValue: "" },
+  {
+    code: "META_REDIRECT_URI",
+    group: "facebook",
+    kind: "string",
+    label: "Meta Redirect URI",
+    defaultValue: "http://127.0.0.1:13002/api/facebook/callback",
   },
   { code: "GEMINI_API_KEY", group: "gemini", kind: "secret", label: "Gemini API key thường (nhiều key: cách nhau dấu phẩy)", defaultValue: "" },
   { code: "GEMINI_API_KEY_VIP", group: "gemini", kind: "secret", label: "Gemini API key VIP (nhiều key: cách nhau dấu phẩy)", defaultValue: "" },

@@ -43,6 +43,7 @@ import { ModelsModule } from "./tools/models/models.module";
 import { YouTubeModule } from "./tools/youtube/youtube.module";
 import { HistoriesModule } from "./tools/histories/histories.module";
 import { TikTokModule } from "./tools/tiktok/tiktok.module";
+import { FacebookModule } from "./tools/facebook/facebook.module";
 
 @Module({
   imports: [
@@ -135,6 +136,7 @@ import { TikTokModule } from "./tools/tiktok/tiktok.module";
     VideosModule,
     HistoriesModule,
     TikTokModule,
+    FacebookModule,
   ],
   controllers: [AppController],
   providers: [
