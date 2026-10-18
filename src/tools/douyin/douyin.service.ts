@@ -59,6 +59,7 @@ interface PlaywrightVideoFormat {
   width: number | null;
   ext: string;
   filesize: number | null;
+  fps?: number | null;
   play_url: string | null;
 }
 
@@ -220,7 +221,7 @@ export class DouyinService {
       filesize: f.filesize,
       vcodec: null,
       acodec: null,
-      fps: null,
+      fps: f.fps ?? null,
       playUrl: f.play_url,
     }));
   }

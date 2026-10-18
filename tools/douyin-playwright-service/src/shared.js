@@ -44,54 +44,82 @@ function normalizeDuration(raw) {
   return value > 1000 ? Math.round(value / 1000) : Math.round(value);
 }
 
+function uniqueFormatId(gearName, item, usedIds) {
+  const base = gearName || `br_${item.height || 0}`;
+  if (!usedIds.has(base)) {
+    usedIds.add(base);
+    return base;
+  }
+
+  const withMeta = `${base}_${item.height || 0}_${item.fps || 0}`;
+  if (!usedIds.has(withMeta)) {
+    usedIds.add(withMeta);
+    return withMeta;
+  }
+
+  let index = 2;
+  let next = `${withMeta}_${index}`;
+  while (usedIds.has(next)) {
+    index += 1;
+    next = `${withMeta}_${index}`;
+  }
+  usedIds.add(next);
+  return next;
+}
+
 function extractFormats(video) {
-  const formats = [];
+  const candidates = [];
 
   if (Array.isArray(video?.bit_rate)) {
     for (const br of video.bit_rate) {
-      const playUrl = normalizeUrl(br?.play_addr?.url_list?.[0]);
+      if (String(br?.format || "").toLowerCase() !== "mp4") continue;
+
+      const play = br.play_addr;
+      const playUrl = normalizeUrl(play?.url_list?.[0]);
       if (!playUrl) continue;
 
-      const height = Number(br.height) || 0;
-      const width = Number(br.width) || 0;
+      const height = Number(play?.height) || 0;
+      const width = Number(play?.width) || 0;
+      const fps = Number(br.FPS) || 0;
+      const filesize = Number(play?.data_size) || 0;
 
-      formats.push({
-        format_id: br.gear_name || `br_${height || formats.length}`,
+      candidates.push({
+        gearName: br.gear_name ? String(br.gear_name) : "",
         height: height || null,
         width: width || null,
         ext: "mp4",
-        filesize: br?.play_addr?.data_size || null,
+        filesize: filesize || null,
+        fps: fps || null,
         play_url: playUrl,
       });
     }
   }
 
-  const defaultUrl = normalizeUrl(video?.play_addr?.url_list?.[0]);
-  if (defaultUrl) {
-    const height = Number(video?.height) || 0;
-    const width = Number(video?.width) || 0;
-    const exists = formats.some((f) => f.height === height && height > 0);
-    if (!exists) {
-      formats.push({
-        format_id: "default",
-        height: height || null,
-        width: width || null,
-        ext: "mp4",
-        filesize: video?.play_addr?.data_size || null,
-        play_url: defaultUrl,
-      });
+  const bestByKey = new Map();
+  for (const item of candidates) {
+    const key = [item.fps || 0, item.height || 0, item.width || 0, item.gearName].join("|");
+    const current = bestByKey.get(key);
+    if (!current || (item.filesize || 0) > (current.filesize || 0)) {
+      bestByKey.set(key, item);
     }
   }
 
-  formats.sort((a, b) => (b.height || 0) - (a.height || 0));
-
-  const seen = new Set();
-  return formats.filter((f) => {
-    const key = `${f.height}-${f.width}`;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
+  const sorted = [...bestByKey.values()].sort((a, b) => {
+    const heightDiff = (b.height || 0) - (a.height || 0);
+    if (heightDiff !== 0) return heightDiff;
+    return (b.fps || 0) - (a.fps || 0);
   });
+
+  const usedIds = new Set();
+  return sorted.map((item) => ({
+    format_id: uniqueFormatId(item.gearName, item, usedIds),
+    height: item.height,
+    width: item.width,
+    ext: item.ext,
+    filesize: item.filesize,
+    fps: item.fps,
+    play_url: item.play_url,
+  }));
 }
 
 function mapAwemeToVideo(entry) {
