@@ -47,17 +47,24 @@ export class FacebookController {
     @Res() response: Response,
   ): Promise<void> {
     try {
-      await this.service.completeOAuth({ state, code, error });
-      response
-        .status(200)
-        .type("html")
-        .send("<!doctype html><meta charset=utf-8><title>KiTLabs</title><p>Đã kết nối Facebook. Bạn có thể đóng cửa sổ này.</p>");
+      const completed = await this.service.completeOAuth({ state, code, error });
+      response.redirect(302, `kitlabs://oauth/facebook?status=success&ticket=${encodeURIComponent(completed.ticket)}`);
     } catch {
-      response
-        .status(400)
-        .type("html")
-        .send("<!doctype html><meta charset=utf-8><title>KiTLabs</title><p>Không thể kết nối Facebook. Hãy quay lại KiTLabs và thử lại.</p>");
+      response.redirect(302, "kitlabs://oauth/facebook?status=error");
     }
+  }
+
+  @Public()
+  @Post("handoff/redeem")
+  @Throttle({ default: { limit: 20, ttl: 60_000 } })
+  redeemHandoff(@Body("ticket") ticket: string) {
+    return this.service.redeemHandoff(ticket);
+  }
+
+  @Post("handoff/import")
+  importHandoff(@CurrentUser() user: AuthUser, @Body() body: { apiServerUrl: string; ticket: string }) {
+    this.desktopOnly();
+    return this.service.importHandoff(user.userId, body.apiServerUrl, body.ticket);
   }
 
   @Post("disconnect")

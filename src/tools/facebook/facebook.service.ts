@@ -11,6 +11,7 @@ import {
 import { InjectQueue } from "@nestjs/bullmq";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Queue } from "bullmq";
+import axios from "axios";
 import { randomUUID } from "crypto";
 import { mkdirSync } from "fs";
 import { copyFile } from "fs/promises";
@@ -81,7 +82,7 @@ export class FacebookService implements OnModuleInit, OnModuleDestroy {
     return { authorizationUrl: this.provider.authorizationUrl(state) };
   }
 
-  async completeOAuth(input: { state?: string; code?: string; error?: string }): Promise<{ userId: string }> {
+  async completeOAuth(input: { state?: string; code?: string; error?: string }): Promise<{ userId: string; ticket: string }> {
     if (input.error) throw new BadRequestException("Facebook từ chối đăng nhập");
     if (!input.state || !input.code) throw new BadRequestException("OAuth callback không hợp lệ");
     const userId = await this.oauthStates.consume(input.state);
@@ -105,7 +106,66 @@ export class FacebookService implements OnModuleInit, OnModuleDestroy {
     await this.accounts.save(account);
     await this.syncPages(account, longLived.accessToken);
     this.realtime.notifyUser(userId, "facebook.account.updated", { accountId: account.id });
-    return { userId };
+    const pages = await this.pages.find({ where: { accountId: account.id } });
+    const ticket = await this.oauthStates.createHandoff({
+      provider: "facebook",
+      account: {
+        fbUserId: account.fbUserId, name: account.name, pictureUrl: account.pictureUrl,
+        accessToken: longLived.accessToken, tokenExpiresAt: account.tokenExpiresAt?.toISOString() ?? null,
+        scopes: account.scopes, status: account.status,
+      },
+      pages: pages.map((page) => ({
+        pageId: page.pageId, name: page.name, pictureUrl: page.pictureUrl,
+        pageAccessToken: page.pageAccessTokenEncrypted ? decryptSecret(page.pageAccessTokenEncrypted) : null,
+        tasks: page.tasks, canPublish: page.canPublish, canComment: page.canComment, status: page.status,
+      })),
+    });
+    return { userId, ticket };
+  }
+
+  async redeemHandoff(ticket: string) {
+    const payload = await this.oauthStates.consumeHandoff(ticket);
+    if (!payload || payload.provider !== "facebook") throw new BadRequestException("OAuth handoff is invalid or expired");
+    return payload;
+  }
+
+  async importHandoff(userId: string, apiServerUrl: string, ticket: string) {
+    const base = this.validateApiServerUrl(apiServerUrl);
+    const response = await axios.post(`${base}/api/facebook/handoff/redeem`, { ticket }, { timeout: 15_000 });
+    const payload = (response.data?.data ?? response.data) as any;
+    if (payload?.provider !== "facebook" || !payload.account?.accessToken) throw new BadRequestException("Invalid Facebook handoff payload");
+    let account = await this.accounts.findOne({ where: { userId } });
+    if (!account) account = this.accounts.create({ userId, fbUserId: String(payload.account.fbUserId) });
+    Object.assign(account, {
+      fbUserId: String(payload.account.fbUserId), name: payload.account.name ?? null,
+      pictureUrl: payload.account.pictureUrl ?? null, accessTokenEncrypted: encryptSecret(String(payload.account.accessToken)),
+      tokenExpiresAt: payload.account.tokenExpiresAt ? new Date(payload.account.tokenExpiresAt) : null,
+      scopes: Array.isArray(payload.account.scopes) ? payload.account.scopes.map(String) : [],
+      status: payload.account.status ?? FacebookAccountStatus.CONNECTED, lastCheckedAt: new Date(), lastCheckMessage: null,
+    });
+    account = await this.accounts.save(account);
+    for (const item of Array.isArray(payload.pages) ? payload.pages : []) {
+      let page = await this.pages.findOne({ where: { accountId: account.id, pageId: String(item.pageId) } });
+      if (!page) page = this.pages.create({ accountId: account.id, pageId: String(item.pageId), name: String(item.name ?? "") });
+      Object.assign(page, {
+        name: String(item.name ?? ""), pictureUrl: item.pictureUrl ?? null,
+        pageAccessTokenEncrypted: item.pageAccessToken ? encryptSecret(String(item.pageAccessToken)) : null,
+        tasks: Array.isArray(item.tasks) ? item.tasks.map(String) : [], canPublish: Boolean(item.canPublish),
+        canComment: Boolean(item.canComment), status: item.status ?? FacebookPageStatus.ACTIVE, lastCheckedAt: new Date(),
+      });
+      await this.pages.save(page);
+    }
+    this.realtime.notifyUser(userId, "facebook.account.updated", { accountId: account.id });
+    return this.connection(userId);
+  }
+
+  private validateApiServerUrl(raw: string): string {
+    let url: URL;
+    try { url = new URL(String(raw || "").trim()); } catch { throw new BadRequestException("Invalid API Server URL"); }
+    if (url.protocol !== "https:" && !(url.protocol === "http:" && ["localhost", "127.0.0.1"].includes(url.hostname))) {
+      throw new BadRequestException("API Server must use HTTPS");
+    }
+    return url.toString().replace(/\/+$/, "").replace(/\/api$/, "");
   }
 
   async disconnect(userId: string): Promise<{ disconnected: true }> {

@@ -10,6 +10,7 @@ import {
 import { InjectQueue } from "@nestjs/bullmq";
 import { InjectDataSource, InjectRepository } from "@nestjs/typeorm";
 import { Queue } from "bullmq";
+import axios from "axios";
 import { mkdirSync } from "fs";
 import { copyFile } from "fs/promises";
 import { extname, join, resolve } from "path";
@@ -58,7 +59,7 @@ export class TikTokService {
     state?: string;
     code?: string;
     error?: string;
-  }): Promise<{ userId: string; account: ReturnType<TikTokService["mapAccount"]> }> {
+  }): Promise<{ userId: string; account: ReturnType<TikTokService["mapAccount"]>; ticket: string }> {
     if (input.error) throw new BadRequestException("TikTok authorization was denied");
     if (!input.state || !input.code) throw new BadRequestException("Invalid OAuth callback");
     const userId = await this.oauthStates.consume(input.state);
@@ -107,10 +108,76 @@ export class TikTokService {
         if (!(await repository.exists({ where: { userId, isActive: true } }))) account.isActive = true;
         return repository.save(account);
       });
-      return { userId, account: this.mapAccount(saved) };
+      const ticket = await this.oauthStates.createHandoff({
+        provider: "tiktok",
+        account: {
+          openId: saved.openId,
+          unionId: saved.unionId,
+          username: saved.username,
+          displayName: saved.displayName,
+          avatarUrl: saved.avatarUrl,
+          accessToken: tokens.access_token,
+          refreshToken: tokens.refresh_token,
+          accessTokenExpiresAt: saved.accessTokenExpiresAt.toISOString(),
+          refreshTokenExpiresAt: saved.refreshTokenExpiresAt.toISOString(),
+          scopes: saved.scopes,
+          status: saved.status,
+          isActive: saved.isActive,
+        },
+      });
+      return { userId, account: this.mapAccount(saved), ticket };
     } catch (error) {
       this.throwSanitized(error);
     }
+  }
+
+  async redeemHandoff(ticket: string) {
+    const payload = await this.oauthStates.consumeHandoff(ticket);
+    if (!payload || payload.provider !== "tiktok") throw new BadRequestException("OAuth handoff is invalid or expired");
+    return payload;
+  }
+
+  async importHandoff(userId: string, apiServerUrl: string, ticket: string) {
+    const base = this.validateApiServerUrl(apiServerUrl);
+    const response = await axios.post(`${base}/api/tiktok/handoff/redeem`, { ticket }, { timeout: 15_000 });
+    const payload = (response.data?.data ?? response.data) as any;
+    const item = payload?.account;
+    if (payload?.provider !== "tiktok" || !item?.openId || !item?.accessToken || !item?.refreshToken) {
+      throw new BadRequestException("Invalid TikTok handoff payload");
+    }
+    const saved = await this.toolDataSource.transaction(async (manager) => {
+      await manager.query("SELECT pg_advisory_xact_lock(hashtext($1))", [`tiktok-account:${userId}`]);
+      const repository = manager.getRepository(TikTokAccount);
+      let account = await repository.findOne({ where: { userId, openId: String(item.openId) } });
+      if (!account && (await repository.count({ where: { userId } })) >= 2) {
+        throw new ConflictException("Chỉ có thể kết nối tối đa 2 tài khoản TikTok.");
+      }
+      account ??= repository.create({ userId, openId: String(item.openId), isActive: false });
+      Object.assign(account, {
+        unionId: item.unionId ? String(item.unionId) : null,
+        username: item.username ? String(item.username) : null,
+        displayName: item.displayName ? String(item.displayName) : null,
+        avatarUrl: item.avatarUrl ? String(item.avatarUrl) : null,
+        accessTokenEncrypted: encryptSecret(String(item.accessToken)),
+        refreshTokenEncrypted: encryptSecret(String(item.refreshToken)),
+        accessTokenExpiresAt: new Date(String(item.accessTokenExpiresAt)),
+        refreshTokenExpiresAt: new Date(String(item.refreshTokenExpiresAt)),
+        scopes: Array.isArray(item.scopes) ? item.scopes.map(String) : [],
+        status: item.status ?? TikTokAccountStatus.CONNECTED,
+      });
+      if (!(await repository.exists({ where: { userId, isActive: true } }))) account.isActive = true;
+      return repository.save(account);
+    });
+    return this.mapAccount(saved);
+  }
+
+  private validateApiServerUrl(raw: string): string {
+    let url: URL;
+    try { url = new URL(String(raw || "").trim()); } catch { throw new BadRequestException("Invalid API Server URL"); }
+    if (url.protocol !== "https:" && !(url.protocol === "http:" && ["localhost", "127.0.0.1"].includes(url.hostname))) {
+      throw new BadRequestException("API Server must use HTTPS");
+    }
+    return url.toString().replace(/\/+$/, "").replace(/\/api$/, "");
   }
 
   async listAccounts(userId: string) {

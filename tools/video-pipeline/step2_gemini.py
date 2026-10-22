@@ -6,6 +6,7 @@ Gọi configure_step2_gemini(...) trước khi dùng step2_translate_srt.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -53,6 +54,8 @@ STEP2_VI_SKIP_TEXTS: tuple[str, ...] = (
 _gemini_api_keys: List[str] = []
 _gemini_clients: List[genai.Client] = []
 _active_key_index: int = 0
+
+STEP2_CHECKPOINT_VERSION = 1
 
 
 def _parse_api_keys(raw_value: Optional[str]) -> List[str]:
@@ -184,6 +187,72 @@ def _validate_batch_mapping(mapped: dict[int, str], expected_count: int) -> None
     empty = [i for i in range(expected_count) if not str(mapped[i]).strip()]
     if empty:
         raise ValueError(f"Gemini returned empty translation for ids: {empty}")
+
+
+def _batch_checkpoint_fingerprint(batch: list, batch_start_index: int) -> str:
+    payload = {
+        "version": STEP2_CHECKPOINT_VERSION,
+        "model": _cfg["gemini_model_name"],
+        "translation_context": _cfg["translation_context"],
+        "batch_start_index": batch_start_index,
+        "blocks": [
+            {
+                "index": block.get("index"),
+                "time": block.get("time"),
+                "text": block.get("text"),
+            }
+            for block in batch
+        ],
+    }
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _batch_checkpoint_path(batch_start_index: int) -> Path:
+    return _cfg["log_dir"] / "gemini_checkpoint" / f"batch_{batch_start_index:06d}.json"
+
+
+def _load_batch_checkpoint(batch: list, batch_start_index: int) -> Optional[dict[int, str]]:
+    path = _batch_checkpoint_path(batch_start_index)
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if data.get("fingerprint") != _batch_checkpoint_fingerprint(batch, batch_start_index):
+            return None
+        raw_mapping = data.get("mapping")
+        if not isinstance(raw_mapping, dict):
+            return None
+        mapping = {int(key): str(value) for key, value in raw_mapping.items()}
+        _validate_batch_mapping(mapping, len(batch))
+        return mapping
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return None
+
+
+def _save_batch_checkpoint(batch: list, batch_start_index: int, mapping: dict[int, str]) -> None:
+    _validate_batch_mapping(mapping, len(batch))
+    path = _batch_checkpoint_path(batch_start_index)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "version": STEP2_CHECKPOINT_VERSION,
+        "fingerprint": _batch_checkpoint_fingerprint(batch, batch_start_index),
+        "batch_start_index": batch_start_index,
+        "batch_size": len(batch),
+        "mapping": {str(key): value for key, value in sorted(mapping.items())},
+    }
+    temp_path = path.with_suffix(f"{path.suffix}.tmp-{os.getpid()}-{time.time_ns()}")
+    try:
+        temp_path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        os.replace(temp_path, path)
+    finally:
+        try:
+            temp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def _normalize_batch_mapping(
@@ -490,7 +559,19 @@ def step2_translate_srt(srt_path):
     stripped_count = 0
     for i in progressbar(range(0, len(blocks), translate_batch_size), desc="Translate"):
         batch = blocks[i : i + translate_batch_size]
-        mapping = translate_batch_with_gemini(batch, i)
+        mapping = _load_batch_checkpoint(batch, i)
+        if mapping is None:
+            mapping = translate_batch_with_gemini(batch, i)
+            _save_batch_checkpoint(batch, i, mapping)
+            log(
+                f"Step2: checkpoint batch {i // translate_batch_size + 1} "
+                f"({i + 1}-{i + len(batch)}/{len(blocks)})."
+            )
+        else:
+            log(
+                f"Step2: resume batch {i // translate_batch_size + 1} từ checkpoint "
+                f"({i + 1}-{i + len(batch)}/{len(blocks)})."
+            )
         for local_idx, b in enumerate(batch):
             translated_text = mapping[local_idx]
             if step2_vi_skip_texts_enabled:

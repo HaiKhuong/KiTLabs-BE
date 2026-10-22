@@ -15,8 +15,6 @@ export const SECRET_SETTING_CODES = new Set([
   "GEMINI_API_KEY_VIP",
   "HF_TOKEN",
   "DOUYIN_COOKIE_CONTENT",
-  "TIKTOK_CLIENT_SECRET",
-  "META_APP_SECRET",
 ]);
 
 /** Stored as `${code}__App` / `${code}__Web` so one Nest can keep both cookies. */
@@ -66,23 +64,12 @@ export const RUNTIME_SETTING_FIELDS: RuntimeSettingField[] = [
   { code: "YTDLP_SERVICE_URL", group: "services", kind: "string", label: "yt-dlp service URL", defaultValue: "http://localhost:8100" },
   { code: "DOUYIN_PLAYWRIGHT_SERVICE_URL", group: "services", kind: "string", label: "Playwright service URL", defaultValue: "http://localhost:8101" },
   { code: "DOUYIN_COOKIE_CONTENT", group: "douyin", kind: "secret", label: "Douyin cookies", defaultValue: "" },
-  { code: "TIKTOK_CLIENT_KEY", group: "tiktok", kind: "string", label: "TikTok Client Key", defaultValue: "" },
-  { code: "TIKTOK_CLIENT_SECRET", group: "tiktok", kind: "secret", label: "TikTok Client Secret", defaultValue: "" },
   {
-    code: "TIKTOK_REDIRECT_URI",
-    group: "tiktok",
+    code: "SOCIAL_AUTH_API_SERVER_URL",
+    group: "social-auth",
     kind: "string",
-    label: "TikTok Redirect URI",
-    defaultValue: "http://127.0.0.1:13002/api/tiktok/callback",
-  },
-  { code: "META_APP_ID", group: "facebook", kind: "string", label: "Meta App ID", defaultValue: "" },
-  { code: "META_APP_SECRET", group: "facebook", kind: "secret", label: "Meta App Secret", defaultValue: "" },
-  {
-    code: "META_REDIRECT_URI",
-    group: "facebook",
-    kind: "string",
-    label: "Meta Redirect URI",
-    defaultValue: "http://127.0.0.1:13002/api/facebook/callback",
+    label: "API Server endpoint",
+    defaultValue: "",
   },
   { code: "GEMINI_API_KEY", group: "gemini", kind: "secret", label: "Gemini API key thường (nhiều key: cách nhau dấu phẩy)", defaultValue: "" },
   { code: "GEMINI_API_KEY_VIP", group: "gemini", kind: "secret", label: "Gemini API key VIP (nhiều key: cách nhau dấu phẩy)", defaultValue: "" },

@@ -35,6 +35,25 @@ export class TikTokOAuthStateService implements OnModuleDestroy {
     return typeof result === "string" ? result : null;
   }
 
+  async createHandoff(payload: object): Promise<string> {
+    const ticket = randomBytes(32).toString("base64url");
+    await this.redis.set(
+      this.handoffKey(ticket), JSON.stringify(payload), "EX",
+      Number(process.env.OAUTH_HANDOFF_TTL_SECONDS ?? 180), "NX",
+    );
+    return ticket;
+  }
+
+  async consumeHandoff(ticket: string): Promise<Record<string, unknown> | null> {
+    if (!ticket || ticket.length > 200) return null;
+    const result = await this.redis.eval(
+      "local value=redis.call('GET',KEYS[1]); if value then redis.call('DEL',KEYS[1]); end; return value",
+      1, this.handoffKey(ticket),
+    );
+    if (typeof result !== "string") return null;
+    try { return JSON.parse(result) as Record<string, unknown>; } catch { return null; }
+  }
+
   onModuleDestroy(): void {
     this.redis.disconnect();
   }
@@ -42,4 +61,6 @@ export class TikTokOAuthStateService implements OnModuleDestroy {
   private key(state: string): string {
     return `tiktok:oauth-state:${state}`;
   }
+
+  private handoffKey(ticket: string): string { return `tiktok:oauth-handoff:${ticket}`; }
 }
