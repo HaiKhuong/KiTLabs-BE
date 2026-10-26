@@ -13,19 +13,14 @@ async function bootstrap() {
   const app = await NestFactory.create(AppModule);
   const corsOrigins = (
     process.env.CORS_ORIGIN ??
-    "http://localhost:5173,http://127.0.0.1:5173,http://localhost:4173,http://127.0.0.1:4173,http://localhost:3001,http://127.0.0.1:3001,http://localhost:3000,http://127.0.0.1:3000,http://localhost:3002,http://127.0.0.1:3002"
+    "http://localhost:5173,http://127.0.0.1:5173,http://localhost:4173,http://127.0.0.1:4173,http://localhost:3001,http://127.0.0.1:3001,http://localhost:3000,http://127.0.0.1:3000,http://localhost:3002,http://127.0.0.1:3002,http://localhost:3005,http://127.0.0.1:3005"
   )
     .split(",")
     .map((origin) => origin.trim())
     .filter(Boolean);
   app.enableCors({
     origin: (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
-      if (
-        !origin ||
-        corsOrigins.includes(origin) ||
-        origin.startsWith("file:") ||
-        origin.startsWith("app:")
-      ) {
+      if (!origin || corsOrigins.includes(origin) || origin.startsWith("file:") || origin.startsWith("app:")) {
         callback(null, true);
         return;
       }
@@ -80,6 +75,7 @@ function setupSwagger(app: INestApplication): void {
       },
       "bearer",
     )
+    .addBearerAuth({ type: "http", scheme: "bearer", bearerFormat: "Film JWT", in: "header" }, "film-bearer")
     .build();
 
   const document = SwaggerModule.createDocument(app, config);

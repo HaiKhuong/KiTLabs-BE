@@ -44,6 +44,8 @@ import { YouTubeModule } from "./tools/youtube/youtube.module";
 import { HistoriesModule } from "./tools/histories/histories.module";
 import { TikTokModule } from "./tools/tiktok/tiktok.module";
 import { FacebookModule } from "./tools/facebook/facebook.module";
+import { FilmModule } from "./film/film.module";
+import { FILM_DB_ENTITIES } from "./database/entities/film.entities";
 
 @Module({
   imports: [
@@ -100,6 +102,21 @@ import { FacebookModule } from "./tools/facebook/facebook.module";
       entities: AUDIT_DB_ENTITIES,
       migrations: [join(__dirname, "database/migrations/audit/*{.ts,.js}")],
     }),
+    TypeOrmModule.forRoot({
+      name: "film",
+      type: "postgres",
+      host: process.env.FILM_DB_HOST ?? "localhost",
+      port: Number(process.env.FILM_DB_PORT ?? 5432),
+      username: process.env.FILM_DB_USER ?? "postgres",
+      password: process.env.FILM_DB_PASSWORD ?? "postgres",
+      database: process.env.FILM_DB_NAME ?? "kitlabs_film",
+      synchronize: false,
+      migrationsRun: (process.env.FILM_DB_MIGRATIONS_RUN ?? "false") === "true",
+      autoLoadEntities: false,
+      entities: FILM_DB_ENTITIES,
+      migrations: [join(__dirname, "database/migrations/film/*{.ts,.js}")],
+      migrationsTransactionMode: "each",
+    }),
     BullModule.forRoot({
       connection: {
         host: process.env.REDIS_HOST ?? "localhost",
@@ -137,6 +154,7 @@ import { FacebookModule } from "./tools/facebook/facebook.module";
     HistoriesModule,
     TikTokModule,
     FacebookModule,
+    FilmModule,
   ],
   controllers: [AppController],
   providers: [
