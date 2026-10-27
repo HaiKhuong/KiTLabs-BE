@@ -51,8 +51,8 @@ async function bootstrap() {
 
   const port = Number(process.env.PORT ?? 3000);
   const host = process.env.HOST?.trim() || "0.0.0.0";
-  console.log(`Server is running on ${host}:${port}`);
   await app.listen(port, host);
+  console.log(`Server is running on ${host}:${port}`);
 }
 
 function setupSwagger(app: INestApplication): void {
