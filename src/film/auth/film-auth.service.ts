@@ -5,7 +5,15 @@ import * as bcrypt from "bcrypt";
 import { randomUUID } from "crypto";
 import { SignOptions } from "jsonwebtoken";
 import { DataSource } from "typeorm";
-import { FilmDevice, FilmUser, FilmUserRole, FilmUserStatus } from "../entities/film.entities";
+import {
+  FilmDevice,
+  FilmItem,
+  FilmUser,
+  FilmUserInventory,
+  FilmUserRole,
+  FilmUserStatus,
+  ItemType,
+} from "../entities/film.entities";
 
 @Injectable()
 export class FilmAuthService implements OnModuleInit {
@@ -138,7 +146,21 @@ export class FilmAuthService implements OnModuleInit {
     return { loggedOut: true };
   }
   async profile(userId: string) {
-    return this.db.getRepository(FilmUser).findOneByOrFail({ id: userId });
+    const user = await this.db.getRepository(FilmUser).findOneByOrFail({ id: userId });
+    const equippedTitle = await this.db
+      .getRepository(FilmUserInventory)
+      .createQueryBuilder("inventory")
+      .innerJoin(FilmItem, "item", "item.id = inventory.itemId")
+      .select("item.assetConfig ->> 'slug'", "currentTitle")
+      .where("inventory.userId = :userId", { userId })
+      .andWhere("inventory.isEquipped = true")
+      .andWhere("item.type = :type", { type: ItemType.TITLE })
+      .orderBy("inventory.acquiredAt", "DESC")
+      .addOrderBy("inventory.updatedAt", "DESC")
+      .limit(1)
+      .getRawOne<{ currentTitle: string | null }>();
+
+    return { ...user, currentTitle: equippedTitle?.currentTitle ?? null };
   }
 
   private async issue(user: FilmUser) {
