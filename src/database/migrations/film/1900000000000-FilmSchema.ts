@@ -3,6 +3,11 @@ import { MigrationInterface, QueryRunner } from "typeorm";
 export class FilmSchema1900000000000 implements MigrationInterface {
   name = "FilmSchema1900000000000";
   async up(q: QueryRunner): Promise<void> {
+    // Existing installations were created by the legacy Film schema migration.
+    // Treat this squashed migration as an idempotent baseline instead of trying
+    // to recreate enums and tables that are already present.
+    if (await q.hasTable("movies")) return;
+
     await q.query(`CREATE EXTENSION IF NOT EXISTS "uuid-ossp"`);
     for (const [name, values] of Object.entries({
       users_role_enum: ["GUEST", "USER", "VIP", "MODERATOR", "ADMIN"],
