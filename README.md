@@ -38,7 +38,20 @@ npm install
 docker compose up -d
 ```
 
-When using `docker-compose.yml`, set `AUDIT_DB_PORT=5433` in `.env`.
+This starts PostgreSQL, Redis, yt-dlp, and the Douyin Playwright service. The
+NestJS API is currently run separately with `npm run start:dev`.
+
+The one-shot `db-init` service ensures all configured databases exist on every
+startup, including when `pg_data` already exists. Database creation is
+idempotent and does not delete existing data.
+
+The Docker Compose stack runs one PostgreSQL 16 instance on port `5432` and creates
+the databases configured by `DB_NAME`, `MAIN_DB_NAME`, `TOOL_DB_NAME`,
+`AUDIT_DB_NAME`, and `FILM_DB_NAME`. Keep all PostgreSQL `*_DB_PORT` values at
+`5432`, and use the same PostgreSQL username/password for every connection.
+
+The database initialization script runs only when `pg_data` is empty. Existing
+volumes are preserved and must be migrated or initialized manually.
 
 4. Start development:
 
