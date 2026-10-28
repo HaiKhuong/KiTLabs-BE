@@ -17,6 +17,11 @@ export enum UserAuthType {
   GUEST = "guest",
 }
 
+export enum UserRole {
+  ADMIN = "ADMIN",
+  USER = "USER",
+}
+
 @Entity("users")
 export class User extends BaseEntity {
   @Column({ name: "auth_type", type: "enum", enum: UserAuthType, default: UserAuthType.ACCOUNT })
@@ -24,6 +29,12 @@ export class User extends BaseEntity {
 
   @Column({ type: "varchar", name: "user_name", unique: true, length: 100, nullable: true })
   userName!: string | null;
+
+  @Column({ type: "varchar", unique: true, length: 150, nullable: true })
+  email!: string | null;
+
+  @Column({ type: "varchar", length: 32, default: UserRole.USER })
+  role!: string;
 
   @Column({ type: "varchar", name: "password_hash", length: 255, nullable: true })
   passwordHash!: string | null;

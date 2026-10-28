@@ -14,41 +14,76 @@ import {
   FilmUserStatus,
   ItemType,
 } from "../entities/film.entities";
+import { PlatformUser, PlatformUserAuthType, PlatformUserRole } from "../../platform/entities/platform-user.entity";
 
 @Injectable()
 export class FilmAuthService implements OnModuleInit {
   private readonly logger = new Logger(FilmAuthService.name);
   constructor(
     @InjectDataSource("film") private readonly db: DataSource,
+    @InjectDataSource() private readonly platformDb: DataSource,
     private readonly jwt: JwtService,
   ) {}
 
   async onModuleInit(): Promise<void> {
-    const email = process.env.FILM_ADMIN_EMAIL?.trim().toLowerCase();
-    const password = process.env.FILM_ADMIN_PASSWORD;
-    if (!email || !password) {
-      if (process.env.NODE_ENV === "production")
-        this.logger.error("FILM_ADMIN_EMAIL and FILM_ADMIN_PASSWORD are required to bootstrap Film Admin");
-      return;
-    }
+    const email = (process.env.FILM_ADMIN_EMAIL || process.env.PLATFORM_ADMIN_EMAIL || "admin@kitlabs.io")
+      .trim()
+      .toLowerCase();
+    const password = process.env.FILM_ADMIN_PASSWORD || process.env.PLATFORM_ADMIN_PASSWORD || "Admin@123456";
+    const username = (process.env.FILM_ADMIN_USERNAME || process.env.PLATFORM_ADMIN_USERNAME || "admin").trim();
+
     try {
-      const repo = this.db.getRepository(FilmUser);
-      if (await repo.findOne({ where: { email } })) return;
-      await repo.save(
-        repo.create({
+      // 1. Bootstrap Admin in Platform DB (kitlabs_platform)
+      const platformRepo = this.platformDb.getRepository(PlatformUser);
+      let platformUser = await platformRepo
+        .createQueryBuilder("u")
+        .where("lower(u.userName) = lower(:username) OR lower(u.email) = lower(:email)", { username, email })
+        .getOne();
+
+      if (!platformUser) {
+        platformUser = platformRepo.create({
+          userName: username,
           email,
-          username: email,
           passwordHash: await bcrypt.hash(password, 12),
-          name: process.env.FILM_ADMIN_NAME?.trim() || "Film Admin",
+          authType: PlatformUserAuthType.ACCOUNT,
+          role: PlatformUserRole.ADMIN,
+          isActive: true,
+        });
+        platformUser = await platformRepo.save(platformUser);
+        this.logger.log(`Bootstrapped Platform Admin (${username} / ${email}) in Platform DB`);
+      } else if (platformUser.role !== PlatformUserRole.ADMIN) {
+        platformUser.role = PlatformUserRole.ADMIN;
+        platformUser = await platformRepo.save(platformUser);
+        this.logger.log(`Promoted user ${username} to ADMIN in Platform DB`);
+      }
+
+      // 2. Ensure mirror entry exists in Film DB (kitlabs_film) so relational queries succeed
+      const filmRepo = this.db.getRepository(FilmUser);
+      let filmAdmin = await filmRepo.findOne({
+        where: [{ id: platformUser.id }, { email: platformUser.email ?? undefined }],
+      });
+      if (!filmAdmin) {
+        filmAdmin = filmRepo.create({
+          id: platformUser.id,
+          email: platformUser.email,
+          username: platformUser.userName,
+          passwordHash: platformUser.passwordHash,
+          name: process.env.FILM_ADMIN_NAME?.trim() || platformUser.userName || "Admin",
           role: FilmUserRole.ADMIN,
           status: FilmUserStatus.ACTIVE,
           deviceId: null,
           refreshTokenHash: null,
-        }),
-      );
+        });
+        await filmRepo.save(filmAdmin);
+        this.logger.log(`Synchronized Platform Admin mirror into Film DB (kitlabs_film)`);
+      } else if (filmAdmin.role !== FilmUserRole.ADMIN) {
+        filmAdmin.role = FilmUserRole.ADMIN;
+        filmAdmin.status = FilmUserStatus.ACTIVE;
+        await filmRepo.save(filmAdmin);
+      }
     } catch (error) {
       this.logger.warn(
-        `Film Admin was not bootstrapped; run Film migrations first: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to bootstrap Platform/Film Admin: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
   }
@@ -101,23 +136,79 @@ export class FilmAuthService implements OnModuleInit {
     return this.db.getRepository(FilmDevice).findOneByOrFail({ id: user.deviceId });
   }
 
-  async adminLogin(email: string, password: string) {
-    const user = await this.db
+  async adminLogin(identifier: string, password: string) {
+    const trimmedId = identifier.trim().toLowerCase();
+
+    // 1. Authenticate against Platform DB (kitlabs_platform)
+    try {
+      const platformRepo = this.platformDb.getRepository(PlatformUser);
+      const platformUser = await platformRepo
+        .createQueryBuilder("u")
+        .where("lower(u.userName) = :id OR lower(u.email) = :id", { id: trimmedId })
+        .getOne();
+
+      if (platformUser) {
+        if (platformUser.role !== PlatformUserRole.ADMIN && platformUser.role !== "ADMIN") {
+          throw new UnauthorizedException("Tài khoản không có quyền quản trị Platform");
+        }
+        if (!platformUser.isActive) {
+          throw new UnauthorizedException("Tài khoản Platform đã bị vô hiệu hóa");
+        }
+        if (!platformUser.passwordHash || !(await bcrypt.compare(password, platformUser.passwordHash))) {
+          throw new UnauthorizedException("Mật khẩu không chính xác");
+        }
+
+        // Sync / update mirror user in Film DB for CMS operations
+        const filmRepo = this.db.getRepository(FilmUser);
+        let filmUser = await filmRepo.findOne({
+          where: [{ id: platformUser.id }, { email: platformUser.email ?? undefined }],
+        });
+
+        if (!filmUser) {
+          filmUser = filmRepo.create({
+            id: platformUser.id,
+            email: platformUser.email,
+            username: platformUser.userName,
+            name: platformUser.userName || "Admin",
+            role: FilmUserRole.ADMIN,
+            status: FilmUserStatus.ACTIVE,
+            lastLoginAt: new Date(),
+          });
+          await filmRepo.save(filmUser);
+        } else {
+          filmUser.role = FilmUserRole.ADMIN;
+          filmUser.status = FilmUserStatus.ACTIVE;
+          filmUser.lastLoginAt = new Date();
+          await filmRepo.save(filmUser);
+        }
+
+        return this.issue(filmUser);
+      }
+    } catch (err) {
+      if (err instanceof UnauthorizedException) throw err;
+      this.logger.error(`Error querying platform db for admin login: ${err}`);
+    }
+
+    // 2. Fallback: Authenticate against Film DB (kitlabs_film) if not found in Platform DB
+    const filmUser = await this.db
       .getRepository(FilmUser)
       .createQueryBuilder("u")
       .addSelect(["u.passwordHash", "u.refreshTokenHash"])
-      .where("lower(u.email) = lower(:email)", { email })
+      .where("lower(u.email) = :id OR lower(u.username) = :id", { id: trimmedId })
       .andWhere("u.role IN (:...roles)", { roles: [FilmUserRole.ADMIN, FilmUserRole.MODERATOR] })
       .getOne();
+
     if (
-      !user?.passwordHash ||
-      !(await bcrypt.compare(password, user.passwordHash)) ||
-      user.status !== FilmUserStatus.ACTIVE
-    )
-      throw new UnauthorizedException("Invalid credentials");
-    user.lastLoginAt = new Date();
-    await this.db.getRepository(FilmUser).save(user);
-    return this.issue(user);
+      !filmUser?.passwordHash ||
+      !(await bcrypt.compare(password, filmUser.passwordHash)) ||
+      filmUser.status !== FilmUserStatus.ACTIVE
+    ) {
+      throw new UnauthorizedException("Thông tin đăng nhập không hợp lệ");
+    }
+
+    filmUser.lastLoginAt = new Date();
+    await this.db.getRepository(FilmUser).save(filmUser);
+    return this.issue(filmUser);
   }
 
   async refresh(refreshToken: string) {
@@ -145,6 +236,7 @@ export class FilmAuthService implements OnModuleInit {
     await this.db.getRepository(FilmUser).update(userId, { refreshTokenHash: null });
     return { loggedOut: true };
   }
+
   async profile(userId: string) {
     const user = await this.db.getRepository(FilmUser).findOneByOrFail({ id: userId });
     const equippedTitle = await this.db

@@ -9,17 +9,6 @@ export class FilmSchema1900000000000 implements MigrationInterface {
       users_status_enum: ["ACTIVE", "BANNED", "SUSPENDED"],
       users_sect_rank_enum: ["LUYEN_KHI", "TRUC_CO", "KIM_DAN", "NGUYEN_ANH", "HOA_THAN", "LUAN_HOI", "THAN_HOANG"],
       movies_status_enum: ["ONGOING", "COMPLETED", "HIATUS"],
-      movies_schedule_enum: [
-        "MONDAY",
-        "TUESDAY",
-        "WEDNESDAY",
-        "THURSDAY",
-        "FRIDAY",
-        "SATURDAY",
-        "SUNDAY",
-        "DAILY",
-        "UNKNOWN",
-      ],
       episode_sources_source_type_enum: ["HLS_M3U8", "MP4", "EMBED", "IFRAME"],
       episode_sources_quality_enum: ["360P", "480P", "720P", "1080P", "4K", "AUTO"],
       items_type_enum: ["AVATAR_FRAME", "TITLE", "CHAT_EFFECT", "STICKER_PACK"],
@@ -41,7 +30,7 @@ export class FilmSchema1900000000000 implements MigrationInterface {
       `CREATE UNIQUE INDEX "UQ_users_device" ON users(device_id) WHERE device_id IS NOT NULL; CREATE UNIQUE INDEX "UQ_users_username" ON users(username) WHERE username IS NOT NULL; CREATE UNIQUE INDEX "UQ_users_email" ON users(email) WHERE email IS NOT NULL`,
     );
     await q.query(
-      `CREATE TABLE "movies" (${base},"title" varchar NOT NULL,"original_title" varchar,"slug" varchar NOT NULL,"description" text,"poster_url" varchar NOT NULL,"banner_url" varchar,"status" movies_status_enum NOT NULL DEFAULT 'ONGOING',"schedule" movies_schedule_enum NOT NULL DEFAULT 'UNKNOWN',"studio" varchar,"release_year" int,"total_episodes" int NOT NULL DEFAULT 0,"current_episode_count" int NOT NULL DEFAULT 0,"views" bigint NOT NULL DEFAULT 0,"rating_avg" numeric(3,2) NOT NULL DEFAULT 0,"rating_count" int NOT NULL DEFAULT 0,"rank_score" bigint NOT NULL DEFAULT 0,"is_hot" boolean NOT NULL DEFAULT false,"is_recommended" boolean NOT NULL DEFAULT false,CONSTRAINT "PK_movies" PRIMARY KEY("id"),CONSTRAINT "UQ_movies_slug" UNIQUE("slug"))`,
+      `CREATE TABLE "movies" (${base},"title" varchar NOT NULL,"slug" varchar NOT NULL,"banner_url" varchar,"status" movies_status_enum NOT NULL DEFAULT 'ONGOING',"release_year" int,"current_episode_count" int NOT NULL DEFAULT 1,"views" bigint NOT NULL DEFAULT 0,"rating_avg" numeric(3,2) NOT NULL DEFAULT 0,"rating_count" int NOT NULL DEFAULT 0,"rank_score" bigint NOT NULL DEFAULT 0,"is_hot" boolean NOT NULL DEFAULT false,"is_recommended" boolean NOT NULL DEFAULT false,CONSTRAINT "PK_movies" PRIMARY KEY("id"),CONSTRAINT "UQ_movies_slug" UNIQUE("slug"))`,
     );
     await q.query(
       `CREATE INDEX "IDX_movies_title" ON movies(title); CREATE INDEX "IDX_movies_views" ON movies(views); CREATE INDEX "IDX_movies_rank" ON movies(rank_score)`,
@@ -124,7 +113,6 @@ export class FilmSchema1900000000000 implements MigrationInterface {
       "items_type_enum",
       "episode_sources_quality_enum",
       "episode_sources_source_type_enum",
-      "movies_schedule_enum",
       "movies_status_enum",
       "users_sect_rank_enum",
       "users_status_enum",

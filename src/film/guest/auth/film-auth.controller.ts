@@ -1,14 +1,21 @@
 import { Body, Controller, Get, Post, Req, UseGuards } from "@nestjs/common";
 import { ApiBearerAuth, ApiProperty, ApiPropertyOptional, ApiTags } from "@nestjs/swagger";
-import { IsEmail, IsOptional, IsString, IsUUID, MinLength } from "class-validator";
+import { IsOptional, IsString, IsUUID, MinLength } from "class-validator";
 import { Request } from "express";
 import { Public } from "../../../common/decorators/public.decorator";
 import { FilmCurrentUser, FilmJwtGuard, FilmPrincipal } from "../../auth/film-auth";
 import { FilmAuthService } from "../../auth/film-auth.service";
 
 class AdminLoginDto {
-  @ApiProperty() @IsEmail() email!: string;
-  @ApiProperty() @IsString() @MinLength(8) password!: string;
+  @ApiProperty({ description: "Email or username of admin" })
+  @IsString()
+  @MinLength(3)
+  email!: string;
+
+  @ApiProperty()
+  @IsString()
+  @MinLength(6)
+  password!: string;
 }
 class RefreshDto {
   @ApiProperty() @IsString() refreshToken!: string;

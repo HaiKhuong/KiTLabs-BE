@@ -15,7 +15,7 @@ export default new DataSource({
   database: process.env.TOOL_DB_NAME ?? process.env.DB_NAME ?? "kitools",
   synchronize: false,
   entities: TOOL_DB_ENTITIES,
-  migrations: [join(__dirname, "migrations/main/*{.ts,.js}")],
+  migrations: [join(__dirname, "migrations/tool/*{.ts,.js}")],
   // "all" forbids per-migration `transaction = false` (needed for enum ADD VALUE).
   migrationsTransactionMode: "each",
 });

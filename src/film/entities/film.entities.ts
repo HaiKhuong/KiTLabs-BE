@@ -142,17 +142,11 @@ export class FilmUser extends FilmBase {
 @Entity("movies")
 export class FilmMovie extends FilmBase {
   @Index() @Column() title!: string;
-  @Column({ name: "original_title", type: "varchar", nullable: true }) originalTitle!: string | null;
   @Index({ unique: true }) @Column() slug!: string;
-  @Column({ type: "text", nullable: true }) description!: string | null;
-  @Column({ name: "poster_url" }) posterUrl!: string;
   @Column({ name: "banner_url", type: "varchar", nullable: true }) bannerUrl!: string | null;
   @Column({ type: "enum", enum: MovieStatus, default: MovieStatus.ONGOING }) status!: MovieStatus;
-  @Column({ type: "enum", enum: MovieSchedule, default: MovieSchedule.UNKNOWN }) schedule!: MovieSchedule;
-  @Column({ type: "varchar", nullable: true }) studio!: string | null;
   @Column({ name: "release_year", type: "int", nullable: true }) releaseYear!: number | null;
-  @Column({ name: "total_episodes", type: "int", default: 0 }) totalEpisodes!: number;
-  @Column({ name: "current_episode_count", type: "int", default: 0 }) currentEpisodeCount!: number;
+  @Column({ name: "current_episode_count", type: "int", default: 1 }) currentEpisodeCount!: number;
   @Index() @Column({ type: "bigint", default: 0 }) views!: string;
   @Column({ name: "rating_avg", type: "numeric", precision: 3, scale: 2, default: 0 }) ratingAvg!: string;
   @Column({ name: "rating_count", default: 0 }) ratingCount!: number;

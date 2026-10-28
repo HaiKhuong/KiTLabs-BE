@@ -28,7 +28,7 @@ describe("FilmAuthService.profile", () => {
         throw new Error("Unexpected repository");
       }),
     } as unknown as DataSource;
-    const service = new FilmAuthService(db, {} as JwtService);
+    const service = new FilmAuthService(db, db, {} as JwtService);
 
     return { service, query, userRepository, inventoryRepository };
   }

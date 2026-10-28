@@ -2,11 +2,11 @@ import { BullModule } from "@nestjs/bullmq";
 import { Module } from "@nestjs/common";
 import { TypeOrmModule } from "@nestjs/typeorm";
 
+import { PlatformModule } from "../../platform/platform.module";
 import { FacebookAccount } from "./facebook-account.entity";
 import { FacebookAffiliateLink } from "./facebook-affiliate-link.entity";
 import { FacebookCommentSettings } from "./facebook-comment-settings.entity";
 import { FacebookController } from "./facebook.controller";
-import { FacebookOAuthStateService } from "./facebook-oauth-state.service";
 import { FacebookPage } from "./facebook-page.entity";
 import { FacebookPost } from "./facebook-post.entity";
 import { FacebookProcessor } from "./facebook.processor";
@@ -20,11 +20,19 @@ import { FacebookTaskLog } from "./facebook-task-log.entity";
   imports: [
     BullModule.registerQueue({ name: FACEBOOK_PUBLISH_QUEUE }),
     TypeOrmModule.forFeature(
-      [FacebookAccount, FacebookPage, FacebookPost, FacebookAffiliateLink, FacebookCommentSettings, FacebookTaskLog],
+      [
+        FacebookAccount,
+        FacebookPage,
+        FacebookPost,
+        FacebookAffiliateLink,
+        FacebookCommentSettings,
+        FacebookTaskLog,
+      ],
       "tool",
     ),
+    PlatformModule,
   ],
   controllers: [FacebookController],
-  providers: [FacebookService, FacebookProviderAdapter, FacebookOAuthStateService, FacebookPublishRunner, FacebookProcessor],
+  providers: [FacebookService, FacebookProviderAdapter, FacebookPublishRunner, FacebookProcessor],
 })
 export class FacebookModule {}

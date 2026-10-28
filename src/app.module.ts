@@ -40,10 +40,10 @@ import { ImagesModule } from "./tools/images/images.module";
 import { ImageEditModule } from "./tools/image-edit/image-edit.module";
 import { VideosModule } from "./tools/videos/videos.module";
 import { ModelsModule } from "./tools/models/models.module";
-import { YouTubeModule } from "./tools/youtube/youtube.module";
 import { HistoriesModule } from "./tools/histories/histories.module";
 import { TikTokModule } from "./tools/tiktok/tiktok.module";
 import { FacebookModule } from "./tools/facebook/facebook.module";
+import { PlatformModule } from "./platform/platform.module";
 import { FilmModule } from "./film/film.module";
 import { FILM_DB_ENTITIES } from "./database/entities/film.entities";
 
@@ -85,7 +85,7 @@ import { FILM_DB_ENTITIES } from "./database/entities/film.entities";
       migrationsRun: (process.env.TOOL_DB_MIGRATIONS_RUN ?? "false") === "true",
       autoLoadEntities: false,
       entities: TOOL_DB_ENTITIES,
-      migrations: [join(__dirname, "database/migrations/main/*{.ts,.js}")],
+      migrations: [join(__dirname, "database/migrations/tool/*{.ts,.js}")],
       migrationsTransactionMode: "each",
     }),
     TypeOrmModule.forRoot({
@@ -146,7 +146,6 @@ import { FILM_DB_ENTITIES } from "./database/entities/film.entities";
     FilesModule,
     DatabaseModule,
     AntiSpamModule,
-    YouTubeModule,
     WorkflowModule,
     ImagesModule,
     ImageEditModule,
@@ -154,6 +153,7 @@ import { FILM_DB_ENTITIES } from "./database/entities/film.entities";
     HistoriesModule,
     TikTokModule,
     FacebookModule,
+    PlatformModule,
     FilmModule,
   ],
   controllers: [AppController],

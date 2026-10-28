@@ -153,7 +153,7 @@ export class FilmService {
     const page = Math.max(1, query.page || 1),
       take = Math.min(100, Math.max(1, query.limit || 20));
     const qb = this.db.getRepository(FilmMovie).createQueryBuilder("m");
-    if (query.search) qb.andWhere("(m.title ILIKE :q OR m.originalTitle ILIKE :q)", { q: `%${query.search}%` });
+    if (query.search) qb.andWhere("m.title ILIKE :q", { q: `%${query.search}%` });
     if (query.hot !== undefined) qb.andWhere("m.isHot=:hot", { hot: query.hot });
     if (query.recommended !== undefined)
       qb.andWhere("m.isRecommended=:recommended", { recommended: query.recommended });

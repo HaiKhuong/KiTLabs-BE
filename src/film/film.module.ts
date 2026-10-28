@@ -11,6 +11,7 @@ import { FilmService } from "./film.service";
 import { FILM_CATALOG_ADMIN_CONTROLLERS } from "./cms/catalog/film-catalog-admin.controllers";
 import { FILM_CONTENT_ADMIN_CONTROLLERS } from "./cms/content/film-content-admin.controllers";
 import { FILM_OPERATIONS_ADMIN_CONTROLLERS } from "./cms/operations/film-operations-admin.controllers";
+import { FilmUploadController } from "./cms/upload/film-upload.controller";
 import { FilmAccountController } from "./guest/account/film-account.controller";
 import { FilmAuthController } from "./guest/auth/film-auth.controller";
 import { FilmCatalogController } from "./guest/catalog/film-catalog.controller";
@@ -29,6 +30,7 @@ import { FilmTrackingController } from "./guest/tracking/film-tracking.controlle
     FilmAccountController,
     FilmChatController,
     FilmTrackingController,
+    FilmUploadController,
     ...FILM_CATALOG_ADMIN_CONTROLLERS,
     ...FILM_CONTENT_ADMIN_CONTROLLERS,
     ...FILM_OPERATIONS_ADMIN_CONTROLLERS,

@@ -24,15 +24,6 @@ import { WhiteboardHistory } from "../../tools/whiteboard/whiteboard-history.ent
 import { WhiteboardIdeaHistory } from "../../tools/whiteboard/whiteboard-idea-history.entity";
 import { WhiteboardSampleImage } from "../../tools/whiteboard/whiteboard-sample-image.entity";
 import { WhiteboardRecentImage } from "../../tools/whiteboard/whiteboard-recent-image.entity";
-import {
-  YouTubeChannel,
-  YouTubeVideo,
-  Movie,
-  MovieTrend,
-  AnalyticsSnapshot,
-  Recommendation,
-} from "../../tools/youtube/entities";
-import { AiChatHistory } from "../../tools/youtube/entities/ai-chat-history.entity";
 import { TikTokAccount } from "../../tools/tiktok/tiktok-account.entity";
 import { TikTokVideo } from "../../tools/tiktok/tiktok-video.entity";
 import { FacebookAccount } from "../../tools/facebook/facebook-account.entity";
@@ -62,13 +53,6 @@ export const TOOL_DB_ENTITIES = [
   Setting,
   UserSettingProfile,
   UserSetting,
-  YouTubeChannel,
-  YouTubeVideo,
-  Movie,
-  MovieTrend,
-  AnalyticsSnapshot,
-  Recommendation,
-  AiChatHistory,
   ChunkUpload,
   WorkflowEntity,
   WorkflowRunEntity,

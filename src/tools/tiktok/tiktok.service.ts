@@ -8,25 +8,22 @@ import {
   ServiceUnavailableException,
 } from "@nestjs/common";
 import { InjectQueue } from "@nestjs/bullmq";
-import { InjectDataSource, InjectRepository } from "@nestjs/typeorm";
+import { InjectRepository } from "@nestjs/typeorm";
 import { Queue } from "bullmq";
-import axios from "axios";
+import { randomUUID } from "crypto";
 import { mkdirSync } from "fs";
 import { copyFile } from "fs/promises";
 import { extname, join, resolve } from "path";
-import { DataSource, Repository } from "typeorm";
-import { randomUUID } from "crypto";
+import { Repository } from "typeorm";
 
-import { decryptSecret, encryptSecret } from "../../common/config/settings-crypto";
+import { PlatformTikTokService } from "../../platform/tiktok/platform-tiktok.service";
 import { TikTokAccount } from "./tiktok-account.entity";
-import { TikTokOAuthStateService } from "./tiktok-oauth-state.service";
 import { TikTokProviderAdapter, TikTokProviderError } from "./tiktok-provider.adapter";
 import {
   CommercialDisclosure,
   ImportLocalVideoDto,
   mapCommercialDisclosure,
   PublishTikTokVideoDto,
-  TikTokAccountStatus,
   TikTokVideoListQueryDto,
   TikTokVideoStatus,
   VideoHistoryQueryDto,
@@ -44,190 +41,22 @@ export class TikTokService {
     @InjectRepository(TikTokAccount, "tool") private readonly accounts: Repository<TikTokAccount>,
     @InjectRepository(TikTokVideo, "tool") private readonly videos: Repository<TikTokVideo>,
     @InjectQueue(TIKTOK_PUBLISH_QUEUE) private readonly queue: Queue,
-    @InjectDataSource("tool") private readonly toolDataSource: DataSource,
     private readonly provider: TikTokProviderAdapter,
-    private readonly oauthStates: TikTokOAuthStateService,
+    private readonly platformTikTok: PlatformTikTokService,
   ) {}
 
-  async connect(userId: string): Promise<{ authorizationUrl: string }> {
-    this.assertConfigured();
-    const state = await this.oauthStates.create(userId);
-    return { authorizationUrl: this.provider.authorizationUrl(state) };
+  async ownedAccount(userId: string, accountId: string) {
+    return this.platformTikTok.ownedAccount(userId, accountId);
   }
 
-  async completeOAuth(input: {
-    state?: string;
-    code?: string;
-    error?: string;
-  }): Promise<{ userId: string; account: ReturnType<TikTokService["mapAccount"]>; ticket: string }> {
-    if (input.error) throw new BadRequestException("TikTok authorization was denied");
-    if (!input.state || !input.code) throw new BadRequestException("Invalid OAuth callback");
-    const userId = await this.oauthStates.consume(input.state);
-    if (!userId) throw new BadRequestException("OAuth state is invalid or expired");
-    try {
-      const tokens = await this.provider.exchangeCode(input.code);
-      const granted = new Set(
-        String(tokens.scope ?? "")
-          .split(",")
-          .filter(Boolean),
-      );
-      for (const required of ["user.info.basic", "video.publish", "video.list"]) {
-        if (!granted.has(required)) throw new BadRequestException("Required TikTok scopes were not granted");
-      }
-      const profile = await this.provider.getUser(tokens.access_token);
-      if (!profile.openId || profile.openId !== tokens.open_id) {
-        throw new BadRequestException("TikTok account identity could not be verified");
-      }
-      const creator = await this.provider.creatorInfo(tokens.access_token);
-      profile.username = creator.creator_username
-        ? String(creator.creator_username)
-        : profile.username;
-      profile.displayName = creator.creator_nickname
-        ? String(creator.creator_nickname)
-        : profile.displayName;
-      profile.avatarUrl = creator.creator_avatar_url
-        ? String(creator.creator_avatar_url)
-        : profile.avatarUrl;
-      const saved = await this.toolDataSource.transaction(async (manager) => {
-        await manager.query("SELECT pg_advisory_xact_lock(hashtext($1))", [`tiktok-account:${userId}`]);
-        const repository = manager.getRepository(TikTokAccount);
-        const existing = await repository.findOne({ where: { userId, openId: profile.openId } });
-        if (!existing && (await repository.count({ where: { userId } })) >= 2) {
-          throw new ConflictException("Chỉ có thể kết nối tối đa 2 tài khoản TikTok.");
-        }
-        const account = existing ?? repository.create({ userId, openId: profile.openId, isActive: false });
-        Object.assign(account, {
-          ...profile,
-          accessTokenEncrypted: encryptSecret(tokens.access_token),
-          refreshTokenEncrypted: encryptSecret(tokens.refresh_token),
-          accessTokenExpiresAt: new Date(Date.now() + Number(tokens.expires_in) * 1000),
-          refreshTokenExpiresAt: new Date(Date.now() + Number(tokens.refresh_expires_in) * 1000),
-          scopes: [...granted],
-          status: TikTokAccountStatus.CONNECTED,
-        });
-        if (!(await repository.exists({ where: { userId, isActive: true } }))) account.isActive = true;
-        return repository.save(account);
-      });
-      const ticket = await this.oauthStates.createHandoff({
-        provider: "tiktok",
-        account: {
-          openId: saved.openId,
-          unionId: saved.unionId,
-          username: saved.username,
-          displayName: saved.displayName,
-          avatarUrl: saved.avatarUrl,
-          accessToken: tokens.access_token,
-          refreshToken: tokens.refresh_token,
-          accessTokenExpiresAt: saved.accessTokenExpiresAt.toISOString(),
-          refreshTokenExpiresAt: saved.refreshTokenExpiresAt.toISOString(),
-          scopes: saved.scopes,
-          status: saved.status,
-          isActive: saved.isActive,
-        },
-      });
-      return { userId, account: this.mapAccount(saved), ticket };
-    } catch (error) {
-      this.throwSanitized(error);
-    }
-  }
-
-  async redeemHandoff(ticket: string) {
-    const payload = await this.oauthStates.consumeHandoff(ticket);
-    if (!payload || payload.provider !== "tiktok") throw new BadRequestException("OAuth handoff is invalid or expired");
-    return payload;
-  }
-
-  async importHandoff(userId: string, apiServerUrl: string, ticket: string) {
-    const base = this.validateApiServerUrl(apiServerUrl);
-    const response = await axios.post(`${base}/api/tiktok/handoff/redeem`, { ticket }, { timeout: 15_000 });
-    const payload = (response.data?.data ?? response.data) as any;
-    const item = payload?.account;
-    if (payload?.provider !== "tiktok" || !item?.openId || !item?.accessToken || !item?.refreshToken) {
-      throw new BadRequestException("Invalid TikTok handoff payload");
-    }
-    const saved = await this.toolDataSource.transaction(async (manager) => {
-      await manager.query("SELECT pg_advisory_xact_lock(hashtext($1))", [`tiktok-account:${userId}`]);
-      const repository = manager.getRepository(TikTokAccount);
-      let account = await repository.findOne({ where: { userId, openId: String(item.openId) } });
-      if (!account && (await repository.count({ where: { userId } })) >= 2) {
-        throw new ConflictException("Chỉ có thể kết nối tối đa 2 tài khoản TikTok.");
-      }
-      account ??= repository.create({ userId, openId: String(item.openId), isActive: false });
-      Object.assign(account, {
-        unionId: item.unionId ? String(item.unionId) : null,
-        username: item.username ? String(item.username) : null,
-        displayName: item.displayName ? String(item.displayName) : null,
-        avatarUrl: item.avatarUrl ? String(item.avatarUrl) : null,
-        accessTokenEncrypted: encryptSecret(String(item.accessToken)),
-        refreshTokenEncrypted: encryptSecret(String(item.refreshToken)),
-        accessTokenExpiresAt: new Date(String(item.accessTokenExpiresAt)),
-        refreshTokenExpiresAt: new Date(String(item.refreshTokenExpiresAt)),
-        scopes: Array.isArray(item.scopes) ? item.scopes.map(String) : [],
-        status: item.status ?? TikTokAccountStatus.CONNECTED,
-      });
-      if (!(await repository.exists({ where: { userId, isActive: true } }))) account.isActive = true;
-      return repository.save(account);
-    });
-    return this.mapAccount(saved);
-  }
-
-  private validateApiServerUrl(raw: string): string {
-    let url: URL;
-    try { url = new URL(String(raw || "").trim()); } catch { throw new BadRequestException("Invalid API Server URL"); }
-    if (url.protocol !== "https:" && !(url.protocol === "http:" && ["localhost", "127.0.0.1"].includes(url.hostname))) {
-      throw new BadRequestException("API Server must use HTTPS");
-    }
-    return url.toString().replace(/\/+$/, "").replace(/\/api$/, "");
-  }
-
-  async listAccounts(userId: string) {
-    const rows = await this.accounts.find({ where: { userId }, order: { createdAt: "ASC" } });
-    return rows.map((row) => this.mapAccount(row));
-  }
-
-  async refreshAccount(userId: string, accountId: string) {
-    const account = await this.ownedAccount(userId, accountId);
-    await this.rotateTokens(account);
-    const creator = await this.provider.creatorInfo(
-      decryptSecret(account.accessTokenEncrypted),
-    );
-    account.username = creator.creator_username
-      ? String(creator.creator_username)
-      : account.username;
-    account.displayName = creator.creator_nickname
-      ? String(creator.creator_nickname)
-      : account.displayName;
-    account.avatarUrl = creator.creator_avatar_url
-      ? String(creator.creator_avatar_url)
-      : account.avatarUrl;
-    await this.accounts.save(account);
-    return this.mapAccount(account);
-  }
-
-  async disconnect(userId: string, accountId: string): Promise<{ disconnected: true }> {
-    const account = await this.ownedAccount(userId, accountId);
-    try {
-      await this.provider.revoke(decryptSecret(account.accessTokenEncrypted));
-    } catch (error) {
-      if (error instanceof TikTokProviderError) {
-        this.logger.warn(`TikTok revoke failed code=${error.code} logId=${error.logId ?? "none"}`);
-      }
-    }
-    await this.accounts.remove(account);
-    if (account.isActive) {
-      const next = await this.accounts.findOne({ where: { userId }, order: { createdAt: "ASC" } });
-      if (next) {
-        next.isActive = true;
-        await this.accounts.save(next);
-      }
-    }
-    return { disconnected: true };
+  async validAccessToken(account: { userId: string; id: string }): Promise<string> {
+    return this.platformTikTok.getValidAccessToken(account.userId, account.id);
   }
 
   async creatorInfo(userId: string, accountId: string): Promise<Record<string, unknown>> {
-    const account = await this.ownedAccount(userId, accountId);
     try {
-      return await this.provider.creatorInfo(await this.validAccessToken(account));
+      const accessToken = await this.platformTikTok.getValidAccessToken(userId, accountId);
+      return await this.provider.creatorInfo(accessToken);
     } catch (error) {
       this.throwSanitized(error);
     }
@@ -281,8 +110,9 @@ export class TikTokService {
       throw new BadRequestException("Nội dung được tài trợ không khả dụng với SELF_ONLY trong MVP.");
     }
     if (!dto.musicUsageConfirmed) throw new BadRequestException("Music Usage Confirmation is required");
-    const account = await this.ownedAccount(userId, dto.accountId);
-    const creator = await this.creatorInfo(userId, account.id);
+    
+    // Ensure account exists and verify via platform
+    const creator = await this.creatorInfo(userId, dto.accountId);
     const privacyOptions = Array.isArray(creator.privacy_level_options)
       ? creator.privacy_level_options.map(String)
       : [];
@@ -297,7 +127,7 @@ export class TikTokService {
       throw new BadRequestException("Stitch is disabled for this creator");
 
     Object.assign(video, {
-      accountId: account.id,
+      accountId: dto.accountId,
       caption: dto.caption,
       privacyLevel: "SELF_ONLY",
       commercialDisclosure: dto.commercialDisclosure,
@@ -387,9 +217,9 @@ export class TikTokService {
   }
 
   async listProviderVideos(userId: string, accountId: string, query: TikTokVideoListQueryDto) {
-    const account = await this.ownedAccount(userId, accountId);
     try {
-      return await this.provider.listVideos(await this.validAccessToken(account), query.maxCount, query.cursor);
+      const accessToken = await this.platformTikTok.getValidAccessToken(userId, accountId);
+      return await this.provider.listVideos(accessToken, query.maxCount, query.cursor);
     } catch (error) {
       this.throwSanitized(error);
     }
@@ -399,58 +229,6 @@ export class TikTokService {
     const row = await this.videos.findOne({ where: { id, userId } });
     if (!row) throw new NotFoundException("TikTok video not found");
     return row;
-  }
-
-  async ownedAccount(userId: string, id: string): Promise<TikTokAccount> {
-    const row = await this.accounts.findOne({ where: { id, userId } });
-    if (!row) throw new NotFoundException("TikTok account not found");
-    return row;
-  }
-
-  async validAccessToken(account: TikTokAccount): Promise<string> {
-    if (account.accessTokenExpiresAt.getTime() > Date.now() + 60_000) {
-      return decryptSecret(account.accessTokenEncrypted);
-    }
-    await this.rotateTokens(account);
-    return decryptSecret(account.accessTokenEncrypted);
-  }
-
-  private async rotateTokens(account: TikTokAccount): Promise<void> {
-    if (account.refreshTokenExpiresAt.getTime() <= Date.now()) {
-      account.status = TikTokAccountStatus.EXPIRED;
-      await this.accounts.save(account);
-      throw new ForbiddenException("TikTok authorization expired. Please reconnect.");
-    }
-    try {
-      const token = await this.provider.refreshToken(decryptSecret(account.refreshTokenEncrypted));
-      account.accessTokenEncrypted = encryptSecret(token.access_token);
-      account.refreshTokenEncrypted = encryptSecret(token.refresh_token);
-      account.accessTokenExpiresAt = new Date(Date.now() + Number(token.expires_in) * 1000);
-      account.refreshTokenExpiresAt = new Date(Date.now() + Number(token.refresh_expires_in) * 1000);
-      account.scopes = String(token.scope ?? "")
-        .split(",")
-        .filter(Boolean);
-      account.status = TikTokAccountStatus.CONNECTED;
-      await this.accounts.save(account);
-    } catch (error) {
-      this.throwSanitized(error);
-    }
-  }
-
-  mapAccount(row: TikTokAccount) {
-    return {
-      id: row.id,
-      openId: row.openId,
-      username: row.username,
-      displayName: row.displayName,
-      avatarUrl: row.avatarUrl,
-      scopes: row.scopes,
-      status: row.status,
-      isActive: row.isActive,
-      accessTokenExpiresAt: row.accessTokenExpiresAt,
-      refreshTokenExpiresAt: row.refreshTokenExpiresAt,
-      createdAt: row.createdAt,
-    };
   }
 
   mapVideo(row: TikTokVideo) {
@@ -490,17 +268,6 @@ export class TikTokService {
     };
   }
 
-  private assertConfigured(): void {
-    for (const name of [
-      "TIKTOK_CLIENT_KEY",
-      "TIKTOK_CLIENT_SECRET",
-      "TIKTOK_REDIRECT_URI",
-      "SETTINGS_ENCRYPTION_KEY",
-    ]) {
-      if (!process.env[name]?.trim()) throw new ServiceUnavailableException("TikTok integration is not configured");
-    }
-  }
-
   private throwSanitized(error: unknown): never {
     if (
       error instanceof BadRequestException ||
@@ -527,3 +294,4 @@ export class TikTokService {
     return mapCommercialDisclosure(video.commercialDisclosure);
   }
 }
+
