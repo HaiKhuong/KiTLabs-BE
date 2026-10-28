@@ -67,4 +67,20 @@ describe("FilmAuthService.profile", () => {
     await expect(service.profile(user.id)).rejects.toBe(error);
     expect(inventoryRepository.createQueryBuilder).not.toHaveBeenCalled();
   });
+
+  describe("updateProfile", () => {
+    it("updates the user name and returns profile", async () => {
+      const { service, userRepository } = setup("kim_dan_so_ky");
+      userRepository.save = jest.fn().mockImplementation((u) => Promise.resolve(u));
+
+      const updated = await service.updateProfile(user.id, { name: "Tiêu Viêm" });
+      expect(userRepository.save).toHaveBeenCalledWith(expect.objectContaining({ name: "Tiêu Viêm" }));
+      expect(updated.name).toBe("Tiêu Viêm");
+    });
+
+    it("rejects invalid name length", async () => {
+      const { service } = setup("kim_dan_so_ky");
+      await expect(service.updateProfile(user.id, { name: "A" })).rejects.toThrow();
+    });
+  });
 });

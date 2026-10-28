@@ -1,4 +1,4 @@
-import { Injectable, Logger, OnModuleInit, UnauthorizedException } from "@nestjs/common";
+import { BadRequestException, Injectable, Logger, OnModuleInit, UnauthorizedException } from "@nestjs/common";
 import { JwtService } from "@nestjs/jwt";
 import { InjectDataSource } from "@nestjs/typeorm";
 import * as bcrypt from "bcrypt";
@@ -253,6 +253,20 @@ export class FilmAuthService implements OnModuleInit {
       .getRawOne<{ currentTitle: string | null }>();
 
     return { ...user, currentTitle: equippedTitle?.currentTitle ?? null };
+  }
+
+  async updateProfile(userId: string, dto: { name?: string }) {
+    const filmRepo = this.db.getRepository(FilmUser);
+    const user = await filmRepo.findOneByOrFail({ id: userId });
+    if (dto.name !== undefined) {
+      const trimmed = dto.name.trim();
+      if (trimmed.length < 2 || trimmed.length > 50) {
+        throw new BadRequestException("Tên phải từ 2 đến 50 ký tự");
+      }
+      user.name = trimmed;
+    }
+    await filmRepo.save(user);
+    return this.profile(userId);
   }
 
   private async issue(user: FilmUser) {
