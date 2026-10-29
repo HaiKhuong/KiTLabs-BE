@@ -1,6 +1,6 @@
 import { Injectable, NotFoundException } from "@nestjs/common";
 import { InjectDataSource } from "@nestjs/typeorm";
-import { DataSource, IsNull, LessThanOrEqual, MoreThanOrEqual } from "typeorm";
+import { DataSource, In, IsNull, LessThanOrEqual, MoreThanOrEqual } from "typeorm";
 import { CreateFilmReportDto, FilmMovieBannersQueryDto, FilmMoviesQueryDto } from "./dto";
 import {
   FilmAdvertisement,
@@ -88,8 +88,28 @@ export class FilmCatalogService {
       .getRepository(FilmEpisode)
       .find({ where: { movieId: movie.id }, order: { episodeNumber: "ASC" } });
 
+    const episodeSources = episodes.length
+      ? await this.db.getRepository(FilmEpisodeSource).find({
+          where: { episodeId: In(episodes.map((episode) => episode.id)), isActive: true },
+          order: { priority: "ASC" },
+        })
+      : [];
+    const sourcesByEpisodeId = new Map<string, FilmEpisodeSource[]>();
+
+    for (const source of episodeSources) {
+      const sources = sourcesByEpisodeId.get(source.episodeId) || [];
+      sources.push(source);
+      sourcesByEpisodeId.set(source.episodeId, sources);
+    }
+
     const [result] = await this.withGenres([movie]);
-    return { ...result, episodes };
+    return {
+      ...result,
+      episodes: episodes.map((episode) => ({
+        ...episode,
+        sources: sourcesByEpisodeId.get(episode.id) || [],
+      })),
+    };
   }
 
   async movieBanners(
@@ -306,4 +326,3 @@ export class FilmCatalogService {
     return setting;
   }
 }
-
