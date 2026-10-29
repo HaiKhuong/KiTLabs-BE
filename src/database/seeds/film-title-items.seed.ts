@@ -57,26 +57,26 @@ export const FILM_TITLE_ITEM_SEED = [
   {
     "slug": "luyen_hu_dinh_phong",
     "name": "Luyện Hư - Đỉnh Phong",
-    "width": 537,
-    "height": 206
+    "width": 470,
+    "height": 192
   },
   {
     "slug": "luyen_hu_hau_ky",
     "name": "Luyện Hư - Hậu Kỳ",
-    "width": 527,
-    "height": 180
+    "width": 466,
+    "height": 197
   },
   {
     "slug": "luyen_hu_so_ky",
     "name": "Luyện Hư - Sơ Kỳ",
-    "width": 506,
-    "height": 122
+    "width": 473,
+    "height": 183
   },
   {
     "slug": "luyen_hu_trung_ky",
     "name": "Luyện Hư - Trung Kỳ",
-    "width": 524,
-    "height": 138
+    "width": 466,
+    "height": 193
   },
   {
     "slug": "luyen_khi_dinh_phong",
@@ -135,25 +135,25 @@ export const FILM_TITLE_ITEM_SEED = [
   {
     "slug": "truc_co_dinh_phong",
     "name": "Trúc Cơ - Đỉnh Phong",
-    "width": 535,
-    "height": 176
+    "width": 533,
+    "height": 179
   },
   {
     "slug": "truc_co_hau_ky",
     "name": "Trúc Cơ - Hậu Kỳ",
-    "width": 527,
-    "height": 142
+    "width": 512,
+    "height": 175
   },
   {
     "slug": "truc_co_so_ky",
     "name": "Trúc Cơ - Sơ Kỳ",
-    "width": 503,
-    "height": 95
+    "width": 507,
+    "height": 158
   },
   {
     "slug": "truc_co_trung_ky",
     "name": "Trúc Cơ - Trung Kỳ",
-    "width": 520,
-    "height": 110
+    "width": 524,
+    "height": 161
   }
 ] as const satisfies readonly FilmTitleItemSeed[];

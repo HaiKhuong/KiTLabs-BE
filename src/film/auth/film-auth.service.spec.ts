@@ -19,7 +19,10 @@ describe("FilmAuthService.profile", () => {
         .fn()
         .mockResolvedValue(currentTitle === undefined ? undefined : { currentTitle }),
     };
-    const userRepository = { findOneByOrFail: jest.fn().mockResolvedValue(user) };
+    const userRepository = {
+      findOneByOrFail: jest.fn().mockResolvedValue(user),
+      save: jest.fn().mockImplementation((u: any) => Promise.resolve(u)),
+    };
     const inventoryRepository = { createQueryBuilder: jest.fn().mockReturnValue(query) };
     const db = {
       getRepository: jest.fn((entity) => {
