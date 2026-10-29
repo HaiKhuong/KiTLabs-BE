@@ -79,7 +79,7 @@ function parseReleaseYear(publishDate?: string): number {
 }
 
 async function seed() {
-  const jsonPath = resolve(__dirname, "../movies_grouped_dataset.json");
+  const jsonPath = resolve(__dirname, "../src/database/seeds/movies.json");
   if (!existsSync(jsonPath)) {
     console.error(`Dataset not found at ${jsonPath}`);
     process.exit(1);
