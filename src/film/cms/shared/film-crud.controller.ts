@@ -13,7 +13,10 @@ export abstract class FilmCrudController {
   @ApiOperation({ summary: "Get paginated list of resources" })
   @Get()
   list(@Query() query: FilmAdminPaginationQueryDto) {
-    return this.service.adminList(this.resource, query.page || 1, query.limit || 20);
+    const filter: { episodeId?: string; movieId?: string } = {};
+    if (query.episodeId) filter.episodeId = query.episodeId;
+    if (query.movieId) filter.movieId = query.movieId;
+    return this.service.adminList(this.resource, query.page || 1, query.limit || 10, filter);
   }
 
   @ApiOperation({ summary: "Get resource details by ID" })

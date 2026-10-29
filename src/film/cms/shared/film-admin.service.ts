@@ -58,12 +58,26 @@ export class FilmAdminService {
     return target;
   }
 
-  async adminList(resource: string, page = 1, limit = 20) {
+  async adminList(
+    resource: string,
+    page = 1,
+    limit = 10,
+    filter?: { episodeId?: string; movieId?: string },
+  ) {
     const repo = this.db.getRepository(this.target(resource));
     const take = Math.min(100, Math.max(1, limit));
     const skip = (Math.max(1, page) - 1) * take;
 
+    const where: Record<string, unknown> = {};
+    if (filter?.episodeId && (resource === "episode-sources" || resource === "episodes")) {
+      where.episodeId = filter.episodeId;
+    }
+    if (filter?.movieId && (resource === "episodes" || resource === "movies")) {
+      where.movieId = filter.movieId;
+    }
+
     const [items, total] = await repo.findAndCount({
+      where: Object.keys(where).length > 0 ? (where as never) : undefined,
       withDeleted: true,
       order: { createdAt: "DESC" } as never,
       take,
