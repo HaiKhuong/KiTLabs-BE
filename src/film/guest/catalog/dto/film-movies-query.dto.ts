@@ -54,29 +54,3 @@ export class FilmMoviesQueryDto {
   @IsString()
   sort?: string;
 }
-
-export class FilmMovieBannersQueryDto {
-  @ApiPropertyOptional({ description: "Number of banner movies to fetch", default: 6 })
-  @IsOptional()
-  @Type(() => Number)
-  @IsInt()
-  @Min(1)
-  @Max(50)
-  limit?: number;
-
-  @ApiPropertyOptional({
-    description: "Filter recommended movies ('true', 'false', 'all'). Defaults to 'true'",
-    default: "true",
-  })
-  @IsOptional()
-  @IsString()
-  recommended?: string;
-}
-
-export class FilmCommentsQueryDto {
-  @ApiPropertyOptional({ description: "Cursor timestamp for pagination" })
-  @IsOptional()
-  @IsString()
-  cursor?: string;
-}
-

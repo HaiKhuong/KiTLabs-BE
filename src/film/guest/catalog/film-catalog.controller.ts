@@ -1,7 +1,7 @@
 import { Controller, Get, Param, Query } from "@nestjs/common";
 import { ApiOperation, ApiParam, ApiTags } from "@nestjs/swagger";
 import { Public } from "../../../common/decorators/public.decorator";
-import { FilmCommentsQueryDto, FilmMovieBannersQueryDto, FilmMoviesQueryDto } from "../../dto/film-catalog.dto";
+import { FilmCommentsQueryDto, FilmMovieBannersQueryDto, FilmMoviesQueryDto } from "./dto";
 import { FilmCatalogService } from "./film-catalog.service";
 
 @Public()

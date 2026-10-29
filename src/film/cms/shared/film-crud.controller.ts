@@ -1,6 +1,6 @@
 import { Body, Delete, Get, Param, Patch, Post, Query } from "@nestjs/common";
 import { ApiOperation, ApiParam } from "@nestjs/swagger";
-import { FilmAdminPaginationQueryDto, FilmAdminPayloadDto } from "../../dto/film-admin.dto";
+import { FilmAdminPaginationQueryDto, FilmAdminPayloadDto } from "./dto";
 import { FilmAdminService } from "./film-admin.service";
 
 export { FilmAdminPaginationQueryDto, FilmAdminPayloadDto };

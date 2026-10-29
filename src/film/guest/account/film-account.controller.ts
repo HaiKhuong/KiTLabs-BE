@@ -4,7 +4,7 @@ import { Request } from "express";
 import { Public } from "../../../common/decorators/public.decorator";
 import { FilmCurrentUser, FilmJwtGuard, FilmPrincipal } from "../../auth/film-auth";
 import { FilmTrackingService } from "../tracking/film-tracking.service";
-import { ActivityDto, CommentDto, MovieDto, RatingDto, ReactionDto, WatchDto } from "./film-account.dto";
+import { ActivityDto, CommentDto, MovieDto, RatingDto, ReactionDto, WatchDto } from "./dto";
 import { FilmAccountService } from "./film-account.service";
 
 @Public()

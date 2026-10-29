@@ -1,7 +1,7 @@
 import { Injectable, NotFoundException } from "@nestjs/common";
 import { InjectDataSource } from "@nestjs/typeorm";
 import { DataSource, IsNull, LessThanOrEqual, MoreThanOrEqual } from "typeorm";
-import { FilmMovieBannersQueryDto, FilmMoviesQueryDto } from "../../dto/film-catalog.dto";
+import { FilmMovieBannersQueryDto, FilmMoviesQueryDto } from "./dto";
 import {
   FilmAdvertisement,
   FilmBanner,

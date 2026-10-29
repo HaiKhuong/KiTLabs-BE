@@ -15,7 +15,7 @@ import {
   ReactionType,
 } from "../../entities/film.entities";
 import { filmRankFor } from "../../shared/film-rank.util";
-import { CommentDto, RatingDto, WatchDto } from "./film-account.dto";
+import { CommentDto, RatingDto, WatchDto } from "./dto";
 
 @Injectable()
 export class FilmAccountService {

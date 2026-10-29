@@ -13,4 +13,3 @@ export class FilmChatHistoryQueryDto {
   @IsString()
   cursor?: string;
 }
-

@@ -1,6 +1,6 @@
 import { Injectable, NotFoundException } from "@nestjs/common";
 import { InjectDataSource } from "@nestjs/typeorm";
-import { DataSource, EntityTarget } from "typeorm";
+import { DataSource, EntityTarget, In } from "typeorm";
 import {
   DonationStatus,
   FilmActivityLog,
@@ -75,6 +75,11 @@ export class FilmAdminService {
       return { items: moviesWithGenres, total, page: Math.max(1, page), limit: take };
     }
 
+    if (resource === "users") {
+      const usersWithDevices = await this.withDevices(items as FilmUser[]);
+      return { items: usersWithDevices, total, page: Math.max(1, page), limit: take };
+    }
+
     return { items, total, page: Math.max(1, page), limit: take };
   }
 
@@ -88,6 +93,11 @@ export class FilmAdminService {
     if (resource === "movies") {
       const [withG] = await this.withGenres([row as FilmMovie]);
       return withG;
+    }
+
+    if (resource === "users") {
+      const [withD] = await this.withDevices([row as FilmUser]);
+      return withD;
     }
 
     return row;
@@ -215,6 +225,30 @@ export class FilmAdminService {
       genres: rows
         .filter((row) => row.movieId === movie.id)
         .map(({ id, name, slug }) => ({ id, name, slug })),
+    }));
+  }
+
+  private async withDevices(users: FilmUser[]) {
+    if (!users.length) return [];
+    const deviceIds = Array.from(
+      new Set(users.map((u) => u.deviceId).filter((id): id is string => Boolean(id))),
+    );
+
+    if (!deviceIds.length) {
+      return users.map((u) => ({ ...u, device: null }));
+    }
+
+    const devices = await this.db.getRepository(FilmDevice).find({
+      where: { id: In(deviceIds) },
+      withDeleted: true,
+    });
+
+    const deviceMap = new Map<string, FilmDevice>();
+    devices.forEach((d) => deviceMap.set(d.id, d));
+
+    return users.map((u) => ({
+      ...u,
+      device: u.deviceId ? deviceMap.get(u.deviceId) || null : null,
     }));
   }
 }

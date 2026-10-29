@@ -1,6 +1,6 @@
-import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
+import { ApiPropertyOptional } from "@nestjs/swagger";
 import { Type } from "class-transformer";
-import { IsInt, IsObject, IsOptional, Max, Min } from "class-validator";
+import { IsInt, IsOptional, Max, Min } from "class-validator";
 
 export class FilmAdminPaginationQueryDto {
   @ApiPropertyOptional({ description: "Page number, starting from 1", default: 1 })
@@ -18,10 +18,3 @@ export class FilmAdminPaginationQueryDto {
   @Max(100)
   limit?: number;
 }
-
-export class FilmAdminPayloadDto {
-  @ApiProperty({ description: "Entity payload data", type: Object })
-  @IsObject()
-  data!: Record<string, unknown>;
-}
-

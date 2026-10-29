@@ -23,7 +23,7 @@ export class FilmAuthService implements OnModuleInit {
     @InjectDataSource("film") private readonly db: DataSource,
     @InjectDataSource() private readonly platformDb: DataSource,
     private readonly jwt: JwtService,
-  ) {}
+  ) { }
 
   async onModuleInit(): Promise<void> {
     const email = (process.env.FILM_ADMIN_EMAIL || process.env.PLATFORM_ADMIN_EMAIL || "admin@kitlabs.io")
@@ -88,7 +88,20 @@ export class FilmAuthService implements OnModuleInit {
     }
   }
 
-  async createDevice(ip: string | null, userAgent: string | null, deviceToken?: string) {
+  decodeToken(token: string): { sub?: string; role?: string; deviceId?: string } | null {
+    try {
+      return this.jwt.decode(token) as { sub?: string; role?: string; deviceId?: string } | null;
+    } catch {
+      return null;
+    }
+  }
+
+  async createDevice(
+    ip: string | null,
+    userAgent: string | null,
+    deviceToken?: string,
+    existingUserId?: string,
+  ) {
     const result = await this.db.transaction(async (manager) => {
       const token = deviceToken || randomUUID();
       await manager.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [token]);
@@ -105,11 +118,37 @@ export class FilmAuthService implements OnModuleInit {
           }),
         );
       } else {
-        Object.assign(device, { lastIp: ip, userAgent, lastSeenAt: new Date() });
+        device.lastIp = ip || device.lastIp;
+        if (!device.firstIp && ip) {
+          device.firstIp = ip;
+        }
+        device.userAgent = userAgent || device.userAgent;
+        device.lastSeenAt = new Date();
         await manager.save(device);
       }
 
-      let user = await manager.getRepository(FilmUser).findOneBy({ deviceId: device.id });
+      let user: FilmUser | null = null;
+
+      // 1. If existingUserId is provided (from authenticated session/token), keep this user
+      if (existingUserId) {
+        user = await manager.getRepository(FilmUser).findOneBy({ id: existingUserId });
+        if (user && user.deviceId !== device.id) {
+          // Release device from any old user if currently held
+          const otherUser = await manager.getRepository(FilmUser).findOneBy({ deviceId: device.id });
+          if (otherUser && otherUser.id !== user.id) {
+            otherUser.deviceId = null;
+            await manager.save(otherUser);
+          }
+          user.deviceId = device.id;
+        }
+      }
+
+      // 2. If no user from existingUserId, retain the user already linked to this device
+      if (!user) {
+        user = await manager.getRepository(FilmUser).findOneBy({ deviceId: device.id });
+      }
+
+      // 3. Only if no user exists at all, create a new guest user
       if (!user) {
         user = await manager.save(
           manager.create(FilmUser, {
@@ -118,12 +157,15 @@ export class FilmAuthService implements OnModuleInit {
             email: null,
             passwordHash: null,
             refreshTokenHash: null,
-            name: `Guest-${device.deviceToken.slice(0, 8)}`,
+            name: `Đạo Hữu #${device.deviceToken.slice(0, 8)}`,
             role: FilmUserRole.GUEST,
             status: FilmUserStatus.ACTIVE,
           }),
         );
       }
+
+      user.lastActiveAt = new Date();
+      await manager.save(user);
 
       return { device, user };
     });
