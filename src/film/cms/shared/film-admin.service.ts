@@ -23,6 +23,9 @@ import {
   FilmUser,
   FilmUserInventory,
   FilmWatchHistory,
+  FilmImageUpload,
+  FilmReport,
+  FilmSetting,
 } from "../../entities/film.entities";
 import { filmRankFor } from "../../shared/film-rank.util";
 
@@ -46,6 +49,9 @@ const RESOURCES: Record<string, EntityTarget<object>> = {
   ratings: FilmRating,
   comments: FilmComment,
   inventories: FilmUserInventory,
+  "image-uploads": FilmImageUpload,
+  reports: FilmReport,
+  settings: FilmSetting,
 };
 
 @Injectable()
@@ -62,7 +68,7 @@ export class FilmAdminService {
     resource: string,
     page = 1,
     limit = 10,
-    filter?: { episodeId?: string; movieId?: string },
+    filter?: { episodeId?: string; movieId?: string; status?: string },
   ) {
     const repo = this.db.getRepository(this.target(resource));
     const take = Math.min(100, Math.max(1, limit));
@@ -72,8 +78,11 @@ export class FilmAdminService {
     if (filter?.episodeId && (resource === "episode-sources" || resource === "episodes")) {
       where.episodeId = filter.episodeId;
     }
-    if (filter?.movieId && (resource === "episodes" || resource === "movies")) {
+    if (filter?.movieId && (resource === "episodes" || resource === "movies" || resource === "comments")) {
       where.movieId = filter.movieId;
+    }
+    if (filter?.status && (resource === "comments" || resource === "reports" || resource === "users")) {
+      where.status = filter.status;
     }
     if (filter?.movieId && resource === "episode-sources") {
       const epRepo = this.db.getRepository(FilmEpisode);
@@ -101,6 +110,11 @@ export class FilmAdminService {
     if (resource === "users") {
       const usersWithDevices = await this.withDevices(items as FilmUser[]);
       return { items: usersWithDevices, total, page: Math.max(1, page), limit: take };
+    }
+
+    if (resource === "comments") {
+      const commentsWithMeta = await this.withCommentMeta(items as FilmComment[]);
+      return { items: commentsWithMeta, total, page: Math.max(1, page), limit: take };
     }
 
     return { items, total, page: Math.max(1, page), limit: take };
@@ -272,6 +286,53 @@ export class FilmAdminService {
     return users.map((u) => ({
       ...u,
       device: u.deviceId ? deviceMap.get(u.deviceId) || null : null,
+    }));
+  }
+
+  private async withCommentMeta(comments: FilmComment[]) {
+    if (!comments.length) return [];
+
+    const userIds = Array.from(new Set(comments.map((c) => c.userId).filter(Boolean)));
+    const movieIds = Array.from(new Set(comments.map((c) => c.movieId).filter(Boolean)));
+    const episodeIds = Array.from(
+      new Set(comments.map((c) => c.episodeId).filter((id): id is string => Boolean(id))),
+    );
+
+    const userMap = new Map<string, Partial<FilmUser>>();
+    if (userIds.length > 0) {
+      const users = await this.db.getRepository(FilmUser).find({
+        where: { id: In(userIds) },
+        select: ["id", "name", "username", "email", "avatarUrl", "sectRank"],
+        withDeleted: true,
+      });
+      users.forEach((u) => userMap.set(u.id, u));
+    }
+
+    const movieMap = new Map<string, Partial<FilmMovie>>();
+    if (movieIds.length > 0) {
+      const movies = await this.db.getRepository(FilmMovie).find({
+        where: { id: In(movieIds) },
+        select: ["id", "title", "slug", "bannerUrl", "thumbnailUrl"],
+        withDeleted: true,
+      });
+      movies.forEach((m) => movieMap.set(m.id, m));
+    }
+
+    const episodeMap = new Map<string, Partial<FilmEpisode>>();
+    if (episodeIds.length > 0) {
+      const episodes = await this.db.getRepository(FilmEpisode).find({
+        where: { id: In(episodeIds) },
+        select: ["id", "episodeNumber", "title"],
+        withDeleted: true,
+      });
+      episodes.forEach((e) => episodeMap.set(e.id, e));
+    }
+
+    return comments.map((c) => ({
+      ...c,
+      user: userMap.get(c.userId) || null,
+      movie: movieMap.get(c.movieId) || null,
+      episode: c.episodeId ? episodeMap.get(c.episodeId) || null : null,
     }));
   }
 }

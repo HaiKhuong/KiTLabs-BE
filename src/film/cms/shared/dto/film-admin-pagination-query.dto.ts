@@ -27,4 +27,9 @@ export class FilmAdminPaginationQueryDto {
   @IsOptional()
   @IsString()
   movieId?: string;
+
+  @ApiPropertyOptional({ description: "Filter by status" })
+  @IsOptional()
+  @IsString()
+  status?: string;
 }

@@ -1,7 +1,7 @@
 import { Injectable, NotFoundException } from "@nestjs/common";
 import { InjectDataSource } from "@nestjs/typeorm";
 import { DataSource, IsNull, LessThanOrEqual, MoreThanOrEqual } from "typeorm";
-import { FilmMovieBannersQueryDto, FilmMoviesQueryDto } from "./dto";
+import { CreateFilmReportDto, FilmMovieBannersQueryDto, FilmMoviesQueryDto } from "./dto";
 import {
   FilmAdvertisement,
   FilmBanner,
@@ -11,9 +11,12 @@ import {
   FilmGenre,
   FilmMovie,
   FilmMovieGenre,
+  FilmReport,
+  FilmSetting,
   FilmTag,
   FilmUser,
   FilmUserRole,
+  ReportStatus,
 } from "../../entities/film.entities";
 
 @Injectable()
@@ -237,6 +240,70 @@ export class FilmCatalogService {
         .filter((row) => row.movieId === movie.id)
         .map(({ id, name, slug }) => ({ id, name, slug })),
     }));
+  }
+
+  async createReport(
+    dto: CreateFilmReportDto,
+    ipAddress?: string | null,
+    userAgent?: string | null,
+    user?: { userId?: string; deviceId?: string },
+  ) {
+    const movieRepo = this.db.getRepository(FilmMovie);
+    const movie = await movieRepo.findOne({ where: { id: dto.movieId } });
+    if (!movie) {
+      throw new NotFoundException("Phim không tồn tại");
+    }
+
+    let episodeTitle = dto.episodeTitle || null;
+    let episodeNumber = dto.episodeNumber !== undefined ? dto.episodeNumber : null;
+
+    if (dto.episodeId) {
+      const ep = await this.db.getRepository(FilmEpisode).findOne({ where: { id: dto.episodeId } });
+      if (ep) {
+        episodeTitle = ep.title || episodeTitle;
+        episodeNumber = Number(ep.episodeNumber) || episodeNumber;
+      }
+    }
+
+    const reportRepo = this.db.getRepository(FilmReport);
+    const report = reportRepo.create({
+      userId: user?.userId || null,
+      deviceId: user?.deviceId || dto.deviceId || null,
+      movieId: movie.id,
+      movieTitle: movie.title,
+      episodeId: dto.episodeId || null,
+      episodeNumber,
+      episodeTitle,
+      pageUrl: dto.pageUrl || null,
+      reason: dto.reason?.trim() || "VIDEO_ISSUE",
+      description: dto.description?.trim() || null,
+      status: ReportStatus.PENDING,
+      ipAddress: ipAddress || null,
+      userAgent: userAgent || null,
+    });
+
+    await reportRepo.save(report);
+
+    return {
+      success: true,
+      id: report.id,
+      message: "Đã ghi nhận báo lỗi thành công. Đội ngũ kỹ thuật sẽ kiểm tra sớm nhất!",
+    };
+  }
+
+  async publicSettings() {
+    return this.db.getRepository(FilmSetting).find({
+      where: { isPublic: true },
+      order: { key: "ASC" },
+    });
+  }
+
+  async publicSettingByKey(key: string) {
+    const setting = await this.db.getRepository(FilmSetting).findOne({
+      where: { key: key.trim(), isPublic: true },
+    });
+    if (!setting) throw new NotFoundException(`Cấu hình ${key} không tồn tại hoặc không công khai`);
+    return setting;
   }
 }
 

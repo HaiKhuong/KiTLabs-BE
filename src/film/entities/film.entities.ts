@@ -96,6 +96,12 @@ export enum ChatType {
   SYSTEM_ANNOUNCEMENT = "SYSTEM_ANNOUNCEMENT",
   DONATE_ALERT = "DONATE_ALERT",
 }
+export enum ReportStatus {
+  PENDING = "PENDING",
+  IN_REVIEW = "IN_REVIEW",
+  RESOLVED = "RESOLVED",
+  DISMISSED = "DISMISSED",
+}
 
 abstract class FilmBase {
   @PrimaryGeneratedColumn("uuid") id!: string;
@@ -144,6 +150,7 @@ export class FilmMovie extends FilmBase {
   @Index() @Column() title!: string;
   @Index({ unique: true }) @Column() slug!: string;
   @Column({ name: "banner_url", type: "varchar", nullable: true }) bannerUrl!: string | null;
+  @Column({ name: "thumbnail_url", type: "varchar", nullable: true }) thumbnailUrl!: string | null;
   @Column({ type: "enum", enum: MovieStatus, default: MovieStatus.ONGOING }) status!: MovieStatus;
   @Column({ name: "release_year", type: "int", nullable: true }) releaseYear!: number | null;
   @Column({ name: "current_episode_count", type: "int", default: 1 }) currentEpisodeCount!: number;
@@ -328,6 +335,46 @@ export class FilmActivityLog {
   @Index() @CreateDateColumn({ name: "created_at" }) createdAt!: Date;
 }
 
+@Entity("image_upload_histories")
+export class FilmImageUpload extends FilmBase {
+  @Index() @Column("uuid", { name: "admin_id", nullable: true }) adminId!: string | null;
+  @Column({ name: "admin_name", type: "varchar", length: 150, nullable: true }) adminName!: string | null;
+  @Column({ name: "admin_email", type: "varchar", length: 150, nullable: true }) adminEmail!: string | null;
+  @Column({ name: "filename", type: "varchar", length: 255 }) filename!: string;
+  @Column({ name: "original_name", type: "varchar", length: 255, nullable: true }) originalName!: string | null;
+  @Column({ name: "url", type: "text" }) url!: string;
+  @Column({ name: "mime_type", type: "varchar", length: 100, nullable: true }) mimeType!: string | null;
+  @Column({ name: "size_bytes", type: "bigint", default: 0 }) sizeBytes!: string;
+  @Column({ name: "category", type: "varchar", length: 50, default: "general" }) category!: string;
+}
+
+@Entity("movie_reports")
+export class FilmReport extends FilmBase {
+  @Index() @Column("uuid", { name: "user_id", nullable: true }) userId!: string | null;
+  @Index() @Column({ name: "device_id", type: "varchar", length: 150, nullable: true }) deviceId!: string | null;
+  @Index() @Column("uuid", { name: "movie_id" }) movieId!: string;
+  @Column({ name: "movie_title", type: "varchar", length: 255, nullable: true }) movieTitle!: string | null;
+  @Index() @Column("uuid", { name: "episode_id", nullable: true }) episodeId!: string | null;
+  @Column({ name: "episode_number", type: "numeric", precision: 6, scale: 1, nullable: true }) episodeNumber!: number | null;
+  @Column({ name: "episode_title", type: "varchar", length: 255, nullable: true }) episodeTitle!: string | null;
+  @Column({ name: "page_url", type: "text", nullable: true }) pageUrl!: string | null;
+  @Column({ name: "reason", type: "varchar", length: 100, default: "VIDEO_ISSUE" }) reason!: string;
+  @Column({ name: "description", type: "text", nullable: true }) description!: string | null;
+  @Column({ type: "enum", enum: ReportStatus, default: ReportStatus.PENDING }) status!: ReportStatus;
+  @Column({ name: "ip_address", type: "varchar", length: 64, nullable: true }) ipAddress!: string | null;
+  @Column({ name: "user_agent", type: "text", nullable: true }) userAgent!: string | null;
+  @Column({ name: "resolved_at", type: "timestamptz", nullable: true }) resolvedAt!: Date | null;
+  @Column("uuid", { name: "resolved_by", nullable: true }) resolvedBy!: string | null;
+}
+
+@Entity("settings")
+export class FilmSetting extends FilmBase {
+  @Index({ unique: true }) @Column({ name: "key", type: "varchar", length: 150 }) key!: string;
+  @Column({ name: "value", type: "jsonb" }) value!: any;
+  @Column({ name: "description", type: "varchar", length: 255, nullable: true }) description!: string | null;
+  @Column({ name: "is_public", type: "boolean", default: true }) isPublic!: boolean;
+}
+
 export const FILM_DB_ENTITIES = [
   FilmDevice,
   FilmUser,
@@ -351,4 +398,7 @@ export const FILM_DB_ENTITIES = [
   FilmBanner,
   FilmAdvertisement,
   FilmActivityLog,
+  FilmImageUpload,
+  FilmReport,
+  FilmSetting,
 ];

@@ -44,9 +44,42 @@ export class FilmNotificationsAdminController extends FilmCrudController {
   }
 }
 
+@FilmCmsAccess()
+@ApiTags("Film CMS - Settings")
+@Controller("film/admin/settings")
+export class FilmSettingsAdminController extends FilmCrudController {
+  protected readonly resource = "settings";
+  constructor(s: FilmAdminService) {
+    super(s);
+  }
+}
+
+@FilmCmsAccess()
+@ApiTags("Film CMS - Reports")
+@Controller("film/admin/reports")
+export class FilmReportsAdminController extends FilmCrudController {
+  protected readonly resource = "reports";
+  constructor(s: FilmAdminService) {
+    super(s);
+  }
+}
+
+@FilmCmsAccess()
+@ApiTags("Film CMS - Image Upload Histories")
+@Controller("film/admin/image-uploads")
+export class FilmUploadsAdminController extends FilmCrudController {
+  protected readonly resource = "image-uploads";
+  constructor(s: FilmAdminService) {
+    super(s);
+  }
+}
+
 export const FILM_CONTENT_ADMIN_CONTROLLERS = [
   FilmItemsAdminController,
   FilmBannersAdminController,
   FilmAdvertisementsAdminController,
   FilmNotificationsAdminController,
+  FilmSettingsAdminController,
+  FilmReportsAdminController,
+  FilmUploadsAdminController,
 ];

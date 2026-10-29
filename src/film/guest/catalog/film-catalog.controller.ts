@@ -1,7 +1,13 @@
-import { Controller, Get, Param, Query } from "@nestjs/common";
+import { Body, Controller, Get, Param, Post, Query, Req } from "@nestjs/common";
 import { ApiOperation, ApiParam, ApiTags } from "@nestjs/swagger";
+import { Request } from "express";
 import { Public } from "../../../common/decorators/public.decorator";
-import { FilmCommentsQueryDto, FilmMovieBannersQueryDto, FilmMoviesQueryDto } from "./dto";
+import {
+  CreateFilmReportDto,
+  FilmCommentsQueryDto,
+  FilmMovieBannersQueryDto,
+  FilmMoviesQueryDto,
+} from "./dto";
 import { FilmCatalogService } from "./film-catalog.service";
 
 @Public()
@@ -71,5 +77,32 @@ export class FilmCatalogController {
   @Get("movies/:movieId/comments")
   comments(@Param("movieId") movieId: string, @Query() query: FilmCommentsQueryDto) {
     return this.service.comments(movieId, query.cursor);
+  }
+
+  @ApiOperation({ summary: "Submit movie / playback issue report" })
+  @Post("reports")
+  createReport(@Body() dto: CreateFilmReportDto, @Req() req: Request) {
+    const user = (req as any).user;
+    const ip = req.socket?.remoteAddress || (req.headers["x-forwarded-for"] as string) || null;
+    const userAgent = (req.headers["user-agent"] as string) || null;
+    return this.service.createReport(
+      dto,
+      ip,
+      userAgent,
+      user ? { userId: user.sub || user.id, deviceId: user.deviceId } : undefined,
+    );
+  }
+
+  @ApiOperation({ summary: "Get public site settings" })
+  @Get("settings")
+  settings() {
+    return this.service.publicSettings();
+  }
+
+  @ApiOperation({ summary: "Get single public site setting by key" })
+  @ApiParam({ name: "key", description: "Setting key identifier (e.g. SITE_INFO)" })
+  @Get("settings/:key")
+  settingByKey(@Param("key") key: string) {
+    return this.service.publicSettingByKey(key);
   }
 }

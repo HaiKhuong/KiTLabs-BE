@@ -6,10 +6,13 @@ import {
   Param,
   Post,
   Query,
+  Req,
   Res,
   UploadedFile,
   UseInterceptors,
 } from "@nestjs/common";
+import { InjectDataSource } from "@nestjs/typeorm";
+import { DataSource } from "typeorm";
 import { FileInterceptor } from "@nestjs/platform-express";
 import { ApiBody, ApiConsumes, ApiOperation, ApiQuery, ApiTags } from "@nestjs/swagger";
 import { randomBytes } from "crypto";
@@ -20,6 +23,7 @@ import { Response } from "express";
 
 import { Public } from "../../../common/decorators/public.decorator";
 import { FilmCmsAccess } from "../shared/film-cms.decorators";
+import { FilmImageUpload } from "../../entities/film.entities";
 
 const ALLOWED_IMAGE_MIME_TYPES = new Set([
   "image/jpeg",
@@ -48,6 +52,8 @@ function sanitizeType(type?: string): string {
 @ApiTags("Film CMS - Uploads")
 @Controller("film")
 export class FilmUploadController {
+  constructor(@InjectDataSource("film") private readonly db: DataSource) {}
+
   @ApiOperation({ summary: "Upload image for film poster, banner or assets" })
   @ApiConsumes("multipart/form-data")
   @ApiQuery({ name: "type", required: false, enum: ["poster", "banner", "general"], description: "Image category" })
@@ -98,9 +104,10 @@ export class FilmUploadController {
       }),
     }),
   )
-  uploadImage(
+  async uploadImage(
     @UploadedFile() file: Express.Multer.File,
     @Query("type") typeQuery?: string,
+    @Req() req?: any,
   ) {
     if (!file) {
       throw new BadRequestException("File ảnh không được để trống");
@@ -112,6 +119,29 @@ export class FilmUploadController {
       .replace(/^\/+|\/+$/g, "");
     const relativeUrl = `${uploadKey}/${type}/${file.filename}`;
 
+    const user = req?.user;
+    const adminId = user?.sub || user?.id || null;
+    const adminName = user?.name || user?.username || null;
+    const adminEmail = user?.email || null;
+
+    try {
+      const historyRepo = this.db.getRepository(FilmImageUpload);
+      const record = historyRepo.create({
+        adminId,
+        adminName,
+        adminEmail,
+        filename: file.filename,
+        originalName: file.originalname,
+        url: relativeUrl,
+        mimeType: file.mimetype,
+        sizeBytes: String(file.size),
+        category: type,
+      });
+      await historyRepo.save(record);
+    } catch (e) {
+      console.error("Failed to record image upload history:", e);
+    }
+
     return {
       url: relativeUrl,
       fileName: file.filename,
@@ -120,6 +150,28 @@ export class FilmUploadController {
       size: file.size,
       type,
     };
+  }
+
+  @ApiOperation({ summary: "Get image upload history for admin" })
+  @FilmCmsAccess()
+  @Get("admin/upload/history")
+  async uploadHistory(
+    @Query("page") page = 1,
+    @Query("limit") limit = 20,
+    @Query("category") category?: string,
+  ) {
+    const take = Math.min(100, Math.max(1, Number(limit) || 20));
+    const skip = (Math.max(1, Number(page) || 1) - 1) * take;
+    const where: any = {};
+    if (category) where.category = category;
+
+    const [items, total] = await this.db.getRepository(FilmImageUpload).findAndCount({
+      where,
+      order: { createdAt: "DESC" },
+      take,
+      skip,
+    });
+    return { items, total, page: Number(page) || 1, limit: take };
   }
 
   @ApiOperation({ summary: "Serve uploaded static film image" })

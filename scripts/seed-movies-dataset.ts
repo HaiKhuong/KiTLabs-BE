@@ -184,20 +184,22 @@ async function seed() {
            SET title = $1,
                slug = $2,
                banner_url = $3,
-               status = $4,
-               release_year = $5,
-               current_episode_count = $6,
-               views = $7,
-               rating_avg = $8,
-               rating_count = $9,
-               rank_score = $10,
-               is_hot = $11,
-               is_recommended = $12,
+               thumbnail_url = $4,
+               status = $5,
+               release_year = $6,
+               current_episode_count = $7,
+               views = $8,
+               rating_avg = $9,
+               rating_count = $10,
+               rank_score = $11,
+               is_hot = $12,
+               is_recommended = $13,
                updated_at = now()
-           WHERE id = $13`,
+           WHERE id = $14`,
           [
             item.movie_title,
             slug,
+            bannerUrl,
             bannerUrl,
             status,
             releaseYear,
@@ -215,15 +217,16 @@ async function seed() {
       } else {
         const insertRes = await client.query(
           `INSERT INTO movies (
-            title, slug, banner_url, status, release_year,
+            title, slug, banner_url, thumbnail_url, status, release_year,
             current_episode_count, views, rating_avg, rating_count,
             rank_score, is_hot, is_recommended
           )
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
           RETURNING id`,
           [
             item.movie_title,
             slug,
+            bannerUrl,
             bannerUrl,
             status,
             releaseYear,
