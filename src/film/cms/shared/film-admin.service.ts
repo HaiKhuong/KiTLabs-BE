@@ -75,6 +75,15 @@ export class FilmAdminService {
     if (filter?.movieId && (resource === "episodes" || resource === "movies")) {
       where.movieId = filter.movieId;
     }
+    if (filter?.movieId && resource === "episode-sources") {
+      const epRepo = this.db.getRepository(FilmEpisode);
+      const eps = await epRepo.find({ where: { movieId: filter.movieId }, select: ["id"] });
+      const epIds = eps.map((e) => e.id);
+      if (epIds.length === 0) {
+        return { items: [], total: 0, page: Math.max(1, page), limit: take };
+      }
+      where.episodeId = In(epIds);
+    }
 
     const [items, total] = await repo.findAndCount({
       where: Object.keys(where).length > 0 ? (where as never) : undefined,
