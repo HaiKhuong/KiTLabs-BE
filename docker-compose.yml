@@ -10,7 +10,7 @@ services:
       POSTGRES_DB: ${DB_NAME:-kitlabs}
       POSTGRES_MULTIPLE_DATABASES: ${DB_NAME:-kitlabs},${MAIN_DB_NAME:-kitlabs_platform},${TOOL_DB_NAME:-kitlabs_tools},${AUDIT_DB_NAME:-kitlabs_audit},${FILM_DB_NAME:-kitlabs_film}
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - pg_data:/var/lib/postgresql/data
       - ./docker/postgres/init-multiple-databases.sh:/docker-entrypoint-initdb.d/10-create-databases.sh:ro
@@ -20,7 +20,7 @@ services:
     container_name: kitlabs-redis
     restart: unless-stopped
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     volumes:
       - redis_data:/data
 
@@ -29,7 +29,7 @@ services:
     container_name: kitlabs-ytdlp
     restart: unless-stopped
     ports:
-      - "8100:8000"
+      - "127.0.0.1:8100:8000"
     volumes:
       - ytdlp_temp:/tmp/ytdlp
     environment:
@@ -40,7 +40,7 @@ services:
     container_name: kitlabs-douyin-playwright
     restart: unless-stopped
     ports:
-      - "8101:8000"
+      - "127.0.0.1:8101:8000"
     environment:
       - PORT=8000
     shm_size: "1gb"
