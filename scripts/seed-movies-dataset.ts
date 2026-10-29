@@ -104,31 +104,54 @@ async function seed() {
   try {
     await client.query("BEGIN");
 
-    // 1. Seed Genres
-    console.log("--> Seeding default genres...");
+    // 1. Seed Genres (check exists -> update / insert)
+    console.log("--> Processing genres (check exists, if exists update)...");
     const genreMap = new Map<string, string>(); // slug -> id
+    let genresInserted = 0;
+    let genresUpdated = 0;
+
     for (const g of FILM_GENRES_SEED) {
-      const res = await client.query(
-        `INSERT INTO genres (name, slug, description)
-         VALUES ($1, $2, $3)
-         ON CONFLICT (slug) DO UPDATE
-           SET name = EXCLUDED.name,
-               description = EXCLUDED.description
-         RETURNING id, slug`,
-        [g.name, g.slug, g.description]
+      const existGenre = await client.query(
+        `SELECT id FROM genres WHERE slug = $1 OR name = $2 LIMIT 1`,
+        [g.slug, g.name]
       );
-      genreMap.set(res.rows[0].slug, res.rows[0].id);
+
+      let genreId: string;
+      if (existGenre.rows.length > 0) {
+        genreId = existGenre.rows[0].id;
+        await client.query(
+          `UPDATE genres
+           SET name = $1, slug = $2, description = $3, updated_at = now()
+           WHERE id = $4`,
+          [g.name, g.slug, g.description, genreId]
+        );
+        genresUpdated++;
+      } else {
+        const insertRes = await client.query(
+          `INSERT INTO genres (name, slug, description)
+           VALUES ($1, $2, $3)
+           RETURNING id`,
+          [g.name, g.slug, g.description]
+        );
+        genreId = insertRes.rows[0].id;
+        genresInserted++;
+      }
+      genreMap.set(g.slug, genreId);
     }
-    console.log(`Seeded ${genreMap.size} genres.`);
 
     // 2. Sort movies by views to determine Hot & Recommended
     const sortedByViews = [...dataset].sort((a, b) => (b.total_views || 0) - (a.total_views || 0));
     const topHotIds = new Set(sortedByViews.slice(0, 10).map((m) => m.id));
     const topRecommendedIds = new Set(sortedByViews.slice(0, 20).map((m) => m.id));
 
-    let moviesCount = 0;
-    let episodesCount = 0;
-    let sourcesCount = 0;
+    let moviesInserted = 0;
+    let moviesUpdated = 0;
+    let episodesInserted = 0;
+    let episodesUpdated = 0;
+    let sourcesInserted = 0;
+    let sourcesUpdated = 0;
+
+    console.log("--> Processing movies, episodes, sources (check exists, if exists update)...");
 
     for (const item of dataset) {
       const slug = slugify(item.movie_title) || `movie-${item.id}`;
@@ -147,58 +170,91 @@ async function seed() {
       const isHot = topHotIds.has(item.id);
       const isRecommended = topRecommendedIds.has(item.id);
 
-      // Insert or Update Movie
-      const movieRes = await client.query(
-        `INSERT INTO movies (
-          title, slug, banner_url, status, release_year,
-          current_episode_count, views, rating_avg, rating_count,
-          rank_score, is_hot, is_recommended
-        )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-        ON CONFLICT (slug) DO UPDATE
-          SET title = EXCLUDED.title,
-              banner_url = EXCLUDED.banner_url,
-              status = EXCLUDED.status,
-              release_year = EXCLUDED.release_year,
-              current_episode_count = EXCLUDED.current_episode_count,
-              views = EXCLUDED.views,
-              rating_avg = EXCLUDED.rating_avg,
-              rating_count = EXCLUDED.rating_count,
-              rank_score = EXCLUDED.rank_score,
-              is_hot = EXCLUDED.is_hot,
-              is_recommended = EXCLUDED.is_recommended,
-              updated_at = now()
-        RETURNING id`,
-        [
-          item.movie_title,
-          slug,
-          bannerUrl,
-          status,
-          releaseYear,
-          currentEpisodeCount,
-          views,
-          ratingAvg,
-          ratingCount,
-          rankScore,
-          isHot,
-          isRecommended,
-        ]
+      // Check if movie exists (by slug or title)
+      const existMovie = await client.query(
+        `SELECT id FROM movies WHERE slug = $1 OR title = $2 LIMIT 1`,
+        [slug, item.movie_title]
       );
 
-      const movieId = movieRes.rows[0].id;
-      moviesCount++;
+      let movieId: string;
+      if (existMovie.rows.length > 0) {
+        movieId = existMovie.rows[0].id;
+        await client.query(
+          `UPDATE movies
+           SET title = $1,
+               slug = $2,
+               banner_url = $3,
+               status = $4,
+               release_year = $5,
+               current_episode_count = $6,
+               views = $7,
+               rating_avg = $8,
+               rating_count = $9,
+               rank_score = $10,
+               is_hot = $11,
+               is_recommended = $12,
+               updated_at = now()
+           WHERE id = $13`,
+          [
+            item.movie_title,
+            slug,
+            bannerUrl,
+            status,
+            releaseYear,
+            currentEpisodeCount,
+            views,
+            ratingAvg,
+            ratingCount,
+            rankScore,
+            isHot,
+            isRecommended,
+            movieId,
+          ]
+        );
+        moviesUpdated++;
+      } else {
+        const insertRes = await client.query(
+          `INSERT INTO movies (
+            title, slug, banner_url, status, release_year,
+            current_episode_count, views, rating_avg, rating_count,
+            rank_score, is_hot, is_recommended
+          )
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+          RETURNING id`,
+          [
+            item.movie_title,
+            slug,
+            bannerUrl,
+            status,
+            releaseYear,
+            currentEpisodeCount,
+            views,
+            ratingAvg,
+            ratingCount,
+            rankScore,
+            isHot,
+            isRecommended,
+          ]
+        );
+        movieId = insertRes.rows[0].id;
+        moviesInserted++;
+      }
 
       // Link Movie Genres
       const matchedSlugs = matchGenreSlugs(item.movie_title);
       for (const genreSlug of matchedSlugs) {
         const genreId = genreMap.get(genreSlug);
         if (genreId) {
-          await client.query(
-            `INSERT INTO movie_genres (movie_id, genre_id)
-             VALUES ($1, $2)
-             ON CONFLICT (movie_id, genre_id) DO NOTHING`,
+          const existLink = await client.query(
+            `SELECT 1 FROM movie_genres WHERE movie_id = $1 AND genre_id = $2`,
             [movieId, genreId]
           );
+          if (existLink.rows.length === 0) {
+            await client.query(
+              `INSERT INTO movie_genres (movie_id, genre_id) VALUES ($1, $2)`,
+              [movieId, genreId]
+            );
+          }
         }
       }
 
@@ -210,63 +266,85 @@ async function seed() {
           const epThumbnail = ep.youtube_id
             ? `https://img.youtube.com/vi/${ep.youtube_id}/hqdefault.jpg`
             : null;
+          const epTitle = ep.title || `Tập ${epNumber}`;
+          const duration = ep.duration_seconds || 0;
+          const epViews = ep.views || 0;
 
-          const epRes = await client.query(
-            `INSERT INTO episodes (
-              movie_id, episode_number, title, duration_seconds, views, thumbnail_url
-            )
-            VALUES ($1, $2, $3, $4, $5, $6)
-            ON CONFLICT (movie_id, episode_number) DO UPDATE
-              SET title = EXCLUDED.title,
-                  duration_seconds = EXCLUDED.duration_seconds,
-                  views = EXCLUDED.views,
-                  thumbnail_url = EXCLUDED.thumbnail_url,
-                  updated_at = now()
-            RETURNING id`,
-            [
-              movieId,
-              epNumber,
-              ep.title || `Tập ${epNumber}`,
-              ep.duration_seconds || 0,
-              ep.views || 0,
-              epThumbnail,
-            ]
+          // Check if episode exists (by movie_id and episode_number)
+          const existEp = await client.query(
+            `SELECT id FROM episodes WHERE movie_id = $1 AND episode_number = $2`,
+            [movieId, epNumber]
           );
 
-          const episodeId = epRes.rows[0].id;
-          episodesCount++;
-
-          // Episode Source (YouTube VIP Embed)
-          const videoUrl = ep.youtube_url || `https://www.youtube.com/watch?v=${ep.youtube_id}`;
-          const existingSourceRes = await client.query(
-            `SELECT id FROM episode_sources WHERE episode_id = $1 AND server_name = $2`,
-            [episodeId, "YouTube VIP"]
-          );
-
-          if (existingSourceRes.rows.length > 0) {
-            const sourceId = existingSourceRes.rows[0].id;
+          let episodeId: string;
+          if (existEp.rows.length > 0) {
+            episodeId = existEp.rows[0].id;
             await client.query(
-              `UPDATE episode_sources
-               SET video_url = $2, source_type = 'EMBED', quality = '1080P', is_active = true, updated_at = now()
-               WHERE id = $1`,
-              [sourceId, videoUrl]
+              `UPDATE episodes
+               SET title = $1,
+                   duration_seconds = $2,
+                   views = $3,
+                   thumbnail_url = $4,
+                   updated_at = now()
+               WHERE id = $5`,
+              [epTitle, duration, epViews, epThumbnail, episodeId]
             );
-            // Clean up any extraneous duplicates for this episode if any
-            if (existingSourceRes.rows.length > 1) {
-              const extraIds = existingSourceRes.rows.slice(1).map((r: any) => r.id);
-              await client.query(`DELETE FROM episode_sources WHERE id = ANY($1::uuid[])`, [extraIds]);
-            }
+            episodesUpdated++;
           } else {
-            await client.query(
-              `INSERT INTO episode_sources (
-                episode_id, server_name, source_type, quality, video_url, is_active, priority
+            const insertEp = await client.query(
+              `INSERT INTO episodes (
+                movie_id, episode_number, title, duration_seconds, views, thumbnail_url
               )
-              VALUES ($1, 'YouTube VIP', 'EMBED', '1080P', $2, true, 1)`,
-              [episodeId, videoUrl]
+              VALUES ($1, $2, $3, $4, $5, $6)
+              RETURNING id`,
+              [movieId, epNumber, epTitle, duration, epViews, epThumbnail]
             );
+            episodeId = insertEp.rows[0].id;
+            episodesInserted++;
           }
 
-          sourcesCount++;
+          // 4. Fill episode_sources with youtube_url for this episode
+          const videoUrl = (
+            ep.youtube_url || (ep.youtube_id ? `https://www.youtube.com/watch?v=${ep.youtube_id}` : "")
+          ).trim();
+
+          if (videoUrl) {
+            const existSource = await client.query(
+              `SELECT id FROM episode_sources WHERE episode_id = $1`,
+              [episodeId]
+            );
+
+            if (existSource.rows.length > 0) {
+              const sourceId = existSource.rows[0].id;
+              await client.query(
+                `UPDATE episode_sources
+                 SET video_url = $1,
+                     server_name = 'YouTube VIP',
+                     source_type = 'EMBED',
+                     quality = '1080P',
+                     is_active = true,
+                     updated_at = now()
+                 WHERE id = $2`,
+                [videoUrl, sourceId]
+              );
+              sourcesUpdated++;
+
+              // Clean up any extra duplicate sources for this episode if any exist
+              if (existSource.rows.length > 1) {
+                const extraIds = existSource.rows.slice(1).map((r: any) => r.id);
+                await client.query(`DELETE FROM episode_sources WHERE id = ANY($1::uuid[])`, [extraIds]);
+              }
+            } else {
+              await client.query(
+                `INSERT INTO episode_sources (
+                  episode_id, server_name, source_type, quality, video_url, is_active, priority
+                )
+                VALUES ($1, 'YouTube VIP', 'EMBED', '1080P', $2, true, 1)`,
+                [episodeId, videoUrl]
+              );
+              sourcesInserted++;
+            }
+          }
         }
       }
     }
@@ -274,9 +352,10 @@ async function seed() {
     await client.query("COMMIT");
     console.log("=========================================");
     console.log(`✅ SEED COMPLETED SUCCESSFULLY!`);
-    console.log(`🎬 Total Movies Seeded:   ${moviesCount}`);
-    console.log(`📺 Total Episodes Seeded: ${episodesCount}`);
-    console.log(`🔗 Total Sources Seeded:  ${sourcesCount}`);
+    console.log(`🏷️  Genres:   ${genresInserted} inserted, ${genresUpdated} updated`);
+    console.log(`🎬 Movies:   ${moviesInserted} inserted, ${moviesUpdated} updated`);
+    console.log(`📺 Episodes: ${episodesInserted} inserted, ${episodesUpdated} updated`);
+    console.log(`🔗 Sources:  ${sourcesInserted} inserted, ${sourcesUpdated} updated`);
     console.log("=========================================");
   } catch (error) {
     await client.query("ROLLBACK");
