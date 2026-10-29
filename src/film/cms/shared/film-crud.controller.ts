@@ -1,36 +1,58 @@
 import { Body, Delete, Get, Param, Patch, Post, Query } from "@nestjs/common";
-import { ApiProperty } from "@nestjs/swagger";
-import { IsObject } from "class-validator";
-import { FilmService } from "../../film.service";
+import { ApiOperation, ApiParam } from "@nestjs/swagger";
+import { FilmAdminPaginationQueryDto, FilmAdminPayloadDto } from "../../dto/film-admin.dto";
+import { FilmAdminService } from "./film-admin.service";
 
-export class FilmAdminPayloadDto {
-  @ApiProperty({ type: Object }) @IsObject() data!: Record<string, unknown>;
-}
+export { FilmAdminPaginationQueryDto, FilmAdminPayloadDto };
 
 export abstract class FilmCrudController {
   protected abstract readonly resource: string;
-  constructor(protected readonly service: FilmService) {}
-  @Get() list(@Query("page") page?: string, @Query("limit") limit?: string) {
-    return this.service.adminList(this.resource, Number(page) || 1, Number(limit) || 20);
+
+  constructor(protected readonly service: FilmAdminService) {}
+
+  @ApiOperation({ summary: "Get paginated list of resources" })
+  @Get()
+  list(@Query() query: FilmAdminPaginationQueryDto) {
+    return this.service.adminList(this.resource, query.page || 1, query.limit || 20);
   }
-  @Get(":id") one(@Param("id") id: string) {
+
+  @ApiOperation({ summary: "Get resource details by ID" })
+  @ApiParam({ name: "id", description: "Resource UUID" })
+  @Get(":id")
+  one(@Param("id") id: string) {
     return this.service.adminOne(this.resource, id);
   }
-  @Post() create(@Body() dto: FilmAdminPayloadDto) {
+
+  @ApiOperation({ summary: "Create new resource record" })
+  @Post()
+  create(@Body() dto: FilmAdminPayloadDto) {
     return this.service.adminCreate(this.resource, this.safe(dto.data));
   }
-  @Patch(":id") update(@Param("id") id: string, @Body() dto: FilmAdminPayloadDto) {
+
+  @ApiOperation({ summary: "Update resource record by ID" })
+  @ApiParam({ name: "id", description: "Resource UUID" })
+  @Patch(":id")
+  update(@Param("id") id: string, @Body() dto: FilmAdminPayloadDto) {
     const data = this.safe(dto.data);
     return this.resource === "donations"
       ? this.service.updateDonation(id, data)
       : this.service.adminUpdate(this.resource, id, data);
   }
-  @Delete(":id") remove(@Param("id") id: string) {
+
+  @ApiOperation({ summary: "Soft delete resource record by ID" })
+  @ApiParam({ name: "id", description: "Resource UUID" })
+  @Delete(":id")
+  remove(@Param("id") id: string) {
     return this.service.adminDelete(this.resource, id);
   }
-  @Post(":id/restore") restore(@Param("id") id: string) {
+
+  @ApiOperation({ summary: "Restore soft-deleted resource record by ID" })
+  @ApiParam({ name: "id", description: "Resource UUID" })
+  @Post(":id/restore")
+  restore(@Param("id") id: string) {
     return this.service.adminRestore(this.resource, id);
   }
+
   private safe(data: Record<string, unknown>) {
     const copy = { ...data };
     for (const key of [
@@ -44,8 +66,9 @@ export abstract class FilmCrudController {
       "createdAt",
       "updatedAt",
       "deletedAt",
-    ])
+    ]) {
       delete copy[key];
+    }
     return copy;
   }
 }

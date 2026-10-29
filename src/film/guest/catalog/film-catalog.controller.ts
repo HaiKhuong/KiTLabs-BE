@@ -1,59 +1,75 @@
 import { Controller, Get, Param, Query } from "@nestjs/common";
-import { ApiTags } from "@nestjs/swagger";
+import { ApiOperation, ApiParam, ApiTags } from "@nestjs/swagger";
 import { Public } from "../../../common/decorators/public.decorator";
-import { FilmService } from "../../film.service";
+import { FilmCommentsQueryDto, FilmMovieBannersQueryDto, FilmMoviesQueryDto } from "../../dto/film-catalog.dto";
+import { FilmCatalogService } from "./film-catalog.service";
 
 @Public()
 @ApiTags("Film Guest - Catalog")
 @Controller("film")
 export class FilmCatalogController {
-  constructor(private readonly service: FilmService) {}
+  constructor(private readonly service: FilmCatalogService) {}
 
+  @ApiOperation({ summary: "Get paginated movie catalog with search and filters" })
   @Get("movies")
-  movies(
-    @Query("page") page?: string,
-    @Query("limit") limit?: string,
-    @Query("search") search?: string,
-    @Query("hot") hot?: string,
-    @Query("recommended") recommended?: string,
-    @Query("genre") genre?: string,
-    @Query("sort") sort?: string,
-  ) {
-    return this.service.publicMovies({
-      page: Number(page),
-      limit: Number(limit),
-      search,
-      hot: hot === undefined ? undefined : hot === "true",
-      recommended: recommended === undefined ? undefined : recommended === "true",
-      genre,
-      sort,
-    });
+  movies(@Query() query: FilmMoviesQueryDto) {
+    return this.service.publicMovies(query);
   }
-  @Get("movies/:slug") movie(@Param("slug") slug: string) {
+
+  @ApiOperation({ summary: "Get movie details and episodes by slug" })
+  @ApiParam({ name: "slug", description: "Movie slug identifier" })
+  @Get("movies/:slug")
+  movie(@Param("slug") slug: string) {
     return this.service.movie(slug);
   }
-  @Get("banners/movies") movieBanners(@Query("limit") limit?: string) {
-    return this.service.movieBanners(Number(limit));
+
+  @ApiOperation({ summary: "Get movies for home hero banners" })
+  @Get("banners/movies")
+  movieBanners(@Query() query: FilmMovieBannersQueryDto) {
+    return this.service.movieBanners(query);
   }
-  @Get("genres") genres() {
+
+  @ApiOperation({ summary: "Get all genres sorted by name" })
+  @Get("genres")
+  genres() {
     return this.service.genres();
   }
-  @Get("tags") tags() {
+
+  @ApiOperation({ summary: "Get all tags sorted by name" })
+  @Get("tags")
+  tags() {
     return this.service.tags();
   }
-  @Get("episodes/:id/sources") sources(@Param("id") id: string) {
+
+  @ApiOperation({ summary: "Get episode sources by episode ID" })
+  @ApiParam({ name: "id", description: "Episode UUID" })
+  @Get("episodes/:id/sources")
+  sources(@Param("id") id: string) {
     return this.service.sources(id);
   }
-  @Get("banners") banners() {
+
+  @ApiOperation({ summary: "Get active banners" })
+  @Get("banners")
+  banners() {
     return this.service.banners();
   }
-  @Get("advertisements") advertisements() {
+
+  @ApiOperation({ summary: "Get active advertisements" })
+  @Get("advertisements")
+  advertisements() {
     return this.service.advertisements();
   }
-  @Get("leaderboards") leaderboards() {
+
+  @ApiOperation({ summary: "Get film leaderboards" })
+  @Get("leaderboards")
+  leaderboards() {
     return this.service.leaderboards();
   }
-  @Get("movies/:movieId/comments") comments(@Param("movieId") movieId: string, @Query("cursor") cursor?: string) {
-    return this.service.comments(movieId, cursor);
+
+  @ApiOperation({ summary: "Get approved comments for a movie" })
+  @ApiParam({ name: "movieId", description: "Movie UUID" })
+  @Get("movies/:movieId/comments")
+  comments(@Param("movieId") movieId: string, @Query() query: FilmCommentsQueryDto) {
+    return this.service.comments(movieId, query.cursor);
   }
 }
