@@ -83,6 +83,9 @@ export class FilmService {
       take,
       skip: (Math.max(1, page) - 1) * take,
     });
+    if (resource === "movies") {
+      return { items: await this.withGenres(items as FilmMovie[]), total, page: Math.max(1, page), limit: take };
+    }
     return { items, total, page: Math.max(1, page), limit: take };
   }
   async adminOne(resource: string, id: string) {
@@ -90,16 +93,54 @@ export class FilmService {
       .getRepository(this.target(resource))
       .findOne({ where: { id } as never, withDeleted: true });
     if (!row) throw new NotFoundException();
+    if (resource === "movies") {
+      const [withG] = await this.withGenres([row as FilmMovie]);
+      return withG;
+    }
     return row;
   }
+  async syncMovieGenres(movieId: string, genreIds: string[]) {
+    const mgRepo = this.db.getRepository(FilmMovieGenre);
+    await mgRepo.delete({ movieId });
+    if (genreIds && genreIds.length > 0) {
+      const rows = genreIds.map((genreId) => mgRepo.create({ movieId, genreId }));
+      await mgRepo.save(rows);
+    }
+  }
   async adminCreate(resource: string, data: Record<string, unknown>) {
-    return this.db.getRepository(this.target(resource)).save(this.db.getRepository(this.target(resource)).create(data));
+    const genreIds = (data.genreIds || data.genre_ids) as string[] | undefined;
+    const cleanData = { ...data };
+    delete cleanData.genreIds;
+    delete cleanData.genre_ids;
+    delete cleanData.genres;
+    const repo = this.db.getRepository(this.target(resource));
+    const created = await repo.save(repo.create(cleanData));
+    if (resource === "movies" && Array.isArray(genreIds)) {
+      await this.syncMovieGenres((created as any).id, genreIds);
+      const [withG] = await this.withGenres([created as FilmMovie]);
+      return withG;
+    }
+    return created;
   }
   async adminUpdate(resource: string, id: string, data: Record<string, unknown>) {
+    const genreIds = (data.genreIds || data.genre_ids) as string[] | undefined;
+    const cleanData = { ...data };
+    delete cleanData.genreIds;
+    delete cleanData.genre_ids;
+    delete cleanData.genres;
     const repo = this.db.getRepository(this.target(resource));
-    const row = await this.adminOne(resource, id);
-    Object.assign(row, data, { id });
-    return repo.save(row);
+    const row = await this.db
+      .getRepository(this.target(resource))
+      .findOne({ where: { id } as never, withDeleted: true });
+    if (!row) throw new NotFoundException();
+    Object.assign(row, cleanData, { id });
+    const saved = await repo.save(row);
+    if (resource === "movies" && Array.isArray(genreIds)) {
+      await this.syncMovieGenres(id, genreIds);
+      const [withG] = await this.withGenres([saved as FilmMovie]);
+      return withG;
+    }
+    return saved;
   }
   async adminDelete(resource: string, id: string) {
     await this.adminOne(resource, id);

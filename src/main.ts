@@ -4,7 +4,8 @@ import { randomUUID } from "crypto";
 import { INestApplication, ValidationPipe } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
 import { DocumentBuilder, SwaggerModule } from "@nestjs/swagger";
-import { json, NextFunction, Request, Response, urlencoded } from "express";
+import { json, NextFunction, Request, Response, urlencoded, static as expressStatic } from "express";
+import { resolve } from "path";
 
 import { kitLabsPlatformMiddleware } from "./common/desktop/request-platform";
 import { AppModule } from "./app.module";
@@ -46,6 +47,10 @@ async function bootstrap() {
       forbidUnknownValues: false,
     }),
   );
+  const uploadDir = resolve(process.cwd(), process.env.FILM_UPLOAD_DIR?.trim() || "uploads");
+  app.use("/uploads", expressStatic(uploadDir));
+  app.use("/api/uploads", expressStatic(uploadDir));
+
   app.setGlobalPrefix("api");
   setupSwagger(app);
 

@@ -35,11 +35,7 @@ export function getFilmUploadDir(): string {
   if (custom) {
     return isAbsolute(custom) ? custom : resolve(process.cwd(), custom);
   }
-  const root = process.env.KITLABS_DATA_ROOT?.trim();
-  if (root) {
-    return resolve(root, "uploads", "film");
-  }
-  return resolve(process.cwd(), "uploads", "film");
+  return resolve(process.cwd(), "uploads");
 }
 
 function sanitizeType(type?: string): string {
@@ -111,7 +107,10 @@ export class FilmUploadController {
     }
 
     const type = sanitizeType(typeQuery);
-    const relativeUrl = `/api/film/uploads/${type}/${file.filename}`;
+    const uploadKey = (process.env.FILM_UPLOAD_DIR?.trim() || "uploads")
+      .replace(/\\/g, "/")
+      .replace(/^\/+|\/+$/g, "");
+    const relativeUrl = `${uploadKey}/${type}/${file.filename}`;
 
     return {
       url: relativeUrl,
