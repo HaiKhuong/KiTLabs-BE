@@ -14,7 +14,7 @@ import { FilmCatalogService } from "./film-catalog.service";
 @ApiTags("Film Guest - Catalog")
 @Controller("film")
 export class FilmCatalogController {
-  constructor(private readonly service: FilmCatalogService) {}
+  constructor(private readonly service: FilmCatalogService) { }
 
   @ApiOperation({ summary: "Get paginated movie catalog with search and filters" })
   @Get("movies")
@@ -38,7 +38,7 @@ export class FilmCatalogController {
   @ApiOperation({ summary: "Get all genres sorted by created_at" })
   @Get("genres")
   genres(@Query("order") order?: "ASC" | "DESC") {
-    return this.service.genres(order || "ASC");
+    return this.service.genres(order || "DESC");
   }
 
   @ApiOperation({ summary: "Get all tags sorted by name" })
