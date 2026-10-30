@@ -1,5 +1,5 @@
 import { existsSync } from "fs";
-import { isAbsolute, join } from "path";
+import { isAbsolute, join, resolve } from "path";
 
 function firstExisting(paths: string[]): string | undefined {
   for (const candidate of paths) {
@@ -9,7 +9,9 @@ function firstExisting(paths: string[]): string | undefined {
 }
 
 /** Resolve Python for pipeline / model scripts on desktop and server. */
-export function resolvePythonBin(preferredEnvKeys: string[] = ["TRANSLATE_PYTHON_BIN"]): string {
+export function resolvePythonBin(
+  preferredEnvKeys: string[] = ["IMAGE_PIPELINE_PYTHON_BIN", "TRANSLATE_PYTHON_BIN"],
+): string {
   for (const key of preferredEnvKeys) {
     const raw = process.env[key]?.trim();
     if (!raw) continue;
@@ -17,8 +19,24 @@ export function resolvePythonBin(preferredEnvKeys: string[] = ["TRANSLATE_PYTHON
       if (existsSync(raw)) return raw;
       continue;
     }
+    // Nếu đường dẫn tương đối (vd: tools/image-pipeline/.venv/bin/python)
+    const fromCwd = resolve(process.cwd(), raw);
+    if (existsSync(fromCwd)) {
+      return fromCwd;
+    }
     return raw;
   }
+
+  // Tự động tìm venv trong các vị trí chuẩn trên Linux/Ubuntu và Windows
+  const autoVenvs = [
+    resolve(process.cwd(), "tools", "image-pipeline", ".venv", "bin", "python"),
+    resolve(process.cwd(), "tools", "image-pipeline", ".venv", "Scripts", "python.exe"),
+    resolve(process.cwd(), "tools", "video-pipeline", ".venv", "bin", "python"),
+    resolve(process.cwd(), ".venv", "bin", "python"),
+    resolve(process.cwd(), ".venv", "Scripts", "python.exe"),
+  ];
+  const foundVenv = firstExisting(autoVenvs);
+  if (foundVenv) return foundVenv;
 
   if (process.env.KITLABS_DESKTOP === "1") {
     const dataRoot = process.env.KITLABS_DATA_ROOT?.trim();
