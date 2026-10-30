@@ -78,8 +78,12 @@ export class FilmAdminService {
     if (filter?.episodeId && (resource === "episode-sources" || resource === "episodes")) {
       where.episodeId = filter.episodeId;
     }
-    if (filter?.movieId && (resource === "episodes" || resource === "movies" || resource === "comments")) {
-      where.movieId = filter.movieId;
+    if (filter?.movieId) {
+      if (resource === "movies") {
+        where.id = filter.movieId;
+      } else if (resource === "episodes" || resource === "comments") {
+        where.movieId = filter.movieId;
+      }
     }
     if (filter?.status && (resource === "comments" || resource === "reports" || resource === "users")) {
       where.status = filter.status;

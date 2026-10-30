@@ -55,20 +55,21 @@ export class FilmCatalogService {
     }
 
     if (query.sort === "views") {
-      qb.orderBy("m.views", "DESC");
+      qb.orderBy("m.views", "DESC").addOrderBy("m.createdAt", "DESC");
     } else if (query.sort === "favorited") {
       qb.orderBy(
         `(SELECT COUNT(*) FROM favorites favorite
           WHERE favorite.movie_id = m.id AND favorite.deleted_at IS NULL)`,
         "DESC",
-      );
-    } else {
+      ).addOrderBy("m.createdAt", "DESC");
+    } else if (query.sort === "hot") {
       qb.orderBy("m.isHot", "DESC")
         .addOrderBy("m.ratingAvg", "DESC")
-        .addOrderBy("m.rankScore", "DESC");
+        .addOrderBy("m.rankScore", "DESC")
+        .addOrderBy("m.createdAt", "DESC");
+    } else {
+      qb.orderBy("m.createdAt", "DESC");
     }
-
-    qb.addOrderBy("m.createdAt", "DESC");
 
     const [items, total] = await qb.take(take).skip(skip).getManyAndCount();
 
