@@ -44,8 +44,36 @@ import { HistoriesModule } from "./tools/histories/histories.module";
 import { TikTokModule } from "./tools/tiktok/tiktok.module";
 import { FacebookModule } from "./tools/facebook/facebook.module";
 import { PlatformModule } from "./platform/platform.module";
-import { FilmModule } from "./film/film.module";
-import { FILM_DB_ENTITIES } from "./database/entities/film.entities";
+
+const isDesktop = process.env.KITLABS_DESKTOP === "1";
+
+const optionalDesktopModules: any[] = [];
+if (!isDesktop) {
+  try {
+    const { FilmModule } = require("./film/film.module");
+    const { FILM_DB_ENTITIES } = require("./database/entities/film.entities");
+    optionalDesktopModules.push(
+      TypeOrmModule.forRoot({
+        name: "film",
+        type: "postgres",
+        host: process.env.FILM_DB_HOST ?? "localhost",
+        port: Number(process.env.FILM_DB_PORT ?? 5432),
+        username: process.env.FILM_DB_USER ?? "postgres",
+        password: process.env.FILM_DB_PASSWORD ?? "postgres",
+        database: process.env.FILM_DB_NAME ?? "kitlabs_film",
+        synchronize: false,
+        migrationsRun: (process.env.FILM_DB_MIGRATIONS_RUN ?? "false") === "true",
+        autoLoadEntities: false,
+        entities: FILM_DB_ENTITIES,
+        migrations: [join(__dirname, "database/migrations/film/*{.ts,.js}")],
+        migrationsTransactionMode: "each",
+      }),
+      FilmModule,
+    );
+  } catch (err: any) {
+    console.warn("[app.module] FilmModule skipped:", err?.message || err);
+  }
+}
 
 @Module({
   imports: [
@@ -102,21 +130,7 @@ import { FILM_DB_ENTITIES } from "./database/entities/film.entities";
       entities: AUDIT_DB_ENTITIES,
       migrations: [join(__dirname, "database/migrations/audit/*{.ts,.js}")],
     }),
-    TypeOrmModule.forRoot({
-      name: "film",
-      type: "postgres",
-      host: process.env.FILM_DB_HOST ?? "localhost",
-      port: Number(process.env.FILM_DB_PORT ?? 5432),
-      username: process.env.FILM_DB_USER ?? "postgres",
-      password: process.env.FILM_DB_PASSWORD ?? "postgres",
-      database: process.env.FILM_DB_NAME ?? "kitlabs_film",
-      synchronize: false,
-      migrationsRun: (process.env.FILM_DB_MIGRATIONS_RUN ?? "false") === "true",
-      autoLoadEntities: false,
-      entities: FILM_DB_ENTITIES,
-      migrations: [join(__dirname, "database/migrations/film/*{.ts,.js}")],
-      migrationsTransactionMode: "each",
-    }),
+    ...optionalDesktopModules,
     BullModule.forRoot({
       connection: {
         host: process.env.REDIS_HOST ?? "localhost",
@@ -154,7 +168,6 @@ import { FILM_DB_ENTITIES } from "./database/entities/film.entities";
     TikTokModule,
     FacebookModule,
     PlatformModule,
-    FilmModule,
   ],
   controllers: [AppController],
   providers: [

@@ -193,22 +193,26 @@ async function prepareDatabase(
 }
 
 export async function ensureDesktopMigrationBaseline(): Promise<void> {
+  const toolDb = process.env.TOOL_DB_NAME ?? "kitlabs_tools";
   await prepareDatabase(
-    { database: process.env.TOOL_DB_NAME ?? "kitools" },
+    { database: toolDb },
     TOOL_INIT_MIGRATION,
     TOOL_INIT_TIMESTAMP,
     toolSchemaHasArtifacts,
   );
-  await prepareDatabase(
-    {
-      database: process.env.AUDIT_DB_NAME ?? "kitools_audit",
-      host: process.env.AUDIT_DB_HOST ?? process.env.TOOL_DB_HOST,
-      port: Number(process.env.AUDIT_DB_PORT ?? process.env.TOOL_DB_PORT ?? 5432),
-      user: process.env.AUDIT_DB_USER ?? process.env.TOOL_DB_USER,
-      password: process.env.AUDIT_DB_PASSWORD ?? process.env.TOOL_DB_PASSWORD,
-    },
-    AUDIT_INIT_MIGRATION,
-    AUDIT_INIT_TIMESTAMP,
-    auditSchemaHasArtifacts,
-  );
+  const auditDb = process.env.AUDIT_DB_NAME ?? "kitlabs_tools";
+  if (auditDb !== toolDb) {
+    await prepareDatabase(
+      {
+        database: auditDb,
+        host: process.env.AUDIT_DB_HOST ?? process.env.TOOL_DB_HOST,
+        port: Number(process.env.AUDIT_DB_PORT ?? process.env.TOOL_DB_PORT ?? 5432),
+        user: process.env.AUDIT_DB_USER ?? process.env.TOOL_DB_USER,
+        password: process.env.AUDIT_DB_PASSWORD ?? process.env.TOOL_DB_PASSWORD,
+      },
+      AUDIT_INIT_MIGRATION,
+      AUDIT_INIT_TIMESTAMP,
+      auditSchemaHasArtifacts,
+    );
+  }
 }
