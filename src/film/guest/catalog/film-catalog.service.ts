@@ -154,8 +154,8 @@ export class FilmCatalogService {
     return this.withGenres(movies);
   }
 
-  genres() {
-    return this.db.getRepository(FilmGenre).find({ order: { name: "ASC" } });
+  genres(order: "ASC" | "DESC" = "ASC") {
+    return this.db.getRepository(FilmGenre).find({ order: { createdAt: order } });
   }
 
   tags() {

@@ -35,10 +35,10 @@ export class FilmCatalogController {
     return this.service.movieBanners(query);
   }
 
-  @ApiOperation({ summary: "Get all genres sorted by name" })
+  @ApiOperation({ summary: "Get all genres sorted by created_at" })
   @Get("genres")
-  genres() {
-    return this.service.genres();
+  genres(@Query("order") order?: "ASC" | "DESC") {
+    return this.service.genres(order || "ASC");
   }
 
   @ApiOperation({ summary: "Get all tags sorted by name" })
