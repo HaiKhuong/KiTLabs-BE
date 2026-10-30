@@ -289,6 +289,8 @@ def run_convert(
     quality: int = 85,
     lossless: bool = False,
     output_filename: str | None = None,
+    resize_width: int | None = None,
+    resize_height: int | None = None,
 ) -> dict:
     from PIL import Image, ImageOps
 
@@ -305,6 +307,12 @@ def run_convert(
             img = ImageOps.exif_transpose(img)
         except Exception:
             pass
+
+        if resize_width and resize_height:
+            try:
+                img = ImageOps.fit(img, (int(resize_width), int(resize_height)), method=Image.Resampling.LANCZOS)
+            except Exception:
+                img = img.resize((int(resize_width), int(resize_height)), Image.Resampling.LANCZOS)
 
         width, height = img.size
 
@@ -417,6 +425,8 @@ def main() -> int:
                 quality=int(payload.get("quality") or 85),
                 lossless=bool(payload.get("lossless", False)),
                 output_filename=payload.get("output_filename"),
+                resize_width=payload.get("resize_width"),
+                resize_height=payload.get("resize_height"),
             )
         else:
             models_dir = Path(payload.get("models_dir") or "models/image-edit")

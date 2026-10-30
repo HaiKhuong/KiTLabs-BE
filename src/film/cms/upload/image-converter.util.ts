@@ -10,6 +10,8 @@ export interface ConvertImageOptions {
   targetFormat?: string;
   quality?: number;
   lossless?: boolean;
+  resizeWidth?: number;
+  resizeHeight?: number;
 }
 
 export interface ConvertImageResult {
@@ -63,6 +65,8 @@ export function convertImageWithPipeline(options: ConvertImageOptions): Promise<
     target_format: options.targetFormat || "webp",
     quality: options.quality ?? 85,
     lossless: options.lossless ?? false,
+    resize_width: options.resizeWidth,
+    resize_height: options.resizeHeight,
   };
 
   return new Promise((resolvePromise, rejectPromise) => {

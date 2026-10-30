@@ -123,6 +123,8 @@ export class FilmUploadController {
       const tempInputPath = join(targetDir, `.temp-${uniqueSuffix}${ext}`);
       writeFileSync(tempInputPath, file.buffer);
 
+      const isThumbnail = type === "thumbnails" || type === "posters";
+
       try {
         const convertRes = await convertImageWithPipeline({
           inputPath: tempInputPath,
@@ -130,6 +132,8 @@ export class FilmUploadController {
           outputFilename: finalFilename,
           targetFormat: "webp",
           quality: 85,
+          resizeWidth: isThumbnail ? 640 : undefined,
+          resizeHeight: isThumbnail ? 360 : undefined,
         });
 
         finalFilename = convertRes.outputFilename;
