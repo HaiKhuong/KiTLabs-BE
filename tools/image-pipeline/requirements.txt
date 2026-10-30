@@ -2,6 +2,7 @@
 # torch, torchvision, transformers, opencv-python-headless, and Pillow are already pinned there.
 # Upscale runs RealESRGAN weights with torch only (tools/image-pipeline/realesrgan_infer.py).
 
+Pillow>=10.0.0
 ultralytics>=8.3.0
 # Package name on the repo is sam-2; the import name stays sam2.
 sam-2 @ https://github.com/facebookresearch/sam2/archive/refs/heads/main.zip

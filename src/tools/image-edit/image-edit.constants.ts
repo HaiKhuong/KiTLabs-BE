@@ -4,7 +4,7 @@ import { resolveConfiguredPath } from "../../common/desktop/data-path";
 
 export const IMAGE_EDIT_QUEUE_NAME = "image-edit";
 
-export const IMAGE_EDIT_FEATURES = ["cutout", "remove-bg", "detect", "upscale"] as const;
+export const IMAGE_EDIT_FEATURES = ["cutout", "remove-bg", "detect", "upscale", "convert"] as const;
 
 export type ImageEditFeature = (typeof IMAGE_EDIT_FEATURES)[number];
 
@@ -15,6 +15,12 @@ export type ImageEditScale = (typeof IMAGE_EDIT_SCALES)[number];
 export const IMAGE_EDIT_DOMAINS = ["photo", "anime"] as const;
 
 export type ImageEditDomain = (typeof IMAGE_EDIT_DOMAINS)[number];
+
+export const IMAGE_CONVERT_FORMATS = ["webp", "png", "jpeg"] as const;
+
+export type ImageConvertFormat = (typeof IMAGE_CONVERT_FORMATS)[number];
+
+export const DEFAULT_CONVERT_QUALITY = 85;
 
 export const IMAGE_EDIT_MAX_UPLOAD_BYTES = 25_000_000;
 

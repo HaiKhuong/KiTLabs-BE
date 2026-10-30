@@ -42,6 +42,9 @@ export class ImageEditController {
         feature: { type: "string", enum: [...IMAGE_EDIT_FEATURES] },
         scale: { type: "string" },
         domain: { type: "string" },
+        targetFormat: { type: "string", enum: ["webp", "png", "jpeg"] },
+        quality: { type: "number", minimum: 1, maximum: 100 },
+        lossless: { type: "boolean" },
       },
       required: ["file", "userId", "feature"],
     },
@@ -56,7 +59,16 @@ export class ImageEditController {
   )
   submit(
     @UploadedFile() file: Express.Multer.File | undefined,
-    @Body() body: { userId?: string; feature?: string; scale?: string; domain?: string },
+    @Body()
+    body: {
+      userId?: string;
+      feature?: string;
+      scale?: string;
+      domain?: string;
+      targetFormat?: string;
+      quality?: string | number;
+      lossless?: string | boolean;
+    },
   ) {
     const userId = (body.userId ?? "").trim();
     if (!USER_ID_RE.test(userId)) {
@@ -70,6 +82,9 @@ export class ImageEditController {
       feature: (body.feature ?? "").trim(),
       scale: body.scale,
       domain: body.domain,
+      targetFormat: body.targetFormat,
+      quality: body.quality,
+      lossless: body.lossless,
       originalName: file.originalname || "image.png",
       bytes: file.buffer,
     });

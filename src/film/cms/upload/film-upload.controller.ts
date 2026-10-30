@@ -16,8 +16,9 @@ import { DataSource } from "typeorm";
 import { FileInterceptor } from "@nestjs/platform-express";
 import { ApiBody, ApiConsumes, ApiOperation, ApiQuery, ApiTags } from "@nestjs/swagger";
 import { randomBytes } from "crypto";
-import { existsSync, mkdirSync } from "fs";
-import { diskStorage } from "multer";
+import { existsSync, mkdirSync, statSync, unlinkSync, writeFileSync } from "fs";
+import { memoryStorage } from "multer";
+import { convertImageWithPipeline } from "./image-converter.util";
 import { extname, isAbsolute, join, resolve } from "path";
 import { Response } from "express";
 
@@ -45,6 +46,7 @@ export function getFilmUploadDir(): string {
 function sanitizeType(type?: string): string {
   const lower = (type || "").trim().toLowerCase();
   if (["poster", "posters"].includes(lower)) return "posters";
+  if (["thumbnail", "thumbnails"].includes(lower)) return "thumbnails";
   if (["banner", "banners"].includes(lower)) return "banners";
   return "general";
 }
@@ -56,7 +58,7 @@ export class FilmUploadController {
 
   @ApiOperation({ summary: "Upload image for film poster, banner or assets" })
   @ApiConsumes("multipart/form-data")
-  @ApiQuery({ name: "type", required: false, enum: ["poster", "banner", "general"], description: "Image category" })
+  @ApiQuery({ name: "type", required: false, enum: ["poster", "banner", "thumbnail", "general"], description: "Image category" })
   @ApiBody({
     schema: {
       type: "object",
@@ -84,24 +86,8 @@ export class FilmUploadController {
         }
         cb(null, true);
       },
-      storage: diskStorage({
-        destination: (req, _file, cb) => {
-          const type = sanitizeType(String(req.query?.type ?? "general"));
-          const baseDir = getFilmUploadDir();
-          const targetDir = join(baseDir, type);
-          if (!existsSync(targetDir)) {
-            mkdirSync(targetDir, { recursive: true });
-          }
-          cb(null, targetDir);
-        },
-        filename: (req, file, cb) => {
-          const type = sanitizeType(String(req.query?.type ?? "general"));
-          const ext = extname(file.originalname).toLowerCase() || ".png";
-          const uniqueSuffix = `${Date.now()}-${randomBytes(4).toString("hex")}`;
-          const prefix = type.endsWith("s") ? type.slice(0, -1) : type;
-          cb(null, `${prefix}-${uniqueSuffix}${ext}`);
-        },
-      }),
+      storage: memoryStorage(),
+
     }),
   )
   async uploadImage(
@@ -109,15 +95,69 @@ export class FilmUploadController {
     @Query("type") typeQuery?: string,
     @Req() req?: any,
   ) {
-    if (!file) {
+    if (!file || !file.buffer) {
       throw new BadRequestException("File ảnh không được để trống");
     }
 
     const type = sanitizeType(typeQuery);
+    const baseDir = getFilmUploadDir();
+    const targetDir = join(baseDir, type);
+    if (!existsSync(targetDir)) {
+      mkdirSync(targetDir, { recursive: true });
+    }
+
+    const ext = extname(file.originalname).toLowerCase() || ".png";
+    const uniqueSuffix = `${Date.now()}-${randomBytes(4).toString("hex")}`;
+    const prefix = type.endsWith("s") ? type.slice(0, -1) : type;
+
+    const isSvg = file.mimetype === "image/svg+xml" || ext === ".svg";
+    const isGif = file.mimetype === "image/gif" || ext === ".gif";
+
+    let finalFilename = "";
+    let finalMimeType = file.mimetype;
+    let finalSize = file.size;
+
+    if (!isSvg && !isGif) {
+      // Chuyển đổi định dạng sang WebP (giữ chất lượng cao 85% / bảo toàn alpha)
+      finalFilename = `${prefix}-${uniqueSuffix}.webp`;
+      const tempInputPath = join(targetDir, `.temp-${uniqueSuffix}${ext}`);
+      writeFileSync(tempInputPath, file.buffer);
+
+      try {
+        const convertRes = await convertImageWithPipeline({
+          inputPath: tempInputPath,
+          outputDir: targetDir,
+          outputFilename: finalFilename,
+          targetFormat: "webp",
+          quality: 85,
+        });
+
+        finalFilename = convertRes.outputFilename;
+        finalMimeType = "image/webp";
+        finalSize = convertRes.sizeBytes || statSync(convertRes.outputPath).size;
+      } catch (err) {
+        throw new BadRequestException(
+          `Không thể chuyển đổi ảnh sang WebP: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      } finally {
+        if (existsSync(tempInputPath)) {
+          try {
+            unlinkSync(tempInputPath);
+          } catch {
+            // ignore
+          }
+        }
+      }
+    } else {
+      finalFilename = `${prefix}-${uniqueSuffix}${ext}`;
+      const finalPath = join(targetDir, finalFilename);
+      writeFileSync(finalPath, file.buffer);
+    }
+
     const uploadKey = (process.env.FILM_UPLOAD_DIR?.trim() || "uploads")
       .replace(/\\/g, "/")
       .replace(/^\/+|\/+$/g, "");
-    const relativeUrl = `${uploadKey}/${type}/${file.filename}`;
+    const relativeUrl = `${uploadKey}/${type}/${finalFilename}`;
 
     const user = req?.user;
     const adminId = user?.sub || user?.id || null;
@@ -130,11 +170,11 @@ export class FilmUploadController {
         adminId,
         adminName,
         adminEmail,
-        filename: file.filename,
+        filename: finalFilename,
         originalName: file.originalname,
         url: relativeUrl,
-        mimeType: file.mimetype,
-        sizeBytes: String(file.size),
+        mimeType: finalMimeType,
+        sizeBytes: String(finalSize),
         category: type,
       });
       await historyRepo.save(record);
@@ -144,10 +184,10 @@ export class FilmUploadController {
 
     return {
       url: relativeUrl,
-      fileName: file.filename,
+      fileName: finalFilename,
       originalName: file.originalname,
-      mimeType: file.mimetype,
-      size: file.size,
+      mimeType: finalMimeType,
+      size: finalSize,
       type,
     };
   }

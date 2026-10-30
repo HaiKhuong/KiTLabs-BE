@@ -9,7 +9,10 @@ import { Queue } from "bullmq";
 import { pythonSubprocessEnv, resolvePythonBin } from "../../common/desktop/python-path";
 import { QueueJobStatus } from "../../common/enums/domain.enums";
 import {
+  DEFAULT_CONVERT_QUALITY,
+  IMAGE_CONVERT_FORMATS,
   IMAGE_EDIT_ALLOWED_EXT,
+  type ImageConvertFormat,
   IMAGE_EDIT_DOMAINS,
   IMAGE_EDIT_FEATURES,
   IMAGE_EDIT_QUEUE_NAME,
@@ -21,7 +24,12 @@ import {
   type ImageEditScale,
 } from "./image-edit.constants";
 import { ImageEditHistoryService, type ImageEditClientJob } from "./image-edit-history.service";
-import type { ImageEditDetection, ImageEditFileMeta, ImageEditOptions } from "./image-edit-history.entity";
+import type {
+  ImageEditDetection,
+  ImageEditFileMeta,
+  ImageEditOptions,
+  ImageEditStats,
+} from "./image-edit-history.entity";
 
 const MAX_LOG_BUFFER = 80_000;
 const PYTHON_TIMEOUT_MS = 30 * 60 * 1000;
@@ -32,6 +40,7 @@ type PythonResult = {
   resultFile?: string | null;
   files?: ImageEditFileMeta[];
   detections?: ImageEditDetection[];
+  stats?: ImageEditStats;
 };
 
 @Injectable()
@@ -48,11 +57,21 @@ export class ImageEditService {
     feature: string;
     scale?: string;
     domain?: string;
+    targetFormat?: string;
+    quality?: string | number;
+    lossless?: string | boolean;
     originalName: string;
     bytes: Buffer;
   }): Promise<{ jobId: string; status: "queued" }> {
     const feature = this.parseFeature(input.feature);
-    const options = this.parseOptions(feature, input.scale, input.domain);
+    const options = this.parseOptions(
+      feature,
+      input.scale,
+      input.domain,
+      input.targetFormat,
+      input.quality,
+      input.lossless,
+    );
     const extension = extname(input.originalName).toLowerCase();
     if (!IMAGE_EDIT_ALLOWED_EXT.has(extension)) {
       throw new BadRequestException("Chỉ nhận ảnh png, jpg hoặc webp");
@@ -116,6 +135,9 @@ export class ImageEditService {
       models_dir: modelsDir,
       scale: row.options?.scale ?? 4,
       domain: row.options?.domain ?? "photo",
+      target_format: row.options?.targetFormat ?? "webp",
+      quality: row.options?.quality ?? DEFAULT_CONVERT_QUALITY,
+      lossless: row.options?.lossless ?? false,
     };
 
     const result = await this.spawnPython(payload);
@@ -128,8 +150,10 @@ export class ImageEditService {
       ...(row.options ?? {}),
       files: result.files ?? [],
       detections: result.detections ?? [],
+      stats: result.stats,
     };
-    const resultPath = row.feature === "cutout" ? jobDir : join(jobDir, resultFileName ?? "result.png");
+    const defaultResultName = row.feature === "convert" ? `result.${row.options?.targetFormat ?? "webp"}` : "result.png";
+    const resultPath = row.feature === "cutout" ? jobDir : join(jobDir, resultFileName ?? defaultResultName);
     await this.historyService.markCompleted(historyId, resultPath, resultFileName, options);
 
     const completed = await this.historyService.getById(historyId);
@@ -250,8 +274,15 @@ export class ImageEditService {
     throw new BadRequestException("feature không hợp lệ");
   }
 
-  private parseOptions(feature: ImageEditFeature, scaleRaw?: string, domainRaw?: string): ImageEditOptions {
-    if (feature !== "upscale") return {};
+  private parseOptions(
+    feature: ImageEditFeature,
+    scaleRaw?: string,
+    domainRaw?: string,
+    targetFormatRaw?: string,
+    qualityRaw?: string | number,
+    losslessRaw?: string | boolean,
+  ): ImageEditOptions {
+    if (feature === "upscale") {
     const scale = Number(scaleRaw ?? 4);
     if (!(IMAGE_EDIT_SCALES as readonly number[]).includes(scale)) {
       throw new BadRequestException("scale phải là 2 hoặc 4");
@@ -261,5 +292,29 @@ export class ImageEditService {
       throw new BadRequestException("domain phải là photo hoặc anime");
     }
     return { scale: scale as ImageEditScale, domain: domain as ImageEditDomain };
+    }
+
+    if (feature === "convert") {
+      const targetFormat = (targetFormatRaw || "webp").trim().toLowerCase();
+      if (!(IMAGE_CONVERT_FORMATS as readonly string[]).includes(targetFormat)) {
+        throw new BadRequestException("targetFormat phải là webp, png hoặc jpeg");
+      }
+      const lossless = losslessRaw === true || losslessRaw === "true" || losslessRaw === "1";
+      let quality =
+        qualityRaw !== undefined && qualityRaw !== null && qualityRaw !== ""
+          ? Number(qualityRaw)
+          : DEFAULT_CONVERT_QUALITY;
+      if (!Number.isFinite(quality) || quality < 1 || quality > 100) {
+        throw new BadRequestException("quality phải từ 1 đến 100");
+      }
+      quality = Math.round(quality);
+      return {
+        targetFormat: targetFormat as ImageConvertFormat,
+        quality,
+        lossless: lossless || quality === 100,
+      };
+    }
+
+    return {};
   }
 }

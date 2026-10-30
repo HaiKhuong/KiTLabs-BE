@@ -5,11 +5,12 @@ import { basename, extname, isAbsolute, relative, resolve } from "path";
 import { Repository } from "typeorm";
 
 import { QueueJobStatus } from "../../common/enums/domain.enums";
-import type { ImageEditDomain, ImageEditFeature, ImageEditScale } from "./image-edit.constants";
+import type { ImageConvertFormat, ImageEditDomain, ImageEditFeature, ImageEditScale } from "./image-edit.constants";
 import { imageEditJobDir } from "./image-edit.constants";
 import {
   ImageEditHistory,
   type ImageEditDetection,
+  type ImageEditStats,
   type ImageEditFileMeta,
   type ImageEditOptions,
 } from "./image-edit-history.entity";
@@ -32,6 +33,10 @@ export type ImageEditClientJob = {
   detections: ImageEditDetection[];
   scale: ImageEditScale | null;
   domain: ImageEditDomain | null;
+  targetFormat: ImageConvertFormat | null;
+  quality: number | null;
+  lossless: boolean | null;
+  stats: ImageEditStats | null;
   errorMessage: string | null;
   createdAt: string;
 };
@@ -159,6 +164,10 @@ export class ImageEditHistoryService {
       detections: options.detections ?? [],
       scale: options.scale ?? null,
       domain: options.domain ?? null,
+      targetFormat: options.targetFormat ?? null,
+      quality: options.quality ?? null,
+      lossless: options.lossless ?? null,
+      stats: options.stats ?? null,
       errorMessage: row.errorMessage,
       createdAt: row.createdAt.toISOString(),
     };

@@ -3,7 +3,7 @@ import { Column, Entity, Index, JoinColumn, ManyToOne } from "typeorm";
 import { BaseEntity } from "../../common/entities/base.entity";
 import { QueueJobStatus } from "../../common/enums/domain.enums";
 import { User } from "../users/user.entity";
-import type { ImageEditDomain, ImageEditFeature, ImageEditScale } from "./image-edit.constants";
+import type { ImageConvertFormat, ImageEditDomain, ImageEditFeature, ImageEditScale } from "./image-edit.constants";
 
 export type ImageEditFileMeta = {
   name: string;
@@ -17,7 +17,23 @@ export type ImageEditDetection = {
   box: [number, number, number, number];
 };
 
+export type ImageEditStats = {
+  originalSize: number;
+  resultSize: number;
+  savedBytes: number;
+  savedPercent: number;
+  width: number;
+  height: number;
+  format: string;
+  quality: number;
+  lossless: boolean;
+};
+
 export type ImageEditOptions = {
+  targetFormat?: ImageConvertFormat;
+  quality?: number;
+  lossless?: boolean;
+  stats?: ImageEditStats;
   scale?: ImageEditScale;
   domain?: ImageEditDomain;
   files?: ImageEditFileMeta[];

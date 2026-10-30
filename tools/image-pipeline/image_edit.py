@@ -58,6 +58,14 @@ def write_result(out_dir: Path, payload: dict) -> None:
 
 
 def device_name() -> str:
+    try:
+        import torch
+
+        return "cuda" if torch.cuda.is_available() else "cpu"
+    except Exception:
+        return "cpu"
+
+def _old_device_name() -> str:
     import torch
 
     return "cuda" if torch.cuda.is_available() else "cpu"
@@ -279,6 +287,115 @@ def run_upscale(image_path: Path, out_dir: Path, models_dir: Path, device: str, 
     return {"resultFile": result_name, "files": [{"name": result_name}], "detections": []}
 
 
+def run_convert(
+    image_path: Path,
+    out_dir: Path,
+    target_format: str = "webp",
+    quality: int = 85,
+    lossless: bool = False,
+    output_filename: str | None = None,
+) -> dict:
+    from PIL import Image, ImageOps
+
+    target_fmt = (target_format or "webp").strip().lower()
+    if target_fmt not in ("webp", "png", "jpeg", "jpg"):
+        raise RuntimeError(f"Định dạng đích không hỗ trợ: {target_fmt}")
+
+    if not image_path.exists():
+        raise RuntimeError(f"Không tìm thấy file ảnh: {image_path}")
+
+    original_size = image_path.stat().st_size
+    with Image.open(image_path) as img:
+        try:
+            img = ImageOps.exif_transpose(img)
+        except Exception:
+            pass
+
+        width, height = img.size
+
+        if target_fmt == "webp":
+            if img.mode in ("RGBA", "LA"):
+                image_to_save = img
+            elif img.mode == "P":
+                if "transparency" in img.info:
+                    image_to_save = img.convert("RGBA")
+                else:
+                    image_to_save = img.convert("RGB")
+            elif img.mode in ("RGB", "L"):
+                image_to_save = img
+            else:
+                image_to_save = img.convert("RGBA" if "A" in img.mode else "RGB")
+
+            save_ext = "webp"
+            save_kwargs = {
+                "format": "WEBP",
+                "method": 6,
+            }
+            if lossless or quality >= 100:
+                save_kwargs["lossless"] = True
+                save_kwargs["quality"] = 100
+            else:
+                save_kwargs["lossless"] = False
+                save_kwargs["quality"] = max(1, min(100, int(quality)))
+
+        elif target_fmt in ("jpeg", "jpg"):
+            if img.mode in ("RGBA", "LA", "P"):
+                image_to_save = img.convert("RGB")
+            elif img.mode not in ("RGB", "L"):
+                image_to_save = img.convert("RGB")
+            else:
+                image_to_save = img
+            save_ext = "jpg"
+            save_kwargs = {
+                "format": "JPEG",
+                "quality": max(1, min(100, int(quality))),
+                "optimize": True,
+            }
+        elif target_fmt == "png":
+            image_to_save = img
+            save_ext = "png"
+            save_kwargs = {
+                "format": "PNG",
+                "optimize": True,
+            }
+
+        icc = img.info.get("icc_profile")
+        if icc:
+            save_kwargs["icc_profile"] = icc
+        exif = img.info.get("exif")
+        if exif:
+            save_kwargs["exif"] = exif
+
+        if output_filename:
+            raw_name = Path(output_filename).name
+            result_name = raw_name if raw_name.lower().endswith(f".{save_ext}") else f"{Path(raw_name).stem}.{save_ext}"
+        else:
+            result_name = f"result.{save_ext}"
+        out_file = out_dir / result_name
+        image_to_save.save(out_file, **save_kwargs)
+
+    result_size = out_file.stat().st_size
+    saved_bytes = max(0, original_size - result_size)
+    saved_percent = round((saved_bytes / original_size) * 100, 2) if original_size > 0 else 0.0
+
+    return {
+        "resultFile": result_name,
+        "files": [{"name": result_name}],
+        "stats": {
+            "originalSize": original_size,
+            "resultSize": result_size,
+            "savedBytes": saved_bytes,
+            "savedPercent": saved_percent,
+            "width": width,
+            "height": height,
+            "format": save_ext,
+            "quality": save_kwargs.get("quality", 100),
+            "lossless": save_kwargs.get("lossless", False),
+        },
+        "detections": [],
+    }
+
+
 def main() -> int:
     raw = sys.stdin.read()
     try:
@@ -315,6 +432,16 @@ def main() -> int:
                 device,
                 int(payload.get("scale") or 4),
                 str(payload.get("domain") or "photo"),
+            )
+        elif op == "convert":
+            data = run_convert(
+                image_path,
+                out_dir,
+                target_format=str(payload.get("target_format") or "webp"),
+                quality=int(payload.get("quality") or 85),
+                lossless=bool(payload.get("lossless", False)),
+                output_filename=payload.get("output_filename"),
+            
             )
         else:
             raise RuntimeError(f"op không hỗ trợ: {op}")
