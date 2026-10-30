@@ -65,11 +65,6 @@ def device_name() -> str:
     except Exception:
         return "cpu"
 
-def _old_device_name() -> str:
-    import torch
-
-    return "cuda" if torch.cuda.is_available() else "cpu"
-
 
 def ensure_weight(models_dir: Path, filename: str) -> Path:
     target = models_dir / filename
@@ -413,27 +408,8 @@ def main() -> int:
     try:
         op = payload.get("op")
         image_path = Path(payload["input_path"])
-        models_dir = Path(payload.get("models_dir") or "models/image-edit")
-        models_dir.mkdir(parents=True, exist_ok=True)
-        device = device_name()
-        log(f"op={op} device={device}")
 
-        if op == "cutout":
-            data = run_cutout(image_path, out_dir, models_dir, device)
-        elif op == "remove-bg":
-            data = run_remove_bg(image_path, out_dir, device)
-        elif op == "detect":
-            data = run_detect(image_path, out_dir, models_dir, device)
-        elif op == "upscale":
-            data = run_upscale(
-                image_path,
-                out_dir,
-                models_dir,
-                device,
-                int(payload.get("scale") or 4),
-                str(payload.get("domain") or "photo"),
-            )
-        elif op == "convert":
+        if op == "convert":
             data = run_convert(
                 image_path,
                 out_dir,
@@ -441,10 +417,33 @@ def main() -> int:
                 quality=int(payload.get("quality") or 85),
                 lossless=bool(payload.get("lossless", False)),
                 output_filename=payload.get("output_filename"),
-            
             )
         else:
-            raise RuntimeError(f"op không hỗ trợ: {op}")
+            models_dir = Path(payload.get("models_dir") or "models/image-edit")
+            try:
+                models_dir.mkdir(parents=True, exist_ok=True)
+            except Exception as e:
+                log(f"Warning: could not create models_dir {models_dir}: {e}")
+            device = device_name()
+            log(f"op={op} device={device}")
+
+            if op == "cutout":
+                data = run_cutout(image_path, out_dir, models_dir, device)
+            elif op == "remove-bg":
+                data = run_remove_bg(image_path, out_dir, device)
+            elif op == "detect":
+                data = run_detect(image_path, out_dir, models_dir, device)
+            elif op == "upscale":
+                data = run_upscale(
+                    image_path,
+                    out_dir,
+                    models_dir,
+                    device,
+                    int(payload.get("scale") or 4),
+                    str(payload.get("domain") or "photo"),
+                )
+            else:
+                raise RuntimeError(f"op không hỗ trợ: {op}")
 
         write_result(out_dir, {"ok": True, **data})
         return 0
