@@ -7,6 +7,7 @@ import { TypeOrmModule } from "@nestjs/typeorm";
 import { join } from "path";
 
 import { AntiSpamModule } from "./anti-spam/anti-spam.module";
+import { AuditModule } from "./audit/audit.module";
 import { AppController } from "./app.controller";
 import { HttpExceptionFilter } from "./common/filters/http-exception.filter";
 import { AntiSpamInterceptor } from "./common/interceptors/anti-spam.interceptor";
@@ -160,6 +161,7 @@ if (!isDesktop) {
     FilesModule,
     DatabaseModule,
     AntiSpamModule,
+    AuditModule,
     WorkflowModule,
     ImagesModule,
     ImageEditModule,
