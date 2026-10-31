@@ -17,13 +17,26 @@ export class AuditController {
     @Body() payload: CreateAuditLogDto | CreateAuditLogDto[],
     @Req() req: Request,
   ) {
+    let data = payload;
+    if ((!data || (typeof data === "object" && Object.keys(data).length === 0)) && typeof req.body === "string") {
+      try {
+        data = JSON.parse(req.body);
+      } catch {
+        // ignore
+      }
+    }
+
+    if (!data || (typeof data === "object" && Object.keys(data).length === 0)) {
+      return { success: false, message: "Empty audit log payload" };
+    }
+
     const forwarded = req.headers["x-forwarded-for"];
     const ip =
       (typeof forwarded === "string" ? forwarded.split(",")[0].trim() : null) ||
       (req.socket.remoteAddress ?? null);
     const userAgent = req.get("user-agent") ?? null;
 
-    return this.auditService.record(payload, ip, userAgent);
+    return this.auditService.record(data, ip, userAgent);
   }
 }
 
