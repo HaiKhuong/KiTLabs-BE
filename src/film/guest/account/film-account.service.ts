@@ -1,10 +1,11 @@
 import { BadRequestException, Injectable } from "@nestjs/common";
 import { InjectDataSource } from "@nestjs/typeorm";
-import { DataSource, IsNull } from "typeorm";
+import { DataSource, In, IsNull } from "typeorm";
 import {
   FilmComment,
   FilmCommentReaction,
   FilmDonation,
+  FilmEpisode,
   FilmFavorite,
   FilmMovie,
   FilmNotification,
@@ -68,10 +69,37 @@ export class FilmAccountService {
     });
   }
 
-  history(userId: string) {
-    return this.db
+  async history(userId: string) {
+    const list = await this.db
       .getRepository(FilmWatchHistory)
-      .find({ where: { userId }, order: { updatedAt: "DESC" } });
+      .find({ where: { userId }, order: { updatedAt: "DESC" }, take: 20 });
+
+    if (!list.length) return [];
+
+    const movieIds = [...new Set(list.map((item) => item.movieId))];
+    const episodeIds = [...new Set(list.map((item) => item.episodeId))];
+
+    const [movies, episodes] = await Promise.all([
+      this.db.getRepository(FilmMovie).find({
+        where: { id: In(movieIds) },
+        select: ["id", "title", "slug", "thumbnailUrl", "bannerUrl", "currentEpisodeCount"],
+      }),
+      episodeIds.length
+        ? this.db.getRepository(FilmEpisode).find({
+            where: { id: In(episodeIds) },
+            select: ["id", "title", "episodeNumber"],
+          })
+        : [],
+    ]);
+
+    const movieMap = new Map(movies.map((m) => [m.id, m]));
+    const episodeMap = new Map(episodes.map((e) => [e.id, e]));
+
+    return list.map((item) => ({
+      ...item,
+      movie: movieMap.get(item.movieId) || null,
+      episode: episodeMap.get(item.episodeId) || null,
+    }));
   }
 
   async favorite(userId: string, movieId: string) {

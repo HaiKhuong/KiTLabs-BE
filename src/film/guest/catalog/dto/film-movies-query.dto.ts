@@ -1,6 +1,6 @@
 import { ApiPropertyOptional } from "@nestjs/swagger";
 import { Transform, Type } from "class-transformer";
-import { IsBoolean, IsInt, IsOptional, IsString, Max, MaxLength, Min } from "class-validator";
+import { IsBoolean, IsInt, IsOptional, IsString, IsUUID, Max, MaxLength, Min } from "class-validator";
 
 export class FilmMoviesQueryDto {
   @ApiPropertyOptional({ description: "Page number, starting from 1", default: 1 })
@@ -49,8 +49,13 @@ export class FilmMoviesQueryDto {
   @IsString()
   genre?: string;
 
-  @ApiPropertyOptional({ description: "Sort by views, favorited, etc.", example: "views" })
+  @ApiPropertyOptional({ description: "Sort by newest, hot, views, favorited", example: "newest" })
   @IsOptional()
   @IsString()
   sort?: string;
+
+  @ApiPropertyOptional({ description: "Filter movies favorited by specific user ID" })
+  @IsOptional()
+  @IsUUID()
+  favoritedUserId?: string;
 }

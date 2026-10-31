@@ -54,19 +54,29 @@ export class FilmCatalogService {
       );
     }
 
-    if (query.sort === "views") {
+    if (query.sort === "newest") {
+      qb.orderBy("m.createdAt", "DESC");
+    } else if (query.sort === "hot") {
+      qb.andWhere("m.isHot = :isHotSort", { isHotSort: true });
+      qb.orderBy("m.createdAt", "DESC");
+    } else if (query.sort === "views") {
       qb.orderBy("m.views", "DESC").addOrderBy("m.createdAt", "DESC");
     } else if (query.sort === "favorited") {
-      qb.orderBy(
-        `(SELECT COUNT(*) FROM favorites favorite
-          WHERE favorite.movie_id = m.id AND favorite.deleted_at IS NULL)`,
-        "DESC",
-      ).addOrderBy("m.createdAt", "DESC");
-    } else if (query.sort === "hot") {
-      qb.orderBy("m.isHot", "DESC")
-        .addOrderBy("m.ratingAvg", "DESC")
-        .addOrderBy("m.rankScore", "DESC")
-        .addOrderBy("m.createdAt", "DESC");
+      if (query.favoritedUserId) {
+        qb.andWhere(
+          `EXISTS (
+            SELECT 1
+            FROM favorites favorite
+            WHERE favorite.movie_id = m.id
+              AND favorite.user_id = :favUserId
+              AND favorite.deleted_at IS NULL
+          )`,
+          { favUserId: query.favoritedUserId },
+        );
+      } else {
+        qb.andWhere("1 = 0");
+      }
+      qb.orderBy("m.createdAt", "DESC");
     } else {
       qb.orderBy("m.createdAt", "DESC");
     }
@@ -154,7 +164,7 @@ export class FilmCatalogService {
     return this.withGenres(movies);
   }
 
-  genres(order: "ASC" | "DESC" = "ASC") {
+  genres(order: "ASC" | "DESC" = "DESC") {
     return this.db.getRepository(FilmGenre).find({ order: { createdAt: order } });
   }
 
