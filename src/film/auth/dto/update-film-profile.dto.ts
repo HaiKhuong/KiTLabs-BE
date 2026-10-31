@@ -8,4 +8,9 @@ export class UpdateFilmProfileDto {
   @MinLength(2)
   @MaxLength(50)
   name?: string;
+
+  @ApiPropertyOptional({ description: "URL ảnh đại diện" })
+  @IsOptional()
+  @IsString()
+  avatarUrl?: string;
 }

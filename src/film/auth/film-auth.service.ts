@@ -297,7 +297,7 @@ export class FilmAuthService implements OnModuleInit {
     return { ...user, currentTitle: equippedTitle?.currentTitle ?? null };
   }
 
-  async updateProfile(userId: string, dto: { name?: string }) {
+  async updateProfile(userId: string, dto: { name?: string; avatarUrl?: string }) {
     const filmRepo = this.db.getRepository(FilmUser);
     const user = await filmRepo.findOneByOrFail({ id: userId });
     if (dto.name !== undefined) {
@@ -306,6 +306,9 @@ export class FilmAuthService implements OnModuleInit {
         throw new BadRequestException("Tên phải từ 2 đến 50 ký tự");
       }
       user.name = trimmed;
+    }
+    if (dto.avatarUrl !== undefined) {
+      user.avatarUrl = dto.avatarUrl?.trim() || null;
     }
     await filmRepo.save(user);
     return this.profile(userId);
