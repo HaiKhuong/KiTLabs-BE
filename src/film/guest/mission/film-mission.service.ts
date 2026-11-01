@@ -12,6 +12,7 @@ import {
   UserMissionStatus,
 } from "../../entities/film.entities";
 import { filmRankFor } from "../../shared/film-rank.util";
+import { FilmChatGateway, type FilmMissionRewardEvent } from "../../film-chat.gateway";
 import { ExpHistoryQueryDto } from "./dto/exp-history-query.dto";
 import { WatchHeartbeatDto } from "./dto/watch-heartbeat.dto";
 
@@ -100,6 +101,7 @@ export class FilmMissionService implements OnModuleInit {
     @InjectRepository(FilmUser, "film")
     private readonly userRepo: Repository<FilmUser>,
     private readonly redis: RedisService,
+    private readonly chatGateway: FilmChatGateway,
   ) {}
 
   async onModuleInit() {
@@ -287,11 +289,7 @@ export class FilmMissionService implements OnModuleInit {
       const maxReward = mission.maxDailyReward;
       if (maxReward && progress.claimedExp >= maxReward) {
         progress.status = UserMissionStatus.CLAIMED;
-      } else if (
-        !maxReward &&
-        mission.targetCount > 0 &&
-        progress.currentCount >= mission.targetCount
-      ) {
+      } else if (!maxReward && mission.targetCount > 0 && progress.currentCount >= mission.targetCount) {
         progress.status = UserMissionStatus.CLAIMED;
       }
       await manager.save(progress);
@@ -330,6 +328,43 @@ export class FilmMissionService implements OnModuleInit {
         newSectRank: newRank,
       };
     });
+  }
+
+  private async autoClaimMission(userId: string, missionCode: string) {
+    try {
+      const result = await this.claimMission(userId, missionCode);
+      const notification: FilmMissionRewardEvent = {
+        missionCode: result.missionCode,
+        claimedExp: result.claimedExp,
+        newTotalExp: result.newTotalExp,
+        newSectRank: result.newSectRank,
+        message: this.getAutoClaimMessage(result.missionCode, result.claimedExp),
+        claimedAt: new Date().toISOString(),
+      };
+
+      try {
+        await this.chatGateway.notifyMissionReward(userId, notification);
+      } catch (notificationError) {
+        this.logger.warn(`Failed to notify mission reward for user ${userId}: ${(notificationError as Error).message}`);
+      }
+
+      return result;
+    } catch (error) {
+      if (error instanceof BadRequestException && error.message === "Không có điểm thưởng nào khả dụng để nhận lúc này")
+        return null;
+      throw error;
+    }
+  }
+
+  private getAutoClaimMessage(missionCode: string, claimedExp: number): string {
+    const messages: Record<string, string> = {
+      DAILY_CHECKIN: "Bạn đã điểm danh thành công",
+      INTERACTIVE_COMMENT: "Bạn đã bình luận tương tác thành công",
+      SHARE_LINK_REF: "Bạn đã giới thiệu đạo hữu thành công",
+      WATCH_MOVIE_TIME: "Bạn đã xem phim tích lũy thành công",
+    };
+
+    return `${messages[missionCode] || "Bạn đã hoàn thành nhiệm vụ"} +${claimedExp} EXP`;
   }
 
   async getExpHistory(userId: string, query: ExpHistoryQueryDto) {
@@ -464,6 +499,7 @@ export class FilmMissionService implements OnModuleInit {
           // Remove processed user from Redis sync set
           await this.redis.srem(syncSetKey, userId);
           await this.redis.hincrby(`film:watch:minutes_today:${today}`, userId, -addedMinutes);
+          await this.autoClaimMission(userId, "WATCH_MOVIE_TIME");
         } catch (itemErr) {
           this.logger.error(`Failed to sync watch minutes for user ${userId}: ${(itemErr as Error).message}`);
         }
@@ -492,6 +528,7 @@ export class FilmMissionService implements OnModuleInit {
         });
         await this.progressRepo.save(progress);
       }
+      await this.autoClaimMission(userId, "DAILY_CHECKIN");
     } catch (e) {
       this.logger.warn(`Checkin error for user ${userId}: ${(e as Error).message}`);
     }
@@ -520,17 +557,13 @@ export class FilmMissionService implements OnModuleInit {
         }
       }
       await this.progressRepo.save(progress);
+      await this.autoClaimMission(userId, "INTERACTIVE_COMMENT");
     } catch (e) {
       this.logger.warn(`Comment mission error: ${(e as Error).message}`);
     }
   }
 
-  async recordReferral(
-    referrerUserId: string,
-    refereeUserId: string,
-    ip: string | undefined,
-    deviceToken: string,
-  ) {
+  async recordReferral(referrerUserId: string, refereeUserId: string, ip: string | undefined, deviceToken: string) {
     if (!referrerUserId || !refereeUserId || referrerUserId === refereeUserId) {
       return { success: false, reason: "self_referral" };
     }
@@ -583,6 +616,7 @@ export class FilmMissionService implements OnModuleInit {
         progress.status = UserMissionStatus.CLAIMABLE;
       }
       await this.progressRepo.save(progress);
+      await this.autoClaimMission(referrerUserId, "SHARE_LINK_REF");
 
       return { success: true };
     } catch (e) {
@@ -591,4 +625,3 @@ export class FilmMissionService implements OnModuleInit {
     }
   }
 }
-
