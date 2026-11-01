@@ -4,14 +4,17 @@ import { InjectDataSource, InjectRepository } from "@nestjs/typeorm";
 import { DataSource, Repository } from "typeorm";
 import { RedisService } from "../../../database/redis.service";
 import {
+  FilmItem,
   FilmMission,
   FilmUser,
   FilmUserExpHistory,
+  FilmUserInventory,
   FilmUserMissionProgress,
   FilmUserReferral,
+  ItemType,
   UserMissionStatus,
 } from "../../entities/film.entities";
-import { filmRankFor } from "../../shared/film-rank.util";
+import { filmRankFor, filmTitleFor } from "../../shared/film-rank.util";
 import { FilmChatGateway, type FilmMissionRewardEvent } from "../../film-chat.gateway";
 import { ExpHistoryQueryDto } from "./dto/exp-history-query.dto";
 import { WatchHeartbeatDto } from "./dto/watch-heartbeat.dto";
@@ -299,9 +302,49 @@ export class FilmMissionService implements OnModuleInit {
 
       const newExp = (BigInt(user.exp || 0) + BigInt(claimableExp)).toString();
       const newRank = filmRankFor(Number(newExp));
+      const newTitle = filmTitleFor(Number(newExp));
       user.exp = newExp;
       user.sectRank = newRank;
+      user.currentTitle = newTitle;
       await manager.save(user);
+
+      const titleItem = await manager
+        .getRepository(FilmItem)
+        .createQueryBuilder("item")
+        .where("item.type = :type", { type: ItemType.TITLE })
+        .andWhere("item.assetConfig ->> 'slug' = :slug", { slug: newTitle })
+        .getOne();
+      if (!titleItem) {
+        throw new BadRequestException(`Danh hiệu ${newTitle} chưa được cấu hình`);
+      }
+
+      await manager.query(
+        `UPDATE user_inventories inventory
+         SET is_equipped = false, updated_at = now()
+         FROM items item
+         WHERE inventory.item_id = item.id
+           AND inventory.user_id = $1
+           AND inventory.is_equipped = true
+           AND item.type = 'TITLE'
+           AND inventory.item_id <> $2`,
+        [userId, titleItem.id],
+      );
+
+      const inventoryRepository = manager.getRepository(FilmUserInventory);
+      let titleInventory = await inventoryRepository.findOne({
+        where: { userId, itemId: titleItem.id },
+      });
+      if (!titleInventory) {
+        titleInventory = inventoryRepository.create({
+          userId,
+          itemId: titleItem.id,
+          isEquipped: true,
+          expiresAt: null,
+        });
+      } else {
+        titleInventory.isEquipped = true;
+      }
+      await inventoryRepository.save(titleInventory);
 
       // Record to EXP History
       const history = manager.create(FilmUserExpHistory, {
@@ -326,6 +369,7 @@ export class FilmMissionService implements OnModuleInit {
         claimedExp: claimableExp,
         newTotalExp: newExp,
         newSectRank: newRank,
+        newCurrentTitle: newTitle,
       };
     });
   }

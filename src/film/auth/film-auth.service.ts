@@ -17,6 +17,8 @@ import {
 import { PlatformUser, PlatformUserAuthType, PlatformUserRole } from "../../platform/entities/platform-user.entity";
 import { FilmMissionService } from "../guest/mission/film-mission.service";
 
+const DEFAULT_USER_TITLE = "luyen_khi_so_ky";
+
 @Injectable()
 export class FilmAuthService implements OnModuleInit {
   private readonly logger = new Logger(FilmAuthService.name);
@@ -163,8 +165,10 @@ export class FilmAuthService implements OnModuleInit {
             name: "Ma Đạo Tử #" + (await this.generateUniqueGuestName(manager)),
             role: FilmUserRole.GUEST,
             status: FilmUserStatus.ACTIVE,
+            currentTitle: DEFAULT_USER_TITLE,
           }),
         );
+        await this.assignDefaultTitle(manager, user.id);
       }
 
       user.lastActiveAt = new Date();
@@ -304,7 +308,7 @@ export class FilmAuthService implements OnModuleInit {
       .limit(1)
       .getRawOne<{ currentTitle: string | null }>();
 
-    return { ...user, currentTitle: equippedTitle?.currentTitle ?? null };
+    return { ...user, currentTitle: equippedTitle?.currentTitle ?? user.currentTitle ?? null };
   }
 
   async updateProfile(userId: string, dto: { name?: string; avatarUrl?: string }) {
@@ -339,6 +343,28 @@ export class FilmAuthService implements OnModuleInit {
     }
 
     throw new Error("Không thể tạo mã người dùng 6 chữ số không trùng");
+  }
+
+  private async assignDefaultTitle(manager: EntityManager, userId: string): Promise<void> {
+    const titleItem = await manager
+      .getRepository(FilmItem)
+      .createQueryBuilder("item")
+      .where("item.type = :type", { type: ItemType.TITLE })
+      .andWhere("item.assetConfig ->> 'slug' = :slug", { slug: DEFAULT_USER_TITLE })
+      .getOne();
+
+    if (!titleItem) {
+      throw new Error(`Default TITLE item ${DEFAULT_USER_TITLE} is not configured`);
+    }
+
+    await manager.getRepository(FilmUserInventory).save(
+      manager.getRepository(FilmUserInventory).create({
+        userId,
+        itemId: titleItem.id,
+        isEquipped: true,
+        expiresAt: null,
+      }),
+    );
   }
 
   private async issue(user: FilmUser) {

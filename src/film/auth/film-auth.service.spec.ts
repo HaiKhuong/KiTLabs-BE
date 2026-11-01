@@ -60,10 +60,10 @@ describe("FilmAuthService.profile", () => {
   it.each([
     ["no equipped TITLE", undefined],
     ["an equipped TITLE without asset_config.slug", null],
-  ])("returns null when there is %s", async (_description, currentTitle) => {
+  ])("falls back to users.current_title when there is %s", async (_description, currentTitle) => {
     const { service } = setup(currentTitle);
 
-    await expect(service.profile(user.id)).resolves.toEqual({ ...user, currentTitle: null });
+    await expect(service.profile(user.id)).resolves.toEqual({ ...user, currentTitle: "legacy-title" });
   });
 
   it("preserves the existing not-found behavior", async () => {
