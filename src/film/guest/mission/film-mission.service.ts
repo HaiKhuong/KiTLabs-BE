@@ -178,11 +178,13 @@ export class FilmMissionService implements OnModuleInit {
           status = UserMissionStatus.CLAIMED;
         }
       } else if (mission.code === "INTERACTIVE_COMMENT") {
-        const totalEarnedExp = Math.min(currentCount * mission.rewardExp, mission.maxDailyReward || 30);
+        const completedCount = Math.min(currentCount, Math.max(0, mission.targetCount));
+        const rewardLimit = mission.maxDailyReward ?? mission.targetCount * mission.rewardExp;
+        const totalEarnedExp = Math.min(completedCount * mission.rewardExp, rewardLimit);
         claimableExp = Math.max(0, totalEarnedExp - claimedExp);
         if (claimableExp > 0) {
           status = UserMissionStatus.CLAIMABLE;
-        } else if (claimedExp >= (mission.maxDailyReward || 30)) {
+        } else if (mission.targetCount > 0 && currentCount >= mission.targetCount) {
           status = UserMissionStatus.CLAIMED;
         }
       } else if (mission.code === "SHARE_LINK_REF") {
@@ -271,8 +273,9 @@ export class FilmMissionService implements OnModuleInit {
         claimableExp = mission.rewardExp;
       }
     } else if (missionCode === "INTERACTIVE_COMMENT") {
-      const maxExp = mission.maxDailyReward || 30;
-      const totalEarned = Math.min(progress.currentCount * mission.rewardExp, maxExp);
+      const completedCount = Math.min(progress.currentCount, Math.max(0, mission.targetCount));
+      const maxExp = mission.maxDailyReward ?? mission.targetCount * mission.rewardExp;
+      const totalEarned = Math.min(completedCount * mission.rewardExp, maxExp);
       claimableExp = Math.max(0, totalEarned - progress.claimedExp);
     } else if (missionCode === "SHARE_LINK_REF") {
       const totalEarned = progress.currentCount * mission.rewardExp;
@@ -290,9 +293,9 @@ export class FilmMissionService implements OnModuleInit {
     return this.dataSource.transaction(async (manager) => {
       progress.claimedExp += claimableExp;
       const maxReward = mission.maxDailyReward;
-      if (maxReward && progress.claimedExp >= maxReward) {
+      if (mission.targetCount > 0 && progress.currentCount >= mission.targetCount) {
         progress.status = UserMissionStatus.CLAIMED;
-      } else if (!maxReward && mission.targetCount > 0 && progress.currentCount >= mission.targetCount) {
+      } else if (maxReward && progress.claimedExp >= maxReward) {
         progress.status = UserMissionStatus.CLAIMED;
       }
       await manager.save(progress);
@@ -581,6 +584,11 @@ export class FilmMissionService implements OnModuleInit {
   async recordComment(userId: string) {
     const today = this.getTodayDateKey();
     try {
+      const mission = await this.missionRepo.findOne({
+        where: { code: "INTERACTIVE_COMMENT", isActive: true },
+      });
+      if (!mission || mission.targetCount <= 0) return;
+
       let progress = await this.progressRepo.findOne({
         where: { userId, missionCode: "INTERACTIVE_COMMENT", dateKey: today },
       });
@@ -595,7 +603,7 @@ export class FilmMissionService implements OnModuleInit {
           status: UserMissionStatus.CLAIMABLE,
         });
       } else {
-        if (progress.currentCount < 3) {
+        if (progress.currentCount < mission.targetCount) {
           progress.currentCount += 1;
           progress.status = UserMissionStatus.CLAIMABLE;
         }
