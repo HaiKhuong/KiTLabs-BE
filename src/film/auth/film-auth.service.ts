@@ -160,7 +160,7 @@ export class FilmAuthService implements OnModuleInit {
             email: null,
             passwordHash: null,
             refreshTokenHash: null,
-            name: await this.generateUniqueGuestName(manager),
+            name: "Ma Đạo Tử #" + (await this.generateUniqueGuestName(manager)),
             role: FilmUserRole.GUEST,
             status: FilmUserStatus.ACTIVE,
           }),
