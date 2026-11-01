@@ -29,8 +29,7 @@ export class FilmMissionController {
   async getMissions(@FilmCurrentUser() user: FilmPrincipal) {
     // Auto record daily check-in if user visits missions
     await this.missionService.recordCheckin(user.userId);
-    const data = await this.missionService.getMissionsWithProgress(user.userId);
-    return { success: true, data };
+    return this.missionService.getMissionsWithProgress(user.userId);
   }
 
   @ApiOperation({ summary: "Bấm nhận điểm kinh nghiệm từ nhiệm vụ đã hoàn thành" })
@@ -39,8 +38,7 @@ export class FilmMissionController {
     @Param("code") code: string,
     @FilmCurrentUser() user: FilmPrincipal,
   ) {
-    const result = await this.missionService.claimMission(user.userId, code);
-    return { success: true, data: result };
+    return this.missionService.claimMission(user.userId, code);
   }
 
   @ApiOperation({ summary: "Lấy lịch sử cộng điểm kinh nghiệm (timeline feed)" })
@@ -49,8 +47,7 @@ export class FilmMissionController {
     @Query() query: ExpHistoryQueryDto,
     @FilmCurrentUser() user: FilmPrincipal,
   ) {
-    const result = await this.missionService.getExpHistory(user.userId, query);
-    return { success: true, data: result };
+    return this.missionService.getExpHistory(user.userId, query);
   }
 
   @ApiOperation({ summary: "Gửi nhịp tim (heartbeat) thời gian xem phim với anti-cheat" })
@@ -64,7 +61,6 @@ export class FilmMissionController {
     const ip = (typeof forwarded === "string" ? forwarded.split(",")[0].trim() : req.socket?.remoteAddress) || "";
     const userAgent = (req.headers["user-agent"] as string) || "";
 
-    const result = await this.missionService.handleWatchHeartbeat(user.userId, dto, ip, userAgent);
-    return { success: true, data: result };
+    return this.missionService.handleWatchHeartbeat(user.userId, dto, ip, userAgent);
   }
 }
