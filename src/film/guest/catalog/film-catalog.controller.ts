@@ -2,19 +2,14 @@ import { Body, Controller, Get, Param, Post, Query, Req } from "@nestjs/common";
 import { ApiOperation, ApiParam, ApiTags } from "@nestjs/swagger";
 import { Request } from "express";
 import { Public } from "../../../common/decorators/public.decorator";
-import {
-  CreateFilmReportDto,
-  FilmCommentsQueryDto,
-  FilmMovieBannersQueryDto,
-  FilmMoviesQueryDto,
-} from "./dto";
+import { CreateFilmReportDto, FilmCommentsQueryDto, FilmMovieBannersQueryDto, FilmMoviesQueryDto } from "./dto";
 import { FilmCatalogService } from "./film-catalog.service";
 
 @Public()
 @ApiTags("Film Guest - Catalog")
 @Controller("film")
 export class FilmCatalogController {
-  constructor(private readonly service: FilmCatalogService) { }
+  constructor(private readonly service: FilmCatalogService) {}
 
   @ApiOperation({ summary: "Get paginated movie catalog with search and filters" })
   @Get("movies")
@@ -58,6 +53,12 @@ export class FilmCatalogController {
   @Get("banners")
   banners() {
     return this.service.banners();
+  }
+
+  @ApiOperation({ summary: "Get highest-priority active popup banner" })
+  @Get("banners/popup")
+  popupBanner() {
+    return this.service.popupBanner();
   }
 
   @ApiOperation({ summary: "Get active advertisements" })

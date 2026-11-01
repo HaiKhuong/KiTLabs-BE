@@ -1,6 +1,6 @@
 import { Injectable, NotFoundException } from "@nestjs/common";
 import { InjectDataSource } from "@nestjs/typeorm";
-import { DataSource, In, IsNull, LessThanOrEqual, MoreThanOrEqual } from "typeorm";
+import { DataSource, In } from "typeorm";
 import { CreateFilmReportDto, FilmMovieBannersQueryDto, FilmMoviesQueryDto } from "./dto";
 import {
   FilmAdvertisement,
@@ -123,10 +123,7 @@ export class FilmCatalogService {
     };
   }
 
-  async movieBanners(
-    queryOrLimit?: FilmMovieBannersQueryDto | number,
-    legacyRecommended: boolean | undefined = true,
-  ) {
+  async movieBanners(queryOrLimit?: FilmMovieBannersQueryDto | number, legacyRecommended: boolean | undefined = true) {
     let limit = 6;
     let recommended: boolean | undefined = true;
 
@@ -180,13 +177,25 @@ export class FilmCatalogService {
 
   banners() {
     const now = new Date();
-    return this.db.getRepository(FilmBanner).find({
-      where: [
-        { isActive: true, startTime: IsNull(), endTime: IsNull() },
-        { isActive: true, startTime: LessThanOrEqual(now), endTime: MoreThanOrEqual(now) },
-      ],
-      order: { displayOrder: "ASC" },
-    });
+    return this.activeBannersQuery(now).orderBy("banner.displayOrder", "ASC").getMany();
+  }
+
+  popupBanner() {
+    const now = new Date();
+    return this.activeBannersQuery(now)
+      .andWhere("banner.position = :position", { position: "POPUP" })
+      .orderBy("banner.displayOrder", "ASC")
+      .addOrderBy("banner.createdAt", "DESC")
+      .getOne();
+  }
+
+  private activeBannersQuery(now: Date) {
+    return this.db
+      .getRepository(FilmBanner)
+      .createQueryBuilder("banner")
+      .where("banner.isActive = :isActive", { isActive: true })
+      .andWhere("(banner.startTime IS NULL OR banner.startTime <= :now)", { now })
+      .andWhere("(banner.endTime IS NULL OR banner.endTime >= :now)", { now });
   }
 
   advertisements() {
@@ -198,12 +207,8 @@ export class FilmCatalogService {
       this.db
         .getRepository(FilmUser)
         .find({ where: { role: FilmUserRole.GUEST }, order: { totalDonatedVnd: "DESC" }, take: 20 }),
-      this.db
-        .getRepository(FilmUser)
-        .find({ where: { role: FilmUserRole.GUEST }, order: { exp: "DESC" }, take: 20 }),
-      this.db
-        .getRepository(FilmMovie)
-        .find({ order: { rankScore: "DESC" }, take: 20 }),
+      this.db.getRepository(FilmUser).find({ where: { role: FilmUserRole.GUEST }, order: { exp: "DESC" }, take: 20 }),
+      this.db.getRepository(FilmMovie).find({ order: { rankScore: "DESC" }, take: 20 }),
     ]).then(([donors, cultivators, movies]) => ({ donors, cultivators, movies }));
   }
 
@@ -267,9 +272,7 @@ export class FilmCatalogService {
 
     return movies.map((movie) => ({
       ...movie,
-      genres: rows
-        .filter((row) => row.movieId === movie.id)
-        .map(({ id, name, slug }) => ({ id, name, slug })),
+      genres: rows.filter((row) => row.movieId === movie.id).map(({ id, name, slug }) => ({ id, name, slug })),
     }));
   }
 

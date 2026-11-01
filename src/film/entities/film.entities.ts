@@ -107,6 +107,11 @@ export enum ReportStatus {
   RESOLVED = "RESOLVED",
   DISMISSED = "DISMISSED",
 }
+export enum BannerDisplayMode {
+  ALWAYS = "ALWAYS",
+  ONCE = "ONCE",
+  SESSION = "SESSION",
+}
 
 abstract class FilmBase {
   @PrimaryGeneratedColumn("uuid") id!: string;
@@ -309,6 +314,14 @@ export class FilmBanner extends FilmBase {
   @Column({ name: "target_url" }) targetUrl!: string;
   @Column() position!: string;
   @Column({ name: "display_order", default: 0 }) displayOrder!: number;
+  @Column({
+    name: "display_mode",
+    type: "enum",
+    enum: BannerDisplayMode,
+    enumName: "banners_display_mode_enum",
+    default: BannerDisplayMode.ALWAYS,
+  })
+  displayMode!: BannerDisplayMode;
   @Column({ name: "is_active", default: true }) isActive!: boolean;
   @Column({ name: "start_time", type: "timestamptz", nullable: true }) startTime!: Date | null;
   @Column({ name: "end_time", type: "timestamptz", nullable: true }) endTime!: Date | null;
@@ -360,7 +373,9 @@ export class FilmReport extends FilmBase {
   @Index() @Column("uuid", { name: "movie_id" }) movieId!: string;
   @Column({ name: "movie_title", type: "varchar", length: 255, nullable: true }) movieTitle!: string | null;
   @Index() @Column("uuid", { name: "episode_id", nullable: true }) episodeId!: string | null;
-  @Column({ name: "episode_number", type: "numeric", precision: 6, scale: 1, nullable: true }) episodeNumber!: number | null;
+  @Column({ name: "episode_number", type: "numeric", precision: 6, scale: 1, nullable: true }) episodeNumber!:
+    | number
+    | null;
   @Column({ name: "episode_title", type: "varchar", length: 255, nullable: true }) episodeTitle!: string | null;
   @Column({ name: "page_url", type: "text", nullable: true }) pageUrl!: string | null;
   @Column({ name: "reason", type: "varchar", length: 100, default: "VIDEO_ISSUE" }) reason!: string;
@@ -379,7 +394,6 @@ export class FilmSetting extends FilmBase {
   @Column({ name: "description", type: "varchar", length: 255, nullable: true }) description!: string | null;
   @Column({ name: "is_public", type: "boolean", default: true }) isPublic!: boolean;
 }
-
 
 @Entity("missions")
 export class FilmMission extends FilmBase {
