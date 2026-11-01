@@ -383,8 +383,8 @@ export class FilmSetting extends FilmBase {
 
 @Entity("missions")
 export class FilmMission extends FilmBase {
-  @Index({ unique: true }) @Column({ length: 50 }) code!: string;
-  @Column({ length: 150 }) title!: string;
+  @Index({ unique: true }) @Column({ type: "varchar", length: 50 }) code!: string;
+  @Column({ type: "varchar", length: 150 }) title!: string;
   @Column({ type: "text" }) description!: string;
   @Column({ name: "reward_exp", type: "int" }) rewardExp!: number;
   @Column({ name: "max_daily_reward", type: "int", nullable: true }) maxDailyReward!: number | null;
@@ -399,8 +399,8 @@ export class FilmMission extends FilmBase {
 @Entity("user_mission_progress")
 export class FilmUserMissionProgress extends FilmBase {
   @Index() @Column("uuid", { name: "user_id" }) userId!: string;
-  @Index() @Column({ name: "mission_code", length: 50 }) missionCode!: string;
-  @Index() @Column({ name: "date_key", length: 10, default: "ALL" }) dateKey!: string;
+  @Index() @Column({ name: "mission_code", type: "varchar", length: 50 }) missionCode!: string;
+  @Index() @Column({ name: "date_key", type: "varchar", length: 10, default: "ALL" }) dateKey!: string;
   @Column({ name: "current_count", type: "int", default: 0 }) currentCount!: number;
   @Column({ name: "claimed_exp", type: "int", default: 0 }) claimedExp!: number;
   @Column({ type: "enum", enum: UserMissionStatus, default: UserMissionStatus.IN_PROGRESS }) status!: UserMissionStatus;
@@ -410,10 +410,10 @@ export class FilmUserMissionProgress extends FilmBase {
 @Entity("user_exp_histories")
 export class FilmUserExpHistory extends FilmBase {
   @Index() @Column("uuid", { name: "user_id" }) userId!: string;
-  @Index() @Column({ name: "mission_code", length: 50, nullable: true }) missionCode!: string | null;
+  @Index() @Column({ name: "mission_code", type: "varchar", length: 50, nullable: true }) missionCode!: string | null;
   @Column({ type: "int" }) amount!: number;
   @Column({ name: "balance_after", type: "bigint" }) balanceAfter!: string;
-  @Column({ length: 150 }) title!: string;
+  @Column({ type: "varchar", length: 150 }) title!: string;
   @Column({ type: "text", nullable: true }) description!: string | null;
   @Column({ name: "raw_data", type: "jsonb", nullable: true }) rawData!: Record<string, any> | null;
 }
