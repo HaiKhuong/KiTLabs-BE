@@ -106,6 +106,8 @@ export class FilmAuthService implements OnModuleInit {
     deviceToken?: string,
     existingUserId?: string,
     ref?: string,
+    isIncognito?: boolean | null,
+    incognitoBrowser?: string | null,
   ) {
     const result = await this.db.transaction(async (manager) => {
       const token = deviceToken || randomUUID();
@@ -119,6 +121,8 @@ export class FilmAuthService implements OnModuleInit {
             firstIp: ip,
             lastIp: ip,
             userAgent,
+            isIncognito: typeof isIncognito === "boolean" ? isIncognito : null,
+            incognitoBrowser: incognitoBrowser?.trim() || null,
             lastSeenAt: new Date(),
           }),
         );
@@ -128,6 +132,10 @@ export class FilmAuthService implements OnModuleInit {
           device.firstIp = ip;
         }
         device.userAgent = userAgent || device.userAgent;
+        if (device.isIncognito === null && typeof isIncognito === "boolean") {
+          device.isIncognito = isIncognito;
+          device.incognitoBrowser = incognitoBrowser?.trim() || null;
+        }
         device.lastSeenAt = new Date();
         await manager.save(device);
       }
@@ -177,7 +185,15 @@ export class FilmAuthService implements OnModuleInit {
       return { device, user };
     });
     if (ref && result.user?.id) {
-      this.missionService.recordReferral(ref, result.user.id, ip || undefined, result.device.deviceToken).catch(() => { });
+      this.missionService
+        .recordReferral(
+          ref,
+          result.user.id,
+          ip || undefined,
+          result.device.deviceToken,
+          result.device.isIncognito,
+        )
+        .catch(() => { });
     }
     if (result.user?.id) {
       this.missionService.recordCheckin(result.user.id).catch(() => { });

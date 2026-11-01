@@ -126,6 +126,9 @@ export class FilmDevice extends FilmBase {
   @Column({ name: "first_ip", type: "varchar", length: 64, nullable: true }) firstIp!: string | null;
   @Column({ name: "last_ip", type: "varchar", length: 64, nullable: true }) lastIp!: string | null;
   @Column({ name: "user_agent", type: "text", nullable: true }) userAgent!: string | null;
+  @Column({ name: "is_incognito", type: "boolean", nullable: true }) isIncognito!: boolean | null;
+  @Column({ name: "incognito_browser", type: "varchar", length: 100, nullable: true })
+  incognitoBrowser!: string | null;
   @Column({ name: "last_seen_at", type: "timestamptz" }) lastSeenAt!: Date;
 }
 
@@ -439,6 +442,9 @@ export class FilmUserReferral extends FilmBase {
   @Index() @Column("uuid", { name: "referee_user_id" }) refereeUserId!: string;
   @Column({ name: "ip_address", type: "varchar", length: 64, nullable: true }) ipAddress!: string | null;
   @Column({ name: "device_token", type: "varchar", length: 100, nullable: true }) deviceToken!: string | null;
+  @Column({ name: "is_reward_eligible", type: "boolean", default: true }) isRewardEligible!: boolean;
+  @Column({ name: "rejection_reason", type: "varchar", length: 50, nullable: true })
+  rejectionReason!: string | null;
 }
 
 export const FILM_DB_ENTITIES = [

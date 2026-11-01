@@ -321,7 +321,7 @@ export class FilmCatalogService {
     return {
       success: true,
       id: report.id,
-      message: "Đã ghi nhận báo lỗi thành công. Đội ngũ kỹ thuật sẽ kiểm tra sớm nhất!",
+      message: "Dị biến đã được truyền về Ma Vực! Chấp Sự sẽ sớm điều tra và khắc phục!",
     };
   }
 

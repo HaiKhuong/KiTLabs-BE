@@ -615,7 +615,13 @@ export class FilmMissionService implements OnModuleInit {
     }
   }
 
-  async recordReferral(referrerUserId: string, refereeUserId: string, ip: string | undefined, deviceToken: string) {
+  async recordReferral(
+    referrerUserId: string,
+    refereeUserId: string,
+    ip: string | undefined,
+    deviceToken: string,
+    isIncognito: boolean | null,
+  ) {
     if (!referrerUserId || !refereeUserId || referrerUserId === refereeUserId) {
       return { success: false, reason: "self_referral" };
     }
@@ -639,15 +645,28 @@ export class FilmMissionService implements OnModuleInit {
         if (existingIp) return { success: false, reason: "ip_already_referred" };
       }
 
-      // Save referral
+      const rejectionReason =
+        isIncognito === false
+          ? null
+          : isIncognito === true
+            ? "INCOGNITO_DETECTED"
+            : "INCOGNITO_UNKNOWN";
+
+      // Save every referral attempt for audit, including ineligible private sessions.
       await this.referralRepo.save(
         this.referralRepo.create({
           referrerUserId,
           refereeUserId,
           ipAddress: ip || null,
           deviceToken: deviceToken || null,
+          isRewardEligible: rejectionReason === null,
+          rejectionReason,
         }),
       );
+
+      if (rejectionReason) {
+        return { success: false, reason: rejectionReason.toLowerCase() };
+      }
 
       // Increment progress for referrer
       let progress = await this.progressRepo.findOne({

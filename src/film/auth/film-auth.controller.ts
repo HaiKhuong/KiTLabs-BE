@@ -39,7 +39,15 @@ export class FilmAuthController {
       }
     }
 
-    return this.auth.createDevice(clientIp, userAgent, dto.deviceToken, userId, dto.ref);
+    return this.auth.createDevice(
+      clientIp,
+      userAgent,
+      dto.deviceToken,
+      userId,
+      dto.ref,
+      dto.isIncognito,
+      dto.incognitoBrowser,
+    );
   }
 
   @ApiOperation({ summary: "Get current device info" })
