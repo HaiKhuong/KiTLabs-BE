@@ -2,7 +2,7 @@ import { BadRequestException, Injectable, Logger, OnModuleInit, UnauthorizedExce
 import { JwtService } from "@nestjs/jwt";
 import { InjectDataSource } from "@nestjs/typeorm";
 import * as bcrypt from "bcrypt";
-import { randomUUID } from "crypto";
+import { randomInt, randomUUID } from "crypto";
 import { SignOptions } from "jsonwebtoken";
 import { DataSource } from "typeorm";
 import {
@@ -160,7 +160,7 @@ export class FilmAuthService implements OnModuleInit {
             email: null,
             passwordHash: null,
             refreshTokenHash: null,
-            name: `Đạo Hữu #${device.deviceToken.slice(0, 8)}`,
+            name: await this.generateUniqueGuestName(manager),
             role: FilmUserRole.GUEST,
             status: FilmUserStatus.ACTIVE,
           }),
@@ -173,10 +173,10 @@ export class FilmAuthService implements OnModuleInit {
       return { device, user };
     });
     if (ref && result.user?.id) {
-      this.missionService.recordReferral(ref, result.user.id, ip || undefined, result.device.deviceToken).catch(() => {});
+      this.missionService.recordReferral(ref, result.user.id, ip || undefined, result.device.deviceToken).catch(() => { });
     }
     if (result.user?.id) {
-      this.missionService.recordCheckin(result.user.id).catch(() => {});
+      this.missionService.recordCheckin(result.user.id).catch(() => { });
     }
     return { device: result.device, ...(await this.issue(result.user)) };
   }
@@ -289,7 +289,7 @@ export class FilmAuthService implements OnModuleInit {
   }
 
   async profile(userId: string) {
-    this.missionService.recordCheckin(userId).catch(() => {});
+    this.missionService.recordCheckin(userId).catch(() => { });
     const user = await this.db.getRepository(FilmUser).findOneByOrFail({ id: userId });
     const equippedTitle = await this.db
       .getRepository(FilmUserInventory)
