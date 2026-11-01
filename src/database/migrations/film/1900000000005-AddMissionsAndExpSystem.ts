@@ -35,7 +35,7 @@ export class AddMissionsAndExpSystem1900000000005 implements MigrationInterface 
     `);
 
     await queryRunner.query(`
-      CREATE UNIQUE INDEX IF NOT EXISTS "IDX_missions_code" ON "missions" ("code") WHERE "deleted_at" IS NULL;
+      CREATE UNIQUE INDEX IF NOT EXISTS "IDX_missions_code" ON "missions" ("code");
     `);
 
     // 3. Table: user_mission_progress
@@ -57,7 +57,7 @@ export class AddMissionsAndExpSystem1900000000005 implements MigrationInterface 
     `);
 
     await queryRunner.query(`
-      CREATE UNIQUE INDEX IF NOT EXISTS "IDX_user_mission_progress_user_code_date" ON "user_mission_progress" ("user_id", "mission_code", "date_key") WHERE "deleted_at" IS NULL;
+      CREATE UNIQUE INDEX IF NOT EXISTS "IDX_user_mission_progress_user_code_date" ON "user_mission_progress" ("user_id", "mission_code", "date_key");
     `);
     await queryRunner.query(`
       CREATE INDEX IF NOT EXISTS "IDX_user_mission_progress_user_id" ON "user_mission_progress" ("user_id");
@@ -104,7 +104,7 @@ export class AddMissionsAndExpSystem1900000000005 implements MigrationInterface 
     `);
 
     await queryRunner.query(`
-      CREATE UNIQUE INDEX IF NOT EXISTS "IDX_user_referrals_referrer_referee" ON "user_referrals" ("referrer_user_id", "referee_user_id") WHERE "deleted_at" IS NULL;
+      CREATE UNIQUE INDEX IF NOT EXISTS "IDX_user_referrals_referrer_referee" ON "user_referrals" ("referrer_user_id", "referee_user_id");
     `);
     await queryRunner.query(`
       CREATE INDEX IF NOT EXISTS "IDX_user_referrals_referrer_ip" ON "user_referrals" ("referrer_user_id", "ip_address");
