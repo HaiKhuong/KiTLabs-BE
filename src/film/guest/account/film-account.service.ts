@@ -17,10 +17,14 @@ import {
 } from "../../entities/film.entities";
 import { filmRankFor } from "../../shared/film-rank.util";
 import { CommentDto, RatingDto, WatchDto } from "./dto";
+import { FilmMissionService } from "../mission/film-mission.service";
 
 @Injectable()
 export class FilmAccountService {
-  constructor(@InjectDataSource("film") private readonly db: DataSource) {}
+  constructor(
+    @InjectDataSource("film") private readonly db: DataSource,
+    private readonly missionService: FilmMissionService,
+  ) {}
 
   async saveWatch(userId: string, input: WatchDto) {
     return this.db.transaction(async (manager) => {
@@ -150,13 +154,15 @@ export class FilmAccountService {
 
   async comment(userId: string, input: CommentDto) {
     const user = await this.db.getRepository(FilmUser).findOneByOrFail({ id: userId });
-    return this.db.getRepository(FilmComment).save(
+    const saved = await this.db.getRepository(FilmComment).save(
       this.db.getRepository(FilmComment).create({
         ...input,
         userId,
         userSectRankSnapshot: user.sectRank,
       }),
     );
+    this.missionService.recordComment(userId).catch(() => {});
+    return saved;
   }
 
   async react(userId: string, commentId: string, type: ReactionType) {

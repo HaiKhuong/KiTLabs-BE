@@ -21,4 +21,9 @@ export class DeviceDto {
   @IsOptional()
   @IsString()
   userId?: string;
+
+  @ApiPropertyOptional({ description: "Referral user ID if visited via ?ref=" })
+  @IsOptional()
+  @IsString()
+  ref?: string;
 }

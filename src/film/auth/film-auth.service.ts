@@ -15,6 +15,7 @@ import {
   ItemType,
 } from "../entities/film.entities";
 import { PlatformUser, PlatformUserAuthType, PlatformUserRole } from "../../platform/entities/platform-user.entity";
+import { FilmMissionService } from "../guest/mission/film-mission.service";
 
 @Injectable()
 export class FilmAuthService implements OnModuleInit {
@@ -23,6 +24,7 @@ export class FilmAuthService implements OnModuleInit {
     @InjectDataSource("film") private readonly db: DataSource,
     @InjectDataSource() private readonly platformDb: DataSource,
     private readonly jwt: JwtService,
+    private readonly missionService: FilmMissionService,
   ) { }
 
   async onModuleInit(): Promise<void> {
@@ -101,6 +103,7 @@ export class FilmAuthService implements OnModuleInit {
     userAgent: string | null,
     deviceToken?: string,
     existingUserId?: string,
+    ref?: string,
   ) {
     const result = await this.db.transaction(async (manager) => {
       const token = deviceToken || randomUUID();
@@ -169,6 +172,12 @@ export class FilmAuthService implements OnModuleInit {
 
       return { device, user };
     });
+    if (ref && result.user?.id) {
+      this.missionService.recordReferral(ref, result.user.id, ip || undefined, result.device.deviceToken).catch(() => {});
+    }
+    if (result.user?.id) {
+      this.missionService.recordCheckin(result.user.id).catch(() => {});
+    }
     return { device: result.device, ...(await this.issue(result.user)) };
   }
 
@@ -280,6 +289,7 @@ export class FilmAuthService implements OnModuleInit {
   }
 
   async profile(userId: string) {
+    this.missionService.recordCheckin(userId).catch(() => {});
     const user = await this.db.getRepository(FilmUser).findOneByOrFail({ id: userId });
     const equippedTitle = await this.db
       .getRepository(FilmUserInventory)

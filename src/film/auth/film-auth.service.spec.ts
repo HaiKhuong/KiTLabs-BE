@@ -31,7 +31,11 @@ describe("FilmAuthService.profile", () => {
         throw new Error("Unexpected repository");
       }),
     } as unknown as DataSource;
-    const service = new FilmAuthService(db, db, {} as JwtService);
+    const mockMissionService = {
+      recordCheckin: jest.fn().mockResolvedValue({}),
+      recordReferral: jest.fn().mockResolvedValue({}),
+    } as unknown as any;
+    const service = new FilmAuthService(db, db, {} as JwtService, mockMissionService);
 
     return { service, query, userRepository, inventoryRepository };
   }

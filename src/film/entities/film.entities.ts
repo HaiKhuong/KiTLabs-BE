@@ -9,6 +9,11 @@ import {
   UpdateDateColumn,
 } from "typeorm";
 
+export enum UserMissionStatus {
+  IN_PROGRESS = "IN_PROGRESS",
+  CLAIMABLE = "CLAIMABLE",
+  CLAIMED = "CLAIMED",
+}
 export enum FilmUserRole {
   GUEST = "GUEST",
   USER = "USER",
@@ -375,6 +380,53 @@ export class FilmSetting extends FilmBase {
   @Column({ name: "is_public", type: "boolean", default: true }) isPublic!: boolean;
 }
 
+
+@Entity("missions")
+export class FilmMission extends FilmBase {
+  @Index({ unique: true }) @Column({ length: 50 }) code!: string;
+  @Column({ length: 150 }) title!: string;
+  @Column({ type: "text" }) description!: string;
+  @Column({ name: "reward_exp", type: "int" }) rewardExp!: number;
+  @Column({ name: "max_daily_reward", type: "int", nullable: true }) maxDailyReward!: number | null;
+  @Column({ name: "target_count", type: "int", default: 1 }) targetCount!: number;
+  @Column({ name: "target_unit", type: "varchar", length: 50, default: "lần" }) targetUnit!: string;
+  @Column({ name: "reset_daily", type: "boolean", default: true }) resetDaily!: boolean;
+  @Column({ name: "is_active", type: "boolean", default: true }) isActive!: boolean;
+  @Column({ name: "display_order", type: "int", default: 0 }) displayOrder!: number;
+}
+
+@Index(["userId", "missionCode", "dateKey"], { unique: true })
+@Entity("user_mission_progress")
+export class FilmUserMissionProgress extends FilmBase {
+  @Index() @Column("uuid", { name: "user_id" }) userId!: string;
+  @Index() @Column({ name: "mission_code", length: 50 }) missionCode!: string;
+  @Index() @Column({ name: "date_key", length: 10, default: "ALL" }) dateKey!: string;
+  @Column({ name: "current_count", type: "int", default: 0 }) currentCount!: number;
+  @Column({ name: "claimed_exp", type: "int", default: 0 }) claimedExp!: number;
+  @Column({ type: "enum", enum: UserMissionStatus, default: UserMissionStatus.IN_PROGRESS }) status!: UserMissionStatus;
+  @Column({ type: "jsonb", nullable: true }) metadata!: Record<string, any> | null;
+}
+
+@Entity("user_exp_histories")
+export class FilmUserExpHistory extends FilmBase {
+  @Index() @Column("uuid", { name: "user_id" }) userId!: string;
+  @Index() @Column({ name: "mission_code", length: 50, nullable: true }) missionCode!: string | null;
+  @Column({ type: "int" }) amount!: number;
+  @Column({ name: "balance_after", type: "bigint" }) balanceAfter!: string;
+  @Column({ length: 150 }) title!: string;
+  @Column({ type: "text", nullable: true }) description!: string | null;
+  @Column({ name: "raw_data", type: "jsonb", nullable: true }) rawData!: Record<string, any> | null;
+}
+
+@Index(["referrerUserId", "refereeUserId"], { unique: true })
+@Entity("user_referrals")
+export class FilmUserReferral extends FilmBase {
+  @Index() @Column("uuid", { name: "referrer_user_id" }) referrerUserId!: string;
+  @Index() @Column("uuid", { name: "referee_user_id" }) refereeUserId!: string;
+  @Column({ name: "ip_address", type: "varchar", length: 64, nullable: true }) ipAddress!: string | null;
+  @Column({ name: "device_token", type: "varchar", length: 100, nullable: true }) deviceToken!: string | null;
+}
+
 export const FILM_DB_ENTITIES = [
   FilmDevice,
   FilmUser,
@@ -401,4 +453,8 @@ export const FILM_DB_ENTITIES = [
   FilmImageUpload,
   FilmReport,
   FilmSetting,
+  FilmMission,
+  FilmUserMissionProgress,
+  FilmUserExpHistory,
+  FilmUserReferral,
 ];

@@ -21,15 +21,20 @@ import { FilmChatController } from "./guest/chat/film-chat.controller";
 import { FilmChatService } from "./guest/chat/film-chat.service";
 import { FilmTrackingController } from "./guest/tracking/film-tracking.controller";
 import { FilmTrackingService } from "./guest/tracking/film-tracking.service";
+import { DatabaseModule } from "../database/database.module";
+import { FilmMissionController } from "./guest/mission/film-mission.controller";
+import { FilmMissionService } from "./guest/mission/film-mission.service";
 
 @Module({
   imports: [
+    DatabaseModule,
     TypeOrmModule.forFeature(FILM_DB_ENTITIES, "film"),
     PassportModule.register({ defaultStrategy: "film-jwt" }),
     JwtModule.register({}),
   ],
   controllers: [
     FilmAuthController,
+    FilmMissionController,
     FilmCatalogController,
     FilmAccountController,
     FilmChatController,
@@ -41,6 +46,7 @@ import { FilmTrackingService } from "./guest/tracking/film-tracking.service";
   ],
   providers: [
     FilmAuthService,
+    FilmMissionService,
     FilmJwtStrategy,
     FilmJwtGuard,
     FilmRolesGuard,
@@ -53,6 +59,7 @@ import { FilmTrackingService } from "./guest/tracking/film-tracking.service";
   ],
   exports: [
     FilmCatalogService,
+    FilmMissionService,
     FilmAccountService,
     FilmTrackingService,
     FilmChatService,
