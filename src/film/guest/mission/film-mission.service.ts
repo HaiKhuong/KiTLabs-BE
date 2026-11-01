@@ -287,7 +287,11 @@ export class FilmMissionService implements OnModuleInit {
       const maxReward = mission.maxDailyReward;
       if (maxReward && progress.claimedExp >= maxReward) {
         progress.status = UserMissionStatus.CLAIMED;
-      } else if (!maxReward && progress.targetCount > 0 && progress.currentCount >= progress.targetCount) {
+      } else if (
+        !maxReward &&
+        mission.targetCount > 0 &&
+        progress.currentCount >= mission.targetCount
+      ) {
         progress.status = UserMissionStatus.CLAIMED;
       }
       await manager.save(progress);
@@ -521,7 +525,12 @@ export class FilmMissionService implements OnModuleInit {
     }
   }
 
-  async recordReferral(referrerUserId: string, refereeUserId: string, ip: string, deviceToken: string) {
+  async recordReferral(
+    referrerUserId: string,
+    refereeUserId: string,
+    ip: string | undefined,
+    deviceToken: string,
+  ) {
     if (!referrerUserId || !refereeUserId || referrerUserId === refereeUserId) {
       return { success: false, reason: "self_referral" };
     }
