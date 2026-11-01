@@ -4,7 +4,7 @@ import { InjectDataSource } from "@nestjs/typeorm";
 import * as bcrypt from "bcrypt";
 import { randomInt, randomUUID } from "crypto";
 import { SignOptions } from "jsonwebtoken";
-import { DataSource } from "typeorm";
+import { DataSource, EntityManager } from "typeorm";
 import {
   FilmDevice,
   FilmItem,
@@ -322,6 +322,23 @@ export class FilmAuthService implements OnModuleInit {
     }
     await filmRepo.save(user);
     return this.profile(userId);
+  }
+
+  private async generateUniqueGuestName(manager: EntityManager): Promise<string> {
+    const userRepository = manager.getRepository(FilmUser);
+
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const candidate = randomInt(100_000, 1_000_000).toString();
+
+      await manager.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [
+        `film:guest-name:${candidate}`,
+      ]);
+
+      const alreadyExists = await userRepository.exists({ where: { name: candidate } });
+      if (!alreadyExists) return candidate;
+    }
+
+    throw new Error("Không thể tạo mã người dùng 6 chữ số không trùng");
   }
 
   private async issue(user: FilmUser) {
