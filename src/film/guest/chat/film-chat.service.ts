@@ -1,7 +1,7 @@
 import { Injectable, NotFoundException } from "@nestjs/common";
 import { InjectDataSource } from "@nestjs/typeorm";
 import { DataSource, EntityManager } from "typeorm";
-import { FilmChatMessage } from "../../entities/film.entities";
+import { ChatType, FilmChatMessage } from "../../entities/film.entities";
 
 @Injectable()
 export class FilmChatService {
@@ -28,7 +28,7 @@ export class FilmChatService {
     }));
   }
 
-  createChat(userId: string, roomChannel: string, message: string) {
+  createChat(userId: string, roomChannel: string, message: string, type: ChatType = ChatType.TEXT) {
     return this.db.transaction(async (manager) => {
       const snapshots = await this.currentChatUserSnapshots([userId], manager);
       const userSnapshot = snapshots.get(userId);
@@ -39,6 +39,7 @@ export class FilmChatService {
           userId,
           roomChannel,
           message,
+          type,
           userSnapshot,
         }),
       );
@@ -101,4 +102,3 @@ export class FilmChatService {
     );
   }
 }
-

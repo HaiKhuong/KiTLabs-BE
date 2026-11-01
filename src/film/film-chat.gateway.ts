@@ -10,6 +10,8 @@ import {
   WebSocketServer,
 } from "@nestjs/websockets";
 import { Server, Socket } from "socket.io";
+import { ChatType } from "./entities/film.entities";
+import { isFilmEmojiId } from "./film-emojis.constants";
 import { FilmChatService } from "./guest/chat/film-chat.service";
 
 @WebSocketGateway({ namespace: "/film-chat", cors: { origin: "*" } })
@@ -55,7 +57,7 @@ export class FilmChatGateway implements OnGatewayConnection, OnGatewayDisconnect
   @SubscribeMessage("message")
   async message(
     @ConnectedSocket() client: Socket,
-    @MessageBody() body: { room?: string; message?: string },
+    @MessageBody() body: { room?: string; message?: string; type?: string },
   ) {
     const userId = String(client.data.userId || "");
     const now = Date.now();
@@ -63,14 +65,22 @@ export class FilmChatGateway implements OnGatewayConnection, OnGatewayDisconnect
 
     if (times.length >= 5) return { error: "RATE_LIMITED" };
 
+    const type = body.type ?? ChatType.TEXT;
+    if (type !== ChatType.TEXT && type !== ChatType.EMOJI) {
+      return { error: "INVALID_MESSAGE" };
+    }
+
     const message = body.message?.trim();
     if (!message || message.length > 1000) return { error: "INVALID_MESSAGE" };
+    if (type === ChatType.EMOJI && !isFilmEmojiId(message)) {
+      return { error: "INVALID_MESSAGE" };
+    }
 
     times.push(now);
     this.recent.set(userId, times);
     const room = (body.room || "WORLD_GENERAL").slice(0, 100);
 
-    const saved = await this.chatService.createChat(userId, room, message);
+    const saved = await this.chatService.createChat(userId, room, message, type);
     this.server.to(room).emit("message", saved);
     return saved;
   }
