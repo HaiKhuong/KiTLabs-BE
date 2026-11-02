@@ -44,7 +44,7 @@ export class FacebookGraphClient {
     url.searchParams.set("client_id", appId);
     url.searchParams.set("redirect_uri", redirectUri);
     url.searchParams.set("state", state);
-    url.searchParams.set("scope", scopes || "pages_show_list,pages_read_engagement,pages_manage_posts,publish_video");
+    url.searchParams.set("scope", scopes || "pages_show_list,pages_read_engagement,pages_manage_posts");
     url.searchParams.set("response_type", "code");
     return url.toString();
   }

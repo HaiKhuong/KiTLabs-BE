@@ -916,33 +916,138 @@ def fmt_time(seconds):
 
 
 def srt_time_to_ms(time_str):
-    hms, ms = time_str.strip().split(",")
-    h, m, s = hms.split(":")
-    return int(h) * 3600000 + int(m) * 60000 + int(s) * 1000 + int(ms)
+    raw = str(time_str or "").strip().replace(".", ",")
+    if "," not in raw:
+        raw = f"{raw},000"
+    parts = raw.split(",")
+    hms = parts[0].strip()
+    ms_str = parts[1].strip() if len(parts) > 1 else "0"
+    hms_parts = hms.split(":")
+    if len(hms_parts) == 3:
+        h, m, s = hms_parts
+    elif len(hms_parts) == 2:
+        h = 0
+        m, s = hms_parts
+    else:
+        raise ValueError(f"Định dạng thời gian không hợp lệ: '{time_str}'")
+    return int(h) * 3600000 + int(m) * 60000 + int(s) * 1000 + int(ms_str[:3].ljust(3, "0"))
 
 
 def parse_srt_time_range(time_range):
-    start_str, end_str = [x.strip() for x in time_range.split("-->")]
-    return srt_time_to_ms(start_str), srt_time_to_ms(end_str)
+    parts = [x.strip() for x in time_range.split("-->")]
+    if len(parts) != 2:
+        raise ValueError(f"Khoảng thời gian SRT thiếu mũi tên '-->': '{time_range}'")
+    return srt_time_to_ms(parts[0]), srt_time_to_ms(parts[1])
 
 
-def parse_srt(srt_text):
+def parse_srt_with_line_numbers(srt_text, strict=False):
+    """
+    Parse nội dung SRT, đồng thời kiểm tra định dạng từng dòng và lưu số dòng bắt đầu (line).
+    Nếu strict=True, khi phát hiện lỗi định dạng (index không phải số, timestamp sai, start > end, text rỗng),
+    sẽ raise ValueError với thông báo chi tiết rõ dòng nào.
+    """
+    raw_lines = srt_text.splitlines()
     blocks = []
-    chunks = re.split(r"\n\s*\n", srt_text.strip(), flags=re.MULTILINE)
-    for chunk in chunks:
-        lines = [line.rstrip("\n") for line in chunk.splitlines() if line.strip() != ""]
-        if len(lines) < 3:
+    i = 0
+    total_lines = len(raw_lines)
+
+    while i < total_lines:
+        line = raw_lines[i].strip()
+        if not line:
+            i += 1
             continue
-        if not lines[0].strip().isdigit() or "-->" not in lines[1]:
+
+        cue_start_line = i + 1  # 1-based line number
+
+        # 1. Dòng Index
+        if not line.isdigit():
+            if strict:
+                raise ValueError(
+                    f"Lỗi format SRT tại dòng {cue_start_line}: Index không phải số nguyên hợp lệ ('{line}')"
+                )
+            i += 1
             continue
+
+        index_val = int(line)
+        i += 1
+
+        # 2. Dòng Timestamp
+        if i >= total_lines:
+            if strict:
+                raise ValueError(
+                    f"Lỗi format SRT tại dòng {cue_start_line}: File kết thúc bất ngờ sau index {index_val}, thiếu dòng timestamp"
+                )
+            break
+
+        timestamp_line_no = i + 1
+        timestamp_line = raw_lines[i].strip()
+        if "-->" not in timestamp_line:
+            if strict:
+                raise ValueError(
+                    f"Lỗi format SRT tại dòng {timestamp_line_no}: Dòng thời gian thiếu mũi tên '-->' ('{timestamp_line}')"
+                )
+            i += 1
+            continue
+
+        time_parts = [p.strip() for p in timestamp_line.split("-->")]
+        if len(time_parts) != 2:
+            if strict:
+                raise ValueError(
+                    f"Lỗi format SRT tại dòng {timestamp_line_no}: Định dạng khoảng thời gian sai ('{timestamp_line}')"
+                )
+            i += 1
+            continue
+
+        try:
+            start_ms = srt_time_to_ms(time_parts[0])
+            end_ms = srt_time_to_ms(time_parts[1])
+        except Exception as e:
+            if strict:
+                raise ValueError(
+                    f"Lỗi format SRT tại dòng {timestamp_line_no}: Không thể đọc mốc thời gian '{timestamp_line}' ({e})"
+                )
+            i += 1
+            continue
+
+        if start_ms > end_ms:
+            if strict:
+                raise ValueError(
+                    f"Lỗi format SRT tại dòng {timestamp_line_no}: Thời gian bắt đầu ({time_parts[0]}) lớn hơn thời gian kết thúc ({time_parts[1]})"
+                )
+
+        i += 1
+
+        # 3. Các dòng Text của cue
+        text_lines = []
+        text_start_line = i + 1
+        while i < total_lines and raw_lines[i].strip():
+            text_lines.append(raw_lines[i].rstrip("\r\n"))
+            i += 1
+
+        text_content = "\n".join(text_lines).strip()
+        if not text_content:
+            if strict:
+                raise ValueError(
+                    f"Lỗi format SRT tại dòng {text_start_line}: Cue #{index_val} không có nội dung phụ đề"
+                )
+            continue
+
         blocks.append(
             {
-                "index": int(lines[0].strip()),
-                "time": lines[1].strip(),
-                "text": "\n".join(lines[2:]).strip(),
+                "index": index_val,
+                "time": timestamp_line,
+                "text": text_content,
+                "start_ms": start_ms,
+                "end_ms": end_ms,
+                "line": cue_start_line,
             }
         )
+
     return blocks
+
+
+def parse_srt(srt_text, strict=False):
+    return parse_srt_with_line_numbers(srt_text, strict=strict)
 
 
 def write_srt(blocks, out_path):
@@ -1401,8 +1506,78 @@ def get_vi_srt_path():
     return SUBTITLE_DIR / f"{WORK_NAME}.vi.srt"
 
 
+def clean_and_filter_existing_srt_blocks(blocks, log=None):
+    """Lọc bỏ các rows nhiễu hoặc lỗi từ SRT có sẵn theo các rule của Step 1 và Step 2."""
+    from subtitle.cue_text import strip_edge_ellipsis
+    from subtitle.merge import merge_exact_duplicate_srt_blocks
+    from subtitle.watermark import build_skip_regexes, should_skip_text
+
+    if not blocks:
+        return []
+
+    extra_patterns = []
+    try:
+        raw_json = (globals().get("EASYOCR_TEXT_SKIP_REGEXES_JSON") or "").strip()
+        if raw_json and raw_json.startswith("["):
+            extra_patterns = json.loads(raw_json)
+    except Exception:
+        pass
+    skip_regexes = build_skip_regexes(extra_patterns, include_builtins=True)
+
+    min_duration = int(globals().get("EASYOCR_NOISE_MIN_DURATION_MS", 150) or 150)
+
+    filtered = []
+    dropped_short = 0
+    dropped_regex = 0
+    dropped_empty = 0
+
+    for b in blocks:
+        text = strip_edge_ellipsis(str(b.get("text") or ""))
+        if not text.strip():
+            dropped_empty += 1
+            continue
+
+        if should_skip_text(text, skip_regexes):
+            dropped_regex += 1
+            if log:
+                log(f"Step1 (existing SRT): bỏ cue #{b.get('index')} do khớp regex/watermark: {text!r}")
+            continue
+
+        start_ms = b.get("start_ms")
+        end_ms = b.get("end_ms")
+        if start_ms is None or end_ms is None:
+            start_ms, end_ms = parse_srt_time_range(b["time"])
+        duration_ms = end_ms - start_ms
+
+        if min_duration > 0 and duration_ms < min_duration:
+            dropped_short += 1
+            if log:
+                log(f"Step1 (existing SRT): bỏ cue #{b.get('index')} do thời lượng ngắn ({duration_ms}ms < {min_duration}ms): {text!r}")
+            continue
+
+        filtered.append({
+            "index": len(filtered) + 1,
+            "time": b["time"],
+            "text": text,
+        })
+
+    merged, merge_count = merge_exact_duplicate_srt_blocks(filtered)
+
+    for idx, cue in enumerate(merged, start=1):
+        cue["index"] = idx
+
+    if log:
+        log(
+            f"Step1 (existing SRT): Đã lọc {dropped_short} cue ngắn (<{min_duration}ms), "
+            f"{dropped_regex} cue watermark/regex, {dropped_empty} cue rỗng, "
+            f"gộp {merge_count} cue trùng lặp."
+        )
+
+    return merged
+
+
 def _try_prefetch_step1_zh_srt_from_existing_dir():
-    """Nếu --existing-srt-dir-path có {WORK_NAME}.srt thì copy sang subtitles/{WORK_NAME}.zh.srt và bỏ Step1."""
+    """Nếu --existing-srt-dir-path có {WORK_NAME}.srt thì lọc nhiễu & convert sang subtitles/{WORK_NAME}.zh.srt và bỏ Step1."""
     raw = str(EXISTING_SRT_DIR_PATH or "").strip()
     if not raw:
         return None
@@ -1422,28 +1597,27 @@ def _try_prefetch_step1_zh_srt_from_existing_dir():
     dest = get_zh_srt_path()
     SUBTITLE_DIR.mkdir(parents=True, exist_ok=True)
 
-    if file_ready(dest):
-        with open(dest, encoding="utf8") as f:
-            blocks = parse_srt(f.read())
-        if blocks:
-            log(
-                f"Step1: subtitle đã tồn tại tại {dest} ({len(blocks)} cues), "
-                f"bỏ qua copy (bỏ qua Whisper/EasyOCR)."
-            )
-            return dest
+    with open(source, encoding="utf8") as f:
+        raw_text = f.read()
 
-    shutil.copyfile(source, dest)
-    if not file_ready(dest):
-        raise RuntimeError(f"Step1 prefetch copy failed: {source} -> {dest}")
+    try:
+        raw_blocks = parse_srt_with_line_numbers(raw_text, strict=True)
+    except ValueError as err:
+        log(f"Step1: File SRT có sẵn tại {source} bị lỗi cú pháp: {err}")
+        raise RuntimeError(f"Step1: File SRT có sẵn tại {source} không hợp lệ: {err}") from err
 
-    with open(dest, encoding="utf8") as f:
-        blocks = parse_srt(f.read())
-    if not blocks:
+    if not raw_blocks:
         raise RuntimeError(f"Step1 prefetch SRT rỗng: {source}")
 
+    cleaned_blocks = clean_and_filter_existing_srt_blocks(raw_blocks, log=log)
+    if not cleaned_blocks:
+        raise RuntimeError(f"Step1: Sau khi lọc nhiễu, không còn cue hợp lệ nào trong {source}")
+
+    write_srt(cleaned_blocks, dest)
+
     log(
-        f"Step1: dùng SRT có sẵn từ {source} ({len(blocks)} cues) -> {dest} "
-        f"(bỏ qua Whisper/EasyOCR)."
+        f"Step1: dùng SRT có sẵn từ {source} (tổng {len(raw_blocks)} cues, "
+        f"sau lọc còn {len(cleaned_blocks)} cues) -> {dest} (bỏ qua Whisper/EasyOCR)."
     )
     return dest
 

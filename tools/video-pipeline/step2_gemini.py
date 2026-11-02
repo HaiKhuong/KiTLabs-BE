@@ -552,7 +552,21 @@ def step2_translate_srt(srt_path):
     skip_mode = "vi-skip-texts on" if step2_vi_skip_texts_enabled else "vi-skip-texts off"
     log(f"Step2: Gemini (tier={gemini_key_tier}, {key_mode}, {skip_mode})…")
     with open(srt_path, encoding="utf8") as f:
-        blocks = parse_srt(f.read())
+        srt_content = f.read()
+
+    try:
+        import inspect
+        sig = inspect.signature(parse_srt)
+        if "strict" in sig.parameters:
+            blocks = parse_srt(srt_content, strict=True)
+        else:
+            blocks = parse_srt(srt_content)
+    except ValueError as e:
+        log(f"Step2: Lỗi định dạng file SRT: {e}")
+        raise ValueError(f"Kiểm tra format SRT thất bại: {e}") from e
+
+    if not blocks:
+        raise ValueError(f"File SRT không có nội dung cue hợp lệ nào: {srt_path}")
 
     translated_blocks = []
     skipped_count = 0

@@ -541,6 +541,19 @@ export class TranslateProcessor extends WorkerHost {
     await this.translateService.processStarted(translateHistoryId);
     this.logger.log(`Translate job ${job.id} → ${translateHistoryId}`);
 
+    const initialAttempts = job.attemptsMade != null ? Number(job.attemptsMade) : 0;
+    if (initialAttempts > 0) {
+      const history = await this.translateService.getById(translateHistoryId);
+      const maxAttempts = job.opts.attempts != null ? Number(job.opts.attempts) : 1;
+      this.realtimeGateway.notifyUser(history?.userId ?? "all", "translate.retrying", {
+        translateHistoryId,
+        attempt: initialAttempts + 1,
+        maxAttempts,
+        errorMessage: "Đang tiến hành thử lại render...",
+        terminal: false,
+      });
+    }
+
     try {
       if (this.renderProcessRegistry.isCancelled(key)) {
         throw new RenderCancelledError();
@@ -593,6 +606,14 @@ export class TranslateProcessor extends WorkerHost {
         this.logger.warn(
           `Translate job ${job.id} failed (attempt ${attemptsMade + 1}/${maxAttempts}), will retry: ${message}`,
         );
+        const retryHistory = await this.translateService.getById(translateHistoryId);
+        this.realtimeGateway.notifyUser(retryHistory?.userId ?? "all", "translate.retrying", {
+          translateHistoryId,
+          attempt: attemptsMade + 1,
+          maxAttempts,
+          errorMessage: message,
+          terminal: false,
+        });
         throw error;
       }
       await this.translateService.processFailed(translateHistoryId, message);
@@ -708,10 +729,13 @@ export class TranslateProcessor extends WorkerHost {
 
           if (code !== 0) {
             const stepFailure = this.extractStepFailureMarker(stdout) ?? this.extractStepFailureMarker(stderr);
-            const statusPart = stepFailure ? ` (step=${stepFailure.step}, ${stepFailure.message})` : "";
+            if (stepFailure?.message) {
+              rejectPromise(new Error(stepFailure.message));
+              return;
+            }
             rejectPromise(
               new Error(
-                `Python command failed with code ${code ?? "unknown"}${signal ? ` and signal ${signal}` : ""}${statusPart}`,
+                `Python command failed with code ${code ?? "unknown"}${signal ? ` and signal ${signal}` : ""}`,
               ),
             );
             return;
