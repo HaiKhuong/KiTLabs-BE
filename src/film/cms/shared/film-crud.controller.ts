@@ -13,10 +13,18 @@ export abstract class FilmCrudController {
   @ApiOperation({ summary: "Get paginated list of resources" })
   @Get()
   list(@Query() query: FilmAdminPaginationQueryDto) {
-    const filter: { episodeId?: string; movieId?: string; status?: string } = {};
+    const filter: {
+      episodeId?: string;
+      movieId?: string;
+      status?: string;
+      deleted?: string;
+      position?: string;
+    } = {};
     if (query.episodeId) filter.episodeId = query.episodeId;
     if (query.movieId) filter.movieId = query.movieId;
     if (query.status) filter.status = query.status;
+    if (query.deleted) filter.deleted = query.deleted;
+    if (query.position) filter.position = query.position;
     return this.service.adminList(this.resource, query.page || 1, query.limit || 10, filter);
   }
 

@@ -7,6 +7,11 @@ import { PlatformCredentialsService } from "./credentials/platform-credentials.s
 import { PlatformAccount } from "./entities/platform-account.entity";
 import { PlatformCredential } from "./entities/platform-credential.entity";
 import { PlatformFacebookPage } from "./entities/platform-facebook-page.entity";
+import { PlatformAdminRole } from "./entities/platform-admin-role.entity";
+import { PlatformAdminUser } from "./entities/platform-admin-user.entity";
+import { PlatformAdminService } from "./admin/platform-admin.service";
+import { PlatformAdminUsersController } from "./admin/platform-admin-users.controller";
+import { PlatformAdminRolesController } from "./admin/platform-admin-roles.controller";
 import { FacebookGraphClient } from "./facebook/facebook-graph.client";
 import { PlatformFacebookController } from "./facebook/platform-facebook.controller";
 import { PlatformFacebookService } from "./facebook/platform-facebook.service";
@@ -21,12 +26,16 @@ import { TikTokApiClient } from "./tiktok/tiktok-api.client";
       PlatformCredential,
       PlatformAccount,
       PlatformFacebookPage,
+      PlatformAdminRole,
+      PlatformAdminUser,
     ]),
   ],
   controllers: [
     PlatformCredentialsController,
     PlatformFacebookController,
     PlatformTikTokController,
+    PlatformAdminUsersController,
+    PlatformAdminRolesController,
   ],
   providers: [
     PlatformCredentialsService,
@@ -36,6 +45,7 @@ import { TikTokApiClient } from "./tiktok/tiktok-api.client";
     PlatformFacebookService,
     TikTokApiClient,
     PlatformTikTokService,
+    PlatformAdminService,
   ],
   exports: [
     PlatformCredentialsService,
@@ -43,7 +53,7 @@ import { TikTokApiClient } from "./tiktok/tiktok-api.client";
     PlatformTikTokService,
     FacebookGraphClient,
     TikTokApiClient,
+    PlatformAdminService,
   ],
 })
 export class PlatformModule {}
-

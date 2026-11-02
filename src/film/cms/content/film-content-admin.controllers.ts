@@ -74,6 +74,16 @@ export class FilmUploadsAdminController extends FilmCrudController {
   }
 }
 
+@FilmCmsAccess()
+@ApiTags("Film CMS - Missions")
+@Controller("film/admin/missions")
+export class FilmMissionsAdminController extends FilmCrudController {
+  protected readonly resource = "missions";
+  constructor(s: FilmAdminService) {
+    super(s);
+  }
+}
+
 export const FILM_CONTENT_ADMIN_CONTROLLERS = [
   FilmItemsAdminController,
   FilmBannersAdminController,
@@ -82,4 +92,5 @@ export const FILM_CONTENT_ADMIN_CONTROLLERS = [
   FilmSettingsAdminController,
   FilmReportsAdminController,
   FilmUploadsAdminController,
+  FilmMissionsAdminController,
 ];

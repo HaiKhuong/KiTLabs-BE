@@ -1,6 +1,6 @@
 import { Injectable, NotFoundException } from "@nestjs/common";
 import { InjectDataSource } from "@nestjs/typeorm";
-import { DataSource, EntityTarget, In } from "typeorm";
+import { DataSource, EntityTarget, In, IsNull, Not } from "typeorm";
 import {
   DonationStatus,
   FilmActivityLog,
@@ -15,6 +15,7 @@ import {
   FilmFavorite,
   FilmGenre,
   FilmItem,
+  FilmMission,
   FilmMovie,
   FilmMovieGenre,
   FilmNotification,
@@ -52,6 +53,7 @@ const RESOURCES: Record<string, EntityTarget<object>> = {
   "image-uploads": FilmImageUpload,
   reports: FilmReport,
   settings: FilmSetting,
+  missions: FilmMission,
 };
 
 @Injectable()
@@ -68,7 +70,13 @@ export class FilmAdminService {
     resource: string,
     page = 1,
     limit = 10,
-    filter?: { episodeId?: string; movieId?: string; status?: string },
+    filter?: {
+      episodeId?: string;
+      movieId?: string;
+      status?: string;
+      deleted?: string;
+      position?: string;
+    },
   ) {
     const repo = this.db.getRepository(this.target(resource));
     const take = Math.min(100, Math.max(1, limit));
@@ -87,6 +95,16 @@ export class FilmAdminService {
     }
     if (filter?.status && (resource === "comments" || resource === "reports" || resource === "users")) {
       where.status = filter.status;
+    }
+    if (filter?.deleted === "true") {
+      where.deletedAt = Not(IsNull());
+    } else if (filter?.deleted === "all") {
+      // withDeleted: true handles it
+    } else {
+      where.deletedAt = IsNull();
+    }
+    if (filter?.position && resource === "banners") {
+      where.position = filter.position;
     }
     if (filter?.movieId && resource === "episode-sources") {
       const epRepo = this.db.getRepository(FilmEpisode);

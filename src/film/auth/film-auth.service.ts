@@ -15,6 +15,8 @@ import {
   ItemType,
 } from "../entities/film.entities";
 import { PlatformUser, PlatformUserAuthType, PlatformUserRole } from "../../platform/entities/platform-user.entity";
+import { PlatformAdminUser } from "../../platform/entities/platform-admin-user.entity";
+import { PlatformAdminRole } from "../../platform/entities/platform-admin-role.entity";
 import { FilmMissionService } from "../guest/mission/film-mission.service";
 
 const DEFAULT_USER_TITLE = "luyen_khi_so_ky";
@@ -210,7 +212,73 @@ export class FilmAuthService implements OnModuleInit {
   async adminLogin(identifier: string, password: string) {
     const trimmedId = identifier.trim().toLowerCase();
 
-    // 1. Authenticate against Platform DB (kitlabs_platform)
+    // 1. Authenticate against platform_admin_users in Platform DB (kitools)
+    try {
+      const adminUserRepo = this.platformDb.getRepository(PlatformAdminUser);
+      const adminUser = await adminUserRepo
+        .createQueryBuilder("u")
+        .leftJoinAndSelect("u.role", "role")
+        .where("lower(u.userName) = :id OR lower(u.email) = :id", { id: trimmedId })
+        .getOne();
+
+      if (adminUser) {
+        if (!adminUser.isActive) {
+          throw new UnauthorizedException("Tài khoản quản trị đã bị vô hiệu hóa");
+        }
+        if (!adminUser.passwordHash || !(await bcrypt.compare(password, adminUser.passwordHash))) {
+          throw new UnauthorizedException("Mật khẩu không chính xác");
+        }
+
+        adminUser.lastLoginAt = new Date();
+        await adminUserRepo.save(adminUser);
+
+        // Mirror user in Film DB for CMS operations
+        const filmRepo = this.db.getRepository(FilmUser);
+        let filmUser = await filmRepo.findOne({
+          where: [{ id: adminUser.id }, { email: adminUser.email }],
+        });
+
+        if (!filmUser) {
+          filmUser = filmRepo.create({
+            id: adminUser.id,
+            email: adminUser.email,
+            username: adminUser.userName,
+            name: adminUser.fullName || adminUser.userName || "Admin",
+            role: FilmUserRole.ADMIN,
+            status: FilmUserStatus.ACTIVE,
+            lastLoginAt: new Date(),
+          });
+          await filmRepo.save(filmUser);
+        } else {
+          filmUser.role = FilmUserRole.ADMIN;
+          filmUser.status = FilmUserStatus.ACTIVE;
+          filmUser.lastLoginAt = new Date();
+          await filmRepo.save(filmUser);
+        }
+
+        const issued = await this.issue(filmUser);
+        return {
+          ...issued,
+          user: {
+            id: adminUser.id,
+            username: adminUser.userName,
+            email: adminUser.email,
+            fullName: adminUser.fullName,
+            avatarUrl: adminUser.avatarUrl,
+            phone: adminUser.phone,
+            isSuperAdmin: adminUser.isSuperAdmin,
+            role: adminUser.role?.code || "ADMIN",
+            permissions: adminUser.role?.permissions || {},
+            roleInfo: adminUser.role,
+          },
+        };
+      }
+    } catch (err) {
+      if (err instanceof UnauthorizedException) throw err;
+      this.logger.error(`Error querying platform admin users: ${err}`);
+    }
+
+    // 2. Fallback: Authenticate against Platform DB (kitlabs_platform)
     try {
       const platformRepo = this.platformDb.getRepository(PlatformUser);
       const platformUser = await platformRepo
@@ -309,6 +377,27 @@ export class FilmAuthService implements OnModuleInit {
   }
 
   async profile(userId: string) {
+    try {
+      const adminUser = await this.platformDb
+        .getRepository(PlatformAdminUser)
+        .findOne({ where: { id: userId }, relations: ["role"] });
+      if (adminUser) {
+        return {
+          id: adminUser.id,
+          username: adminUser.userName,
+          email: adminUser.email,
+          fullName: adminUser.fullName,
+          avatarUrl: adminUser.avatarUrl,
+          phone: adminUser.phone,
+          isSuperAdmin: adminUser.isSuperAdmin,
+          role: adminUser.role?.code || "ADMIN",
+          permissions: adminUser.role?.permissions || {},
+          roleInfo: adminUser.role,
+        };
+      }
+    } catch {
+      // ignore
+    }
     this.missionService.recordCheckin(userId).catch(() => { });
     const user = await this.db.getRepository(FilmUser).findOneByOrFail({ id: userId });
     const equippedTitle = await this.db

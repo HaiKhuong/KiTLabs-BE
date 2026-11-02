@@ -32,4 +32,14 @@ export class FilmAdminPaginationQueryDto {
   @IsOptional()
   @IsString()
   status?: string;
+
+  @ApiPropertyOptional({ description: "Filter deleted state: 'true' (trash only), 'false' (active only), 'all'", default: "false" })
+  @IsOptional()
+  @IsString()
+  deleted?: string;
+
+  @ApiPropertyOptional({ description: "Filter by position (e.g. for banners: POPUP, HOME_HERO...)" })
+  @IsOptional()
+  @IsString()
+  position?: string;
 }
