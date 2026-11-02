@@ -31,6 +31,7 @@ import {
   FacebookAffiliateStatus,
   FacebookContentKind,
   FacebookPostQueryDto,
+  FacebookPageStatus,
   FacebookPostStatus,
   FacebookSelectionRule,
   FacebookTaskQueryDto,
@@ -56,7 +57,16 @@ export class FacebookService implements OnModuleInit, OnModuleDestroy {
     private readonly realtime: ToolsRealtimeGateway,
   ) {}
 
-  onModuleInit(): void {
+  async onModuleInit(): Promise<void> {
+    try {
+      await this.pages.query(`
+        ALTER TABLE "facebook_pages" DROP CONSTRAINT IF EXISTS "FK_facebook_pages_account";
+        ALTER TABLE "facebook_pages" DROP CONSTRAINT IF EXISTS "UQ_facebook_pages_account_page";
+        ALTER TABLE "facebook_pages" ALTER COLUMN "account_id" DROP NOT NULL;
+      `);
+    } catch {
+      // Ignore if table does not exist yet or already altered
+    }
     this.timer = setInterval(() => {
       void this.sweep().catch((error: unknown) =>
         this.logger.warn(`Facebook sweep failed: ${error instanceof Error ? error.message : "unknown"}`),
@@ -382,22 +392,35 @@ export class FacebookService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async ownedPage(userId: string, pageId: string): Promise<FacebookPage> {
-    // Check locally if page exists in tool or platform
-    let page = await this.pages.findOne({ where: { id: pageId } });
+    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(pageId);
+    let page = await this.pages.findOne({
+      where: isUuid ? [{ id: pageId }, { pageId }] : { pageId },
+    });
     if (!page) {
       // Sync from platform if needed
       try {
         const platPage = await this.platformFb.getPageById(userId, pageId);
-        page = this.pages.create({
-          id: platPage.id,
-          pageId: platPage.pageId,
-          name: platPage.name,
-          pictureUrl: platPage.pictureUrl,
-          canPublish: platPage.canPublish,
-          canComment: platPage.canComment,
+        page = await this.pages.findOne({
+          where: [{ id: platPage.id }, { pageId: platPage.pageId }],
         });
-        await this.pages.save(page);
-      } catch {
+        if (!page) {
+          page = this.pages.create({
+            id: platPage.id,
+            accountId: null,
+            pageId: platPage.pageId,
+            name: platPage.name,
+            pictureUrl: platPage.pictureUrl,
+            pageAccessTokenEncrypted: platPage.pageAccessTokenEncrypted,
+            tasks: platPage.tasks ?? [],
+            canPublish: platPage.canPublish,
+            canComment: platPage.canComment,
+            status: platPage.status as unknown as FacebookPageStatus,
+            lastCheckedAt: platPage.lastCheckedAt,
+          });
+          page = await this.pages.save(page);
+        }
+      } catch (err) {
+        this.logger.error(`ownedPage sync failed for user=${userId} pageId=${pageId}: ${err instanceof Error ? err.message : String(err)}`);
         throw new NotFoundException("Không tìm thấy Page");
       }
     }

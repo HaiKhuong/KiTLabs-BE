@@ -5,14 +5,14 @@ import { FacebookPageStatus } from "./facebook.types";
 import { FacebookAccount } from "./facebook-account.entity";
 
 @Entity("facebook_pages")
-@Index(["accountId", "pageId"], { unique: true })
+@Index(["pageId"])
 export class FacebookPage extends BaseEntity {
-  @Column({ name: "account_id", type: "uuid" })
-  accountId!: string;
+  @Column({ name: "account_id", type: "uuid", nullable: true })
+  accountId!: string | null;
 
-  @ManyToOne(() => FacebookAccount, (account) => account.pages, { onDelete: "CASCADE" })
+  @ManyToOne(() => FacebookAccount, (account) => account.pages, { onDelete: "CASCADE", nullable: true })
   @JoinColumn({ name: "account_id" })
-  account!: FacebookAccount;
+  account?: FacebookAccount | null;
 
   @Column({ name: "page_id", type: "varchar", length: 64 })
   pageId!: string;

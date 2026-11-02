@@ -5,6 +5,7 @@ import { stat } from "fs/promises";
 import { Repository } from "typeorm";
 
 import { decryptSecret, encryptSecret } from "../../common/config/settings-crypto";
+import { PlatformFacebookService } from "../../platform/facebook/platform-facebook.service";
 import { ToolsRealtimeGateway } from "../realtime/tools-realtime.gateway";
 import { FacebookAccount } from "./facebook-account.entity";
 import { FacebookAffiliateLink } from "./facebook-affiliate-link.entity";
@@ -40,6 +41,7 @@ export class FacebookPublishRunner {
     @InjectRepository(FacebookCommentSettings, "tool") private readonly settings: Repository<FacebookCommentSettings>,
     @InjectRepository(FacebookTaskLog, "tool") private readonly tasks: Repository<FacebookTaskLog>,
     private readonly provider: FacebookProviderAdapter,
+    private readonly platformFb: PlatformFacebookService,
     private readonly realtime: ToolsRealtimeGateway,
   ) {}
 
@@ -315,7 +317,65 @@ export class FacebookPublishRunner {
       await this.block(post, "PAGE_MISSING", "Bài không còn gắn với Page.");
       return null;
     }
-    const page = await this.pages.findOne({ where: { id: post.pageId }, relations: { account: true } });
+
+    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(post.pageId);
+    let page = await this.pages.findOne({
+      where: isUuid ? [{ id: post.pageId }, { pageId: post.pageId }] : { pageId: post.pageId },
+      relations: { account: true },
+    });
+
+    // 1. Try PlatformFacebookService (new Platform OAuth integration)
+    try {
+      const valid = await this.platformFb.getValidPageAccessToken(post.userId, page?.pageId || post.pageId);
+      if (page) {
+        page.name = valid.page.name;
+        page.canPublish = valid.page.canPublish;
+        page.canComment = valid.page.canComment;
+        page.status = FacebookPageStatus.ACTIVE;
+        page.lastCheckedAt = new Date();
+        await this.pages.save(page);
+      } else {
+        page = this.pages.create({
+          id: valid.page.id,
+          pageId: valid.page.pageId,
+          name: valid.page.name,
+          canPublish: valid.page.canPublish,
+          canComment: valid.page.canComment,
+          status: FacebookPageStatus.ACTIVE,
+          lastCheckedAt: new Date(),
+        });
+        await this.pages.save(page);
+      }
+
+      if (!post.localPath && post.kind !== FacebookContentKind.POST) {
+        await this.markFailed(post, new FacebookProviderError("MEDIA_MISSING", false, false, false), started, post.uploadPhase);
+        return null;
+      }
+      return { page, token: valid.token };
+    } catch (platformErr) {
+      this.logger.warn(
+        `Platform token verification failed for post=${post.id}: ${platformErr instanceof Error ? platformErr.message : String(platformErr)}`,
+      );
+
+      // 2. Fallback to legacy account if present
+      if (page?.account && page.account.accessTokenEncrypted) {
+        return this.ensureAccessLegacy(post, page, started);
+      }
+
+      const message =
+        platformErr instanceof Error
+          ? platformErr.message
+          : "Page hoặc tài khoản Facebook mất quyền đăng. Hãy kết nối lại.";
+      await this.block(post, "PAGE_ACCESS_LOST", message);
+      return null;
+    }
+  }
+
+  private async ensureAccessLegacy(
+    post: FacebookPost,
+    page: FacebookPage,
+    started: Date,
+  ): Promise<{ page: FacebookPage; token: string } | null> {
     if (!page?.account || page.status !== FacebookPageStatus.ACTIVE || !page.canPublish || !page.pageAccessTokenEncrypted) {
       await this.block(post, "PAGE_ACCESS_LOST", "Page mất quyền đăng. Hãy kết nối lại.");
       return null;

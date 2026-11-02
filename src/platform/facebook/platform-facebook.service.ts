@@ -366,7 +366,7 @@ export class PlatformFacebookService {
     userId: string,
     pageId: string,
   ): Promise<{
-    page: { id: string; pageId: string; name: string };
+    page: { id: string; pageId: string; name: string; canPublish: boolean; canComment: boolean };
     token: string;
   }> {
     const account = await this.accountRepo.findOne({
@@ -376,8 +376,14 @@ export class PlatformFacebookService {
       throw new UnauthorizedException("Tài khoản Facebook chưa kết nối hoặc token đã hết hạn");
     }
 
+    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(pageId);
     const page = await this.pageRepo.findOne({
-      where: { id: pageId, accountId: account.id },
+      where: isUuid
+        ? [
+            { id: pageId, accountId: account.id },
+            { pageId, accountId: account.id },
+          ]
+        : { pageId, accountId: account.id },
     });
     if (!page || page.status !== PlatformFacebookPageStatus.ACTIVE || !page.canPublish || !page.pageAccessTokenEncrypted) {
       throw new UnauthorizedException("Page Facebook không có quyền đăng bài hoặc chưa sẵn sàng");
@@ -389,6 +395,8 @@ export class PlatformFacebookService {
         id: page.id,
         pageId: page.pageId,
         name: page.name,
+        canPublish: page.canPublish,
+        canComment: page.canComment,
       },
       token,
     };
@@ -399,8 +407,14 @@ export class PlatformFacebookService {
       where: { userId, provider: "facebook" },
     });
     if (!account) throw new NotFoundException("Chưa kết nối Facebook");
+    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(pageId);
     const page = await this.pageRepo.findOne({
-      where: { id: pageId, accountId: account.id },
+      where: isUuid
+        ? [
+            { id: pageId, accountId: account.id },
+            { pageId, accountId: account.id },
+          ]
+        : { pageId, accountId: account.id },
     });
     if (!page) throw new NotFoundException("Không tìm thấy Page");
     return page;
