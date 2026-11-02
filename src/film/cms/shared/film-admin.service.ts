@@ -305,10 +305,15 @@ export class FilmAdminService {
     const deviceMap = new Map<string, FilmDevice>();
     devices.forEach((d) => deviceMap.set(d.id, d));
 
-    return users.map((u) => ({
-      ...u,
-      device: u.deviceId ? deviceMap.get(u.deviceId) || null : null,
-    }));
+    return users.map((u) => {
+      const device = u.deviceId ? deviceMap.get(u.deviceId) || null : null;
+      return {
+        ...u,
+        device,
+        lastIp: device?.lastIp || device?.firstIp || null,
+        lastUserAgent: device?.userAgent || null,
+      };
+    });
   }
 
   private async withCommentMeta(comments: FilmComment[]) {
