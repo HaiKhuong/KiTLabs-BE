@@ -1,13 +1,10 @@
-import { Controller, Get, Query, UseGuards } from "@nestjs/common";
-import { ApiBearerAuth, ApiOperation, ApiTags } from "@nestjs/swagger";
+import { Controller, Get, Query } from "@nestjs/common";
+import { ApiOperation, ApiTags } from "@nestjs/swagger";
 import { Public } from "../../../common/decorators/public.decorator";
-import { FilmJwtGuard } from "../../auth/film-auth";
 import { FilmChatHistoryQueryDto } from "./dto";
 import { FilmChatService } from "./film-chat.service";
 
 @Public()
-@ApiBearerAuth("film-bearer")
-@UseGuards(FilmJwtGuard)
 @ApiTags("Film Guest - Chat")
 @Controller("film/chat")
 export class FilmChatController {

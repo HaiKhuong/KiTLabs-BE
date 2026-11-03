@@ -21,6 +21,13 @@ import { FilmMissionService } from "../guest/mission/film-mission.service";
 
 const DEFAULT_USER_TITLE = "luyen_khi_so_ky";
 
+const BOT_OR_PROBE_REGEX =
+  /^(node|curl|wget|python|axios|go-http-client|undici|postman|insomnia|healthcheck|kube-probe|uptime)|bot|crawler|spider|headless|lighthouse|prerender|facebookexternalhit|bytespider|ahrefs|semrush|mj12bot|dotbot|petalbot|yandex|baiduspider|bingpreview|slurp|duckduckbot/i;
+
+const VALID_OS_REGEX = /windows|android|iphone|ipad|ipod|macintosh|mac os x|linux|cros/i;
+const VALID_BROWSER_REGEX =
+  /edg|chrome|crios|firefox|fxios|safari|opr|opera|samsungbrowser|ucbrowser|coccoc|brave/i;
+
 @Injectable()
 export class FilmAuthService implements OnModuleInit {
   private readonly logger = new Logger(FilmAuthService.name);
@@ -102,6 +109,46 @@ export class FilmAuthService implements OnModuleInit {
     }
   }
 
+  private normalizeAndValidateDevice(
+    ip: string | null,
+    userAgent: string | null,
+  ): { cleanIp: string; cleanUserAgent: string } {
+    const rawIp = (ip || "").trim().toLowerCase();
+    const cleanIp = rawIp.startsWith("::ffff:") ? rawIp.slice(7) : rawIp;
+
+    if (
+      !cleanIp ||
+      cleanIp === "127.0.0.1" ||
+      cleanIp === "::1" ||
+      cleanIp === "localhost" ||
+      cleanIp === "0.0.0.0" ||
+      cleanIp.startsWith("127.")
+    ) {
+      throw new BadRequestException(
+        "Từ chối khởi tạo thiết bị từ IP nội bộ (127.0.0.1) hoặc thiếu địa chỉ IP.",
+      );
+    }
+
+    const cleanUserAgent = (userAgent || "").trim();
+    if (!cleanUserAgent || cleanUserAgent.length < 15 || !cleanUserAgent.includes("Mozilla/")) {
+      throw new BadRequestException(
+        "Từ chối khởi tạo thiết bị do thiếu thông tin thiết bị (User-Agent).",
+      );
+    }
+
+    if (
+      BOT_OR_PROBE_REGEX.test(cleanUserAgent) ||
+      !VALID_OS_REGEX.test(cleanUserAgent) ||
+      !VALID_BROWSER_REGEX.test(cleanUserAgent)
+    ) {
+      throw new BadRequestException(
+        "Từ chối khởi tạo thiết bị do thông tin hệ điều hành/trình duyệt không hợp lệ.",
+      );
+    }
+
+    return { cleanIp, cleanUserAgent };
+  }
+
   async createDevice(
     ip: string | null,
     userAgent: string | null,
@@ -111,6 +158,8 @@ export class FilmAuthService implements OnModuleInit {
     isIncognito?: boolean | null,
     incognitoBrowser?: string | null,
   ) {
+    const { cleanIp, cleanUserAgent } = this.normalizeAndValidateDevice(ip, userAgent);
+
     const result = await this.db.transaction(async (manager) => {
       const token = deviceToken || randomUUID();
       await manager.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [token]);
@@ -120,20 +169,20 @@ export class FilmAuthService implements OnModuleInit {
         device = await manager.save(
           manager.create(FilmDevice, {
             deviceToken: token,
-            firstIp: ip,
-            lastIp: ip,
-            userAgent,
+            firstIp: cleanIp,
+            lastIp: cleanIp,
+            userAgent: cleanUserAgent,
             isIncognito: typeof isIncognito === "boolean" ? isIncognito : null,
             incognitoBrowser: incognitoBrowser?.trim() || null,
             lastSeenAt: new Date(),
           }),
         );
       } else {
-        device.lastIp = ip || device.lastIp;
-        if (!device.firstIp && ip) {
-          device.firstIp = ip;
+        device.lastIp = cleanIp || device.lastIp;
+        if (!device.firstIp && cleanIp) {
+          device.firstIp = cleanIp;
         }
-        device.userAgent = userAgent || device.userAgent;
+        device.userAgent = cleanUserAgent || device.userAgent;
         if (device.isIncognito === null && typeof isIncognito === "boolean") {
           device.isIncognito = isIncognito;
           device.incognitoBrowser = incognitoBrowser?.trim() || null;
