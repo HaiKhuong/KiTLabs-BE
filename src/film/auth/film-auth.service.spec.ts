@@ -4,7 +4,7 @@ import { FilmItem, FilmUser, FilmUserInventory, ItemType } from "../entities/fil
 import { FilmAuthService } from "./film-auth.service";
 
 describe("FilmAuthService.profile", () => {
-  const user = { id: "user-1", name: "Dao huu", currentTitle: "legacy-title" } as FilmUser;
+  const user = { id: "user-1", name: "Dao huu", currentTitle: "legacy-title", exp: "6000" } as FilmUser;
 
   function setup(currentTitle: string | null | undefined) {
     const query = {
@@ -40,12 +40,17 @@ describe("FilmAuthService.profile", () => {
     return { service, query, userRepository, inventoryRepository };
   }
 
-  it("returns the equipped TITLE slug instead of users.current_title", async () => {
+  it("returns the equipped TITLE slug normalized and cultivation EXP thresholds", async () => {
     const { service, query } = setup("kim_dan_so_ky");
 
     await expect(service.profile(user.id)).resolves.toEqual({
       ...user,
-      currentTitle: "kim_dan_so_ky",
+      currentTitle: "kim_dan_ky",
+      nextTitle: "nguyen_anh_ky",
+      nextTitleLabel: "Nguyên Anh Kỳ",
+      minExp: 5000,
+      nextExp: 20000,
+      expPercentage: 6.67,
     });
     expect(query.innerJoin).toHaveBeenCalledWith(FilmItem, "item", "item.id = inventory.itemId");
     expect(query.select).toHaveBeenCalledWith("item.assetConfig ->> 'slug'", "currentTitle");
@@ -63,7 +68,12 @@ describe("FilmAuthService.profile", () => {
   ])("falls back to users.current_title when there is %s", async (_description, currentTitle) => {
     const { service } = setup(currentTitle);
 
-    await expect(service.profile(user.id)).resolves.toEqual({ ...user, currentTitle: "legacy-title" });
+    await expect(service.profile(user.id)).resolves.toEqual(
+      expect.objectContaining({
+        ...user,
+        currentTitle: "legacy-title",
+      }),
+    );
   });
 
   it("preserves the existing not-found behavior", async () => {
@@ -77,7 +87,7 @@ describe("FilmAuthService.profile", () => {
 
   describe("updateProfile", () => {
     it("updates the user name and returns profile", async () => {
-      const { service, userRepository } = setup("kim_dan_so_ky");
+      const { service, userRepository } = setup("kim_dan_ky");
       userRepository.save = jest.fn().mockImplementation((u) => Promise.resolve(u));
 
       const updated = await service.updateProfile(user.id, { name: "Tiêu Viêm" });
@@ -86,7 +96,7 @@ describe("FilmAuthService.profile", () => {
     });
 
     it("rejects invalid name length", async () => {
-      const { service } = setup("kim_dan_so_ky");
+      const { service } = setup("kim_dan_ky");
       await expect(service.updateProfile(user.id, { name: "A" })).rejects.toThrow();
     });
   });

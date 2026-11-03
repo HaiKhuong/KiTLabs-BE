@@ -3,157 +3,81 @@ export interface FilmTitleItemSeed {
   name: string;
   width: number;
   height: number;
+  rank: string;
+  minExp: number;
+  nextExp: number;
+  order: number;
 }
 
 export const FILM_TITLE_ITEM_SEED = [
   {
-    "slug": "hoa_than_dinh_phong",
-    "name": "Hóa Thần - Đỉnh Phong",
-    "width": 541,
-    "height": 208
+    slug: "luyen_khi_ky",
+    name: "Luyện Khí Kỳ",
+    width: 543,
+    height: 181,
+    rank: "LUYEN_KHI",
+    minExp: 0,
+    nextExp: 1_000,
+    order: 1,
   },
   {
-    "slug": "hoa_than_hau_ky",
-    "name": "Hóa Thần - Hậu Kỳ",
-    "width": 532,
-    "height": 179
+    slug: "truc_co_ky",
+    name: "Trúc Cơ Kỳ",
+    width: 543,
+    height: 181,
+    rank: "TRUC_CO",
+    minExp: 1_000,
+    nextExp: 5_000,
+    order: 2,
   },
   {
-    "slug": "hoa_than_so_ky",
-    "name": "Hóa Thần - Sơ Kỳ",
-    "width": 517,
-    "height": 119
+    slug: "kim_dan_ky",
+    name: "Kim Đan Kỳ",
+    width: 543,
+    height: 181,
+    rank: "KIM_DAN",
+    minExp: 5_000,
+    nextExp: 20_000,
+    order: 3,
   },
   {
-    "slug": "hoa_than_trung_ky",
-    "name": "Hóa Thần - Trung Kỳ",
-    "width": 531,
-    "height": 133
+    slug: "nguyen_anh_ky",
+    name: "Nguyên Anh Kỳ",
+    width: 543,
+    height: 181,
+    rank: "NGUYEN_ANH",
+    minExp: 20_000,
+    nextExp: 50_000,
+    order: 4,
   },
   {
-    "slug": "kim_dan_dinh_phong",
-    "name": "Kim Đan - Đỉnh Phong",
-    "width": 530,
-    "height": 162
+    slug: "hoa_than_ky",
+    name: "Hóa Thần Kỳ",
+    width: 543,
+    height: 181,
+    rank: "HOA_THAN",
+    minExp: 50_000,
+    nextExp: 200_000,
+    order: 5,
   },
   {
-    "slug": "kim_dan_hau_ky",
-    "name": "Kim Đan - Hậu Kỳ",
-    "width": 531,
-    "height": 169
+    slug: "luyen_hu_ky",
+    name: "Luyện Hư Kỳ",
+    width: 543,
+    height: 181,
+    rank: "LUAN_HOI",
+    minExp: 200_000,
+    nextExp: 1_000_000,
+    order: 6,
   },
   {
-    "slug": "kim_dan_so_ky",
-    "name": "Kim Đan - Sơ Kỳ",
-    "width": 517,
-    "height": 114
+    slug: "tac_gia_canh",
+    name: "Tác Giả Cảnh",
+    width: 543,
+    height: 181,
+    rank: "THAN_HOANG",
+    minExp: 1_000_000,
+    nextExp: 1_000_000,
+    order: 7,
   },
-  {
-    "slug": "kim_dan_trung_ky",
-    "name": "Kim Đan - Trung Kỳ",
-    "width": 531,
-    "height": 124
-  },
-  {
-    "slug": "luyen_hu_dinh_phong",
-    "name": "Luyện Hư - Đỉnh Phong",
-    "width": 470,
-    "height": 192
-  },
-  {
-    "slug": "luyen_hu_hau_ky",
-    "name": "Luyện Hư - Hậu Kỳ",
-    "width": 466,
-    "height": 197
-  },
-  {
-    "slug": "luyen_hu_so_ky",
-    "name": "Luyện Hư - Sơ Kỳ",
-    "width": 473,
-    "height": 183
-  },
-  {
-    "slug": "luyen_hu_trung_ky",
-    "name": "Luyện Hư - Trung Kỳ",
-    "width": 466,
-    "height": 193
-  },
-  {
-    "slug": "luyen_khi_dinh_phong",
-    "name": "Luyện Khí - Đỉnh Phong",
-    "width": 527,
-    "height": 198
-  },
-  {
-    "slug": "luyen_khi_hau_ky",
-    "name": "Luyện Khí - Hậu Kỳ",
-    "width": 256,
-    "height": 82
-  },
-  {
-    "slug": "luyen_khi_so_ky",
-    "name": "Luyện Khí - Sơ Kỳ",
-    "width": 256,
-    "height": 82
-  },
-  {
-    "slug": "luyen_khi_trung_ky",
-    "name": "Luyện Khí - Trung Kỳ",
-    "width": 256,
-    "height": 82
-  },
-  {
-    "slug": "nguyen_anh_dinh_phong",
-    "name": "Nguyên Anh - Đỉnh Phong",
-    "width": 514,
-    "height": 173
-  },
-  {
-    "slug": "nguyen_anh_hau_ky",
-    "name": "Nguyên Anh - Hậu Kỳ",
-    "width": 522,
-    "height": 173
-  },
-  {
-    "slug": "nguyen_anh_so_ky",
-    "name": "Nguyên Anh - Sơ Kỳ",
-    "width": 512,
-    "height": 158
-  },
-  {
-    "slug": "nguyen_anh_trung_ky",
-    "name": "Nguyên Anh - Trung Kỳ",
-    "width": 509,
-    "height": 160
-  },
-  {
-    "slug": "tac_gia_canh",
-    "name": "Tác Giả Cảnh",
-    "width": 543,
-    "height": 181
-  },
-  {
-    "slug": "truc_co_dinh_phong",
-    "name": "Trúc Cơ - Đỉnh Phong",
-    "width": 533,
-    "height": 179
-  },
-  {
-    "slug": "truc_co_hau_ky",
-    "name": "Trúc Cơ - Hậu Kỳ",
-    "width": 512,
-    "height": 175
-  },
-  {
-    "slug": "truc_co_so_ky",
-    "name": "Trúc Cơ - Sơ Kỳ",
-    "width": 507,
-    "height": 158
-  },
-  {
-    "slug": "truc_co_trung_ky",
-    "name": "Trúc Cơ - Trung Kỳ",
-    "width": 524,
-    "height": 161
-  }
 ] as const satisfies readonly FilmTitleItemSeed[];

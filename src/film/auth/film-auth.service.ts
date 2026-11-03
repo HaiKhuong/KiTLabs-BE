@@ -18,8 +18,9 @@ import { PlatformUser, PlatformUserAuthType, PlatformUserRole } from "../../plat
 import { PlatformAdminUser } from "../../platform/entities/platform-admin-user.entity";
 import { PlatformAdminRole } from "../../platform/entities/platform-admin-role.entity";
 import { FilmMissionService } from "../guest/mission/film-mission.service";
+import { buildCultivationProgress, resolveCultivationRanks } from "../shared/film-rank.util";
 
-const DEFAULT_USER_TITLE = "luyen_khi_so_ky";
+const DEFAULT_USER_TITLE = "luyen_khi_ky";
 
 const BOT_OR_PROBE_REGEX =
   /^(node|curl|wget|python|axios|go-http-client|undici|postman|insomnia|healthcheck|kube-probe|uptime)|bot|crawler|spider|headless|lighthouse|prerender|facebookexternalhit|bytespider|ahrefs|semrush|mj12bot|dotbot|petalbot|yandex|baiduspider|bingpreview|slurp|duckduckbot/i;
@@ -462,7 +463,19 @@ export class FilmAuthService implements OnModuleInit {
       .limit(1)
       .getRawOne<{ currentTitle: string | null }>();
 
-    return { ...user, currentTitle: equippedTitle?.currentTitle ?? user.currentTitle ?? null };
+    const rawTitle = equippedTitle?.currentTitle ?? user.currentTitle ?? null;
+    const ranks = await resolveCultivationRanks(this.db);
+    const cultivation = buildCultivationProgress(user.exp, rawTitle, ranks);
+
+    return {
+      ...user,
+      currentTitle: cultivation.currentTitle,
+      nextTitle: cultivation.nextTitle,
+      nextTitleLabel: cultivation.nextTitleLabel,
+      minExp: cultivation.minExp,
+      nextExp: cultivation.nextExp,
+      expPercentage: cultivation.expPercentage,
+    };
   }
 
   async updateProfile(userId: string, dto: { name?: string; avatarUrl?: string }) {
@@ -504,7 +517,9 @@ export class FilmAuthService implements OnModuleInit {
       .getRepository(FilmItem)
       .createQueryBuilder("item")
       .where("item.type = :type", { type: ItemType.TITLE })
-      .andWhere("item.assetConfig ->> 'slug' = :slug", { slug: DEFAULT_USER_TITLE })
+      .andWhere("item.assetConfig ->> 'slug' IN (:...slugs)", {
+        slugs: [DEFAULT_USER_TITLE, "luyen_khi_so_ky"],
+      })
       .getOne();
 
     if (!titleItem) {
@@ -538,6 +553,21 @@ export class FilmAuthService implements OnModuleInit {
       },
     );
     await this.db.getRepository(FilmUser).update(user.id, { refreshTokenHash: await bcrypt.hash(refreshToken, 10) });
-    return { user, accessToken, refreshToken, accessTokenExpiresIn: process.env.FILM_JWT_ACCESS_EXPIRES_IN || "15m" };
+    const ranks = await resolveCultivationRanks(this.db);
+    const cultivation = buildCultivationProgress(user.exp, user.currentTitle, ranks);
+    return {
+      user: {
+        ...user,
+        currentTitle: cultivation.currentTitle,
+        nextTitle: cultivation.nextTitle,
+        nextTitleLabel: cultivation.nextTitleLabel,
+        minExp: cultivation.minExp,
+        nextExp: cultivation.nextExp,
+        expPercentage: cultivation.expPercentage,
+      },
+      accessToken,
+      refreshToken,
+      accessTokenExpiresIn: process.env.FILM_JWT_ACCESS_EXPIRES_IN || "15m",
+    };
   }
 }

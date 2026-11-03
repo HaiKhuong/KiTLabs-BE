@@ -14,7 +14,7 @@ import {
   ItemType,
   UserMissionStatus,
 } from "../../entities/film.entities";
-import { filmRankFor, filmTitleFor } from "../../shared/film-rank.util";
+import { filmRankFor, filmTitleFor, resolveCultivationRanks } from "../../shared/film-rank.util";
 import { FilmChatGateway, type FilmMissionRewardEvent } from "../../film-chat.gateway";
 import { ExpHistoryQueryDto } from "./dto/exp-history-query.dto";
 import { WatchHeartbeatDto } from "./dto/watch-heartbeat.dto";
@@ -304,8 +304,9 @@ export class FilmMissionService implements OnModuleInit {
       if (!user) throw new BadRequestException("Người dùng không tồn tại");
 
       const newExp = (BigInt(user.exp || 0) + BigInt(claimableExp)).toString();
-      const newRank = filmRankFor(Number(newExp));
-      const newTitle = filmTitleFor(Number(newExp));
+      const ranks = await resolveCultivationRanks(manager);
+      const newRank = filmRankFor(Number(newExp), ranks);
+      const newTitle = filmTitleFor(Number(newExp), ranks);
       user.exp = newExp;
       user.sectRank = newRank;
       user.currentTitle = newTitle;
@@ -315,7 +316,9 @@ export class FilmMissionService implements OnModuleInit {
         .getRepository(FilmItem)
         .createQueryBuilder("item")
         .where("item.type = :type", { type: ItemType.TITLE })
-        .andWhere("item.assetConfig ->> 'slug' = :slug", { slug: newTitle })
+        .andWhere("item.assetConfig ->> 'slug' IN (:...slugs)", {
+          slugs: [newTitle, newTitle.replace(/_ky$/, "_so_ky")],
+        })
         .getOne();
       if (!titleItem) {
         throw new BadRequestException(`Danh hiệu ${newTitle} chưa được cấu hình`);
