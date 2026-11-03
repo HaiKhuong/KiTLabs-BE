@@ -12,10 +12,11 @@ import { InjectQueue } from "@nestjs/bullmq";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Queue } from "bullmq";
 import { randomUUID } from "crypto";
-import { mkdirSync } from "fs";
+import { existsSync, mkdirSync } from "fs";
 import { copyFile } from "fs/promises";
 import { extname, join, resolve } from "path";
-import { In, LessThanOrEqual, Repository } from "typeorm";
+import { pathToFileURL } from "url";
+import { LessThanOrEqual, Repository } from "typeorm";
 
 import { PlatformFacebookService } from "../../platform/facebook/platform-facebook.service";
 import { ToolsRealtimeGateway } from "../realtime/tools-realtime.gateway";
@@ -24,6 +25,7 @@ import { FacebookCommentSettings } from "./facebook-comment-settings.entity";
 import { assertHttpsUrl, validateFacebookMedia } from "./facebook-media.validation";
 import { FacebookPage } from "./facebook-page.entity";
 import { FacebookPost } from "./facebook-post.entity";
+import { formatCaptionWithTitle } from "./facebook-publish.runner";
 import { FacebookTaskLog } from "./facebook-task-log.entity";
 import {
   CreateFacebookPostDto,
@@ -63,6 +65,7 @@ export class FacebookService implements OnModuleInit, OnModuleDestroy {
         ALTER TABLE "facebook_pages" DROP CONSTRAINT IF EXISTS "FK_facebook_pages_account";
         ALTER TABLE "facebook_pages" DROP CONSTRAINT IF EXISTS "UQ_facebook_pages_account_page";
         ALTER TABLE "facebook_pages" ALTER COLUMN "account_id" DROP NOT NULL;
+        ALTER TABLE "facebook_posts" ADD COLUMN IF NOT EXISTS "thumbnail_path" text;
       `);
     } catch {
       // Ignore if table does not exist yet or already altered
@@ -101,14 +104,18 @@ export class FacebookService implements OnModuleInit, OnModuleDestroy {
   async createPost(userId: string, dto: CreateFacebookPostDto) {
     const page = await this.ownedPage(userId, dto.pageId);
     const media = await this.maybeStoreMedia(userId, dto.kind, dto.sourcePath);
-    this.assertPublishable(dto.publish, dto.kind, dto.message, media?.localPath);
+    const thumbnailPath = await this.maybeStoreThumbnail(userId, dto.kind, dto.thumbnailPath);
+    const resolvedTitle = dto.title?.trim() || media?.originalFileName || null;
+    const resolvedMessage = formatCaptionWithTitle(dto.title?.trim() || null, dto.message) || null;
+    this.assertPublishable(dto.publish, dto.kind, resolvedMessage, media?.localPath);
     const post = this.posts.create({
       userId,
       pageId: page.id,
       kind: dto.kind,
-      title: dto.title?.trim() || media?.originalFileName || null,
-      message: dto.message?.trim() || null,
+      title: resolvedTitle,
+      message: resolvedMessage,
       localPath: media?.localPath ?? null,
+      thumbnailPath,
       originalFileName: media?.originalFileName ?? null,
       fileSize: media?.fileSize ?? null,
       affiliateEnabled: dto.affiliateEnabled,
@@ -139,12 +146,22 @@ export class FacebookService implements OnModuleInit, OnModuleDestroy {
     if (dto.pageId) post.pageId = (await this.ownedPage(userId, dto.pageId)).id;
     if (dto.kind) post.kind = dto.kind;
     if (dto.title !== undefined) post.title = dto.title.trim() || null;
-    if (dto.message !== undefined) post.message = dto.message.trim() || null;
+    if (dto.message !== undefined || dto.title !== undefined) {
+      const nextMessage = dto.message !== undefined ? dto.message : post.message;
+      post.message = formatCaptionWithTitle(post.title, nextMessage) || null;
+    }
     if (dto.affiliateEnabled !== undefined) post.affiliateEnabled = dto.affiliateEnabled;
     if (dto.scheduledAt !== undefined) post.scheduledAt = dto.scheduledAt ? new Date(dto.scheduledAt) : null;
     if (dto.sourcePath) {
       const media = await this.maybeStoreMedia(userId, post.kind, dto.sourcePath);
       if (media) Object.assign(post, media);
+    }
+    if (dto.thumbnailPath !== undefined) {
+      if (!dto.thumbnailPath) {
+        post.thumbnailPath = null;
+      } else {
+        post.thumbnailPath = await this.maybeStoreThumbnail(userId, post.kind, dto.thumbnailPath);
+      }
     }
     const publish = dto.publish === true;
     this.assertPublishable(publish, post.kind, post.message, post.localPath);
@@ -168,6 +185,7 @@ export class FacebookService implements OnModuleInit, OnModuleDestroy {
       title: source.title,
       message: source.message,
       localPath: source.localPath,
+      thumbnailPath: source.thumbnailPath,
       originalFileName: source.originalFileName,
       fileSize: source.fileSize,
       affiliateEnabled: source.affiliateEnabled,
@@ -321,6 +339,12 @@ export class FacebookService implements OnModuleInit, OnModuleDestroy {
       );
       post.queueJobId = job.id ? String(job.id) : this.jobId(post.id);
       await this.posts.save(post);
+      this.realtime.notifyUser(post.userId, "facebook.post.updated", {
+        postId: post.id,
+        status: post.status,
+        uploadPhase: post.uploadPhase,
+        uploadOffset: post.uploadOffset ? Number(post.uploadOffset) : 0,
+      });
     } catch {
       post.status = FacebookPostStatus.FAILED;
       post.errorCode = "QUEUE_UNAVAILABLE";
@@ -352,6 +376,18 @@ export class FacebookService implements OnModuleInit, OnModuleDestroy {
     const destination = join(directory, `${randomUUID()}${extname(local.fileName).toLowerCase()}`);
     await copyFile(local.realPath, destination);
     return { localPath: destination, originalFileName: local.fileName, fileSize: String(local.sizeBytes) };
+  }
+
+  private async maybeStoreThumbnail(userId: string, kind: FacebookContentKind, thumbnailPath?: string | null): Promise<string | null> {
+    if (!thumbnailPath?.trim()) return null;
+    if (kind !== FacebookContentKind.VIDEO && kind !== FacebookContentKind.REEL) return null;
+    const local = validateFacebookMedia(thumbnailPath.trim(), FacebookContentKind.PHOTO);
+    const root = resolve(process.env.FACEBOOK_MEDIA_WORK_ROOT ?? "uploads/facebook");
+    const directory = join(root, userId);
+    mkdirSync(directory, { recursive: true });
+    const destination = join(directory, `thumb-${randomUUID()}${extname(local.fileName).toLowerCase()}`);
+    await copyFile(local.realPath, destination);
+    return destination;
   }
 
   private assertPublishable(publish: boolean, kind: FacebookContentKind, message?: string | null, localPath?: string | null): void {
@@ -433,6 +469,16 @@ export class FacebookService implements OnModuleInit, OnModuleDestroy {
     return row;
   }
 
+  private resolveThumbnailUrl(row: FacebookPost): string | null {
+    if (row.thumbnailPath && existsSync(row.thumbnailPath)) {
+      return pathToFileURL(row.thumbnailPath).href;
+    }
+    if (row.kind === FacebookContentKind.PHOTO && row.localPath && existsSync(row.localPath)) {
+      return pathToFileURL(row.localPath).href;
+    }
+    return null;
+  }
+
   private mapPost(row: FacebookPost) {
     return {
       id: row.id,
@@ -444,11 +490,13 @@ export class FacebookService implements OnModuleInit, OnModuleDestroy {
       message: row.message,
       originalFileName: row.originalFileName,
       fileSize: row.fileSize ? Number(row.fileSize) : null,
+      uploadOffset: row.uploadOffset ? Number(row.uploadOffset) : 0,
+      uploadPhase: row.uploadPhase,
+      thumbnailUrl: this.resolveThumbnailUrl(row),
       status: row.status,
       scheduledAt: row.scheduledAt,
       publishedAt: row.publishedAt,
       facebookPostId: row.facebookPostId,
-      uploadPhase: row.uploadPhase,
       affiliateEnabled: row.affiliateEnabled,
       sourcePostId: row.sourcePostId,
       errorCode: row.errorCode,
@@ -488,4 +536,3 @@ export class FacebookService implements OnModuleInit, OnModuleDestroy {
     };
   }
 }
-

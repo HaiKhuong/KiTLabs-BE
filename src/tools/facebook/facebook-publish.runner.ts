@@ -29,6 +29,18 @@ import {
 
 const CHUNK_BYTES = Number(process.env.FACEBOOK_UPLOAD_CHUNK_BYTES ?? 4 * 1024 * 1024);
 
+export function formatCaptionWithTitle(title?: string | null, message?: string | null): string {
+  const cleanTitle = (title ?? "").trim();
+  const cleanMessage = (message ?? "").trim();
+  if (cleanTitle && cleanMessage) {
+    if (cleanMessage === cleanTitle || cleanMessage.startsWith(`${cleanTitle}\n`)) {
+      return cleanMessage;
+    }
+    return `${cleanTitle}\n\n${cleanMessage}`;
+  }
+  return cleanMessage || cleanTitle;
+}
+
 @Injectable()
 export class FacebookPublishRunner {
   private readonly logger = new Logger(FacebookPublishRunner.name);
@@ -63,6 +75,10 @@ export class FacebookPublishRunner {
     const started = new Date();
     const phaseBefore = post.uploadPhase;
     try {
+      post.status = FacebookPostStatus.PUBLISHING;
+      await this.posts.save(post);
+      this.emit(post, "facebook.post.updated");
+
       if (!(post.facebookPostId && post.uploadPhase === FacebookUploadPhase.CONFIRMED)) {
         await this.publish(post, ready.page, ready.token);
       }
@@ -115,13 +131,14 @@ export class FacebookPublishRunner {
   }
 
   private async publish(post: FacebookPost, page: FacebookPage, token: string): Promise<void> {
+    const fullDescription = formatCaptionWithTitle(post.title, post.message);
     if (post.kind === FacebookContentKind.POST) {
-      await this.publishOnce(post, () => this.provider.publishFeed(token, page.pageId, post.message ?? ""));
+      await this.publishOnce(post, () => this.provider.publishFeed(token, page.pageId, fullDescription));
       return;
     }
     if (post.kind === FacebookContentKind.PHOTO) {
       await this.publishOnce(post, () =>
-        this.provider.publishPhoto(token, page.pageId, post.localPath ?? "", post.message ?? post.title ?? ""),
+        this.provider.publishPhoto(token, page.pageId, post.localPath ?? "", fullDescription),
       );
       return;
     }
@@ -133,18 +150,26 @@ export class FacebookPublishRunner {
   }
 
   private async publishOnce(post: FacebookPost, send: () => Promise<{ id: string }>): Promise<void> {
-    post.uploadPhase = FacebookUploadPhase.UNCERTAIN;
+    post.uploadPhase = FacebookUploadPhase.STARTED;
     post.status = FacebookPostStatus.PUBLISHING;
     await this.posts.save(post);
+    this.emit(post, "facebook.post.updated");
+
+    post.uploadPhase = FacebookUploadPhase.UNCERTAIN;
+    await this.posts.save(post);
+    this.emit(post, "facebook.post.updated");
     try {
       const created = await send();
       post.facebookPostId = created.id;
       post.uploadPhase = FacebookUploadPhase.CONFIRMED;
+      if (post.fileSize) post.uploadOffset = post.fileSize;
       await this.posts.save(post);
+      this.emit(post, "facebook.post.updated");
     } catch (error) {
       if (error instanceof FacebookProviderError && error.retryable && !error.uncertain) {
         post.uploadPhase = FacebookUploadPhase.NONE;
         await this.posts.save(post);
+        this.emit(post, "facebook.post.updated");
       }
       throw error;
     }
@@ -161,21 +186,28 @@ export class FacebookPublishRunner {
       post.uploadOffset = String(started.startOffset);
       post.uploadPhase = FacebookUploadPhase.STARTED;
       await this.posts.save(post);
+      this.emit(post, "facebook.post.updated");
       await this.transferUntilDone(post, page, token, filePath, fileSize, started.endOffset);
     } else {
       await this.transferUntilDone(post, page, token, filePath, fileSize, Number(post.uploadOffset) + CHUNK_BYTES);
     }
+    post.uploadOffset = String(fileSize);
     post.uploadPhase = FacebookUploadPhase.UNCERTAIN;
     await this.posts.save(post);
+    this.emit(post, "facebook.post.updated");
+
+    const fullDescription = formatCaptionWithTitle(post.title, post.message);
     await this.provider.finishVideo(
       token,
       page.pageId,
       post.uploadSessionId,
       post.title ?? post.originalFileName ?? "Video",
-      post.message ?? "",
+      fullDescription,
+      post.thumbnailPath,
     );
     post.uploadPhase = FacebookUploadPhase.CONFIRMED;
     await this.posts.save(post);
+    this.emit(post, "facebook.post.updated");
   }
 
   private async transferUntilDone(
@@ -214,17 +246,47 @@ export class FacebookPublishRunner {
       const started = await this.provider.startReel(token, page.pageId);
       post.facebookPostId = started.videoId;
       post.uploadSessionId = started.uploadUrl;
+      post.uploadOffset = "0";
       post.uploadPhase = FacebookUploadPhase.STARTED;
       await this.posts.save(post);
+      this.emit(post, "facebook.post.updated");
     }
     if (post.uploadPhase === FacebookUploadPhase.STARTED) {
-      await this.provider.uploadReel(post.uploadSessionId ?? "", token, filePath, fileSize);
+      await this.provider.uploadReel(post.uploadSessionId ?? "", token, filePath, fileSize, (uploadedBytes) => {
+        post.uploadOffset = String(uploadedBytes);
+        void this.posts
+          .update(post.id, { uploadOffset: String(uploadedBytes) })
+          .then(() => this.emit(post, "facebook.post.updated"))
+          .catch(() => undefined);
+      });
     }
+    post.uploadOffset = String(fileSize);
     post.uploadPhase = FacebookUploadPhase.UNCERTAIN;
     await this.posts.save(post);
-    await this.provider.finishReel(token, page.pageId, post.facebookPostId ?? "", post.message ?? post.title ?? "");
+    this.emit(post, "facebook.post.updated");
+
+    const fullDescription = formatCaptionWithTitle(post.title, post.message);
+    await this.provider.finishReel(
+      token,
+      page.pageId,
+      post.facebookPostId ?? "",
+      fullDescription,
+      post.title,
+    );
+
+    if (post.thumbnailPath && post.facebookPostId) {
+      try {
+        await this.provider.uploadVideoThumbnail(token, post.facebookPostId, post.thumbnailPath);
+      } catch (thumbErr) {
+        this.logger.warn(
+          `Reel custom thumbnail skipped for post=${post.id}: ${thumbErr instanceof Error ? thumbErr.message : String(thumbErr)}`,
+        );
+      }
+    }
+
     post.uploadPhase = FacebookUploadPhase.CONFIRMED;
     await this.posts.save(post);
+    this.emit(post, "facebook.post.updated");
   }
 
   private async commentIfNeeded(post: FacebookPost, page: FacebookPage, token: string): Promise<void> {
@@ -539,6 +601,12 @@ export class FacebookPublishRunner {
   }
 
   private emit(post: FacebookPost, event: string): void {
-    this.realtime.notifyUser(post.userId, event, { postId: post.id, status: post.status });
+    this.realtime.notifyUser(post.userId, event, {
+      postId: post.id,
+      status: post.status,
+      uploadPhase: post.uploadPhase,
+      uploadOffset: post.uploadOffset ? Number(post.uploadOffset) : 0,
+      fileSize: post.fileSize ? Number(post.fileSize) : null,
+    });
   }
 }

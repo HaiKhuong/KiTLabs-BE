@@ -72,6 +72,10 @@ export class CreateFacebookPostDto {
   sourcePath?: string;
 
   @IsOptional()
+  @IsString()
+  thumbnailPath?: string;
+
+  @IsOptional()
   @IsBoolean()
   affiliateEnabled = true;
 
@@ -105,6 +109,10 @@ export class UpdateFacebookPostDto {
   @IsOptional()
   @IsString()
   sourcePath?: string;
+
+  @IsOptional()
+  @IsString()
+  thumbnailPath?: string | null;
 
   @IsOptional()
   @IsBoolean()

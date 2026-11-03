@@ -40,6 +40,9 @@ export class FacebookPost extends BaseEntity {
   @Column({ name: "local_path", type: "text", nullable: true })
   localPath!: string | null;
 
+  @Column({ name: "thumbnail_path", type: "text", nullable: true })
+  thumbnailPath!: string | null;
+
   @Column({ name: "original_file_name", type: "varchar", length: 255, nullable: true })
   originalFileName!: string | null;
 

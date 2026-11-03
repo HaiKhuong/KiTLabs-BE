@@ -1,7 +1,8 @@
 import { Injectable } from "@nestjs/common";
 import axios, { AxiosError, AxiosInstance } from "axios";
-import { createReadStream, statSync } from "fs";
+import { createReadStream, existsSync, statSync } from "fs";
 import { open } from "fs/promises";
+import { basename, extname } from "path";
 
 import { classifyFacebookFailure } from "./facebook-retry";
 
@@ -163,7 +164,7 @@ export class FacebookProviderAdapter {
     const form = new FormData();
     form.append("caption", caption);
     form.append("published", "true");
-    form.append("source", new Blob([Uint8Array.from(bytes)]), "photo.jpg");
+    form.append("source", new Blob([Uint8Array.from(bytes)], { type: imageMimeType(filePath) }), basename(filePath) || "photo.jpg");
     const data = await this.postMultipart<{ id?: string; post_id?: string }>(`/${pageId}/photos`, pageToken, form);
     const id = data.post_id || data.id;
     if (!id) throw new FacebookProviderError("POST_ID_MISSING", false, true, false);
@@ -228,13 +229,43 @@ export class FacebookProviderAdapter {
     uploadSessionId: string,
     title: string,
     description: string,
+    thumbnailPath?: string | null,
   ): Promise<void> {
+    if (thumbnailPath && existsSync(thumbnailPath)) {
+      const thumbBytes = await readSlice(thumbnailPath, 0, statSync(thumbnailPath).size);
+      const form = new FormData();
+      form.append("upload_phase", "finish");
+      form.append("upload_session_id", uploadSessionId);
+      form.append("title", title);
+      form.append("description", description);
+      form.append(
+        "thumb",
+        new Blob([Uint8Array.from(thumbBytes)], { type: imageMimeType(thumbnailPath) }),
+        basename(thumbnailPath) || "thumb.jpg",
+      );
+      await this.postVideoMultipart(`/${pageId}/videos`, pageToken, form);
+      return;
+    }
+
     await this.postVideoForm(`/${pageId}/videos`, pageToken, {
       upload_phase: "finish",
       upload_session_id: uploadSessionId,
       title,
       description,
     });
+  }
+
+  async uploadVideoThumbnail(pageToken: string, videoId: string, thumbnailPath: string): Promise<void> {
+    if (!thumbnailPath || !existsSync(thumbnailPath)) return;
+    const thumbBytes = await readSlice(thumbnailPath, 0, statSync(thumbnailPath).size);
+    const form = new FormData();
+    form.append("is_preferred", "true");
+    form.append(
+      "source",
+      new Blob([Uint8Array.from(thumbBytes)], { type: imageMimeType(thumbnailPath) }),
+      basename(thumbnailPath) || "thumb.jpg",
+    );
+    await this.postVideoMultipart(`/${videoId}/thumbnails`, pageToken, form);
   }
 
   async startReel(pageToken: string, pageId: string): Promise<{ videoId: string; uploadUrl: string }> {
@@ -247,9 +278,29 @@ export class FacebookProviderAdapter {
     return { videoId: data.video_id, uploadUrl: data.upload_url };
   }
 
-  async uploadReel(uploadUrl: string, pageToken: string, filePath: string, fileSize: number): Promise<void> {
+  async uploadReel(
+    uploadUrl: string,
+    pageToken: string,
+    filePath: string,
+    fileSize: number,
+    onProgress?: (uploadedBytes: number) => void,
+  ): Promise<void> {
     try {
-      await axios.post(uploadUrl, createReadStream(filePath), {
+      const stream = createReadStream(filePath);
+      if (onProgress) {
+        let uploaded = 0;
+        let lastNotifiedAt = 0;
+        stream.on("data", (chunk: Buffer | string) => {
+          const byteLen = typeof chunk === "string" ? Buffer.byteLength(chunk) : chunk.length;
+          uploaded = Math.min(fileSize, uploaded + byteLen);
+          const now = Date.now();
+          if (now - lastNotifiedAt >= 350 || uploaded >= fileSize) {
+            lastNotifiedAt = now;
+            onProgress(uploaded);
+          }
+        });
+      }
+      await axios.post(uploadUrl, stream, {
         headers: {
           Authorization: `OAuth ${pageToken}`,
           offset: "0",
@@ -266,13 +317,23 @@ export class FacebookProviderAdapter {
     }
   }
 
-  async finishReel(pageToken: string, pageId: string, videoId: string, description: string): Promise<void> {
-    await this.postForm(`/${pageId}/video_reels`, pageToken, {
+  async finishReel(
+    pageToken: string,
+    pageId: string,
+    videoId: string,
+    description: string,
+    title?: string | null,
+  ): Promise<void> {
+    const body: Record<string, string> = {
       upload_phase: "finish",
       video_id: videoId,
       video_state: "PUBLISHED",
       description,
-    });
+    };
+    if (title?.trim()) {
+      body.title = title.trim();
+    }
+    await this.postForm(`/${pageId}/video_reels`, pageToken, body);
   }
 
   async comment(pageToken: string, objectId: string, message: string): Promise<{ id: string }> {
@@ -391,6 +452,13 @@ export class FacebookProviderAdapter {
     if (!value) throw new FacebookProviderError("NOT_CONFIGURED", false, false, false, undefined, name);
     return value;
   }
+}
+
+function imageMimeType(filePath: string): string {
+  const ext = extname(filePath).toLowerCase();
+  if (ext === ".png") return "image/png";
+  if (ext === ".webp") return "image/webp";
+  return "image/jpeg";
 }
 
 async function readSlice(filePath: string, start: number, end: number): Promise<Buffer> {
