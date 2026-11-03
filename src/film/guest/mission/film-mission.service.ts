@@ -14,7 +14,15 @@ import {
   ItemType,
   UserMissionStatus,
 } from "../../entities/film.entities";
-import { filmRankFor, filmTitleFor, resolveCultivationRanks } from "../../shared/film-rank.util";
+import {
+  CULTIVATION_RANKS_SETTING_KEY,
+  DEFAULT_CULTIVATION_RANKS,
+  filmRankFor,
+  filmTitleFor,
+  resolveCultivationRanks,
+} from "../../shared/film-rank.util";
+import { FILM_TITLE_ITEM_SEED } from "../../../database/seeds/film-title-items.seed";
+import { FilmSetting } from "../../entities/film.entities";
 import { FilmChatGateway, type FilmMissionRewardEvent } from "../../film-chat.gateway";
 import { ExpHistoryQueryDto } from "./dto/exp-history-query.dto";
 import { WatchHeartbeatDto } from "./dto/watch-heartbeat.dto";
@@ -110,6 +118,7 @@ export class FilmMissionService implements OnModuleInit {
   async onModuleInit() {
     try {
       await this.ensureDefaultMissions();
+      await this.ensureDefaultTitlesAndRanks();
     } catch (error) {
       this.logger.warn(`Failed to seed default missions: ${(error as Error).message}`);
     }
@@ -118,6 +127,62 @@ export class FilmMissionService implements OnModuleInit {
   getTodayDateKey(): string {
     const now = new Date();
     return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Ho_Chi_Minh" }).format(now);
+  }
+
+  private async ensureDefaultTitlesAndRanks() {
+    const itemRepo = this.dataSource.getRepository(FilmItem);
+    for (const seed of FILM_TITLE_ITEM_SEED) {
+      const existing = await itemRepo
+        .createQueryBuilder("item")
+        .where("item.type = :type", { type: ItemType.TITLE })
+        .andWhere("item.assetConfig ->> 'slug' = :slug", { slug: seed.slug })
+        .getOne();
+
+      const assetConfig = {
+        slug: seed.slug,
+        width: seed.width,
+        height: seed.height,
+        slot: "TITLE",
+        rank: seed.rank,
+        minExp: seed.minExp,
+        nextExp: seed.nextExp,
+        order: seed.order,
+      };
+      const imageUrl = `/effects/title/${seed.slug}.webp`;
+
+      if (!existing) {
+        await itemRepo.save(
+          itemRepo.create({
+            name: seed.name,
+            type: ItemType.TITLE,
+            priceSpiritStones: "0",
+            imageUrl,
+            assetConfig,
+            isPurchasable: false,
+          }),
+        );
+      } else if (existing.assetConfig?.minExp === undefined || existing.imageUrl !== imageUrl) {
+        existing.name = seed.name;
+        existing.imageUrl = imageUrl;
+        existing.assetConfig = assetConfig;
+        await itemRepo.save(existing);
+      }
+    }
+
+    const settingRepo = this.dataSource.getRepository(FilmSetting);
+    const existingSetting = await settingRepo.findOne({
+      where: { key: CULTIVATION_RANKS_SETTING_KEY },
+    });
+    if (!existingSetting) {
+      await settingRepo.save(
+        settingRepo.create({
+          key: CULTIVATION_RANKS_SETTING_KEY,
+          value: DEFAULT_CULTIVATION_RANKS,
+          description: "Cấu hình mốc EXP và danh hiệu 6 cảnh giới tu luyện",
+          isPublic: true,
+        }),
+      );
+    }
   }
 
   private async ensureDefaultMissions() {
