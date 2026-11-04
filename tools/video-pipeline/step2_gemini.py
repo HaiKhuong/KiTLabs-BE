@@ -303,9 +303,9 @@ def _build_translate_prompt(batch: list, payload_text: str, translation_context:
         'Example: a trailing "Đây." with no role in the line — omit it in Vietnamese. '
         "Still return every line id; never drop a whole cue.\n",
         "If a cue is unusually long, translate more compactly than usual: short spoken Vietnamese, same meaning, no padding.\n",
-        "NUMBERS: write every number in Vietnamese digit style. Thousands separator is a dot (.), never a comma.\n",
-        "Examples: 3000, 3,000, 三千 → 3.000; 15000 → 15.000; 1000000, 一百万 → 1.000.000.\n",
-        "Numbers below 1000 stay plain digits (12, 999). Decimal separator is a comma: 3.5 → 3,5; 12.25 → 12,25.\n",
+        "NUMBERS: Format numbers in Vietnamese style. Under 1 million, use dot (.) as thousands separator (never comma): 3000, 3,000, 三千 → 3.000; 15000 → 15.000. Numbers below 1000 stay plain digits (12, 999).\n",
+        "For numbers from millions or billions upwards, write with 'triệu' or 'tỉ': 1.000.000, 1000000, 一百万 → 1 triệu; 1.576.000 → 1 triệu 576; 100.000.000, 一亿 → 100 triệu; 100.567.000 → 100 triệu 567 nghìn; 1.000.000.000, 十亿 → 1 tỉ.\n",
+        "Decimal separator is a comma: 3.5 → 3,5; 12.25 → 12,25.\n",
     ]
 
     if translation_context and translation_context.strip():

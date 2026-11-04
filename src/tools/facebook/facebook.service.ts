@@ -366,10 +366,21 @@ export class FacebookService implements OnModuleInit, OnModuleDestroy {
     return `facebook-post-${postId}`;
   }
 
+  /**
+   * Desktop app chạy trực tiếp trên máy người dùng → dùng thẳng file gốc đã chọn (không copy),
+   * tránh nhân đôi dung lượng ổ đĩa với video lớn. Đặt FACEBOOK_COPY_MEDIA=true để bật lại chế độ copy.
+   */
+  private shouldCopyMedia(): boolean {
+    return (process.env.FACEBOOK_COPY_MEDIA ?? "false").trim().toLowerCase() === "true";
+  }
+
   private async maybeStoreMedia(userId: string, kind: FacebookContentKind, sourcePath?: string) {
     if (!sourcePath?.trim()) return null;
     if (kind === FacebookContentKind.POST) return null;
     const local = validateFacebookMedia(sourcePath.trim(), kind);
+    if (!this.shouldCopyMedia()) {
+      return { localPath: local.realPath, originalFileName: local.fileName, fileSize: String(local.sizeBytes) };
+    }
     const root = resolve(process.env.FACEBOOK_MEDIA_WORK_ROOT ?? "uploads/facebook");
     const directory = join(root, userId);
     mkdirSync(directory, { recursive: true });
@@ -382,6 +393,7 @@ export class FacebookService implements OnModuleInit, OnModuleDestroy {
     if (!thumbnailPath?.trim()) return null;
     if (kind !== FacebookContentKind.VIDEO && kind !== FacebookContentKind.REEL) return null;
     const local = validateFacebookMedia(thumbnailPath.trim(), FacebookContentKind.PHOTO);
+    if (!this.shouldCopyMedia()) return local.realPath;
     const root = resolve(process.env.FACEBOOK_MEDIA_WORK_ROOT ?? "uploads/facebook");
     const directory = join(root, userId);
     mkdirSync(directory, { recursive: true });

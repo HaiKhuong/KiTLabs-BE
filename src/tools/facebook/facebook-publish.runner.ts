@@ -1,12 +1,17 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { UnrecoverableError } from "bullmq";
+import { spawnSync } from "child_process";
+import { existsSync } from "fs";
 import { stat } from "fs/promises";
+import { basename } from "path";
 import { Repository } from "typeorm";
 
+import { AppConfigService } from "../../common/config/app-config.service";
 import { decryptSecret, encryptSecret } from "../../common/config/settings-crypto";
 import { PlatformFacebookService } from "../../platform/facebook/platform-facebook.service";
 import { ToolsRealtimeGateway } from "../realtime/tools-realtime.gateway";
+import { TelegramService } from "../telegram/telegram.service";
 import { FacebookAccount } from "./facebook-account.entity";
 import { FacebookAffiliateLink } from "./facebook-affiliate-link.entity";
 import { renderCommentTemplate, selectAffiliateLinks } from "./facebook-affiliate.selector";
@@ -27,7 +32,7 @@ import {
   FACEBOOK_REQUIRED_SCOPES,
 } from "./facebook.types";
 
-const CHUNK_BYTES = Number(process.env.FACEBOOK_UPLOAD_CHUNK_BYTES ?? 4 * 1024 * 1024);
+const CHUNK_BYTES = Number(process.env.FACEBOOK_UPLOAD_CHUNK_BYTES ?? 16 * 1024 * 1024);
 
 export function formatCaptionWithTitle(title?: string | null, message?: string | null): string {
   const cleanTitle = (title ?? "").trim();
@@ -55,7 +60,9 @@ export class FacebookPublishRunner {
     private readonly provider: FacebookProviderAdapter,
     private readonly platformFb: PlatformFacebookService,
     private readonly realtime: ToolsRealtimeGateway,
-  ) {}
+    private readonly appConfig: AppConfigService,
+    private readonly telegramService: TelegramService,
+  ) { }
 
   async run(postId: string): Promise<void> {
     const post = await this.posts.findOne({ where: { id: postId } });
@@ -97,6 +104,11 @@ export class FacebookPublishRunner {
         facebookObjectId: post.facebookPostId,
       });
       this.emit(post, "facebook.post.updated");
+      try {
+        await this.notifyTelegram(post, ready.page);
+      } catch {
+        this.logger.warn(`Telegram notification could not be attempted for Facebook post=${post.id}.`);
+      }
     } catch (error) {
       const providerError = error instanceof FacebookProviderError ? error : null;
       if (providerError?.permission) {
@@ -112,15 +124,131 @@ export class FacebookPublishRunner {
           : new FacebookProviderError(providerError?.code ?? "NETWORK", true, false, false, providerError?.httpStatus, providerError?.detail);
       }
       if (providerError?.uncertain || post.uploadPhase === FacebookUploadPhase.UNCERTAIN) {
+        const detailMsg = providerError?.detail ? `[Facebook: ${providerError.detail}] ` : "";
         await this.markReview(
           post,
           providerError?.code ?? "UNCERTAIN_PUBLISH",
-          "Không chắc bài đã lên Facebook chưa, nên không tự đăng lại.",
+          `${detailMsg}Không chắc bài đã lên Facebook chưa, nên không tự đăng lại.`,
         );
         return;
       }
       await this.markFailed(post, providerError, started, phaseBefore);
       throw new UnrecoverableError("Facebook publish failed");
+    }
+  }
+
+  private escapeTelegramMarkdown(str: string): string {
+    return str.replace(/([_*`\[])/g, "\\$1");
+  }
+
+  private async getMediaDuration(filePath?: string | null): Promise<string> {
+    if (!filePath || !existsSync(filePath)) return "Không xác định";
+    try {
+      const ffprobe = process.env.FFPROBE_BIN ?? "ffprobe";
+      const result = spawnSync(
+        ffprobe,
+        [
+          "-v",
+          "error",
+          "-show_entries",
+          "format=duration",
+          "-of",
+          "default=noprint_wrappers=1:nokey=1",
+          filePath,
+        ],
+        { encoding: "utf8", windowsHide: true, timeout: 5000 },
+      );
+      if (result.status === 0 && result.stdout) {
+        const sec = parseFloat(result.stdout.trim());
+        if (!isNaN(sec) && sec > 0) {
+          return this.formatDurationSeconds(sec);
+        }
+      }
+    } catch {
+      // fallback to ffmpeg
+    }
+
+    try {
+      const ffmpeg = process.env.FFMPEG_BIN ?? "ffmpeg";
+      const result = spawnSync(
+        ffmpeg,
+        ["-i", filePath],
+        { encoding: "utf8", windowsHide: true, timeout: 5000 },
+      );
+      const out = (result.stderr || "") + (result.stdout || "");
+      const match = out.match(/Duration:\s*(\d{2}:\d{2}:\d{2})/i);
+      if (match) {
+        return match[1];
+      }
+    } catch {
+      // ignore
+    }
+
+    return "Không xác định";
+  }
+
+  private formatDurationSeconds(seconds: number): string {
+    const total = Math.floor(seconds);
+    const h = Math.floor(total / 3600);
+    const m = Math.floor((total % 3600) / 60);
+    const s = total % 60;
+    if (h > 0) {
+      return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+    }
+    return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+  }
+
+  private async notifyTelegram(post: FacebookPost, page: FacebookPage): Promise<void> {
+    const rawToken = this.appConfig.getSecret("TELEGRAM_BOT_TOKEN").trim();
+    const rawChatId = this.appConfig.get("TELEGRAM_CHAT_ID").trim();
+    // Hệ thống chỉ hỗ trợ 1 BOT TOKEN và 1 CHAT ID duy nhất
+    const token = rawToken.split(/[,;\s]+/)[0]?.trim();
+    const chatId = rawChatId.split(/[,;\s]+/)[0]?.trim();
+    if (!token || !chatId) return;
+
+    const videoTitle = post.title?.trim() || post.originalFileName || "Không có tiêu đề";
+    const type = post.kind || "video";
+    const originalFileName = post.originalFileName || (post.localPath ? basename(post.localPath) : "N/A");
+
+    let duration = "Không áp dụng";
+    if (post.kind === FacebookContentKind.VIDEO || post.kind === FacebookContentKind.REEL) {
+      duration = await this.getMediaDuration(post.localPath);
+    }
+
+    const facebookPostUrl = post.facebookPostId
+      ? `https://www.facebook.com/${post.facebookPostId}`
+      : `https://www.facebook.com/${page.pageId}`;
+
+    const publishDate = post.publishedAt ? new Date(post.publishedAt) : new Date();
+    const pad = (n: number) => String(n).padStart(2, "0");
+    const publishTime = `${pad(publishDate.getHours())}:${pad(publishDate.getMinutes())}:${pad(publishDate.getSeconds())} ${pad(publishDate.getDate())}/${pad(publishDate.getMonth() + 1)}/${publishDate.getFullYear()}`;
+
+    const pageName = page?.name ? this.escapeTelegramMarkdown(page.name) : "N/A";
+
+    const messageText = [
+      "✅ *ĐĂNG VIDEO FACEBOOK THÀNH CÔNG!*",
+      "",
+      `🌐 *Fanpage:* ${pageName}`,
+      `🎬 *Tiêu đề:* ${this.escapeTelegramMarkdown(videoTitle)}`,
+      `*Thời lượng:* ${duration}`,
+      `*Loại bài viết:* ${type}`,
+      `*File:* ${this.escapeTelegramMarkdown(originalFileName)}`,
+      "",
+      `🔗 [Xem video trên Facebook](${facebookPostUrl})`,
+      "",
+      "🤖 *System Info:*",
+      "• Trạng thái: Published",
+      `• Thời gian: ${publishTime}`,
+    ].join("\n");
+
+    try {
+      await this.telegramService.sendMessage(chatId, messageText, {
+        parse_mode: "Markdown",
+        disable_web_page_preview: false,
+      });
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      this.logger.warn(`Telegram notification failed for Facebook post=${post.id}: ${msg}`);
     }
   }
 
@@ -131,6 +259,7 @@ export class FacebookPublishRunner {
   }
 
   private async publish(post: FacebookPost, page: FacebookPage, token: string): Promise<void> {
+    await this.assertSourceMediaIntact(post);
     const fullDescription = formatCaptionWithTitle(post.title, post.message);
     if (post.kind === FacebookContentKind.POST) {
       await this.publishOnce(post, () => this.provider.publishFeed(token, page.pageId, fullDescription));
@@ -147,6 +276,39 @@ export class FacebookPublishRunner {
       return;
     }
     await this.publishVideo(post, page, token);
+  }
+
+  /**
+   * Media được dùng trực tiếp từ file gốc người dùng chọn (không copy), nên trước khi upload
+   * phải chắc chắn file vẫn còn và không bị sửa đổi (đổi dung lượng sẽ làm hỏng resumable offset).
+   */
+  private async assertSourceMediaIntact(post: FacebookPost): Promise<void> {
+    if (post.kind === FacebookContentKind.POST || !post.localPath) return;
+    let currentSize: number;
+    try {
+      const info = await stat(post.localPath);
+      if (!info.isFile()) throw new Error("not a file");
+      currentSize = info.size;
+    } catch {
+      throw new FacebookProviderError(
+        "MEDIA_MISSING",
+        false,
+        false,
+        false,
+        undefined,
+        "Không tìm thấy tệp gốc (đã bị xóa, đổi tên hoặc di chuyển).",
+      );
+    }
+    if (post.fileSize && Number(post.fileSize) !== currentSize) {
+      throw new FacebookProviderError(
+        "MEDIA_CHANGED",
+        false,
+        false,
+        false,
+        undefined,
+        "Tệp gốc đã bị thay đổi sau khi tạo bài. Hãy chọn lại tệp.",
+      );
+    }
   }
 
   private async publishOnce(post: FacebookPost, send: () => Promise<{ id: string }>): Promise<void> {
@@ -556,6 +718,10 @@ export class FacebookPublishRunner {
     post.status = FacebookPostStatus.FAILED;
     post.errorCode = error?.code ?? "PUBLISH_FAILED";
     post.errorMessage = "Facebook từ chối hoặc không hoàn tất bài đăng.";
+    post.errorMessage =
+      error?.code === "MEDIA_MISSING" || error?.code === "MEDIA_CHANGED"
+        ? (error.detail ?? "Tệp gốc không còn hợp lệ.")
+        : "Facebook từ chối hoặc không hoàn tất bài đăng.";
     await this.posts.save(post);
     await this.writeLog({
       post,

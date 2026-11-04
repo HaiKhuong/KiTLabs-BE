@@ -45,6 +45,7 @@ import { ModelsModule } from "./tools/models/models.module";
 import { HistoriesModule } from "./tools/histories/histories.module";
 import { TikTokModule } from "./tools/tiktok/tiktok.module";
 import { FacebookModule } from "./tools/facebook/facebook.module";
+import { TelegramModule } from "./tools/telegram/telegram.module";
 import { PlatformModule } from "./platform/platform.module";
 
 const isDesktop = process.env.KITLABS_DESKTOP === "1";
@@ -171,6 +172,7 @@ if (!isDesktop) {
     HistoriesModule,
     TikTokModule,
     FacebookModule,
+    TelegramModule,
     PlatformModule,
   ],
   controllers: [AppController],

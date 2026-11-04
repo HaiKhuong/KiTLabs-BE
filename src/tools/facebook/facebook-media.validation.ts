@@ -49,9 +49,9 @@ export function validateFacebookMedia(
   if (!allowed.has(extension)) {
     throw new BadRequestException("Định dạng tệp không được hỗ trợ");
   }
-  const maxBytes = Number(process.env.FACEBOOK_LOCAL_MAX_BYTES ?? 4_294_967_296);
+  const maxBytes = Number(process.env.FACEBOOK_LOCAL_MAX_BYTES ?? 10 * 1024 * 1024 * 1024);
   if (file.size <= 0 || file.size > maxBytes) {
-    throw new BadRequestException("Kích thước tệp vượt giới hạn");
+    throw new BadRequestException("Kích thước tệp vượt giới hạn (tối đa 10 GB)");
   }
   return { realPath, fileName: basename(realPath), sizeBytes: file.size };
 }

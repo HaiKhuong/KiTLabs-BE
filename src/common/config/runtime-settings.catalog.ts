@@ -15,6 +15,7 @@ export const SECRET_SETTING_CODES = new Set([
   "GEMINI_API_KEY_VIP",
   "HF_TOKEN",
   "DOUYIN_COOKIE_CONTENT",
+  "TELEGRAM_BOT_TOKEN",
 ]);
 
 /** Stored as `${code}__App` / `${code}__Web` so one Nest can keep both cookies. */
@@ -71,6 +72,8 @@ export const RUNTIME_SETTING_FIELDS: RuntimeSettingField[] = [
     label: "API Server endpoint",
     defaultValue: "",
   },
+  { code: "TELEGRAM_BOT_TOKEN", group: "telegram", kind: "secret", label: "Telegram Bot Token", defaultValue: "" },
+  { code: "TELEGRAM_CHAT_ID", group: "telegram", kind: "string", label: "Telegram Chat ID", defaultValue: "" },
   { code: "GEMINI_API_KEY", group: "gemini", kind: "secret", label: "Gemini API key thường (nhiều key: cách nhau dấu phẩy)", defaultValue: "" },
   { code: "GEMINI_API_KEY_VIP", group: "gemini", kind: "secret", label: "Gemini API key VIP (nhiều key: cách nhau dấu phẩy)", defaultValue: "" },
   /** Shared by Cấu hình runtime + Model AI — one settings row, both UIs read/write this code. */
