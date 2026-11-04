@@ -7,6 +7,7 @@ import { basename, dirname, extname, isAbsolute, join, resolve } from "path";
 import { QueueJobStatus } from "../../common/enums/domain.enums";
 
 import { TRANSLATE_QUEUE_NAME, TranslateService } from "./translate.service";
+import { TelegramService } from "../telegram/telegram.service";
 import { ToolsRealtimeGateway } from "../realtime/tools-realtime.gateway";
 import { deleteUploadedSourceVideo } from "../files/files.service";
 import {
@@ -530,6 +531,7 @@ export class TranslateProcessor extends WorkerHost {
     private readonly translateService: TranslateService,
     private readonly realtimeGateway: ToolsRealtimeGateway,
     private readonly renderProcessRegistry: RenderProcessRegistry,
+    private readonly telegramService: TelegramService,
   ) {
     super();
   }
@@ -581,6 +583,17 @@ export class TranslateProcessor extends WorkerHost {
         resultPath,
         stepNbr: history.stepNbr,
       });
+
+      const compVideoInputPath = this.resolveVideoInputPathSafe(history.engineConfig);
+      const compMovieName = compVideoInputPath ? basename(compVideoInputPath) : (completedHistory?.resultFileName || "video.mp4");
+      const compDuration = await this.getVideoDurationFormatted(resultPath || compVideoInputPath);
+      const compChatId = String((history.engineConfig as Record<string, unknown> | null)?.telegramChatId || "").trim();
+
+      void this.telegramService.sendPipelineNotification("completed", {
+        movieName: compMovieName,
+        duration: compDuration,
+        chatId: compChatId || undefined,
+      });
     } catch (error) {
       if (this.renderProcessRegistry.isCancelled(key) || isRenderCancelledError(error)) {
         const row = await this.translateService.getById(translateHistoryId);
@@ -614,6 +627,16 @@ export class TranslateProcessor extends WorkerHost {
           errorMessage: message,
           terminal: false,
         });
+
+        const retryVideoInputPath = this.resolveVideoInputPathSafe(retryHistory?.engineConfig);
+        const retryMovieName = retryVideoInputPath ? basename(retryVideoInputPath) : (retryHistory?.resultFileName || "video.mp4");
+        const retryChatId = String((retryHistory?.engineConfig as Record<string, unknown> | null)?.telegramChatId || "").trim();
+
+        void this.telegramService.sendPipelineNotification("retrying", {
+          movieName: retryMovieName,
+          chatId: retryChatId || undefined,
+        });
+
         throw error;
       }
       await this.translateService.processFailed(translateHistoryId, message);
@@ -623,9 +646,65 @@ export class TranslateProcessor extends WorkerHost {
         errorMessage: message,
         terminal: true,
       });
+
+      const failVideoInputPath = this.resolveVideoInputPathSafe(failedHistory?.engineConfig);
+      const failMovieName = failVideoInputPath ? basename(failVideoInputPath) : (failedHistory?.resultFileName || "video.mp4");
+      const failChatId = String((failedHistory?.engineConfig as Record<string, unknown> | null)?.telegramChatId || "").trim();
+
+      void this.telegramService.sendPipelineNotification("failed", {
+        movieName: failMovieName,
+        errorMessage: message,
+        chatId: failChatId || undefined,
+      });
+
       throw error;
     } finally {
       this.renderProcessRegistry.release(key);
+    }
+  }
+
+
+  private async getVideoDurationFormatted(filePath: string): Promise<string> {
+    if (!filePath) {
+      return "N/A";
+    }
+    return new Promise<string>((resolve) => {
+      try {
+        const proc = spawn(
+          "ffprobe",
+          ["-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", filePath],
+          { windowsHide: true },
+        );
+        let out = "";
+        proc.stdout?.on("data", (d) => (out += d.toString()));
+        proc.on("close", (code) => {
+          if (code === 0 && out.trim()) {
+            const sec = parseFloat(out.trim());
+            if (!isNaN(sec) && sec >= 0) {
+              const totalSec = Math.round(sec);
+              const h = Math.floor(totalSec / 3600);
+              const m = Math.floor((totalSec % 3600) / 60);
+              const s = totalSec % 60;
+              const pad = (n: number) => String(n).padStart(2, "0");
+              resolve(h > 0 ? `${pad(h)}:${pad(m)}:${pad(s)}` : `${pad(m)}:${pad(s)}`);
+              return;
+            }
+          }
+          resolve("N/A");
+        });
+        proc.on("error", () => resolve("N/A"));
+      } catch {
+        resolve("N/A");
+      }
+    });
+  }
+
+  private resolveVideoInputPathSafe(engineConfig: Record<string, unknown> | null | undefined): string {
+    if (!engineConfig) return "";
+    try {
+      return this.resolveVideoInputPath(engineConfig);
+    } catch {
+      return "";
     }
   }
 
@@ -667,6 +746,7 @@ export class TranslateProcessor extends WorkerHost {
             // so logs only appear after the buffer fills or the process exits.
             PYTHONUNBUFFERED: "1",
             PYTHONIOENCODING: "utf-8",
+            KI_TELEGRAM_NOTIFIED_BY_BE: "1",
           },
         });
 

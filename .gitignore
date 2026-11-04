@@ -23,6 +23,7 @@ Thumbs.db
 uploads/
 tmp/
 temp/
+secrets/*.json
 secrets/douyin-cookies.txt
 tools/douyin-playwright-service/cookies.txt
 tools/douyin-playwright-service/video.json

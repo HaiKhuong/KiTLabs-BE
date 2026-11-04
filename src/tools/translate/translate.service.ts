@@ -766,4 +766,130 @@ export class TranslateService {
 
     return rows[0] ?? null;
   }
+
+  async retryByMovieName(
+    movieNameInput: string,
+    chatId?: string,
+  ): Promise<{
+    success: boolean;
+    code: "NOT_FOUND" | "ALREADY_COMPLETED" | "ALREADY_RUNNING" | "SUCCESS";
+    message: string;
+    movieFileName?: string;
+  }> {
+    const raw = movieNameInput.replace(/^["']|["']$/g, "").trim();
+    if (!raw) {
+      return {
+        success: false,
+        code: "NOT_FOUND",
+        message: "Vui lòng cung cấp tên phim cần thử lại.",
+      };
+    }
+
+    const cleanInput = raw.toLowerCase();
+    const cleanBase = cleanInput.replace(/\.[a-z0-9]+$/i, "");
+
+    const histories = await this.translateRepository.find({
+      order: { createdAt: "DESC" },
+    });
+
+    const isMatch = (h: TranslateHistory) => {
+      const cfg = (h.engineConfig ?? {}) as Record<string, unknown>;
+      const localPath = String(cfg.localVideoPath || cfg.local_video_path || "").trim();
+      const localFile = localPath ? basename(localPath).toLowerCase() : "";
+      const localBase = localFile.replace(/\.[a-z0-9]+$/i, "");
+
+      const resultFile = h.resultFileName ? String(h.resultFileName).toLowerCase() : "";
+      const resultBase = resultFile.replace(/\.[a-z0-9]+$/i, "").replace(/_vs_tm$/, "").replace(/_tm$/, "");
+
+      return (
+        localFile === cleanInput ||
+        localBase === cleanBase ||
+        resultFile === cleanInput ||
+        resultBase === cleanBase ||
+        localFile === `${cleanBase}.mp4` ||
+        resultFile === `${cleanBase}_vs_tm.mp4` ||
+        resultFile === `${cleanBase}.mp4`
+      );
+    };
+
+    const matchingHistories = histories.filter(isMatch);
+
+    if (matchingHistories.length === 0) {
+      return {
+        success: false,
+        code: "NOT_FOUND",
+        message: `Phim "${raw}" không tồn tại trong hệ thống lịch sử!`,
+      };
+    }
+
+    const latest = matchingHistories[0];
+    const cfg = (latest.engineConfig ?? {}) as Record<string, unknown>;
+    const localPath = String(cfg.localVideoPath || cfg.local_video_path || "").trim();
+    const displayMovieName = localPath ? basename(localPath) : (latest.resultFileName || raw);
+
+    if (latest.status === QueueJobStatus.COMPLETED) {
+      return {
+        success: false,
+        code: "ALREADY_COMPLETED",
+        message: `Phim "${displayMovieName}" đã hoàn thành thuyết minh thành công trước đó, không thể retry!`,
+        movieFileName: displayMovieName,
+      };
+    }
+
+    if (latest.status === QueueJobStatus.RUNNING || latest.status === QueueJobStatus.PENDING) {
+      return {
+        success: false,
+        code: "ALREADY_RUNNING",
+        message: `Phim "${displayMovieName}" hiện đang được xử lý trong hàng đợi, vui lòng đợi!`,
+        movieFileName: displayMovieName,
+      };
+    }
+
+    const failedHistory = matchingHistories.find(
+      (h) => h.status === QueueJobStatus.FAILED || h.status === QueueJobStatus.CANCELLED,
+    );
+
+    if (!failedHistory) {
+      return {
+        success: false,
+        code: "NOT_FOUND",
+        message: `Phim "${displayMovieName}" không tồn tại trong danh sách lịch sử lỗi!`,
+        movieFileName: displayMovieName,
+      };
+    }
+
+    if (chatId) {
+      failedHistory.engineConfig = {
+        ...(failedHistory.engineConfig ?? {}),
+        telegramChatId: chatId,
+      };
+    }
+
+    if (failedHistory.queueJobId) {
+      await discardQueueJob(this.translateQueue, failedHistory.queueJobId);
+    }
+
+    failedHistory.status = QueueJobStatus.PENDING;
+    failedHistory.errorMessage = null;
+    failedHistory.resultPath = null;
+    failedHistory.resultFileName = null;
+    await this.translateRepository.save(failedHistory);
+
+    this.renderProcessRegistry.begin(RenderJobKeys.translate(failedHistory.id));
+    const queueJob = await this.translateQueue.add(
+      TRANSLATE_QUEUE_NAME,
+      { translateHistoryId: failedHistory.id },
+      { attempts: 2, removeOnComplete: true, removeOnFail: 50 },
+    );
+
+    failedHistory.queueJobId = queueJob.id ? String(queueJob.id) : null;
+    await this.translateRepository.save(failedHistory);
+
+    return {
+      success: true,
+      code: "SUCCESS",
+      message: `Đã đưa phim "${displayMovieName}" vào hàng đợi xử lý lại thành công!`,
+      movieFileName: displayMovieName,
+    };
+  }
 }

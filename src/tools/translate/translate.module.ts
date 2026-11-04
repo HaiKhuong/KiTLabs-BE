@@ -25,5 +25,6 @@ import { TRANSLATE_QUEUE_NAME, TranslateService } from "./translate.service";
   ],
   controllers: [TranslateController],
   providers: [TranslateService, TranslateProcessor, GeminiSubtitleTranslateService],
+  exports: [TranslateService],
 })
 export class TranslateModule {}

@@ -5736,10 +5736,109 @@ def run_pipeline(video, step_arg=None):
     published = publish_deliverables(
         preferred=Path(last_output) if last_output else None,
     )
-    if published is not None:
-        return str(published)
-    return last_output
+    final_result = str(published) if published is not None else last_output
+    _send_python_telegram_notification(
+        "completed",
+        Path(video_path).name,
+        duration=_format_dur_seconds(dur_s),
+    )
+    return final_result
 
+
+
+# ==============================
+# TELEGRAM PIPELINE NOTIFICATION
+# ==============================
+
+def _format_dur_seconds(dur_s) -> str:
+    if dur_s is None or dur_s <= 0:
+        return "N/A"
+    total_sec = int(round(dur_s))
+    h = total_sec // 3600
+    m = (total_sec % 3600) // 60
+    s = total_sec % 60
+    if h > 0:
+        return f"{h:02d}:{m:02d}:{s:02d}"
+    return f"{m:02d}:{s:02d}"
+
+
+def _classify_python_pipeline_error(raw_err: str) -> str:
+    err_lower = (raw_err or "").lower()
+    if (
+        "[step_1_failed]" in err_lower
+        or "step1" in err_lower
+        or "step 1" in err_lower
+        or "whisper" in err_lower
+        or "transcribe" in err_lower
+        or "paddleocr" in err_lower
+        or "easyocr" in err_lower
+        or "vse" in err_lower
+    ):
+        return "Lỗi Dịch ( Step 1 lỗi )"
+    if (
+        "[step_2_failed]" in err_lower
+        or "step2" in err_lower
+        or "step 2" in err_lower
+        or "gemini" in err_lower
+        or "translate_srt" in err_lower
+    ):
+        return "Lỗi Gemini ( step 2 lỗi )"
+    return "Lỗi Hệ Thống ( Các lỗi khác )"
+
+
+def _send_python_telegram_notification(alert_type: str, movie_name: str, duration: str = "", error_message: str = ""):
+    # Nếu BE NestJS đang chạy subprocess này thì BE chịu trách nhiệm gửi thông báo (tránh duplicate)
+    if os.getenv("KI_TELEGRAM_NOTIFIED_BY_BE"):
+        return
+
+    bot_token = (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip().split(",")[0].strip()
+    chat_id = (os.getenv("TELEGRAM_CHAT_ID") or "").strip().split(",")[0].strip()
+    if not bot_token or not chat_id:
+        return
+
+    import urllib.request
+    from datetime import datetime
+
+    time_str = datetime.now().strftime("%H:%M:%S %d/%m/%Y")
+    safe_movie = movie_name.replace("_", "\\_")
+
+    if alert_type == "completed":
+        text = (
+            f"✨ *THUYẾT MINH PHIM HOÀN TẤT!* ✨\n\n"
+            f"🎬 *Tên phim:* {safe_movie}\n"
+            f"⏱ *Thời lượng:* {duration or 'N/A'}\n"
+            f"🕒 *Thời gian:* {time_str}"
+        )
+    elif alert_type == "retrying":
+        text = (
+            f"⚠️ *THUYẾT MINH PHIM ĐANG THỬ LẠI!*\n\n"
+            f"🎬 *Tên phim:* {safe_movie}\n"
+            f"🕒 *Thời gian:* {time_str}"
+        )
+    elif alert_type == "failed":
+        classified = _classify_python_pipeline_error(error_message)
+        text = (
+            f"❌ *THUYẾT MINH PHIM THẤT BẠI!*\n\n"
+            f"🎬 *Tên phim:* {safe_movie}\n"
+            f"💬 *Chi tiết lỗi:* {classified}\n"
+            f"🕒 *Thời gian:* {time_str}\n\n"
+            f"👉 Dùng `/auto_vs_retry {movie_name}` để thử lại"
+        )
+    else:
+        return
+
+    try:
+        url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+        payload = json.dumps({
+            "chat_id": chat_id,
+            "text": text,
+            "parse_mode": "Markdown",
+        }).encode("utf-8")
+        req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            pass
+    except Exception as e:
+        log(f"[Telegram Notify Warning] Không gửi được thông báo Telegram: {e}")
 
 # ==============================
 # ENTRY
@@ -5754,4 +5853,9 @@ if __name__ == "__main__":
     except Exception as e:
         log(f"ERROR: {e}")
         log(traceback.format_exc())
+        _send_python_telegram_notification(
+            "failed",
+            Path(args.video).name,
+            error_message=str(e),
+        )
         raise
