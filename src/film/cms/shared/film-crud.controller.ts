@@ -19,12 +19,22 @@ export abstract class FilmCrudController {
       status?: string;
       deleted?: string;
       position?: string;
+      search?: string;
+      year?: number;
+      genreId?: string;
+      isHot?: string;
+      isRecommended?: string;
     } = {};
     if (query.episodeId) filter.episodeId = query.episodeId;
     if (query.movieId) filter.movieId = query.movieId;
     if (query.status) filter.status = query.status;
     if (query.deleted) filter.deleted = query.deleted;
     if (query.position) filter.position = query.position;
+    if (query.search) filter.search = query.search;
+    if (query.year) filter.year = query.year;
+    if (query.genreId) filter.genreId = query.genreId;
+    if (query.isHot) filter.isHot = query.isHot;
+    if (query.isRecommended) filter.isRecommended = query.isRecommended;
     return this.service.adminList(this.resource, query.page || 1, query.limit || 10, filter);
   }
 

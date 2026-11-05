@@ -15,6 +15,12 @@ export class FilmJwtStrategy extends PassportStrategy(Strategy, "film-jwt") {
   validate(payload: FilmPrincipal & { sub: string }): FilmPrincipal {
     if (payload.tokenType !== "access" || !payload.sub || !payload.role)
       throw new UnauthorizedException("Invalid film token");
-    return { userId: payload.sub, deviceId: payload.deviceId ?? null, role: payload.role, tokenType: "access" };
+    return {
+      userId: payload.sub,
+      deviceId: payload.deviceId ?? null,
+      role: payload.role,
+      tokenType: "access",
+      authSource: payload.authSource,
+    };
   }
 }

@@ -76,11 +76,20 @@ export class FilmAdminService {
       status?: string;
       deleted?: string;
       position?: string;
+      search?: string;
+      year?: number;
+      genreId?: string;
+      isHot?: string;
+      isRecommended?: string;
     },
   ) {
     const repo = this.db.getRepository(this.target(resource));
     const take = Math.min(100, Math.max(1, limit));
     const skip = (Math.max(1, page) - 1) * take;
+
+    if (resource === "movies") {
+      return this.listMovies(page, take, skip, filter);
+    }
 
     const where: Record<string, unknown> = {};
     if (filter?.episodeId && (resource === "episode-sources" || resource === "episodes")) {
@@ -116,18 +125,18 @@ export class FilmAdminService {
       where.episodeId = In(epIds);
     }
 
+    const order = resource === "episodes"
+      ? { sortOrder: "ASC", episodeNumber: "ASC" }
+      : resource === "episode-sources"
+        ? { isActive: "DESC", priority: "ASC", createdAt: "DESC" }
+        : { createdAt: "DESC" };
     const [items, total] = await repo.findAndCount({
       where: Object.keys(where).length > 0 ? (where as never) : undefined,
       withDeleted: true,
-      order: { createdAt: "DESC" } as never,
+      order: order as never,
       take,
       skip,
     });
-
-    if (resource === "movies") {
-      const moviesWithGenres = await this.withGenres(items as FilmMovie[]);
-      return { items: moviesWithGenres, total, page: Math.max(1, page), limit: take };
-    }
 
     if (resource === "users") {
       const usersWithDevices = await this.withDevices(items as FilmUser[]);
@@ -140,6 +149,64 @@ export class FilmAdminService {
     }
 
     return { items, total, page: Math.max(1, page), limit: take };
+  }
+
+  private async listMovies(
+    page: number,
+    take: number,
+    skip: number,
+    filter?: {
+      status?: string;
+      deleted?: string;
+      search?: string;
+      year?: number;
+      genreId?: string;
+      isHot?: string;
+      isRecommended?: string;
+    },
+  ) {
+    const query = this.db.getRepository(FilmMovie).createQueryBuilder("movie").withDeleted();
+    if (filter?.deleted === "true") query.andWhere("movie.deletedAt IS NOT NULL");
+    else if (filter?.deleted !== "all") query.andWhere("movie.deletedAt IS NULL");
+
+    const search = filter?.search?.trim();
+    if (search) {
+      query.andWhere("(movie.title ILIKE :search OR movie.slug ILIKE :search)", { search: `%${search}%` });
+    }
+    if (filter?.year) query.andWhere("movie.releaseYear = :year", { year: filter.year });
+    if (filter?.status) query.andWhere("movie.status = :status", { status: filter.status });
+    if (filter?.isHot === "true" || filter?.isHot === "false") {
+      query.andWhere("movie.isHot = :isHot", { isHot: filter.isHot === "true" });
+    }
+    if (filter?.isRecommended === "true" || filter?.isRecommended === "false") {
+      query.andWhere("movie.isRecommended = :isRecommended", {
+        isRecommended: filter.isRecommended === "true",
+      });
+    }
+    if (filter?.genreId) {
+      query.andWhere((subQuery) => {
+        const exists = subQuery
+          .subQuery()
+          .select("1")
+          .from(FilmMovieGenre, "movieGenre")
+          .where("movieGenre.movieId = movie.id")
+          .andWhere("movieGenre.genreId = :genreId")
+          .getQuery();
+        return `EXISTS ${exists}`;
+      }).setParameter("genreId", filter.genreId);
+    }
+
+    const [movies, total] = await query
+      .orderBy("movie.createdAt", "DESC")
+      .skip(skip)
+      .take(take)
+      .getManyAndCount();
+    return {
+      items: await this.withGenres(movies),
+      total,
+      page: Math.max(1, page),
+      limit: take,
+    };
   }
 
   async adminOne(resource: string, id: string) {
@@ -179,6 +246,21 @@ export class FilmAdminService {
     delete cleanData.genre_ids;
     delete cleanData.genres;
 
+    if (resource === "episode-sources" && cleanData.isActive !== false) {
+      return this.saveEpisodeSource(null, cleanData);
+    }
+
+    if (resource === "episodes" && cleanData.sortOrder === undefined) {
+      const movieId = String(cleanData.movieId || "");
+      const result = await this.db
+        .getRepository(FilmEpisode)
+        .createQueryBuilder("episode")
+        .select("COALESCE(MAX(episode.sortOrder), -1)", "max")
+        .where("episode.movieId = :movieId", { movieId })
+        .getRawOne<{ max: string }>();
+      cleanData.sortOrder = Number(result?.max ?? -1) + 1;
+    }
+
     const repo = this.db.getRepository(this.target(resource));
     const created = await repo.save(repo.create(cleanData));
 
@@ -198,6 +280,10 @@ export class FilmAdminService {
     delete cleanData.genre_ids;
     delete cleanData.genres;
 
+    if (resource === "episode-sources") {
+      return this.saveEpisodeSource(id, cleanData);
+    }
+
     const repo = this.db.getRepository(this.target(resource));
     const row = await this.db
       .getRepository(this.target(resource))
@@ -215,6 +301,40 @@ export class FilmAdminService {
     }
 
     return saved;
+  }
+
+  async reorderEpisodes(movieId: string, episodeIds: string[]) {
+    return this.db.transaction(async (manager) => {
+      const repo = manager.getRepository(FilmEpisode);
+      const episodes = await repo.find({ where: { movieId, id: In(episodeIds) } });
+      if (episodes.length !== episodeIds.length) throw new NotFoundException("Episode not found in movie");
+      const byId = new Map(episodes.map((episode) => [episode.id, episode]));
+      await repo.save(episodeIds.map((id, index) => Object.assign(byId.get(id)!, { sortOrder: index })));
+      return { reordered: true, episodeIds };
+    });
+  }
+
+  private async saveEpisodeSource(id: string | null, data: Record<string, unknown>) {
+    return this.db.transaction(async (manager) => {
+      const repo = manager.getRepository(FilmEpisodeSource);
+      const existing = id ? await repo.findOne({ where: { id }, withDeleted: true }) : null;
+      if (id && !existing) throw new NotFoundException();
+      const episodeId = String(data.episodeId || existing?.episodeId || "");
+
+      if (data.isActive !== false) {
+        await repo
+          .createQueryBuilder()
+          .update(FilmEpisodeSource)
+          .set({ isActive: false })
+          .where("episode_id = :episodeId", { episodeId })
+          .andWhere(id ? "id <> :id" : "1 = 1", id ? { id } : {})
+          .execute();
+      }
+
+      const row = existing || repo.create();
+      Object.assign(row, data, { ...(id ? { id } : {}) });
+      return repo.save(row);
+    });
   }
 
   async adminDelete(resource: string, id: string) {

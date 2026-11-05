@@ -3,7 +3,13 @@ import { Reflector } from "@nestjs/core";
 import { AuthGuard } from "@nestjs/passport";
 import { FilmUserRole } from "../entities/film.entities";
 
-export type FilmPrincipal = { userId: string; deviceId: string | null; role: FilmUserRole; tokenType: "access" };
+export type FilmPrincipal = {
+  userId: string;
+  deviceId: string | null;
+  role: FilmUserRole;
+  tokenType: "access";
+  authSource?: "film" | "platform-admin";
+};
 export const FilmCurrentUser = createParamDecorator(
   (_data: unknown, context: ExecutionContext) => context.switchToHttp().getRequest().user as FilmPrincipal | undefined,
 );

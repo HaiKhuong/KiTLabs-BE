@@ -42,4 +42,30 @@ export class FilmAdminPaginationQueryDto {
   @IsOptional()
   @IsString()
   position?: string;
+
+  @ApiPropertyOptional({ description: "Search movies by title or slug" })
+  @IsOptional()
+  @IsString()
+  search?: string;
+
+  @ApiPropertyOptional({ description: "Filter movies by release year" })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  year?: number;
+
+  @ApiPropertyOptional({ description: "Filter movies by genre UUID" })
+  @IsOptional()
+  @IsString()
+  genreId?: string;
+
+  @ApiPropertyOptional({ description: "Filter movies by HOT flag ('true' or 'false')" })
+  @IsOptional()
+  @IsString()
+  isHot?: string;
+
+  @ApiPropertyOptional({ description: "Filter movies by recommended flag ('true' or 'false')" })
+  @IsOptional()
+  @IsString()
+  isRecommended?: string;
 }

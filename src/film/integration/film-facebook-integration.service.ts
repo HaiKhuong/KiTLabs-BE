@@ -54,6 +54,10 @@ export class FilmFacebookIntegrationService {
       });
       let createdEpisode = false;
       if (!episode) {
+        const lastEpisode = await episodes.findOne({
+          where: { movieId: dto.movieId },
+          order: { sortOrder: "DESC" },
+        });
         episode = await episodes.save(episodes.create({
           movieId: dto.movieId,
           episodeNumber: normalizedEpisode,
@@ -61,10 +65,12 @@ export class FilmFacebookIntegrationService {
           durationSeconds: 0,
           views: "0",
           thumbnailUrl: null,
+          sortOrder: (lastEpisode?.sortOrder ?? -1) + 1,
         }));
         createdEpisode = true;
       }
 
+      await sources.update({ episodeId: episode.id, isActive: true }, { isActive: false });
       const source = await sources.save(sources.create({
         episodeId: episode.id,
         serverName: "Facebook",

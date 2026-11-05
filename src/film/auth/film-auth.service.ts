@@ -14,7 +14,7 @@ import {
   FilmUserStatus,
   ItemType,
 } from "../entities/film.entities";
-import { PlatformUser, PlatformUserAuthType, PlatformUserRole } from "../../platform/entities/platform-user.entity";
+import { PlatformUser, PlatformUserRole } from "../../platform/entities/platform-user.entity";
 import { PlatformAdminUser } from "../../platform/entities/platform-admin-user.entity";
 import { PlatformAdminRole } from "../../platform/entities/platform-admin-role.entity";
 import { FilmMissionService } from "../guest/mission/film-mission.service";
@@ -40,57 +40,73 @@ export class FilmAuthService implements OnModuleInit {
   ) { }
 
   async onModuleInit(): Promise<void> {
-    const email = (process.env.FILM_ADMIN_EMAIL || process.env.PLATFORM_ADMIN_EMAIL || "admin@kitlabs.io")
-      .trim()
-      .toLowerCase();
-    const password = process.env.FILM_ADMIN_PASSWORD || process.env.PLATFORM_ADMIN_PASSWORD || "Admin@123456";
-    const username = (process.env.FILM_ADMIN_USERNAME || process.env.PLATFORM_ADMIN_USERNAME || "admin").trim();
+    const email = process.env.ADMIN_EMAIL?.trim().toLowerCase();
+    const password = process.env.ADMIN_PASSWORD;
+    const fullName = process.env.ADMIN_NAME?.trim() || "Platform Admin";
+    if (!email || !password) {
+      this.logger.log("Skip Platform Admin bootstrap: ADMIN_EMAIL or ADMIN_PASSWORD is not configured");
+      return;
+    }
+    const username = email.split("@")[0].replace(/[^a-z0-9._-]/gi, "") || "admin";
 
     try {
-      // 1. Bootstrap Admin in Platform DB (kitlabs_platform)
-      const platformRepo = this.platformDb.getRepository(PlatformUser);
-      let platformUser = await platformRepo
+      // 1. Bootstrap the configured account in platform_admin_users.
+      const adminRepo = this.platformDb.getRepository(PlatformAdminUser);
+      const superAdminRole = await this.platformDb
+        .getRepository(PlatformAdminRole)
+        .findOne({ where: { code: "SUPER_ADMIN" } });
+      let platformAdmin = await adminRepo
         .createQueryBuilder("u")
         .where("lower(u.userName) = lower(:username) OR lower(u.email) = lower(:email)", { username, email })
         .getOne();
 
-      if (!platformUser) {
-        platformUser = platformRepo.create({
+      if (!platformAdmin) {
+        platformAdmin = adminRepo.create({
           userName: username,
           email,
           passwordHash: await bcrypt.hash(password, 12),
-          authType: PlatformUserAuthType.ACCOUNT,
-          role: PlatformUserRole.ADMIN,
+          fullName,
+          phone: null,
+          avatarUrl: null,
+          roleId: superAdminRole?.id || null,
+          isSuperAdmin: true,
           isActive: true,
+          lastLoginAt: null,
+          refreshTokenHash: null,
         });
-        platformUser = await platformRepo.save(platformUser);
+        platformAdmin = await adminRepo.save(platformAdmin);
         this.logger.log(`Bootstrapped Platform Admin (${username} / ${email}) in Platform DB`);
-      } else if (platformUser.role !== PlatformUserRole.ADMIN) {
-        platformUser.role = PlatformUserRole.ADMIN;
-        platformUser = await platformRepo.save(platformUser);
-        this.logger.log(`Promoted user ${username} to ADMIN in Platform DB`);
+      } else {
+        platformAdmin.email = email;
+        platformAdmin.fullName = fullName;
+        platformAdmin.passwordHash = await bcrypt.hash(password, 12);
+        platformAdmin.roleId = superAdminRole?.id || platformAdmin.roleId;
+        platformAdmin.isSuperAdmin = true;
+        platformAdmin.isActive = true;
+        platformAdmin = await adminRepo.save(platformAdmin);
       }
 
       // 2. Ensure mirror entry exists in Film DB (kitlabs_film) so relational queries succeed
       const filmRepo = this.db.getRepository(FilmUser);
       let filmAdmin = await filmRepo.findOne({
-        where: [{ id: platformUser.id }, { email: platformUser.email ?? undefined }],
+        where: [{ id: platformAdmin.id }, { email: platformAdmin.email }],
       });
       if (!filmAdmin) {
         filmAdmin = filmRepo.create({
-          id: platformUser.id,
-          email: platformUser.email,
-          username: platformUser.userName,
-          passwordHash: platformUser.passwordHash,
-          name: process.env.FILM_ADMIN_NAME?.trim() || platformUser.userName || "Admin",
+          id: platformAdmin.id,
+          email: platformAdmin.email,
+          username: platformAdmin.userName,
+          passwordHash: null,
+          name: fullName,
           role: FilmUserRole.ADMIN,
           status: FilmUserStatus.ACTIVE,
           deviceId: null,
           refreshTokenHash: null,
         });
         await filmRepo.save(filmAdmin);
-        this.logger.log(`Synchronized Platform Admin mirror into Film DB (kitlabs_film)`);
-      } else if (filmAdmin.role !== FilmUserRole.ADMIN) {
+        this.logger.log("Synchronized Platform Admin mirror into Film DB (kitlabs_film)");
+      } else {
+        filmAdmin.name = fullName;
         filmAdmin.role = FilmUserRole.ADMIN;
         filmAdmin.status = FilmUserStatus.ACTIVE;
         await filmRepo.save(filmAdmin);
@@ -306,7 +322,7 @@ export class FilmAuthService implements OnModuleInit {
           await filmRepo.save(filmUser);
         }
 
-        const issued = await this.issue(filmUser);
+        const issued = await this.issuePlatformAdmin(adminUser);
         return {
           ...issued,
           user: {
@@ -378,30 +394,12 @@ export class FilmAuthService implements OnModuleInit {
       this.logger.error(`Error querying platform db for admin login: ${err}`);
     }
 
-    // 2. Fallback: Authenticate against Film DB (kitlabs_film) if not found in Platform DB
-    const filmUser = await this.db
-      .getRepository(FilmUser)
-      .createQueryBuilder("u")
-      .addSelect(["u.passwordHash", "u.refreshTokenHash"])
-      .where("lower(u.email) = :id OR lower(u.username) = :id", { id: trimmedId })
-      .andWhere("u.role IN (:...roles)", { roles: [FilmUserRole.ADMIN, FilmUserRole.MODERATOR] })
-      .getOne();
-
-    if (
-      !filmUser?.passwordHash ||
-      !(await bcrypt.compare(password, filmUser.passwordHash)) ||
-      filmUser.status !== FilmUserStatus.ACTIVE
-    ) {
+    // Admin authentication is intentionally restricted to Platform DB accounts.
       throw new UnauthorizedException("Thông tin đăng nhập không hợp lệ");
-    }
-
-    filmUser.lastLoginAt = new Date();
-    await this.db.getRepository(FilmUser).save(filmUser);
-    return this.issue(filmUser);
   }
 
   async refresh(refreshToken: string) {
-    let payload: { sub: string; tokenType: string };
+    let payload: { sub: string; tokenType: string; authSource?: "film" | "platform-admin" };
     try {
       payload = await this.jwt.verifyAsync(refreshToken, {
         secret: process.env.FILM_JWT_REFRESH_SECRET || "film_refresh_secret_change_me",
@@ -410,6 +408,25 @@ export class FilmAuthService implements OnModuleInit {
       throw new UnauthorizedException("Invalid refresh token");
     }
     if (payload.tokenType !== "refresh") throw new UnauthorizedException("Invalid refresh token");
+
+    if (payload.authSource === "platform-admin") {
+      const admin = await this.platformDb
+        .getRepository(PlatformAdminUser)
+        .createQueryBuilder("u")
+        .addSelect("u.refreshTokenHash")
+        .leftJoinAndSelect("u.role", "role")
+        .where("u.id = :id", { id: payload.sub })
+        .getOne();
+      if (
+        !admin?.isActive ||
+        !admin.refreshTokenHash ||
+        !(await bcrypt.compare(refreshToken, admin.refreshTokenHash))
+      ) {
+        throw new UnauthorizedException("Invalid refresh token");
+      }
+      return this.issuePlatformAdmin(admin);
+    }
+
     const user = await this.db
       .getRepository(FilmUser)
       .createQueryBuilder("u")
@@ -421,12 +438,16 @@ export class FilmAuthService implements OnModuleInit {
     return this.issue(user);
   }
 
-  async logout(userId: string) {
-    await this.db.getRepository(FilmUser).update(userId, { refreshTokenHash: null });
+  async logout(userId: string, authSource?: "film" | "platform-admin") {
+    if (authSource === "platform-admin") {
+      await this.platformDb.getRepository(PlatformAdminUser).update(userId, { refreshTokenHash: null });
+    } else {
+      await this.db.getRepository(FilmUser).update(userId, { refreshTokenHash: null });
+    }
     return { loggedOut: true };
   }
 
-  async profile(userId: string) {
+  async profile(userId: string): Promise<any> {
     try {
       const adminUser = await this.platformDb
         .getRepository(PlatformAdminUser)
@@ -537,7 +558,7 @@ export class FilmAuthService implements OnModuleInit {
   }
 
   private async issue(user: FilmUser) {
-    const base = { sub: user.id, deviceId: user.deviceId, role: user.role };
+    const base = { sub: user.id, deviceId: user.deviceId, role: user.role, authSource: "film" as const };
     const accessToken = await this.jwt.signAsync(
       { ...base, tokenType: "access" },
       {
@@ -564,6 +585,49 @@ export class FilmAuthService implements OnModuleInit {
         minExp: cultivation.minExp,
         nextExp: cultivation.nextExp,
         expPercentage: cultivation.expPercentage,
+      },
+      accessToken,
+      refreshToken,
+      accessTokenExpiresIn: process.env.FILM_JWT_ACCESS_EXPIRES_IN || "15m",
+    };
+  }
+
+  private async issuePlatformAdmin(admin: PlatformAdminUser) {
+    const base = {
+      sub: admin.id,
+      deviceId: null,
+      role: FilmUserRole.ADMIN,
+      authSource: "platform-admin" as const,
+    };
+    const accessToken = await this.jwt.signAsync(
+      { ...base, tokenType: "access" },
+      {
+        secret: process.env.FILM_JWT_ACCESS_SECRET || "film_access_secret_change_me",
+        expiresIn: (process.env.FILM_JWT_ACCESS_EXPIRES_IN || "15m") as SignOptions["expiresIn"],
+      },
+    );
+    const refreshToken = await this.jwt.signAsync(
+      { ...base, tokenType: "refresh" },
+      {
+        secret: process.env.FILM_JWT_REFRESH_SECRET || "film_refresh_secret_change_me",
+        expiresIn: (process.env.FILM_JWT_REFRESH_EXPIRES_IN || "7d") as SignOptions["expiresIn"],
+      },
+    );
+    await this.platformDb.getRepository(PlatformAdminUser).update(admin.id, {
+      refreshTokenHash: await bcrypt.hash(refreshToken, 10),
+    });
+    return {
+      user: {
+        id: admin.id,
+        username: admin.userName,
+        email: admin.email,
+        fullName: admin.fullName,
+        avatarUrl: admin.avatarUrl,
+        phone: admin.phone,
+        isSuperAdmin: admin.isSuperAdmin,
+        role: admin.role?.code || "ADMIN",
+        permissions: admin.role?.permissions || {},
+        roleInfo: admin.role,
       },
       accessToken,
       refreshToken,

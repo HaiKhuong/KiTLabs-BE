@@ -97,7 +97,7 @@ export class FilmCatalogService {
 
     const episodes = await this.db
       .getRepository(FilmEpisode)
-      .find({ where: { movieId: movie.id }, order: { episodeNumber: "ASC" } });
+      .find({ where: { movieId: movie.id }, order: { sortOrder: "ASC", episodeNumber: "ASC" } });
 
     const episodeSources = episodes.length
       ? await this.db.getRepository(FilmEpisodeSource).find({

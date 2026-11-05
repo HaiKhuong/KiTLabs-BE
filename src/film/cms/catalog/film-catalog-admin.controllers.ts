@@ -1,4 +1,4 @@
-import { Controller } from "@nestjs/common";
+import { Body, Controller, Post } from "@nestjs/common";
 import { ApiTags } from "@nestjs/swagger";
 import { FilmAdminService } from "../shared/film-admin.service";
 import { FilmCmsAccess } from "../shared/film-cms.decorators";
@@ -41,6 +41,11 @@ export class FilmEpisodesAdminController extends FilmCrudController {
   protected readonly resource = "episodes";
   constructor(s: FilmAdminService) {
     super(s);
+  }
+
+  @Post("reorder")
+  reorder(@Body() body: { movieId: string; episodeIds: string[] }) {
+    return this.service.reorderEpisodes(body.movieId, body.episodeIds);
   }
 }
 

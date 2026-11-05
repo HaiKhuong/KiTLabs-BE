@@ -75,7 +75,7 @@ export class FilmAuthController {
   @UseGuards(FilmJwtGuard)
   @Post("logout")
   logout(@FilmCurrentUser() user: FilmPrincipal) {
-    return this.auth.logout(user.userId);
+    return this.auth.logout(user.userId, user.authSource);
   }
 
   @ApiOperation({ summary: "Get user profile" })

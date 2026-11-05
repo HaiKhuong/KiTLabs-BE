@@ -206,6 +206,7 @@ export class FilmEpisode extends FilmBase {
   @Column({ name: "duration_seconds", default: 0 }) durationSeconds!: number;
   @Column({ type: "bigint", default: 0 }) views!: string;
   @Column({ name: "thumbnail_url", type: "varchar", nullable: true }) thumbnailUrl!: string | null;
+  @Column({ name: "sort_order", type: "int", default: 0 }) sortOrder!: number;
 }
 @Index(["externalProvider", "externalReference"], { unique: true })
 @Entity("episode_sources")
