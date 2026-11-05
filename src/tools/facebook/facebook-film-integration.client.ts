@@ -12,6 +12,14 @@ export type FilmSyncResult = {
   createdSource: boolean;
 };
 
+type ApiEnvelope<T> = { success?: boolean; data?: T };
+
+function unwrapApiResponse<T>(payload: T | ApiEnvelope<T>): T {
+  return payload && typeof payload === "object" && "data" in payload && payload.data !== undefined
+    ? payload.data
+    : payload as T;
+}
+
 export function facebookPermalink(kind: FacebookContentKind, pageGraphId: string, objectId: string): string {
   return kind === FacebookContentKind.REEL
     ? `https://www.facebook.com/reel/${encodeURIComponent(objectId)}/`
@@ -39,7 +47,7 @@ export class FacebookFilmIntegrationClient {
       headers: { "x-film-integration-key": key },
       timeout: 10_000,
     });
-    return response.data;
+    return unwrapApiResponse(response.data);
   }
 
   async sync(post: FacebookPost, page: FacebookPage): Promise<FilmSyncResult> {
@@ -63,7 +71,7 @@ export class FacebookFilmIntegrationClient {
         },
         { headers: { "x-film-integration-key": key }, timeout: 15_000 },
       );
-      return response.data;
+      return unwrapApiResponse(response.data as FilmSyncResult | ApiEnvelope<FilmSyncResult>);
     } catch (error) {
       const axiosError = error as AxiosError<{ message?: string | string[] }>;
       const remoteMessage = axiosError.response?.data?.message;

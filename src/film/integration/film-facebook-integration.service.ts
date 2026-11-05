@@ -69,7 +69,7 @@ export class FilmFacebookIntegrationService {
       const source = await sources.save(sources.create({
         episodeId: episode.id,
         serverName: "Facebook",
-        sourceType: SourceType.EMBED,
+        sourceType: SourceType.DIRECT_LINK,
         quality: VideoQuality.AUTO,
         videoUrl: dto.permalink,
         isActive: true,

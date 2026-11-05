@@ -56,6 +56,7 @@ export enum SourceType {
   MP4 = "MP4",
   EMBED = "EMBED",
   IFRAME = "IFRAME",
+  DIRECT_LINK = "DIRECT_LINK",
 }
 export enum VideoQuality {
   P360 = "360P",
