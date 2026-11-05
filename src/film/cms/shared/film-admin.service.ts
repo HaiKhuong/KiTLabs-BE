@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from "@nestjs/common";
+import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
 import { InjectDataSource } from "@nestjs/typeorm";
 import { DataSource, EntityTarget, In, IsNull, Not } from "typeorm";
 import {
@@ -27,6 +27,7 @@ import {
   FilmImageUpload,
   FilmReport,
   FilmSetting,
+  ItemType,
 } from "../../entities/film.entities";
 import { filmRankFor } from "../../shared/film-rank.util";
 
@@ -241,10 +242,12 @@ export class FilmAdminService {
 
   async adminCreate(resource: string, data: Record<string, unknown>) {
     const genreIds = (data.genreIds || data.genre_ids) as string[] | undefined;
+    const titleItemId = data.titleItemId as string | undefined;
     const cleanData = { ...data };
     delete cleanData.genreIds;
     delete cleanData.genre_ids;
     delete cleanData.genres;
+    delete cleanData.titleItemId;
 
     if (resource === "episode-sources" && cleanData.isActive !== false) {
       return this.saveEpisodeSource(null, cleanData);
@@ -252,6 +255,10 @@ export class FilmAdminService {
 
     const repo = this.db.getRepository(this.target(resource));
     const created = await repo.save(repo.create(cleanData));
+
+    if (resource === "users" && titleItemId) {
+      return this.equipUserTitle((created as FilmUser).id, titleItemId);
+    }
 
     if (resource === "movies" && Array.isArray(genreIds)) {
       await this.syncMovieGenres((created as any).id, genreIds);
@@ -264,10 +271,12 @@ export class FilmAdminService {
 
   async adminUpdate(resource: string, id: string, data: Record<string, unknown>) {
     const genreIds = (data.genreIds || data.genre_ids) as string[] | undefined;
+    const titleItemId = data.titleItemId as string | undefined;
     const cleanData = { ...data };
     delete cleanData.genreIds;
     delete cleanData.genre_ids;
     delete cleanData.genres;
+    delete cleanData.titleItemId;
 
     if (resource === "episode-sources") {
       return this.saveEpisodeSource(id, cleanData);
@@ -283,6 +292,10 @@ export class FilmAdminService {
     Object.assign(row, cleanData, { id });
     const saved = await repo.save(row);
 
+    if (resource === "users" && titleItemId) {
+      return this.equipUserTitle(id, titleItemId);
+    }
+
     if (resource === "movies" && Array.isArray(genreIds)) {
       await this.syncMovieGenres(id, genreIds);
       const [withG] = await this.withGenres([saved as FilmMovie]);
@@ -290,6 +303,47 @@ export class FilmAdminService {
     }
 
     return saved;
+  }
+
+  private async equipUserTitle(userId: string, itemId: string) {
+    return this.db.transaction(async (manager) => {
+      const item = await manager.getRepository(FilmItem).findOne({
+        where: { id: itemId, type: ItemType.TITLE },
+      });
+      if (!item) throw new BadRequestException("Danh hiệu không hợp lệ");
+
+      const slug = String(item.assetConfig?.slug || "").trim();
+      if (!slug) throw new BadRequestException("Item danh hiệu chưa cấu hình assetConfig.slug");
+
+      await manager
+        .getRepository(FilmUserInventory)
+        .createQueryBuilder("inventory")
+        .update()
+        .set({ isEquipped: false })
+        .where("user_id = :userId", { userId })
+        .andWhere("is_equipped = true")
+        .andWhere(`item_id IN (SELECT id FROM items WHERE type = 'TITLE')`)
+        .execute();
+
+      const inventoryRepo = manager.getRepository(FilmUserInventory);
+      let inventory = await inventoryRepo.findOne({
+        where: { userId, itemId },
+        withDeleted: true,
+      });
+      if (!inventory) {
+        inventory = inventoryRepo.create({ userId, itemId, acquiredAt: new Date() });
+      }
+      inventory.isEquipped = true;
+      inventory.deletedAt = null;
+      await inventoryRepo.save(inventory);
+
+      const userRepo = manager.getRepository(FilmUser);
+      const user = await userRepo.findOne({ where: { id: userId }, withDeleted: true });
+      if (!user) throw new NotFoundException();
+      user.currentTitle = slug;
+      await userRepo.save(user);
+      return user;
+    });
   }
 
   async reorderEpisodes(movieId: string, episodeIds: string[]) {
@@ -404,26 +458,40 @@ export class FilmAdminService {
 
   private async withDevices(users: FilmUser[]) {
     if (!users.length) return [];
+    const userIds = users.map((user) => user.id);
+    const equippedTitles = await this.db
+      .getRepository(FilmUserInventory)
+      .createQueryBuilder("inventory")
+      .innerJoin(FilmItem, "item", "item.id = inventory.itemId")
+      .select("inventory.userId", "userId")
+      .addSelect("inventory.itemId", "itemId")
+      .addSelect("item.assetConfig ->> 'slug'", "slug")
+      .where("inventory.userId IN (:...userIds)", { userIds })
+      .andWhere("inventory.isEquipped = true")
+      .andWhere("item.type = :type", { type: ItemType.TITLE })
+      .getRawMany<{ userId: string; itemId: string; slug: string | null }>();
+    const titleMap = new Map(equippedTitles.map((title) => [title.userId, title]));
     const deviceIds = Array.from(
       new Set(users.map((u) => u.deviceId).filter((id): id is string => Boolean(id))),
     );
 
-    if (!deviceIds.length) {
-      return users.map((u) => ({ ...u, device: null }));
-    }
-
-    const devices = await this.db.getRepository(FilmDevice).find({
-      where: { id: In(deviceIds) },
-      withDeleted: true,
-    });
+    const devices = deviceIds.length
+      ? await this.db.getRepository(FilmDevice).find({
+          where: { id: In(deviceIds) },
+          withDeleted: true,
+        })
+      : [];
 
     const deviceMap = new Map<string, FilmDevice>();
     devices.forEach((d) => deviceMap.set(d.id, d));
 
     return users.map((u) => {
       const device = u.deviceId ? deviceMap.get(u.deviceId) || null : null;
+      const equippedTitle = titleMap.get(u.id);
       return {
         ...u,
+        currentTitle: equippedTitle?.slug || u.currentTitle,
+        equippedTitleItemId: equippedTitle?.itemId || null,
         device,
         lastIp: device?.lastIp || device?.firstIp || null,
         lastUserAgent: device?.userAgent || null,
