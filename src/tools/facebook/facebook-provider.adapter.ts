@@ -284,6 +284,7 @@ export class FacebookProviderAdapter {
     filePath: string,
     fileSize: number,
     onProgress?: (uploadedBytes: number) => void,
+    signal?: AbortSignal,
   ): Promise<void> {
     try {
       const stream = createReadStream(filePath);
@@ -311,6 +312,7 @@ export class FacebookProviderAdapter {
         maxBodyLength: Infinity,
         maxContentLength: Infinity,
         timeout: Number(process.env.META_UPLOAD_TIMEOUT_MS ?? 1_800_000),
+        signal,
       });
     } catch (error) {
       throw this.asProviderError(error);

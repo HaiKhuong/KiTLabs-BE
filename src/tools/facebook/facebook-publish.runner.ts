@@ -34,6 +34,8 @@ import {
 
 const CHUNK_BYTES = Number(process.env.FACEBOOK_UPLOAD_CHUNK_BYTES ?? 16 * 1024 * 1024);
 
+class FacebookPublishCancelled extends Error {}
+
 export function formatCaptionWithTitle(title?: string | null, message?: string | null): string {
   const cleanTitle = (title ?? "").trim();
   const cleanMessage = (message ?? "").trim();
@@ -49,6 +51,8 @@ export function formatCaptionWithTitle(title?: string | null, message?: string |
 @Injectable()
 export class FacebookPublishRunner {
   private readonly logger = new Logger(FacebookPublishRunner.name);
+  private readonly cancelledPosts = new Set<string>();
+  private readonly activeUploads = new Map<string, AbortController>();
 
   constructor(
     @InjectRepository(FacebookPost, "tool") private readonly posts: Repository<FacebookPost>,
@@ -63,6 +67,11 @@ export class FacebookPublishRunner {
     private readonly appConfig: AppConfigService,
     private readonly telegramService: TelegramService,
   ) { }
+
+  requestCancel(postId: string): void {
+    this.cancelledPosts.add(postId);
+    this.activeUploads.get(postId)?.abort();
+  }
 
   async run(postId: string): Promise<void> {
     const post = await this.posts.findOne({ where: { id: postId } });
@@ -82,6 +91,7 @@ export class FacebookPublishRunner {
     const started = new Date();
     const phaseBefore = post.uploadPhase;
     try {
+      await this.assertNotCancelled(post);
       post.status = FacebookPostStatus.PUBLISHING;
       await this.posts.save(post);
       this.emit(post, "facebook.post.updated");
@@ -89,7 +99,9 @@ export class FacebookPublishRunner {
       if (!(post.facebookPostId && post.uploadPhase === FacebookUploadPhase.CONFIRMED)) {
         await this.publish(post, ready.page, ready.token);
       }
+      await this.assertNotCancelled(post);
       await this.commentIfNeeded(post, ready.page, ready.token);
+      await this.assertNotCancelled(post);
       post.status = FacebookPostStatus.PUBLISHED;
       post.publishedAt = post.publishedAt ?? new Date();
       post.errorCode = null;
@@ -110,6 +122,7 @@ export class FacebookPublishRunner {
         this.logger.warn(`Telegram notification could not be attempted for Facebook post=${post.id}.`);
       }
     } catch (error) {
+      if (error instanceof FacebookPublishCancelled || this.cancelledPosts.has(post.id)) return;
       const providerError = error instanceof FacebookProviderError ? error : null;
       if (providerError?.permission) {
         await this.block(post, providerError.code, "Page hoặc token không còn quyền đăng.");
@@ -134,7 +147,16 @@ export class FacebookPublishRunner {
       }
       await this.markFailed(post, providerError, started, phaseBefore);
       throw new UnrecoverableError("Facebook publish failed");
+    } finally {
+      this.activeUploads.delete(post.id);
+      this.cancelledPosts.delete(post.id);
     }
+  }
+
+  private async assertNotCancelled(post: FacebookPost): Promise<void> {
+    if (this.cancelledPosts.has(post.id)) throw new FacebookPublishCancelled();
+    const current = await this.posts.findOne({ where: { id: post.id }, select: { id: true, status: true } });
+    if (current?.status === FacebookPostStatus.CANCELLED) throw new FacebookPublishCancelled();
   }
 
   private escapeTelegramMarkdown(str: string): string {
@@ -312,6 +334,7 @@ export class FacebookPublishRunner {
   }
 
   private async publishOnce(post: FacebookPost, send: () => Promise<{ id: string }>): Promise<void> {
+    await this.assertNotCancelled(post);
     post.uploadPhase = FacebookUploadPhase.STARTED;
     post.status = FacebookPostStatus.PUBLISHING;
     await this.posts.save(post);
@@ -322,6 +345,7 @@ export class FacebookPublishRunner {
     this.emit(post, "facebook.post.updated");
     try {
       const created = await send();
+      await this.assertNotCancelled(post);
       post.facebookPostId = created.id;
       post.uploadPhase = FacebookUploadPhase.CONFIRMED;
       if (post.fileSize) post.uploadOffset = post.fileSize;
@@ -338,11 +362,13 @@ export class FacebookPublishRunner {
   }
 
   private async publishVideo(post: FacebookPost, page: FacebookPage, token: string): Promise<void> {
+    await this.assertNotCancelled(post);
     const filePath = post.localPath ?? "";
     const fileSize = Number(post.fileSize ?? (await stat(filePath)).size);
     post.status = FacebookPostStatus.PUBLISHING;
     if (!post.facebookPostId || !post.uploadSessionId) {
       const started = await this.provider.startVideo(token, page.pageId, fileSize);
+      await this.assertNotCancelled(post);
       post.facebookPostId = started.videoId;
       post.uploadSessionId = started.uploadSessionId;
       post.uploadOffset = String(started.startOffset);
@@ -353,6 +379,7 @@ export class FacebookPublishRunner {
     } else {
       await this.transferUntilDone(post, page, token, filePath, fileSize, Number(post.uploadOffset) + CHUNK_BYTES);
     }
+    await this.assertNotCancelled(post);
     post.uploadOffset = String(fileSize);
     post.uploadPhase = FacebookUploadPhase.UNCERTAIN;
     await this.posts.save(post);
@@ -367,6 +394,7 @@ export class FacebookPublishRunner {
       fullDescription,
       post.thumbnailPath,
     );
+    await this.assertNotCancelled(post);
     post.uploadPhase = FacebookUploadPhase.CONFIRMED;
     await this.posts.save(post);
     this.emit(post, "facebook.post.updated");
@@ -383,6 +411,7 @@ export class FacebookPublishRunner {
     let start = Number(post.uploadOffset);
     let end = Math.min(fileSize, Math.max(firstEnd, start + Math.min(CHUNK_BYTES, fileSize - start)));
     while (start < fileSize) {
+      await this.assertNotCancelled(post);
       const next = await this.provider.transferVideo({
         pageToken: token,
         pageId: page.pageId,
@@ -391,6 +420,7 @@ export class FacebookPublishRunner {
         startOffset: start,
         endOffset: end,
       });
+      await this.assertNotCancelled(post);
       start = next.startOffset;
       post.uploadOffset = String(start);
       await this.posts.save(post);
@@ -401,11 +431,13 @@ export class FacebookPublishRunner {
   }
 
   private async publishReel(post: FacebookPost, page: FacebookPage, token: string): Promise<void> {
+    await this.assertNotCancelled(post);
     const filePath = post.localPath ?? "";
     const fileSize = Number(post.fileSize ?? (await stat(filePath)).size);
     post.status = FacebookPostStatus.PUBLISHING;
     if (!post.facebookPostId || !post.uploadSessionId) {
       const started = await this.provider.startReel(token, page.pageId);
+      await this.assertNotCancelled(post);
       post.facebookPostId = started.videoId;
       post.uploadSessionId = started.uploadUrl;
       post.uploadOffset = "0";
@@ -414,13 +446,17 @@ export class FacebookPublishRunner {
       this.emit(post, "facebook.post.updated");
     }
     if (post.uploadPhase === FacebookUploadPhase.STARTED) {
+      const controller = new AbortController();
+      this.activeUploads.set(post.id, controller);
       await this.provider.uploadReel(post.uploadSessionId ?? "", token, filePath, fileSize, (uploadedBytes) => {
         post.uploadOffset = String(uploadedBytes);
         void this.posts
           .update(post.id, { uploadOffset: String(uploadedBytes) })
           .then(() => this.emit(post, "facebook.post.updated"))
           .catch(() => undefined);
-      });
+      }, controller.signal);
+      this.activeUploads.delete(post.id);
+      await this.assertNotCancelled(post);
     }
     post.uploadOffset = String(fileSize);
     post.uploadPhase = FacebookUploadPhase.UNCERTAIN;
@@ -435,6 +471,7 @@ export class FacebookPublishRunner {
       fullDescription,
       post.title,
     );
+    await this.assertNotCancelled(post);
 
     if (post.thumbnailPath && post.facebookPostId) {
       try {
@@ -484,6 +521,7 @@ export class FacebookPublishRunner {
     }
     for (const attempt of post.commentResults) {
       if (attempt.status !== "pending") continue;
+      await this.assertNotCancelled(post);
       await this.sendComment(post, token, attempt);
     }
   }

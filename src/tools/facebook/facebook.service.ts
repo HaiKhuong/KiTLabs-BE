@@ -25,7 +25,7 @@ import { FacebookCommentSettings } from "./facebook-comment-settings.entity";
 import { assertHttpsUrl, validateFacebookMedia } from "./facebook-media.validation";
 import { FacebookPage } from "./facebook-page.entity";
 import { FacebookPost } from "./facebook-post.entity";
-import { formatCaptionWithTitle } from "./facebook-publish.runner";
+import { FacebookPublishRunner, formatCaptionWithTitle } from "./facebook-publish.runner";
 import { FacebookTaskLog } from "./facebook-task-log.entity";
 import {
   CreateFacebookPostDto,
@@ -57,6 +57,7 @@ export class FacebookService implements OnModuleInit, OnModuleDestroy {
     @InjectQueue(FACEBOOK_PUBLISH_QUEUE) private readonly queue: Queue,
     private readonly platformFb: PlatformFacebookService,
     private readonly realtime: ToolsRealtimeGateway,
+    private readonly publishRunner: FacebookPublishRunner,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -208,11 +209,22 @@ export class FacebookService implements OnModuleInit, OnModuleDestroy {
 
   async cancelPost(userId: string, id: string) {
     const post = await this.ownedPost(userId, id);
-    if (post.status !== FacebookPostStatus.SCHEDULED) throw new ConflictException("Chỉ hủy được bài đang chờ đăng");
+    if (![FacebookPostStatus.SCHEDULED, FacebookPostStatus.PUBLISHING].includes(post.status)) {
+      throw new ConflictException("Chỉ hủy được bài đang chờ hoặc đang đăng");
+    }
+    if (post.status === FacebookPostStatus.PUBLISHING) this.publishRunner.requestCancel(post.id);
     await this.removeJob(post.id);
     post.status = FacebookPostStatus.CANCELLED;
     post.queueJobId = null;
+    post.errorCode = null;
+    post.errorMessage = null;
     await this.posts.save(post);
+    this.realtime.notifyUser(post.userId, "facebook.post.updated", {
+      postId: post.id,
+      status: post.status,
+      uploadPhase: post.uploadPhase,
+      uploadOffset: post.uploadOffset ? Number(post.uploadOffset) : 0,
+    });
     return this.mapPost(post);
   }
 
@@ -514,7 +526,7 @@ export class FacebookService implements OnModuleInit, OnModuleDestroy {
       errorCode: row.errorCode,
       errorMessage: row.errorMessage,
       canEdit: [FacebookPostStatus.DRAFT, FacebookPostStatus.SCHEDULED].includes(row.status),
-      canCancel: row.status === FacebookPostStatus.SCHEDULED,
+      canCancel: [FacebookPostStatus.SCHEDULED, FacebookPostStatus.PUBLISHING].includes(row.status),
       canRepublish: [FacebookPostStatus.FAILED, FacebookPostStatus.NEEDS_REVIEW].includes(row.status),
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
