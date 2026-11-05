@@ -126,7 +126,7 @@ export class FilmAdminService {
     }
 
     const order = resource === "episodes"
-      ? { sortOrder: "ASC", episodeNumber: "ASC" }
+      ? { episodeNumber: "ASC" }
       : resource === "episode-sources"
         ? { isActive: "DESC", priority: "ASC", createdAt: "DESC" }
         : { createdAt: "DESC" };
@@ -250,17 +250,6 @@ export class FilmAdminService {
       return this.saveEpisodeSource(null, cleanData);
     }
 
-    if (resource === "episodes" && cleanData.sortOrder === undefined) {
-      const movieId = String(cleanData.movieId || "");
-      const result = await this.db
-        .getRepository(FilmEpisode)
-        .createQueryBuilder("episode")
-        .select("COALESCE(MAX(episode.sortOrder), -1)", "max")
-        .where("episode.movieId = :movieId", { movieId })
-        .getRawOne<{ max: string }>();
-      cleanData.sortOrder = Number(result?.max ?? -1) + 1;
-    }
-
     const repo = this.db.getRepository(this.target(resource));
     const created = await repo.save(repo.create(cleanData));
 
@@ -308,8 +297,14 @@ export class FilmAdminService {
       const repo = manager.getRepository(FilmEpisode);
       const episodes = await repo.find({ where: { movieId, id: In(episodeIds) } });
       if (episodes.length !== episodeIds.length) throw new NotFoundException("Episode not found in movie");
-      const byId = new Map(episodes.map((episode) => [episode.id, episode]));
-      await repo.save(episodeIds.map((id, index) => Object.assign(byId.get(id)!, { sortOrder: index })));
+      // Use temporary negative values first to avoid the unique (movie_id, episode_number)
+      // constraint while two existing episode numbers are being swapped.
+      for (const [index, id] of episodeIds.entries()) {
+        await repo.update({ id, movieId }, { episodeNumber: String(-(index + 1)) });
+      }
+      for (const [index, id] of episodeIds.entries()) {
+        await repo.update({ id, movieId }, { episodeNumber: String(index + 1) });
+      }
       return { reordered: true, episodeIds };
     });
   }

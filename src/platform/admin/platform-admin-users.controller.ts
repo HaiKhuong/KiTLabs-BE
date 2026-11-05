@@ -10,7 +10,9 @@ import {
 } from "@nestjs/common";
 import { ApiOperation, ApiTags } from "@nestjs/swagger";
 import { PlatformAdminService } from "./platform-admin.service";
+import { PlatformAdminAccess } from "../credentials/platform-admin-access.decorator";
 
+@PlatformAdminAccess()
 @ApiTags("Platform Admin - Users")
 @Controller("platform/admin/admin-users")
 export class PlatformAdminUsersController {
