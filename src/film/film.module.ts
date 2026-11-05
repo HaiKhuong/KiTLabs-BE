@@ -24,6 +24,8 @@ import { FilmTrackingService } from "./guest/tracking/film-tracking.service";
 import { DatabaseModule } from "../database/database.module";
 import { FilmMissionController } from "./guest/mission/film-mission.controller";
 import { FilmMissionService } from "./guest/mission/film-mission.service";
+import { FilmFacebookIntegrationController } from "./integration/film-facebook-integration.controller";
+import { FilmFacebookIntegrationService } from "./integration/film-facebook-integration.service";
 
 @Module({
   imports: [
@@ -40,6 +42,7 @@ import { FilmMissionService } from "./guest/mission/film-mission.service";
     FilmChatController,
     FilmTrackingController,
     FilmUploadController,
+    FilmFacebookIntegrationController,
     ...FILM_CATALOG_ADMIN_CONTROLLERS,
     ...FILM_CONTENT_ADMIN_CONTROLLERS,
     ...FILM_OPERATIONS_ADMIN_CONTROLLERS,
@@ -56,6 +59,7 @@ import { FilmMissionService } from "./guest/mission/film-mission.service";
     FilmChatService,
     FilmAdminService,
     FilmChatGateway,
+    FilmFacebookIntegrationService,
   ],
   exports: [
     FilmCatalogService,

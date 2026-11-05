@@ -15,6 +15,7 @@ import { FacebookPublishRunner } from "./facebook-publish.runner";
 import { FacebookService } from "./facebook.service";
 import { FACEBOOK_PUBLISH_QUEUE } from "./facebook.types";
 import { FacebookTaskLog } from "./facebook-task-log.entity";
+import { FacebookFilmIntegrationClient } from "./facebook-film-integration.client";
 
 @Module({
   imports: [
@@ -33,6 +34,6 @@ import { FacebookTaskLog } from "./facebook-task-log.entity";
     PlatformModule,
   ],
   controllers: [FacebookController],
-  providers: [FacebookService, FacebookProviderAdapter, FacebookPublishRunner, FacebookProcessor],
+  providers: [FacebookService, FacebookProviderAdapter, FacebookPublishRunner, FacebookProcessor, FacebookFilmIntegrationClient],
 })
 export class FacebookModule {}

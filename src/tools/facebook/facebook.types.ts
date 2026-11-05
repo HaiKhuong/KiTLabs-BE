@@ -12,6 +12,8 @@ import {
   Max,
   MaxLength,
   Min,
+  IsNumber,
+  ValidateIf,
   ValidateNested,
 } from "class-validator";
 
@@ -85,6 +87,21 @@ export class CreateFacebookPostDto {
 
   @IsBoolean()
   publish!: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  filmSyncEnabled?: boolean;
+
+  @ValidateIf((dto: CreateFacebookPostDto) => dto.filmSyncEnabled === true)
+  @IsUUID()
+  filmMovieId?: string;
+
+  @ValidateIf((dto: CreateFacebookPostDto) => dto.filmSyncEnabled === true)
+  @Type(() => Number)
+  @IsNumber({ maxDecimalPlaces: 1 })
+  @Min(0.1)
+  @Max(99999.9)
+  filmEpisodeNumber?: number;
 }
 
 export class UpdateFacebookPostDto {
@@ -125,6 +142,21 @@ export class UpdateFacebookPostDto {
   @IsOptional()
   @IsBoolean()
   publish?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  filmSyncEnabled?: boolean;
+
+  @IsOptional()
+  @IsUUID()
+  filmMovieId?: string | null;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber({ maxDecimalPlaces: 1 })
+  @Min(0.1)
+  @Max(99999.9)
+  filmEpisodeNumber?: number | null;
 }
 
 export class FacebookPostQueryDto {

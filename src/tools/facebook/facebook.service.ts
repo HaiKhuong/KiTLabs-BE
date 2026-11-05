@@ -27,6 +27,7 @@ import { FacebookPage } from "./facebook-page.entity";
 import { FacebookPost } from "./facebook-post.entity";
 import { FacebookPublishRunner, formatCaptionWithTitle } from "./facebook-publish.runner";
 import { FacebookTaskLog } from "./facebook-task-log.entity";
+import { FacebookFilmIntegrationClient } from "./facebook-film-integration.client";
 import {
   CreateFacebookPostDto,
   FACEBOOK_PUBLISH_QUEUE,
@@ -58,6 +59,7 @@ export class FacebookService implements OnModuleInit, OnModuleDestroy {
     private readonly platformFb: PlatformFacebookService,
     private readonly realtime: ToolsRealtimeGateway,
     private readonly publishRunner: FacebookPublishRunner,
+    private readonly filmIntegration: FacebookFilmIntegrationClient,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -109,6 +111,11 @@ export class FacebookService implements OnModuleInit, OnModuleDestroy {
     const resolvedTitle = dto.title?.trim() || media?.originalFileName || null;
     const resolvedMessage = formatCaptionWithTitle(dto.title?.trim() || null, dto.message) || null;
     this.assertPublishable(dto.publish, dto.kind, resolvedMessage, media?.localPath);
+    const videoLike = dto.kind === FacebookContentKind.VIDEO || dto.kind === FacebookContentKind.REEL;
+    const filmSyncEnabled = videoLike && (dto.filmSyncEnabled ?? true);
+    if (filmSyncEnabled && (!dto.filmMovieId || !dto.filmEpisodeNumber)) {
+      throw new BadRequestException("Vui lòng chọn phim và nhập số tập");
+    }
     const post = this.posts.create({
       userId,
       pageId: page.id,
@@ -132,6 +139,14 @@ export class FacebookService implements OnModuleInit, OnModuleDestroy {
       errorCode: null,
       errorMessage: null,
       publishedAt: null,
+      filmSyncEnabled,
+      filmMovieId: filmSyncEnabled ? dto.filmMovieId! : null,
+      filmEpisodeNumber: filmSyncEnabled ? String(dto.filmEpisodeNumber) : null,
+      filmSyncStatus: filmSyncEnabled ? "pending" : null,
+      filmSyncError: null,
+      filmEpisodeId: null,
+      filmSourceId: null,
+      filmSyncedAt: null,
     });
     await this.posts.save(post);
     if (dto.publish) await this.queuePost(post);
@@ -163,6 +178,22 @@ export class FacebookService implements OnModuleInit, OnModuleDestroy {
       } else {
         post.thumbnailPath = await this.maybeStoreThumbnail(userId, post.kind, dto.thumbnailPath);
       }
+    }
+    const nextVideoLike = post.kind === FacebookContentKind.VIDEO || post.kind === FacebookContentKind.REEL;
+    if (!nextVideoLike) {
+      post.filmSyncEnabled = false;
+      post.filmMovieId = null;
+      post.filmEpisodeNumber = null;
+      post.filmSyncStatus = null;
+    } else {
+      if (dto.filmSyncEnabled !== undefined) post.filmSyncEnabled = dto.filmSyncEnabled;
+      if (dto.filmMovieId !== undefined) post.filmMovieId = dto.filmMovieId;
+      if (dto.filmEpisodeNumber !== undefined) post.filmEpisodeNumber = dto.filmEpisodeNumber == null ? null : String(dto.filmEpisodeNumber);
+      if (post.filmSyncEnabled && (!post.filmMovieId || !post.filmEpisodeNumber)) {
+        throw new BadRequestException("Vui lòng chọn phim và nhập số tập");
+      }
+      post.filmSyncStatus = post.filmSyncEnabled ? "pending" : null;
+      post.filmSyncError = null;
     }
     const publish = dto.publish === true;
     this.assertPublishable(publish, post.kind, post.message, post.localPath);
@@ -202,6 +233,14 @@ export class FacebookService implements OnModuleInit, OnModuleDestroy {
       queueJobId: null,
       errorCode: null,
       errorMessage: null,
+      filmSyncEnabled: source.filmSyncEnabled,
+      filmMovieId: source.filmMovieId,
+      filmEpisodeNumber: source.filmEpisodeNumber,
+      filmSyncStatus: source.filmSyncEnabled ? "pending" : null,
+      filmSyncError: null,
+      filmEpisodeId: null,
+      filmSourceId: null,
+      filmSyncedAt: null,
     });
     await this.posts.save(copy);
     return this.mapPost(await this.ownedPost(userId, copy.id));
@@ -247,6 +286,34 @@ export class FacebookService implements OnModuleInit, OnModuleDestroy {
     await this.posts.save(post);
     await this.queuePost(post, true);
     return this.mapPost(await this.ownedPost(userId, id));
+  }
+
+  searchFilmMovies(query: string) {
+    return this.filmIntegration.searchMovies(query);
+  }
+
+  async retryFilmSync(userId: string, id: string) {
+    const post = await this.ownedPost(userId, id);
+    if (post.status !== FacebookPostStatus.PUBLISHED) throw new ConflictException("Bài Facebook chưa đăng thành công");
+    if (!post.filmSyncEnabled || !post.page) throw new ConflictException("Bài đăng không bật đồng bộ Film");
+    try {
+      const result = await this.filmIntegration.sync(post, post.page);
+      post.filmSyncStatus = "synced";
+      post.filmSyncError = null;
+      post.filmEpisodeId = result.episodeId;
+      post.filmSourceId = result.sourceId;
+      post.filmSyncedAt = new Date();
+    } catch (error) {
+      post.filmSyncStatus = "failed";
+      post.filmSyncError = error instanceof Error ? error.message : "Không thể đồng bộ Film DB";
+    }
+    await this.posts.save(post);
+    this.realtime.notifyUser(post.userId, "facebook.post.updated", {
+      postId: post.id,
+      status: post.status,
+      filmSyncStatus: post.filmSyncStatus,
+    });
+    return this.mapPost(post);
   }
 
   async listAffiliateLinks(userId: string) {
@@ -525,6 +592,14 @@ export class FacebookService implements OnModuleInit, OnModuleDestroy {
       sourcePostId: row.sourcePostId,
       errorCode: row.errorCode,
       errorMessage: row.errorMessage,
+      filmSyncEnabled: row.filmSyncEnabled,
+      filmMovieId: row.filmMovieId,
+      filmEpisodeNumber: row.filmEpisodeNumber ? Number(row.filmEpisodeNumber) : null,
+      filmSyncStatus: row.filmSyncStatus,
+      filmSyncError: row.filmSyncError,
+      filmEpisodeId: row.filmEpisodeId,
+      filmSourceId: row.filmSourceId,
+      filmSyncedAt: row.filmSyncedAt,
       canEdit: [FacebookPostStatus.DRAFT, FacebookPostStatus.SCHEDULED].includes(row.status),
       canCancel: [FacebookPostStatus.SCHEDULED, FacebookPostStatus.PUBLISHING].includes(row.status),
       canRepublish: [FacebookPostStatus.FAILED, FacebookPostStatus.NEEDS_REVIEW].includes(row.status),

@@ -207,6 +207,7 @@ export class FilmEpisode extends FilmBase {
   @Column({ type: "bigint", default: 0 }) views!: string;
   @Column({ name: "thumbnail_url", type: "varchar", nullable: true }) thumbnailUrl!: string | null;
 }
+@Index(["externalProvider", "externalReference"], { unique: true })
 @Entity("episode_sources")
 export class FilmEpisodeSource extends FilmBase {
   @Index() @Column("uuid", { name: "episode_id" }) episodeId!: string;
@@ -216,6 +217,8 @@ export class FilmEpisodeSource extends FilmBase {
   @Column({ name: "video_url", type: "text" }) videoUrl!: string;
   @Column({ name: "is_active", default: true }) isActive!: boolean;
   @Column({ default: 1 }) priority!: number;
+  @Column({ name: "external_provider", type: "varchar", length: 32, nullable: true }) externalProvider!: string | null;
+  @Column({ name: "external_reference", type: "varchar", length: 128, nullable: true }) externalReference!: string | null;
 }
 
 @Index(["userId", "episodeId"], { unique: true })

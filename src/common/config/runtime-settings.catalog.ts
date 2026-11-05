@@ -16,6 +16,7 @@ export const SECRET_SETTING_CODES = new Set([
   "HF_TOKEN",
   "DOUYIN_COOKIE_CONTENT",
   "TELEGRAM_BOT_TOKEN",
+  "INTEGRATION_SERVICE_KEY",
 ]);
 
 /** Stored as `${code}__App` / `${code}__Web` so one Nest can keep both cookies. */
@@ -70,6 +71,20 @@ export const RUNTIME_SETTING_FIELDS: RuntimeSettingField[] = [
     group: "social-auth",
     kind: "string",
     label: "API Server endpoint",
+    defaultValue: "",
+  },
+  {
+    code: "INTEGRATION_BASE_URL",
+    group: "services",
+    kind: "string",
+    label: "Integration API URL",
+    defaultValue: "",
+  },
+  {
+    code: "INTEGRATION_SERVICE_KEY",
+    group: "services",
+    kind: "secret",
+    label: "Integration service key",
     defaultValue: "",
   },
   { code: "TELEGRAM_BOT_TOKEN", group: "telegram", kind: "secret", label: "Telegram Bot Token", defaultValue: "" },

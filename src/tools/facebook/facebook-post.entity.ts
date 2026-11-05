@@ -87,4 +87,28 @@ export class FacebookPost extends BaseEntity {
 
   @Column({ name: "error_message", type: "text", nullable: true })
   errorMessage!: string | null;
+
+  @Column({ name: "film_sync_enabled", default: false })
+  filmSyncEnabled!: boolean;
+
+  @Column({ name: "film_movie_id", type: "uuid", nullable: true })
+  filmMovieId!: string | null;
+
+  @Column({ name: "film_episode_number", type: "numeric", precision: 6, scale: 1, nullable: true })
+  filmEpisodeNumber!: string | null;
+
+  @Column({ name: "film_sync_status", type: "varchar", length: 16, nullable: true })
+  filmSyncStatus!: "pending" | "synced" | "failed" | null;
+
+  @Column({ name: "film_sync_error", type: "text", nullable: true })
+  filmSyncError!: string | null;
+
+  @Column({ name: "film_episode_id", type: "uuid", nullable: true })
+  filmEpisodeId!: string | null;
+
+  @Column({ name: "film_source_id", type: "uuid", nullable: true })
+  filmSourceId!: string | null;
+
+  @Column({ name: "film_synced_at", type: "timestamptz", nullable: true })
+  filmSyncedAt!: Date | null;
 }

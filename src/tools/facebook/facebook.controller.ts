@@ -56,6 +56,18 @@ export class FacebookController {
     return this.service.republishPost(user.userId, id);
   }
 
+  @Post("posts/:id/sync-film")
+  syncFilm(@CurrentUser() user: AuthUser, @Param("id") id: string) {
+    this.desktopOnly();
+    return this.service.retryFilmSync(user.userId, id);
+  }
+
+  @Get("film/movies")
+  filmMovies(@Query("q") q = "") {
+    this.desktopOnly();
+    return this.service.searchFilmMovies(q);
+  }
+
   @Get("affiliate-links")
   affiliateLinks(@CurrentUser() user: AuthUser) {
     this.desktopOnly();

@@ -20,6 +20,7 @@ import { FacebookPage } from "./facebook-page.entity";
 import { FacebookPost } from "./facebook-post.entity";
 import { FacebookProviderAdapter, FacebookProviderError } from "./facebook-provider.adapter";
 import { FacebookTaskLog } from "./facebook-task-log.entity";
+import { FacebookFilmIntegrationClient } from "./facebook-film-integration.client";
 import {
   FacebookAccountStatus,
   FacebookCommentAttempt,
@@ -66,6 +67,7 @@ export class FacebookPublishRunner {
     private readonly realtime: ToolsRealtimeGateway,
     private readonly appConfig: AppConfigService,
     private readonly telegramService: TelegramService,
+    private readonly filmIntegration: FacebookFilmIntegrationClient,
   ) { }
 
   requestCancel(postId: string): void {
@@ -107,6 +109,7 @@ export class FacebookPublishRunner {
       post.errorCode = null;
       post.errorMessage = null;
       await this.posts.save(post);
+      await this.syncFilmIfNeeded(post, ready.page);
       await this.writeLog({
         post,
         kind: FacebookTaskKind.PUBLISH,
@@ -151,6 +154,23 @@ export class FacebookPublishRunner {
       this.activeUploads.delete(post.id);
       this.cancelledPosts.delete(post.id);
     }
+  }
+
+  private async syncFilmIfNeeded(post: FacebookPost, page: FacebookPage): Promise<void> {
+    if (!post.filmSyncEnabled || (post.kind !== FacebookContentKind.VIDEO && post.kind !== FacebookContentKind.REEL)) return;
+    try {
+      const result = await this.filmIntegration.sync(post, page);
+      post.filmSyncStatus = "synced";
+      post.filmSyncError = null;
+      post.filmEpisodeId = result.episodeId;
+      post.filmSourceId = result.sourceId;
+      post.filmSyncedAt = new Date();
+    } catch (error) {
+      post.filmSyncStatus = "failed";
+      post.filmSyncError = error instanceof Error ? error.message : "Không thể đồng bộ Film DB";
+      this.logger.warn(`Film sync failed post=${post.id}: ${post.filmSyncError}`);
+    }
+    await this.posts.save(post);
   }
 
   private async assertNotCancelled(post: FacebookPost): Promise<void> {
@@ -811,6 +831,9 @@ export class FacebookPublishRunner {
       uploadPhase: post.uploadPhase,
       uploadOffset: post.uploadOffset ? Number(post.uploadOffset) : 0,
       fileSize: post.fileSize ? Number(post.fileSize) : null,
+      filmSyncStatus: post.filmSyncStatus,
+      filmEpisodeId: post.filmEpisodeId,
+      filmSourceId: post.filmSourceId,
     });
   }
 }
