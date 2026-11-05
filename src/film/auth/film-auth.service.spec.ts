@@ -7,6 +7,11 @@ describe("FilmAuthService.profile", () => {
   const user = { id: "user-1", name: "Dao huu", currentTitle: "legacy-title", exp: "6000" } as FilmUser;
 
   function setup(currentTitle: string | null | undefined) {
+    const userNameQuery = {
+      where: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      getExists: jest.fn().mockResolvedValue(false),
+    };
     const query = {
       innerJoin: jest.fn().mockReturnThis(),
       select: jest.fn().mockReturnThis(),
@@ -22,6 +27,7 @@ describe("FilmAuthService.profile", () => {
     const userRepository = {
       findOneByOrFail: jest.fn().mockResolvedValue(user),
       save: jest.fn().mockImplementation((u: any) => Promise.resolve(u)),
+      createQueryBuilder: jest.fn().mockReturnValue(userNameQuery),
     };
     const inventoryRepository = { createQueryBuilder: jest.fn().mockReturnValue(query) };
     const db = {
@@ -37,7 +43,7 @@ describe("FilmAuthService.profile", () => {
     } as unknown as any;
     const service = new FilmAuthService(db, db, {} as JwtService, mockMissionService);
 
-    return { service, query, userRepository, inventoryRepository };
+    return { service, query, userNameQuery, userRepository, inventoryRepository };
   }
 
   it("returns the equipped TITLE slug normalized and cultivation EXP thresholds", async () => {
@@ -98,6 +104,28 @@ describe("FilmAuthService.profile", () => {
     it("rejects invalid name length", async () => {
       const { service } = setup("kim_dan_ky");
       await expect(service.updateProfile(user.id, { name: "A" })).rejects.toThrow();
+    });
+
+    it.each(["ADMIN", "Quản Trị", "bộ-đội", "Help Desk", "developer"])(
+      "rejects reserved name %s",
+      async (name) => {
+        const { service } = setup("kim_dan_ky");
+        await expect(service.updateProfile(user.id, { name })).rejects.toThrow(
+          "Tên này được dành riêng cho hệ thống",
+        );
+      },
+    );
+
+    it("rejects a duplicate name case-insensitively", async () => {
+      const { service, userNameQuery } = setup("kim_dan_ky");
+      userNameQuery.getExists.mockResolvedValue(true);
+
+      await expect(service.updateProfile(user.id, { name: "Đạo Hữu" })).rejects.toThrow(
+        "Tên này đã tồn tại",
+      );
+      expect(userNameQuery.where).toHaveBeenCalledWith("existingUser.id <> :userId", {
+        userId: user.id,
+      });
     });
   });
 });

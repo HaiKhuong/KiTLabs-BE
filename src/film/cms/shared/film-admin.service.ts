@@ -28,6 +28,7 @@ import {
   FilmReport,
   FilmSetting,
   ItemType,
+  SectRank,
 } from "../../entities/film.entities";
 import { filmRankFor } from "../../shared/film-rank.util";
 
@@ -314,6 +315,13 @@ export class FilmAdminService {
 
       const slug = String(item.assetConfig?.slug || "").trim();
       if (!slug) throw new BadRequestException("Item danh hiệu chưa cấu hình assetConfig.slug");
+      const minExp = Number(item.assetConfig?.minExp);
+      const rank = String(item.assetConfig?.rank || "") as SectRank;
+      if (!Number.isFinite(minExp) || minExp < 0 || !Object.values(SectRank).includes(rank)) {
+        throw new BadRequestException(
+          "Item danh hiệu chưa cấu hình assetConfig.minExp hoặc assetConfig.rank hợp lệ",
+        );
+      }
 
       await manager
         .getRepository(FilmUserInventory)
@@ -341,6 +349,8 @@ export class FilmAdminService {
       const user = await userRepo.findOne({ where: { id: userId }, withDeleted: true });
       if (!user) throw new NotFoundException();
       user.currentTitle = slug;
+      user.exp = String(Math.floor(minExp));
+      user.sectRank = rank;
       await userRepo.save(user);
       return user;
     });

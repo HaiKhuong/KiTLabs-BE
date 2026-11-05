@@ -1,4 +1,11 @@
-import { BadRequestException, Injectable, Logger, OnModuleInit, UnauthorizedException } from "@nestjs/common";
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  Logger,
+  OnModuleInit,
+  UnauthorizedException,
+} from "@nestjs/common";
 import { JwtService } from "@nestjs/jwt";
 import { InjectDataSource } from "@nestjs/typeorm";
 import * as bcrypt from "bcrypt";
@@ -21,6 +28,21 @@ import { FilmMissionService } from "../guest/mission/film-mission.service";
 import { buildCultivationProgress, resolveCultivationRanks } from "../shared/film-rank.util";
 
 const DEFAULT_USER_TITLE = "luyen_khi_ky";
+
+const RESERVED_FILM_NAMES = new Set([
+  "admin", "administrator", "mod", "moderator", "sysadmin", "system", "root",
+  "support", "helpdesk", "dev", "developer", "tester", "owner", "master",
+  "founder", "monitor", "supervisor", "operator", "bot", "quantri",
+  "quantrivien", "banquantri", "bodoi", "hotro", "nhanvien",
+]);
+
+const normalizeProtectedName = (name: string): string =>
+  name
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[đĐ]/g, "d")
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "");
 
 const BOT_OR_PROBE_REGEX =
   /^(node|curl|wget|python|axios|go-http-client|undici|postman|insomnia|healthcheck|kube-probe|uptime)|bot|crawler|spider|headless|lighthouse|prerender|facebookexternalhit|bytespider|ahrefs|semrush|mj12bot|dotbot|petalbot|yandex|baiduspider|bingpreview|slurp|duckduckbot/i;
@@ -506,6 +528,17 @@ export class FilmAuthService implements OnModuleInit {
       const trimmed = dto.name.trim();
       if (trimmed.length < 2 || trimmed.length > 50) {
         throw new BadRequestException("Tên phải từ 2 đến 50 ký tự");
+      }
+      if (RESERVED_FILM_NAMES.has(normalizeProtectedName(trimmed))) {
+        throw new BadRequestException("Tên này được dành riêng cho hệ thống và không thể sử dụng");
+      }
+      const duplicate = await filmRepo
+        .createQueryBuilder("existingUser")
+        .where("existingUser.id <> :userId", { userId })
+        .andWhere("LOWER(TRIM(existingUser.name)) = LOWER(:name)", { name: trimmed })
+        .getExists();
+      if (duplicate) {
+        throw new ConflictException("Tên này đã tồn tại, vui lòng chọn tên khác");
       }
       user.name = trimmed;
     }

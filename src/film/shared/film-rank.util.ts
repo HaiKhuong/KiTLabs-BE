@@ -18,6 +18,7 @@ export const DEFAULT_CULTIVATION_RANKS: readonly CultivationRankConfig[] = [
   { rank: SectRank.NGUYEN_ANH, slug: "nguyen_anh_ky", label: "Nguyên Anh Kỳ", minExp: 20_000, nextExp: 50_000 },
   { rank: SectRank.HOA_THAN, slug: "hoa_than_ky", label: "Hóa Thần Kỳ", minExp: 50_000, nextExp: 200_000 },
   { rank: SectRank.LUAN_HOI, slug: "luyen_hu_ky", label: "Luyện Hư Kỳ", minExp: 200_000, nextExp: 1_000_000 },
+  { rank: SectRank.THAN_HOANG, slug: "tac_gia_canh", label: "Tác Giả Cảnh", minExp: 999_999, nextExp: 1_000_000 },
 ] as const;
 
 export function normalizeTitleSlug(slug: string | null | undefined): string | null {
@@ -75,7 +76,7 @@ export async function resolveCultivationRanks(
         const slug = normalizeTitleSlug(String(cfg.slug || ""));
         const minExp = Number(cfg.minExp);
         const nextExp = Number(cfg.nextExp);
-        if (!slug || slug === "tac_gia_canh" || !Number.isFinite(minExp) || !Number.isFinite(nextExp) || nextExp <= minExp) {
+        if (!slug || !Number.isFinite(minExp) || !Number.isFinite(nextExp) || nextExp <= minExp) {
           return null;
         }
         return {
@@ -114,8 +115,10 @@ export const filmTitleFor = (
   ranks: readonly CultivationRankConfig[] = DEFAULT_CULTIVATION_RANKS,
 ): string => {
   const normalizedExp = Number.isFinite(exp) ? Math.max(0, Math.floor(exp)) : 0;
+  const automaticRanks = ranks.filter(({ slug }) => slug !== "tac_gia_canh");
   const rank =
-    ranks.find(({ nextExp }) => normalizedExp < nextExp) ?? ranks[ranks.length - 1];
+    automaticRanks.find(({ nextExp }) => normalizedExp < nextExp) ??
+    automaticRanks[automaticRanks.length - 1];
 
   return rank?.slug ?? "luyen_khi_ky";
 };

@@ -76,7 +76,7 @@ export const FILM_TITLE_ITEM_SEED = [
     width: 543,
     height: 181,
     rank: "THAN_HOANG",
-    minExp: 1_000_000,
+    minExp: 999_999,
     nextExp: 1_000_000,
     order: 7,
   },
