@@ -86,7 +86,15 @@ export class FilmAccountService {
     const [movies, episodes] = await Promise.all([
       this.db.getRepository(FilmMovie).find({
         where: { id: In(movieIds) },
-        select: ["id", "title", "slug", "thumbnailUrl", "bannerUrl", "currentEpisodeCount"],
+        select: [
+          "id",
+          "title",
+          "slug",
+          "thumbnailUrl",
+          "bannerUrl",
+          "currentEpisodeCount",
+          "status",
+        ],
       }),
       episodeIds.length
         ? this.db.getRepository(FilmEpisode).find({

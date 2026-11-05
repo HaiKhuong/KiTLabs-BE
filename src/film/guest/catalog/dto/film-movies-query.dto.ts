@@ -44,6 +44,16 @@ export class FilmMoviesQueryDto {
   @IsBoolean()
   recommended?: boolean;
 
+  @ApiPropertyOptional({ description: "Exclude movies with HIATUS status" })
+  @IsOptional()
+  @Transform(({ value }) => {
+    if (value === "true" || value === true) return true;
+    if (value === "false" || value === false) return false;
+    return undefined;
+  })
+  @IsBoolean()
+  excludeHiatus?: boolean;
+
   @ApiPropertyOptional({ description: "Filter by genre slug" })
   @IsOptional()
   @IsString()

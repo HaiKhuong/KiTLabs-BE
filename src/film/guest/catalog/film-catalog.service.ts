@@ -11,6 +11,7 @@ import {
   FilmGenre,
   FilmMovie,
   FilmMovieGenre,
+  MovieStatus,
   FilmReport,
   FilmSetting,
   FilmTag,
@@ -40,6 +41,10 @@ export class FilmCatalogService {
 
     if (query.recommended !== undefined) {
       qb.andWhere("m.isRecommended = :recommended", { recommended: query.recommended });
+    }
+
+    if (query.excludeHiatus) {
+      qb.andWhere("m.status != :hiatusStatus", { hiatusStatus: MovieStatus.HIATUS });
     }
 
     if (query.genre) {
