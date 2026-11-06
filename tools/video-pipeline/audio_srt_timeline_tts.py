@@ -251,7 +251,7 @@ def run_srt_timeline(payload: dict[str, Any]) -> dict[str, Any]:
             ref_audio=str(ref_audio),
             model_id=model_id,
             device=str(payload.get("device_map") or "auto"),
-            backend=str(payload.get("backend") or os.getenv("VIENEU_BACKEND") or "auto"),
+            backend=str(payload.get("backend") or os.getenv("VIENEU_BACKEND") or "onnx"),
             denoise=bool(payload.get("denoise", True)),
             seed=int(seed) if seed not in (None, "") else None,
         )

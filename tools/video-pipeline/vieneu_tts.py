@@ -33,7 +33,7 @@ def _resolve_device(raw: str | None) -> str:
 
 
 def _resolve_backend(raw: str | None, device: str) -> str:
-    value = str(raw or os.getenv("VIENEU_BACKEND") or "auto").strip().lower()
+    value = str(raw or os.getenv("VIENEU_BACKEND") or "onnx").strip().lower()
     if value not in {"auto", "onnx", "pytorch"}:
         raise ValueError(f"vieneu: invalid backend {value!r}; expected auto, onnx or pytorch")
     if value == "pytorch" and device == "cpu":
@@ -46,7 +46,7 @@ def get_vieneu_session(
     model_id: str = DEFAULT_MODEL_ID,
     codec_id: str = DEFAULT_CODEC_ID,
     device: str = "auto",
-    backend: str = "auto",
+    backend: str = "onnx",
 ) -> Any:
     global _SESSION, _SESSION_KEY
 
@@ -100,7 +100,7 @@ def synthesize_to_wav(
     model_id: str = DEFAULT_MODEL_ID,
     codec_id: str = DEFAULT_CODEC_ID,
     device: str = "auto",
-    backend: str = "auto",
+    backend: str = "onnx",
     temperature: float = 0.8,
     top_k: int = 25,
     top_p: float = 0.95,

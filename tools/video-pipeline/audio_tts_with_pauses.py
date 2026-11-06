@@ -315,8 +315,9 @@ def _append_silence_to_timeline(
     timeline: List[Path],
     path: Path,
     duration_sec: float,
+    sample_rate: int = 24000,
 ) -> None:
-    _write_silence_wav(path, duration_sec)
+    _write_silence_wav(path, duration_sec, sample_rate)
     if path.is_file() and path.stat().st_size > 0:
         timeline.append(path)
 
@@ -425,7 +426,7 @@ def synthesize_with_pause_settings(
             ref_audio=str(ref_prepared),
             model_id=model_id or "pnnbao-ump/VieNeu-TTS-v3-Turbo",
             device=device_map or "auto",
-            backend=os.getenv("VIENEU_BACKEND", "auto"),
+            backend=os.getenv("VIENEU_BACKEND", "onnx"),
             denoise=True if denoise is None else bool(denoise),
             seed=resolved_seed,
         )
