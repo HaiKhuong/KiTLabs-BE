@@ -3,6 +3,8 @@ python-dotenv>=1.0.0
 numpy>=1.24,<2.4
 tqdm
 Pillow
+soundfile>=0.12.1
+scipy>=1.11.0
 
 # ─── PyTorch (Whisper / EasyOCR / OmniVoice) ───
 # PyTorch 2.9+ ép dùng torchcodec — dễ lỗi trên Linux; pin <2.9 cho OmniVoice/torchaudio.
@@ -33,7 +35,6 @@ omnivoice>=0.2.1
 # ─── Step3: VoxCPM2 (optional: --step3-tts-engine voxcpm2) ───
 # PyTorch ≥2.5 khuyến nghị theo upstream; pin torch ở trên vẫn dùng được nếu CUDA ok.
 voxcpm>=2.0.0
-soundfile
 
 # VieNeu-TTS v3 Turbo (48 kHz; ONNX/CPU or PyTorch/CUDA).
 # Keep Transformers 5.x for OmniVoice; compatibility is isolated in vieneu_tts.py.
