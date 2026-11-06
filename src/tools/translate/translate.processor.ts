@@ -628,15 +628,6 @@ export class TranslateProcessor extends WorkerHost {
           terminal: false,
         });
 
-        const retryVideoInputPath = this.resolveVideoInputPathSafe(retryHistory?.engineConfig);
-        const retryMovieName = retryVideoInputPath ? basename(retryVideoInputPath) : (retryHistory?.resultFileName || "video.mp4");
-        const retryChatId = String((retryHistory?.engineConfig as Record<string, unknown> | null)?.telegramChatId || "").trim();
-
-        void this.telegramService.sendPipelineNotification("retrying", {
-          movieName: retryMovieName,
-          chatId: retryChatId || undefined,
-        });
-
         throw error;
       }
       await this.translateService.processFailed(translateHistoryId, message);

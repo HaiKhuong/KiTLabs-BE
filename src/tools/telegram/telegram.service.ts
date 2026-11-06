@@ -1028,12 +1028,7 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
         return `❌ *Lỗi:* ${result.message}`;
       }
 
-      await this.sendPipelineNotification("retrying", {
-        movieName: result.movieFileName || movieName,
-        chatId,
-      });
-
-      return;
+      return `🔄 Đã tiếp nhận và bắt đầu thử lại cho phim: *${(result.movieFileName || movieName).replace(/_/g, "\\_")}*`;
     });
 
     this.registerCommandHandler("chatid", respondId);
@@ -1102,17 +1097,17 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
     const timeStr = `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())} ${pad(now.getDate())}/${pad(now.getMonth() + 1)}/${now.getFullYear()}`;
     const safeMovieName = params.movieName.replace(/_/g, "\\_");
 
+    if (type === "retrying") {
+      // Đã tắt gửi thông báo "THUYẾT MINH PHIM ĐANG THỬ LẠI!"
+      return false;
+    }
+
     let text = "";
     if (type === "completed") {
       text =
         `✨ *THUYẾT MINH PHIM HOÀN TẤT!* ✨\n\n` +
         `🎬 *Tên phim:* ${safeMovieName}\n` +
         `⏱ *Thời lượng:* ${params.duration || "N/A"}\n` +
-        `🕒 *Thời gian:* ${timeStr}`;
-    } else if (type === "retrying") {
-      text =
-        `⚠️ *THUYẾT MINH PHIM ĐANG THỬ LẠI!*\n\n` +
-        `🎬 *Tên phim:* ${safeMovieName}\n` +
         `🕒 *Thời gian:* ${timeStr}`;
     } else if (type === "failed") {
       const errorMsg = this.classifyPipelineError(params.errorMessage);

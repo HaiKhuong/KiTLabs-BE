@@ -128,6 +128,12 @@ VOXCPM2_NORMALIZE_TEXT = False
 VOXCPM2_LOAD_DENOISER = False
 VOXCPM2_OPTIMIZE = False
 VOXCPM2_TRIM_TRAILING_SILENCE = True
+# VieNeu-TTS v3 Turbo
+VIENEU_MODEL_ID = "pnnbao-ump/VieNeu-TTS-v3-Turbo"
+VIENEU_BACKEND = "onnx"
+VIENEU_SEED = 42
+VIENEU_VOICE = ""
+VIENEU_BATCH_SIZE = 8
 
 
 def _resolve_omnivoice_ref_wav_arg(raw: str) -> str:
@@ -531,6 +537,14 @@ if _omni_batch_env:
         OMNIVOICE_BATCH_SIZE = max(1, int(_omni_batch_env))
     except ValueError:
         pass
+_vie_batch_env = (os.getenv("VIENEU_BATCH_SIZE") or "").strip()
+if _vie_batch_env:
+    try:
+        VIENEU_BATCH_SIZE = max(1, int(_vie_batch_env))
+    except ValueError:
+        pass
+else:
+    VIENEU_BATCH_SIZE = OMNIVOICE_BATCH_SIZE
 
 
 def parse_api_keys(raw_value):
@@ -2599,9 +2613,10 @@ def _step3_prefetch_omnivoice_batches(
     done_block_indices,
     omni_ref_prepared,
     omni_device,
+    tts_engine="omnivoice",
 ):
     """Phase A: batch generate raw_*.wav trước timeline loop (khi batch_size > 1)."""
-    batch_size = max(1, int(OMNIVOICE_BATCH_SIZE))
+    batch_size = max(1, int(VIENEU_BATCH_SIZE if tts_engine == "vieneu" else OMNIVOICE_BATCH_SIZE))
     if batch_size <= 1:
         return
 
@@ -2628,8 +2643,9 @@ def _step3_prefetch_omnivoice_batches(
     if not jobs:
         return
 
+    label = "VieNeu" if tts_engine == "vieneu" else "OmniVoice"
     log_step3(
-        f"Step3 OmniVoice: batch prefetch {len(jobs)} segment(s), batch_size={batch_size}",
+        f"Step3 {label}: batch prefetch {len(jobs)} segment(s), batch_size={batch_size}",
         important=True,
     )
 
@@ -2643,19 +2659,32 @@ def _step3_prefetch_omnivoice_batches(
             chunk = jobs[start : start + bs]
             if STEP3_VERBOSE_LOG:
                 log_step3(
-                    f"Step3 OmniVoice: batch {start // bs + 1} "
+                    f"Step3 {label}: batch {start // bs + 1} "
                     f"({len(chunk)} segment(s))",
                     important=False,
                 )
-            from omnivoice_tts import synthesize_batch_to_wavs
+            if tts_engine == "vieneu":
+                from vieneu_tts import synthesize_many_to_wavs as synthesize_many_vieneu_to_wavs
 
-            texts = [str(j["text"]) for j in chunk]
-            out_wavs = [j["out_wav"] for j in chunk]
-            synthesize_batch_to_wavs(texts=texts, out_wavs=out_wavs, **batch_kw)
+                vieneu_kw = dict(
+                    ref_audio=str(omni_ref_prepared) if omni_ref_prepared else None,
+                    voice=VIENEU_VOICE or None,
+                    model_id=str(VIENEU_MODEL_ID or "pnnbao-ump/VieNeu-TTS-v3-Turbo"),
+                    backend=str(os.getenv("VIENEU_BACKEND") or VIENEU_BACKEND or "onnx"),
+                    device=omni_device or "auto",
+                    seed=VIENEU_SEED,
+                )
+                synthesize_many_vieneu_to_wavs(chunk, batch_size=bs, **vieneu_kw)
+            else:
+                from omnivoice_tts import synthesize_batch_to_wavs
+
+                texts = [str(j["text"]) for j in chunk]
+                out_wavs = [j["out_wav"] for j in chunk]
+                synthesize_batch_to_wavs(texts=texts, out_wavs=out_wavs, **batch_kw)
 
     step3_tts_retry(
         run_batch,
-        "Step3 OmniVoice batch prefetch",
+        f"Step3 {label} batch prefetch",
         max_retry=TTS_RETRY_MAX,
     )
 
@@ -2706,11 +2735,12 @@ def step2b_voice_sync_srt(vi_srt_path, video_duration_ms=None):
 
 def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
     eng = str(STEP3_TTS_ENGINE or "edge").strip().lower()
-    if eng not in ("edge", "omnivoice", "voxcpm2"):
+    if eng not in ("edge", "omnivoice", "voxcpm2", "vieneu"):
         raise ValueError(f"Step3: --step3-tts-engine không hợp lệ: {eng!r}")
     use_omnivoice = eng == "omnivoice"
     use_voxcpm2 = eng == "voxcpm2"
-    use_voice_clone = use_omnivoice or use_voxcpm2
+    use_vieneu = eng == "vieneu"
+    use_voice_clone = use_omnivoice or use_voxcpm2 or use_vieneu
     omni_ref_prepared = None
     omni_device = None
 
@@ -2725,36 +2755,43 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
     )
 
     if use_voice_clone:
-        engine_label = "VoxCPM2" if use_voxcpm2 else "OmniVoice"
+        engine_label = "VieNeu" if use_vieneu else "VoxCPM2" if use_voxcpm2 else "OmniVoice"
         if use_omnivoice:
             _omni_mid = str(OMNIVOICE_MODEL_ID or "").strip()
             if not _omni_mid:
                 raise ValueError("OmniVoice: cần OMNIVOICE_MODEL_ID trong auto_vietsub_pro.py (HF repo id).")
-        else:
+        elif use_voxcpm2:
             _vox_mid = str(VOXCPM2_MODEL_ID or "").strip()
             if not _vox_mid:
                 raise ValueError("VoxCPM2: cần VOXCPM2_MODEL_ID trong auto_vietsub_pro.py (HF repo id).")
+        else:
+            _vie_mid = str(VIENEU_MODEL_ID or "").strip()
+            if not _vie_mid:
+                raise ValueError("VieNeu: cần VIENEU_MODEL_ID trong auto_vietsub_pro.py (HF repo id).")
+
         spk = Path(str(OMNIVOICE_REF_WAV or "").strip()).expanduser()
-        if not str(OMNIVOICE_REF_WAV or "").strip() or not spk.is_file():
+        if (not str(OMNIVOICE_REF_WAV or "").strip() or not spk.is_file()) and not (use_vieneu and VIENEU_VOICE):
             raise FileNotFoundError(
                 f"{engine_label}: cần OMNIVOICE_REF_WAV (giọng mẫu): {spk}"
             )
         LOG_DIR.mkdir(parents=True, exist_ok=True)
-        omni_ref_prepared = prepare_speaker_reference(spk, LOG_DIR)
+        omni_ref_prepared = prepare_speaker_reference(spk, LOG_DIR) if spk.is_file() else None
         omni_device = _omnivoice_resolve_device_map(str(OMNIVOICE_DEVICE_MAP or ""))
-        if not str(OMNIVOICE_REF_TEXT or "").strip():
+        if not use_vieneu and not str(OMNIVOICE_REF_TEXT or "").strip():
             raise ValueError(
                 f"{engine_label}: cần OMNIVOICE_REF_TEXT (transcript của giọng mẫu) trong auto_vietsub_pro.py. "
                 "Để trống sẽ kích hoạt auto ASR và có thể kéo TorchCodec/FFmpeg runtime."
             )
+        current_batch = VIENEU_BATCH_SIZE if use_vieneu else OMNIVOICE_BATCH_SIZE
         batch_hint = (
-            f"batch={int(OMNIVOICE_BATCH_SIZE)}"
-            if use_omnivoice
+            f"batch={int(current_batch)}"
+            if (use_omnivoice or use_vieneu)
             else "batch=-"
         )
-        dev_hint = f"device={omni_device}" if use_omnivoice else "device=-"
+        dev_hint = f"device={omni_device}" if (use_omnivoice or use_vieneu) else "device=-"
+        ref_desc = spk.name if (spk and spk.is_file()) else f"preset:{VIENEU_VOICE}"
         log_step3(
-            f"Step3: {engine_label} | ref={spk.name} | {batch_hint} | {dev_hint}",
+            f"Step3: {engine_label} | ref={ref_desc} | {batch_hint} | {dev_hint}",
             important=True,
         )
         if STEP3_VERBOSE_LOG:
@@ -2786,13 +2823,14 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
             done_block_indices, srt_path, chunk_dir, blocks
         )
 
-    if use_omnivoice and int(OMNIVOICE_BATCH_SIZE) > 1:
+    if (use_omnivoice or use_vieneu) and int(current_batch) > 1:
         _step3_prefetch_omnivoice_batches(
             blocks,
             chunk_dir,
             done_block_indices,
             omni_ref_prepared,
             omni_device,
+            tts_engine=eng,
         )
 
     timeline_paths = []
@@ -2899,7 +2937,7 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
                     omni_ref_prepared, omni_device
                 )
                 if (
-                    int(OMNIVOICE_BATCH_SIZE) > 1
+                    int(current_batch) > 1
                     and not force_tts_regen[0]
                     and step3_tts_audio_usable(raw_audio_path)
                 ):
@@ -2927,6 +2965,28 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
                     optimize=bool(VOXCPM2_OPTIMIZE),
                     seed=VOXCPM2_SEED if VOXCPM2_SEED is not None else None,
                     target_sample_rate=24000,
+                )
+            elif use_vieneu:
+                from vieneu_tts import synthesize_to_wav as synthesize_vieneu_to_wav
+
+                vieneu_kw = dict(
+                    ref_audio=str(omni_ref_prepared) if omni_ref_prepared else None,
+                    voice=VIENEU_VOICE or None,
+                    model_id=str(VIENEU_MODEL_ID or "pnnbao-ump/VieNeu-TTS-v3-Turbo"),
+                    backend=str(os.getenv("VIENEU_BACKEND") or VIENEU_BACKEND or "onnx"),
+                    device=omni_device or "auto",
+                    seed=VIENEU_SEED,
+                )
+                if (
+                    int(current_batch) > 1
+                    and not force_tts_regen[0]
+                    and step3_tts_audio_usable(raw_audio_path)
+                ):
+                    return
+                synthesize_vieneu_to_wav(
+                    text=subtitle_text,
+                    out_wav=raw_audio_path,
+                    **vieneu_kw,
                 )
             else:
                 run_edge_tts_mp3_save(subtitle_text, raw_audio_path, rate)
@@ -4763,12 +4823,19 @@ def parse_cli_args():
     parser.add_argument("--edge-tts-pitch", default=EDGE_TTS_PITCH)
     parser.add_argument(
         "--step3-tts-engine",
-        choices=["edge", "omnivoice", "voxcpm2"],
+        choices=["edge", "omnivoice", "voxcpm2", "vieneu"],
         default=STEP3_TTS_ENGINE,
         help=(
-            "edge=Edge TTS; omnivoice=OmniVoice; voxcpm2=VoxCPM2 "
-            "(pip install omnivoice|voxcpm, khuyến nghị GPU)."
+            "edge=Edge TTS; omnivoice=OmniVoice; voxcpm2=VoxCPM2; vieneu=VieNeu-TTS v3 Turbo "
+            "(pip install omnivoice|voxcpm|vieneu)."
         ),
+    )
+    parser.add_argument("--vieneu-voice", default=VIENEU_VOICE, help="Tên giọng preset của VieNeu")
+    parser.add_argument(
+        "--vieneu-batch-size",
+        type=int,
+        default=None,
+        help="Batch prefetch size cho VieNeu (mặc định lấy theo omnivoice-batch-size)",
     )
     parser.add_argument(
         "--omnivoice-ref-wav",
@@ -5010,6 +5077,8 @@ def apply_cli_config(args):
     global STEP4_MERGE_SPEED
     global EDGE_TTS_VOICE
     global STEP3_TTS_ENGINE
+    global VIENEU_VOICE
+    global VIENEU_BATCH_SIZE
     global STEP3_AUTO_RATE_ENABLED
     global STEP3_AUTO_RATE_TRIGGER_CHARS_PER_SEC
     global STEP3_AUTO_RATE_BONUS_PERCENT
@@ -5194,9 +5263,12 @@ def apply_cli_config(args):
     if (
         omnivoice_ref_wav_name
         and runs_step3
-        and STEP3_TTS_ENGINE in ("omnivoice", "voxcpm2")
+        and STEP3_TTS_ENGINE in ("omnivoice", "voxcpm2", "vieneu")
     ):
         OMNIVOICE_REF_WAV = _resolve_omnivoice_ref_wav_arg(omnivoice_ref_wav_name)
+    vieneu_voice_name = str(getattr(args, "vieneu_voice", "") or "").strip()
+    if vieneu_voice_name:
+        VIENEU_VOICE = vieneu_voice_name
     omnivoice_ref_text = str(getattr(args, "omnivoice_ref_text", "") or "").strip()
     if omnivoice_ref_text:
         OMNIVOICE_REF_TEXT = omnivoice_ref_text
@@ -5205,6 +5277,10 @@ def apply_cli_config(args):
         OMNIVOICE_LANGUAGE = omnivoice_language
         VOXCPM2_LANGUAGE = omnivoice_language
     OMNIVOICE_BATCH_SIZE = max(1, int(getattr(args, "omnivoice_batch_size", OMNIVOICE_BATCH_SIZE)))
+    if getattr(args, "vieneu_batch_size", None) is not None:
+        VIENEU_BATCH_SIZE = max(1, int(args.vieneu_batch_size))
+    else:
+        VIENEU_BATCH_SIZE = OMNIVOICE_BATCH_SIZE
     STEP3_AUTO_RATE_ENABLED = args.auto_speed == "on"
     STEP3_AUTO_RATE_TRIGGER_CHARS_PER_SEC = float(args.step3_auto_rate_trigger_cps)
     STEP3_AUTO_RATE_BONUS_PERCENT = int(args.step3_auto_rate_bonus_percent)
