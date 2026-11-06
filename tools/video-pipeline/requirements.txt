@@ -24,7 +24,7 @@ edge-tts
 # ─── Step3: OmniVoice (optional: --step3-tts-engine omnivoice) ───
 # PyPI latest: https://pypi.org/project/omnivoice/ (0.2.1+)
 # omnivoice_tts.py patches empty-segment tokenization for transformers 5.x.
-transformers>=5.3.0
+transformers>=5.3.0,<6
 huggingface_hub
 underthesea
 vinorm
@@ -34,6 +34,10 @@ omnivoice>=0.2.1
 # PyTorch ≥2.5 khuyến nghị theo upstream; pin torch ở trên vẫn dùng được nếu CUDA ok.
 voxcpm>=2.0.0
 soundfile
+
+# VieNeu-TTS v3 Turbo (48 kHz; ONNX/CPU or PyTorch/CUDA).
+# Keep Transformers 5.x for OmniVoice; compatibility is isolated in vieneu_tts.py.
+vieneu>=3.8.3,<4
 
 # ─── OCR: EasyOCR ───
 easyocr

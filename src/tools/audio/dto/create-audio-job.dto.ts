@@ -62,13 +62,13 @@ export class CreateAudioJobDto {
   cloneRefText?: string;
 
   @ApiPropertyOptional({
-    enum: ["omnivoice", "voxcpm2"],
+    enum: ["omnivoice", "voxcpm2", "vieneu"],
     default: "omnivoice",
-    description: "TTS engine: OmniVoice or VoxCPM2",
+    description: "TTS engine: OmniVoice, VoxCPM2 or VieNeu",
   })
   @IsOptional()
-  @IsIn(["omnivoice", "voxcpm2"])
-  ttsEngine?: "omnivoice" | "voxcpm2";
+  @IsIn(["omnivoice", "voxcpm2", "vieneu"])
+  ttsEngine?: "omnivoice" | "voxcpm2" | "vieneu";
 
   @ApiPropertyOptional({ default: 1, minimum: 0.5, maximum: 2, description: "Playback speed after TTS" })
   @IsOptional()

@@ -82,7 +82,9 @@ def _prepare_text_for_pause_tokenize(text: str) -> str:
 
 def _resolve_tts_engine(raw: Any) -> str:
     key = str(raw or "omnivoice").strip().lower()
-    return "voxcpm2" if key == "voxcpm2" else "omnivoice"
+    if key in ("omnivoice", "voxcpm2", "vieneu"):
+        return key
+    raise ValueError(f"Unsupported TTS engine: {key}")
 
 
 def _is_speakable_piece(piece: str, engine: str = "omnivoice", language: str | None = None) -> bool:
@@ -94,6 +96,10 @@ def _is_speakable_piece(piece: str, engine: str = "omnivoice", language: str | N
         from voxcpm2_tts import prepare_voxcpm2_input_text
 
         return bool(prepare_voxcpm2_input_text(text, language))
+    if engine == "vieneu":
+        from vieneu_tts import prepare_vieneu_input_text
+
+        return bool(prepare_vieneu_input_text(text))
     return bool(prepare_omnivoice_input_text(text))
 
 
@@ -325,6 +331,7 @@ def _append_tts_segment(
     tail_pad_sec: float,
     synthesize_fn: Callable[..., None],
     synth_kw: Dict[str, Any],
+    sample_rate: int = 24000,
 ) -> None:
     seg_path = tmp_dir / f"seg_{index:04d}.wav"
     if not seg_path.is_file():
@@ -337,6 +344,7 @@ def _append_tts_segment(
             timeline,
             tmp_dir / f"tail_{index:04d}.wav",
             tail_pad_sec,
+            sample_rate,
         )
 
     if pause_after and pause_after in pause_sec:
@@ -344,6 +352,7 @@ def _append_tts_segment(
             timeline,
             tmp_dir / f"sil_{index:04d}.wav",
             pause_sec[pause_after],
+            sample_rate,
         )
 
 
@@ -394,12 +403,33 @@ def synthesize_with_pause_settings(
 ) -> None:
     out = Path(out_wav)
     out.parent.mkdir(parents=True, exist_ok=True)
-    ref_prepared = _prepare_ref_audio_for_omnivoice(ref_audio)
     tts_engine = _resolve_tts_engine(engine)
+    ref_prepared = _prepare_ref_audio_for_omnivoice(ref_audio)
     resolved_seed = _resolve_omnivoice_seed(seed)
     pause_sec = _resolve_pause_sec(pause_settings)
 
-    if tts_engine == "voxcpm2":
+    sample_rate = 24000
+    batch_synthesize_fn = synthesize_many_to_wavs
+    if tts_engine == "vieneu":
+        from vieneu_tts import (
+            SAMPLE_RATE,
+            synthesize_many_to_wavs as synthesize_many_vieneu_to_wavs,
+            synthesize_to_wav as synthesize_vieneu_to_wav,
+        )
+
+        resolved_language = "vietnamese"
+        sample_rate = SAMPLE_RATE
+        synthesize_fn = synthesize_vieneu_to_wav
+        batch_synthesize_fn = synthesize_many_vieneu_to_wavs
+        synth_kw = dict(
+            ref_audio=str(ref_prepared),
+            model_id=model_id or "pnnbao-ump/VieNeu-TTS-v3-Turbo",
+            device=device_map or "auto",
+            backend=os.getenv("VIENEU_BACKEND", "auto"),
+            denoise=True if denoise is None else bool(denoise),
+            seed=resolved_seed,
+        )
+    elif tts_engine == "voxcpm2":
         from voxcpm2_tts import resolve_voxcpm2_language, synthesize_to_wav as synthesize_voxcpm2_to_wav
 
         resolved_language = resolve_voxcpm2_language(language)
@@ -468,6 +498,7 @@ def synthesize_with_pause_settings(
                         timeline,
                         tmp_dir / f"sil_only_{i:04d}.wav",
                         pause_sec[pause_key],
+                        sample_rate,
                     )
             _concat_wavs(timeline, out)
         _apply_playback_speed(out, speed)
@@ -492,7 +523,7 @@ def synthesize_with_pause_settings(
                         {"text": piece, "out_wav": tmp_dir / f"seg_{i:04d}.wav"}
                     )
             if batch_jobs:
-                synthesize_many_to_wavs(
+                batch_synthesize_fn(
                     batch_jobs,
                     batch_size=resolve_omnivoice_batch_size(),
                     **synth_kw,
@@ -512,12 +543,14 @@ def synthesize_with_pause_settings(
                     tail_pad_sec,
                     synthesize_fn,
                     synth_kw,
+                    sample_rate,
                 )
             elif pause_key and pause_key in pause_sec:
                 _append_silence_to_timeline(
                     timeline,
                     tmp_dir / f"sil_{i:04d}.wav",
                     pause_sec[pause_key],
+                    sample_rate,
                 )
 
         _concat_wavs(timeline, out)

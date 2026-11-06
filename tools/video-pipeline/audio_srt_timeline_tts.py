@@ -227,14 +227,44 @@ def run_srt_timeline(payload: dict[str, Any]) -> dict[str, Any]:
         raise FileNotFoundError(f"ref_audio not found: {ref_audio}")
     ref_text = str(payload.get("ref_text") or "")
     engine_key = str(payload.get("engine") or "omnivoice").strip().lower()
+    if engine_key not in ("omnivoice", "voxcpm2", "vieneu"):
+        raise ValueError(f"Unsupported TTS engine: {engine_key}")
     use_voxcpm2 = engine_key == "voxcpm2"
+    use_vieneu = engine_key == "vieneu"
     model_id = str(
         payload.get("model_id")
-        or ("openbmb/VoxCPM2" if use_voxcpm2 else "k2-fsa/OmniVoice")
+        or ("pnnbao-ump/VieNeu-TTS-v3-Turbo" if use_vieneu else "openbmb/VoxCPM2" if use_voxcpm2 else "k2-fsa/OmniVoice")
     ).strip()
     seed = payload.get("seed")
 
-    if use_voxcpm2:
+    batch_synthesize = None
+    batch_kw: dict[str, Any] = {}
+    batch_size = 1
+    if use_vieneu:
+        from vieneu_tts import (
+            prepare_vieneu_input_text,
+            synthesize_many_to_wavs as synthesize_many_vieneu_to_wavs,
+            synthesize_to_wav as synthesize_vieneu_to_wav,
+        )
+
+        vieneu_kw = dict(
+            ref_audio=str(ref_audio),
+            model_id=model_id,
+            device=str(payload.get("device_map") or "auto"),
+            backend=str(payload.get("backend") or os.getenv("VIENEU_BACKEND") or "auto"),
+            denoise=bool(payload.get("denoise", True)),
+            seed=int(seed) if seed not in (None, "") else None,
+        )
+        batch_synthesize = synthesize_many_vieneu_to_wavs
+        batch_kw = vieneu_kw
+        batch_size = int(payload.get("batch_size") or 8)
+
+        def _prepare_text(raw: str) -> str:
+            return prepare_vieneu_input_text(raw)
+
+        def _synthesize(text: str, out_wav: Path) -> None:
+            synthesize_vieneu_to_wav(text=text, out_wav=out_wav, **vieneu_kw)
+    elif use_voxcpm2:
         from voxcpm2_tts import (
             prepare_voxcpm2_input_text,
             resolve_voxcpm2_language,
@@ -308,6 +338,8 @@ def run_srt_timeline(payload: dict[str, Any]) -> dict[str, Any]:
             normalize_text=normalize_text,
             seed=int(seed) if seed not in (None, "") else None,
         )
+        batch_synthesize = synthesize_many_to_wavs
+        batch_kw = omni_synth_kw
 
         def _prepare_text(raw: str) -> str:
             return prepare_omnivoice_input_text(raw)
@@ -327,7 +359,7 @@ def run_srt_timeline(payload: dict[str, Any]) -> dict[str, Any]:
     with tempfile.TemporaryDirectory(prefix="srt_tts_") as tmp:
         tmp_dir = Path(tmp)
 
-        if not use_voxcpm2:
+        if batch_synthesize is not None:
             batch_jobs = []
             for i, cue in enumerate(cues):
                 prepared = _prepare_text(str(cue.get("text") or ""))
@@ -336,10 +368,10 @@ def run_srt_timeline(payload: dict[str, Any]) -> dict[str, Any]:
                         {"text": prepared, "out_wav": tmp_dir / f"raw_{i:04d}.wav"}
                     )
             if batch_jobs:
-                synthesize_many_to_wavs(
+                batch_synthesize(
                     batch_jobs,
                     batch_size=batch_size,
-                    **omni_synth_kw,
+                    **batch_kw,
                 )
 
         for i, cue in enumerate(cues):

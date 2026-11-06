@@ -10,11 +10,12 @@ import { isAppPlatform } from "../../common/desktop/request-platform";
 import { ToolsRealtimeGateway } from "../realtime/tools-realtime.gateway";
 import { resolveConfiguredPath } from "../../common/desktop/data-path";
 
-export type AiModelId = "whisper-large-v3" | "omnivoice" | "voxcpm2" | "qwen-vl-3b";
+export type AiModelId = "whisper-large-v3" | "omnivoice" | "voxcpm2" | "vieneu" | "qwen-vl-3b";
 
 export type AiModelCatalogItem = {
   id: AiModelId;
   repoId: string;
+  repoIds?: string[];
   label: string;
   gated: boolean;
 };
@@ -23,6 +24,13 @@ export const AI_MODEL_CATALOG: AiModelCatalogItem[] = [
   { id: "whisper-large-v3", repoId: "Systran/faster-whisper-large-v3", label: "Whisper large-v3", gated: false },
   { id: "omnivoice", repoId: "k2-fsa/OmniVoice", label: "OmniVoice", gated: true },
   { id: "voxcpm2", repoId: "openbmb/VoxCPM2", label: "VoxCPM2", gated: false },
+  {
+    id: "vieneu",
+    repoId: "pnnbao-ump/VieNeu-TTS-v3-Turbo",
+    repoIds: ["pnnbao-ump/VieNeu-TTS-v3-Turbo", "OpenMOSS-Team/MOSS-Audio-Tokenizer-Nano"],
+    label: "VieNeu-TTS v3 Turbo",
+    gated: false,
+  },
   { id: "qwen-vl-3b", repoId: "Qwen/Qwen2.5-VL-3B-Instruct", label: "Qwen2.5-VL-3B (Recap VLM)", gated: false },
 ];
 
@@ -68,13 +76,14 @@ export class ModelsService {
   status() {
     const hub = this.cacheHub();
     return AI_MODEL_CATALOG.map((item) => {
-      const path = join(hub, hubFolder(item.repoId));
-      const installed = existsSync(path);
+      const paths = (item.repoIds ?? [item.repoId]).map((repoId) => join(hub, hubFolder(repoId)));
+      const path = paths[0];
+      const installed = paths.every((candidate) => existsSync(candidate));
       return {
         ...item,
         installed,
         path,
-        sizeBytes: installed ? dirSizeBytes(path) : 0,
+        sizeBytes: paths.reduce((total, candidate) => total + dirSizeBytes(candidate), 0),
         downloading: this.downloading.has(item.id),
       };
     });
@@ -190,16 +199,15 @@ export class ModelsService {
 
   private async runDownloadViaNode(item: AiModelCatalogItem, userId?: string): Promise<void> {
     const hfToken = this.appConfig.getSecret("HF_TOKEN").trim() || undefined;
-    this.notifyProgress(item, userId, `DOWNLOAD_START repo=${item.repoId}\n`);
+    const repos = item.repoIds ?? [item.repoId];
+    this.notifyProgress(item, userId, `DOWNLOAD_START repos=${repos.join(",")}\n`);
 
     try {
       const { snapshotDownload } = await import("@huggingface/hub");
-      await snapshotDownload({
-        repo: item.repoId,
-        cacheDir: this.cacheHub(),
-        accessToken: hfToken,
-      });
-      this.notifyProgress(item, userId, `DOWNLOAD_DONE repo=${item.repoId}\n`);
+      for (const repo of repos) {
+        await snapshotDownload({ repo, cacheDir: this.cacheHub(), accessToken: hfToken });
+        this.notifyProgress(item, userId, `DOWNLOAD_DONE repo=${repo}\n`);
+      }
       this.notifyDone(item, userId, true, 0);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
@@ -216,9 +224,10 @@ export class ModelsService {
     item: AiModelCatalogItem,
     userId?: string,
   ): Promise<void> {
+    const repos = item.repoIds ?? [item.repoId];
     return new Promise<void>((resolvePromise, rejectPromise) => {
       const hfToken = this.appConfig.getSecret("HF_TOKEN").trim();
-      const child = spawn(pythonBin, [script, "--repo", item.repoId, "--cache-dir", this.cacheHub()], {
+      const child = spawn(pythonBin, [script, "--repo", ...repos, "--cache-dir", this.cacheHub()], {
         windowsHide: true,
         env: {
           ...process.env,

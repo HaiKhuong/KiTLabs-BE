@@ -8,7 +8,7 @@ import sys
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--repo", required=True)
+    parser.add_argument("--repo", required=True, nargs="+")
     parser.add_argument("--cache-dir", required=True)
     args = parser.parse_args()
 
@@ -19,13 +19,14 @@ def main() -> int:
     from huggingface_hub import snapshot_download
 
     token = (os.getenv("HF_TOKEN") or os.getenv("HUGGING_FACE_HUB_TOKEN") or "").strip() or None
-    print(f"DOWNLOAD_START repo={args.repo}", flush=True)
-    snapshot_download(
-        repo_id=args.repo,
-        cache_dir=args.cache_dir,
-        token=token,
-    )
-    print(f"DOWNLOAD_DONE repo={args.repo}", flush=True)
+    for repo in args.repo:
+        print(f"DOWNLOAD_START repo={repo}", flush=True)
+        snapshot_download(
+            repo_id=repo,
+            cache_dir=args.cache_dir,
+            token=token,
+        )
+        print(f"DOWNLOAD_DONE repo={repo}", flush=True)
     return 0
 
 

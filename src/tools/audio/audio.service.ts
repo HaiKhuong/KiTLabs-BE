@@ -134,11 +134,13 @@ export class AudioService {
     return Number.isFinite(n) ? n : 42;
   }
 
-  private resolveTtsEngine(raw?: string | null): "omnivoice" | "voxcpm2" {
+  private resolveTtsEngine(raw?: string | null): "omnivoice" | "voxcpm2" | "vieneu" {
     const key = String(raw ?? "")
       .trim()
       .toLowerCase();
-    return key === "voxcpm2" ? "voxcpm2" : "omnivoice";
+    if (!key || key === "omnivoice") return "omnivoice";
+    if (key === "voxcpm2" || key === "vieneu") return key;
+    throw new BadRequestException(`Unsupported TTS engine: ${key}`);
   }
 
   private resolveEnvFlag(name: string, defaultValue = true): boolean {
@@ -199,7 +201,7 @@ export class AudioService {
       seed?: number;
       pauseSettings?: Record<string, number>;
       playbackSpeed?: number;
-      ttsEngine?: "omnivoice" | "voxcpm2";
+      ttsEngine?: "omnivoice" | "voxcpm2" | "vieneu";
     },
     audioHistoryId?: string,
     processKey?: string,
@@ -214,7 +216,7 @@ export class AudioService {
 
     const scriptDir = resolve(process.cwd(), VIDEO_PIPELINE_DIR);
     const engine = this.resolveTtsEngine(opts.ttsEngine);
-    const language = opts.language
+    const language = engine === "vieneu" ? "vietnamese" : opts.language
       ? resolveOmnivoiceLanguageValue(opts.language)
       : process.env.OMNIVOICE_LANGUAGE
         ? resolveOmnivoiceLanguageValue(process.env.OMNIVOICE_LANGUAGE)
@@ -226,7 +228,23 @@ export class AudioService {
       opts.seed ?? (engine === "voxcpm2" ? this.resolveVoxcpm2Seed() : this.resolveOmnivoiceSeed());
 
     const payload =
-      engine === "voxcpm2"
+      engine === "vieneu"
+        ? {
+            engine: "vieneu",
+            text: opts.text,
+            out_wav: outWav,
+            ref_audio: refAudio,
+            ref_text: opts.refText ?? "",
+            model_id: (process.env.VIENEU_MODEL_ID ?? "pnnbao-ump/VieNeu-TTS-v3-Turbo").trim(),
+            device_map: (process.env.VIENEU_DEVICE ?? "auto").trim(),
+            denoise: this.resolveEnvFlag("VIENEU_DENOISE", true),
+            ...(seed != null ? { seed } : {}),
+            ...(opts.pauseSettings ? { pause_settings: opts.pauseSettings } : {}),
+            ...(opts.playbackSpeed != null && Math.abs(opts.playbackSpeed - 1) > 1e-6
+              ? { playback_speed: opts.playbackSpeed }
+              : {}),
+          }
+        : engine === "voxcpm2"
         ? {
             engine: "voxcpm2",
             text: opts.text,
@@ -261,7 +279,7 @@ export class AudioService {
               : {}),
           };
 
-    const engineLabel = engine === "voxcpm2" ? "VoxCPM2" : "OmniVoice";
+    const engineLabel = engine === "vieneu" ? "VieNeu" : engine === "voxcpm2" ? "VoxCPM2" : "OmniVoice";
     const pythonBin = this.resolvePythonBin();
 
     await new Promise<void>((resolvePromise, rejectPromise) => {
@@ -319,7 +337,7 @@ export class AudioService {
       language: string;
       playbackSpeed?: number;
       fitToCue?: boolean;
-      ttsEngine?: "omnivoice" | "voxcpm2";
+      ttsEngine?: "omnivoice" | "voxcpm2" | "vieneu";
     },
     audioHistoryId?: string,
     processKey?: string,
@@ -337,11 +355,26 @@ export class AudioService {
     }
 
     const engine = this.resolveTtsEngine(opts.ttsEngine);
-    const language = resolveOmnivoiceLanguageValue(opts.language);
+    const language = engine === "vieneu" ? "vietnamese" : resolveOmnivoiceLanguageValue(opts.language);
     const seed = engine === "voxcpm2" ? this.resolveVoxcpm2Seed() : this.resolveOmnivoiceSeed();
 
     const payload =
-      engine === "voxcpm2"
+      engine === "vieneu"
+        ? {
+            engine: "vieneu",
+            srt_text: opts.srtText,
+            out_wav: outWav,
+            ref_audio: refAudio,
+            ref_text: opts.refText ?? "",
+            model_id: (process.env.VIENEU_MODEL_ID ?? "pnnbao-ump/VieNeu-TTS-v3-Turbo").trim(),
+            device_map: (process.env.VIENEU_DEVICE ?? "auto").trim(),
+            denoise: this.resolveEnvFlag("VIENEU_DENOISE", true),
+            sample_rate: 48_000,
+            ...(seed != null ? { seed } : {}),
+            playback_speed: opts.playbackSpeed ?? 1,
+            fit_to_cue: opts.fitToCue !== false,
+          }
+        : engine === "voxcpm2"
         ? {
             engine: "voxcpm2",
             srt_text: opts.srtText,

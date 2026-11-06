@@ -56,13 +56,13 @@ export class CreateAudioFromSrtDto {
   cloneRefText?: string;
 
   @ApiPropertyOptional({
-    enum: ["omnivoice", "voxcpm2"],
+    enum: ["omnivoice", "voxcpm2", "vieneu"],
     default: "omnivoice",
     description: "TTS engine: OmniVoice or VoxCPM2",
   })
   @IsOptional()
-  @IsIn(["omnivoice", "voxcpm2"])
-  ttsEngine?: "omnivoice" | "voxcpm2";
+  @IsIn(["omnivoice", "voxcpm2", "vieneu"])
+  ttsEngine?: "omnivoice" | "voxcpm2" | "vieneu";
 
   @ApiPropertyOptional({ default: 1, minimum: 0.5, maximum: 2 })
   @IsOptional()
