@@ -278,19 +278,38 @@ export class FilmCatalogService {
     if (!movies.length) return [];
     const ids = movies.map((movie) => movie.id);
 
-    const rows = await this.db
-      .createQueryBuilder()
-      .select("mg.movie_id", "movieId")
-      .addSelect("g.id", "id")
-      .addSelect("g.name", "name")
-      .addSelect("g.slug", "slug")
-      .from(FilmMovieGenre, "mg")
-      .innerJoin(FilmGenre, "g", "g.id = mg.genre_id")
-      .where("mg.movie_id IN (:...ids)", { ids })
-      .getRawMany<{ movieId: string; id: string; name: string; slug: string }>();
+    const [rows, episodeCountRows] = await Promise.all([
+      this.db
+        .createQueryBuilder()
+        .select("mg.movie_id", "movieId")
+        .addSelect("g.id", "id")
+        .addSelect("g.name", "name")
+        .addSelect("g.slug", "slug")
+        .from(FilmMovieGenre, "mg")
+        .innerJoin(FilmGenre, "g", "g.id = mg.genre_id")
+        .where("mg.movie_id IN (:...ids)", { ids })
+        .getRawMany<{ movieId: string; id: string; name: string; slug: string }>(),
+      this.db
+        .createQueryBuilder()
+        .select("episode.movie_id", "movieId")
+        .addSelect("COUNT(DISTINCT episode.id)", "episodeCount")
+        .from(FilmEpisode, "episode")
+        .innerJoin(
+          FilmEpisodeSource,
+          "source",
+          "source.episode_id = episode.id AND source.is_active = :sourceActive AND source.deleted_at IS NULL",
+          { sourceActive: true },
+        )
+        .where("episode.movie_id IN (:...ids)", { ids })
+        .andWhere("episode.deleted_at IS NULL")
+        .groupBy("episode.movie_id")
+        .getRawMany<{ movieId: string; episodeCount: string }>(),
+    ]);
+    const episodeCounts = new Map(episodeCountRows.map((row) => [row.movieId, Number(row.episodeCount)]));
 
     return movies.map((movie) => ({
       ...movie,
+      currentEpisodeCount: episodeCounts.get(movie.id) ?? 0,
       genres: rows.filter((row) => row.movieId === movie.id).map(({ id, name, slug }) => ({ id, name, slug })),
     }));
   }

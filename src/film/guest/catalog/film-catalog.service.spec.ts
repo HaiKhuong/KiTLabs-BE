@@ -14,7 +14,7 @@ describe("FilmCatalogService banner queries", () => {
     getOne: jest.fn(),
   };
   const repository = { createQueryBuilder: jest.fn() };
-  const dataSource = { getRepository: jest.fn() };
+  const dataSource = { getRepository: jest.fn(), createQueryBuilder: jest.fn() };
   let service: FilmCatalogService;
 
   beforeEach(() => {
@@ -46,6 +46,41 @@ describe("FilmCatalogService banner queries", () => {
       expect(queryBuilder.addOrderBy).toHaveBeenNthCalledWith(2, "m.id", "DESC");
     },
   );
+
+  it("counts only episodes that have an active source", async () => {
+    const movie = { id: "movie-1", currentEpisodeCount: 1 };
+    const createRawQueryBuilder = (rows: unknown[]) => {
+      const rawQueryBuilder = {
+        select: jest.fn(),
+        addSelect: jest.fn(),
+        from: jest.fn(),
+        innerJoin: jest.fn(),
+        where: jest.fn(),
+        andWhere: jest.fn(),
+        groupBy: jest.fn(),
+        getRawMany: jest.fn().mockResolvedValue(rows),
+      };
+      Object.values(rawQueryBuilder).forEach((mock) => {
+        if (mock !== rawQueryBuilder.getRawMany) mock.mockReturnValue(rawQueryBuilder);
+      });
+      return rawQueryBuilder;
+    };
+    const genreQuery = createRawQueryBuilder([]);
+    const episodeCountQuery = createRawQueryBuilder([{ movieId: movie.id, episodeCount: "7" }]);
+    dataSource.createQueryBuilder.mockReturnValueOnce(genreQuery).mockReturnValueOnce(episodeCountQuery);
+    queryBuilder.getManyAndCount.mockResolvedValue([[movie], 1]);
+
+    const result = await service.publicMovies({});
+
+    expect(result.items[0].currentEpisodeCount).toBe(7);
+    expect(episodeCountQuery.innerJoin).toHaveBeenCalledWith(
+      expect.anything(),
+      "source",
+      expect.stringContaining("source.is_active = :sourceActive"),
+      { sourceActive: true },
+    );
+    expect(episodeCountQuery.andWhere).toHaveBeenCalledWith("episode.deleted_at IS NULL");
+  });
 
   it("accepts open-ended schedules when listing active banners", async () => {
     queryBuilder.getMany.mockResolvedValue([]);
