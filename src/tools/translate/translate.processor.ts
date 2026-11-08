@@ -804,9 +804,11 @@ export class TranslateProcessor extends WorkerHost {
               rejectPromise(new Error(stepFailure.message));
               return;
             }
+            const pythonError = this.extractPythonErrorSummary(stderr) ?? this.extractPythonErrorSummary(stdout);
             rejectPromise(
               new Error(
-                `Python command failed with code ${code ?? "unknown"}${signal ? ` and signal ${signal}` : ""}`,
+                pythonError ||
+                  `Python command failed with code ${code ?? "unknown"}${signal ? ` and signal ${signal}` : ""}`,
               ),
             );
             return;
@@ -870,6 +872,20 @@ export class TranslateProcessor extends WorkerHost {
       step: Number(last[1]),
       message: String(last[2] ?? "").trim(),
     };
+  }
+
+  /** Keep import/startup failures actionable when Python exits before pipeline.log is initialized. */
+  private extractPythonErrorSummary(text: string | undefined): string | null {
+    if (!text?.trim()) return null;
+    const lines = text
+      .replace(/\r/g, "")
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean);
+    const errorLine = [...lines]
+      .reverse()
+      .find((line) => /^(?:[\w.]+Error|Exception):\s+\S/.test(line));
+    return errorLine?.slice(0, 2000) ?? null;
   }
 
   private resolveVideoInputPath(engineConfig: Record<string, unknown>): string {
