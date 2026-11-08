@@ -42,6 +42,21 @@ def write_srt(blocks: list[dict], path: Path) -> None:
 
 
 class Step2GeminiCheckpointTest(unittest.TestCase):
+    def test_payload_flattens_visual_line_breaks_within_each_cue(self) -> None:
+        batch = [
+            {"index": 8, "text": '我的\n“好” 兄弟'},
+            {"index": 9, "text": "末世三年"},
+            {"index": 10, "text": "我拿命护着他们"},
+        ]
+
+        payload = step2_gemini._build_translate_payload(batch)
+
+        self.assertEqual(
+            payload,
+            '0:|我的 “好” 兄弟\n1:|末世三年\n2:|我拿命护着他们',
+        )
+        self.assertEqual(len(payload.splitlines()), len(batch))
+
     def test_rerun_only_requests_batches_without_a_valid_checkpoint(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

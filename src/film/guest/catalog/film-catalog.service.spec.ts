@@ -7,6 +7,9 @@ describe("FilmCatalogService banner queries", () => {
     andWhere: jest.fn(),
     orderBy: jest.fn(),
     addOrderBy: jest.fn(),
+    take: jest.fn(),
+    skip: jest.fn(),
+    getManyAndCount: jest.fn(),
     getMany: jest.fn(),
     getOne: jest.fn(),
   };
@@ -21,6 +24,28 @@ describe("FilmCatalogService banner queries", () => {
     dataSource.getRepository.mockReturnValue(repository);
     service = new FilmCatalogService(dataSource as unknown as DataSource);
   });
+
+  it.each([undefined, "newest"])(
+    "sorts the public movie catalog by latest episode update for sort=%s",
+    async (sort) => {
+      queryBuilder.getManyAndCount.mockResolvedValue([[], 0]);
+
+      await service.publicMovies({ sort });
+
+      expect(queryBuilder.orderBy).toHaveBeenCalledWith(
+        expect.stringContaining("SELECT MAX(episode.updated_at)"),
+        "DESC",
+        "NULLS LAST",
+      );
+      expect(queryBuilder.orderBy).toHaveBeenCalledWith(
+        expect.stringContaining("episode.deleted_at IS NULL"),
+        "DESC",
+        "NULLS LAST",
+      );
+      expect(queryBuilder.addOrderBy).toHaveBeenNthCalledWith(1, "m.createdAt", "DESC");
+      expect(queryBuilder.addOrderBy).toHaveBeenNthCalledWith(2, "m.id", "DESC");
+    },
+  );
 
   it("accepts open-ended schedules when listing active banners", async () => {
     queryBuilder.getMany.mockResolvedValue([]);

@@ -60,7 +60,7 @@ export class FilmCatalogService {
     }
 
     if (query.sort === "newest") {
-      qb.orderBy("m.createdAt", "DESC");
+      this.orderByLatestEpisode(qb);
     } else if (query.sort === "hot") {
       qb.andWhere("m.isHot = :isHotSort", { isHotSort: true });
       qb.orderBy("m.createdAt", "DESC");
@@ -83,7 +83,7 @@ export class FilmCatalogService {
       }
       qb.orderBy("m.createdAt", "DESC");
     } else {
-      qb.orderBy("m.createdAt", "DESC");
+      this.orderByLatestEpisode(qb);
     }
 
     const [items, total] = await qb.take(take).skip(skip).getManyAndCount();
@@ -94,6 +94,20 @@ export class FilmCatalogService {
       page,
       limit: take,
     };
+  }
+
+  private orderByLatestEpisode(qb: ReturnType<DataSource["createQueryBuilder"]>) {
+    return qb
+      .orderBy(
+        `(SELECT MAX(episode.updated_at)
+          FROM episodes episode
+          WHERE episode.movie_id = m.id
+            AND episode.deleted_at IS NULL)`,
+        "DESC",
+        "NULLS LAST",
+      )
+      .addOrderBy("m.createdAt", "DESC")
+      .addOrderBy("m.id", "DESC");
   }
 
   async movie(slug: string) {

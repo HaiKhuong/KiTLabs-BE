@@ -342,6 +342,17 @@ def _build_translate_prompt(batch: list, payload_text: str, translation_context:
     return "".join(prompt_parts)
 
 
+def _build_translate_payload(batch: list) -> str:
+    """Build one physical input line per SRT cue for Gemini."""
+    payload_lines = []
+    for i, block in enumerate(batch):
+        # SRT cue text may contain visual line breaks. They belong to the same cue;
+        # sending them as physical lines makes Gemini treat them as extra cue ids.
+        cue_text = " ".join(str(block.get("text", "")).split())
+        payload_lines.append(f"{i}:|{cue_text}")
+    return "\n".join(payload_lines)
+
+
 def _parse_response(text: str) -> dict[int, str]:
     """Try JSON first, fallback to line format."""
     try:
@@ -417,8 +428,7 @@ def translate_batch_with_gemini(batch, batch_start_index):
     translation_context = _cfg["translation_context"]
     step2_multi_keys_enabled = _cfg["step2_multi_keys_enabled"]
 
-    payload_lines = [f"{i}:|{b['text']}" for i, b in enumerate(batch)]
-    payload_text = "\n".join(payload_lines)
+    payload_text = _build_translate_payload(batch)
     prompt = _build_translate_prompt(batch, payload_text, translation_context)
 
     debug_dir = log_dir / "gemini_debug"
