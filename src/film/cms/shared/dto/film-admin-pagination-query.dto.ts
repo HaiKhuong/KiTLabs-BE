@@ -78,4 +78,14 @@ export class FilmAdminPaginationQueryDto {
   @IsOptional()
   @IsString()
   reason?: string;
+
+  @ApiPropertyOptional({ description: "Filter comments by parentId" })
+  @IsOptional()
+  @IsString()
+  parentId?: string;
+
+  @ApiPropertyOptional({ description: "Include reply comments in listing ('true' or 'false')" })
+  @IsOptional()
+  @IsString()
+  includeReplies?: string;
 }

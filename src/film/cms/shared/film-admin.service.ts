@@ -94,6 +94,8 @@ export class FilmAdminService {
       isRecommended?: string;
       role?: string;
       reason?: string;
+      parentId?: string;
+      includeReplies?: string;
     },
   ) {
     const repo = this.db.getRepository(this.target(resource));
@@ -284,11 +286,20 @@ export class FilmAdminService {
       movieId?: string;
       search?: string;
       deleted?: string;
+      parentId?: string;
+      includeReplies?: string;
     },
   ) {
     const query = this.db.getRepository(FilmComment).createQueryBuilder("comment").withDeleted();
     if (filter?.deleted === "true") query.andWhere("comment.deletedAt IS NOT NULL");
     else if (filter?.deleted !== "all") query.andWhere("comment.deletedAt IS NULL");
+
+    // Do not show reply comments in admin comments table
+    if (filter?.parentId) {
+      query.andWhere("comment.parentId = :parentId", { parentId: filter.parentId });
+    } else if (filter?.includeReplies !== "true") {
+      query.andWhere("comment.parentId IS NULL");
+    }
 
     if (filter?.status) {
       query.andWhere("comment.status = :status", { status: filter.status });
@@ -759,7 +770,7 @@ export class FilmAdminService {
       this.db.getRepository(FilmGenre).count({ where: { deletedAt: IsNull() } }).catch(() => 0),
       this.db.getRepository(FilmBanner).count({ where: { deletedAt: IsNull() } }).catch(() => 0),
       this.db.getRepository(FilmMission).count({ where: { deletedAt: IsNull() } }).catch(() => 0),
-      this.db.getRepository(FilmComment).count({ where: { deletedAt: IsNull() } }).catch(() => 0),
+      this.db.getRepository(FilmComment).count({ where: { parentId: IsNull(), deletedAt: IsNull() } }).catch(() => 0),
       this.db.getRepository(FilmReport).count({ where: { deletedAt: IsNull() } }).catch(() => 0),
       this.db.getRepository(FilmUser).count({ where: { deletedAt: IsNull() } }).catch(() => 0),
       this.db.getRepository(FilmSetting).count({ where: { deletedAt: IsNull() } }).catch(() => 0),

@@ -26,6 +26,8 @@ export abstract class FilmCrudController {
       isRecommended?: string;
       role?: string;
       reason?: string;
+      parentId?: string;
+      includeReplies?: string;
     } = {};
     if (query.episodeId) filter.episodeId = query.episodeId;
     if (query.movieId) filter.movieId = query.movieId;
@@ -39,6 +41,8 @@ export abstract class FilmCrudController {
     if (query.isRecommended) filter.isRecommended = query.isRecommended;
     if (query.role) filter.role = query.role;
     if (query.reason) filter.reason = query.reason;
+    if (query.parentId) filter.parentId = query.parentId;
+    if (query.includeReplies) filter.includeReplies = query.includeReplies;
     return this.service.adminList(this.resource, query.page || 1, query.limit || 10, filter);
   }
 
