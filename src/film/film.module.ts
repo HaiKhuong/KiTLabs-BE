@@ -26,6 +26,9 @@ import { FilmMissionController } from "./guest/mission/film-mission.controller";
 import { FilmMissionService } from "./guest/mission/film-mission.service";
 import { FilmFacebookIntegrationController } from "./integration/film-facebook-integration.controller";
 import { FilmFacebookIntegrationService } from "./integration/film-facebook-integration.service";
+import { FilmAnalyticsAdminController } from "./cms/analytics/film-analytics-admin.controller";
+import { FilmAnalyticsAdminService } from "./cms/analytics/film-analytics-admin.service";
+import { FilmAnalyticsScannerService } from "./cms/analytics/film-analytics-scanner.service";
 
 @Module({
   imports: [
@@ -43,6 +46,7 @@ import { FilmFacebookIntegrationService } from "./integration/film-facebook-inte
     FilmTrackingController,
     FilmUploadController,
     FilmFacebookIntegrationController,
+    FilmAnalyticsAdminController,
     ...FILM_CATALOG_ADMIN_CONTROLLERS,
     ...FILM_CONTENT_ADMIN_CONTROLLERS,
     ...FILM_OPERATIONS_ADMIN_CONTROLLERS,
@@ -58,6 +62,8 @@ import { FilmFacebookIntegrationService } from "./integration/film-facebook-inte
     FilmTrackingService,
     FilmChatService,
     FilmAdminService,
+    FilmAnalyticsScannerService,
+    FilmAnalyticsAdminService,
     FilmChatGateway,
     FilmFacebookIntegrationService,
   ],
@@ -68,6 +74,8 @@ import { FilmFacebookIntegrationService } from "./integration/film-facebook-inte
     FilmTrackingService,
     FilmChatService,
     FilmAdminService,
+    FilmAnalyticsScannerService,
+    FilmAnalyticsAdminService,
   ],
 })
 export class FilmModule {}

@@ -8,6 +8,7 @@ import {
   PrimaryGeneratedColumn,
   UpdateDateColumn,
 } from "typeorm";
+import { FILM_REPORT_ENTITIES } from "./film-report.entities";
 
 export enum UserMissionStatus {
   IN_PROGRESS = "IN_PROGRESS",
@@ -481,4 +482,7 @@ export const FILM_DB_ENTITIES = [
   FilmUserMissionProgress,
   FilmUserExpHistory,
   FilmUserReferral,
+  ...FILM_REPORT_ENTITIES,
 ];
+
+export * from "./film-report.entities";
