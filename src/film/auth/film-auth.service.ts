@@ -3,6 +3,7 @@ import {
   ConflictException,
   Injectable,
   Logger,
+  NotFoundException,
   OnModuleInit,
   UnauthorizedException,
 } from "@nestjs/common";
@@ -21,6 +22,7 @@ import {
   FilmUserStatus,
   ItemType,
 } from "../entities/film.entities";
+import { FilmPrincipal } from "./film-auth";
 import { PlatformUser, PlatformUserRole } from "../../platform/entities/platform-user.entity";
 import { PlatformAdminUser } from "../../platform/entities/platform-admin-user.entity";
 import { PlatformAdminRole } from "../../platform/entities/platform-admin-role.entity";
@@ -306,42 +308,58 @@ export class FilmAuthService implements OnModuleInit {
       const adminUser = await adminUserRepo
         .createQueryBuilder("u")
         .leftJoinAndSelect("u.role", "role")
+        .withDeleted()
         .where("lower(u.userName) = :id OR lower(u.email) = :id", { id: trimmedId })
         .getOne();
 
       if (adminUser) {
-        if (!adminUser.isActive) {
-          throw new UnauthorizedException("Tài khoản quản trị đã bị vô hiệu hóa");
-        }
         if (!adminUser.passwordHash || !(await bcrypt.compare(password, adminUser.passwordHash))) {
           throw new UnauthorizedException("Mật khẩu không chính xác");
+        }
+
+        if (adminUser.deletedAt) {
+          await adminUserRepo.restore(adminUser.id);
+          adminUser.deletedAt = null;
+          adminUser.isActive = true;
+        } else if (!adminUser.isActive) {
+          throw new UnauthorizedException("Tài khoản quản trị đã bị vô hiệu hóa");
         }
 
         adminUser.lastLoginAt = new Date();
         await adminUserRepo.save(adminUser);
 
-        // Mirror user in Film DB for CMS operations
-        const filmRepo = this.db.getRepository(FilmUser);
-        let filmUser = await filmRepo.findOne({
-          where: [{ id: adminUser.id }, { email: adminUser.email }],
-        });
-
-        if (!filmUser) {
-          filmUser = filmRepo.create({
-            id: adminUser.id,
-            email: adminUser.email,
-            username: adminUser.userName,
-            name: adminUser.fullName || adminUser.userName || "Admin",
-            role: FilmUserRole.ADMIN,
-            status: FilmUserStatus.ACTIVE,
-            lastLoginAt: new Date(),
+        // Mirror user in Film DB for CMS operations (optional / safe fallback)
+        try {
+          const filmRepo = this.db.getRepository(FilmUser);
+          let filmUser = await filmRepo.findOne({
+            where: [{ id: adminUser.id }, { email: adminUser.email }],
+            withDeleted: true,
           });
-          await filmRepo.save(filmUser);
-        } else {
-          filmUser.role = FilmUserRole.ADMIN;
-          filmUser.status = FilmUserStatus.ACTIVE;
-          filmUser.lastLoginAt = new Date();
-          await filmRepo.save(filmUser);
+
+          if (filmUser?.deletedAt) {
+            await filmRepo.restore(filmUser.id);
+            filmUser.deletedAt = null;
+          }
+
+          if (!filmUser) {
+            filmUser = filmRepo.create({
+              id: adminUser.id,
+              email: adminUser.email,
+              username: adminUser.userName,
+              name: adminUser.fullName || adminUser.userName || "Admin",
+              role: FilmUserRole.ADMIN,
+              status: FilmUserStatus.ACTIVE,
+              lastLoginAt: new Date(),
+            });
+            await filmRepo.save(filmUser);
+          } else {
+            filmUser.role = FilmUserRole.ADMIN;
+            filmUser.status = FilmUserStatus.ACTIVE;
+            filmUser.lastLoginAt = new Date();
+            await filmRepo.save(filmUser);
+          }
+        } catch (mirrorErr) {
+          this.logger.warn(`Skipping FilmUser mirror for admin: ${mirrorErr}`);
         }
 
         const issued = await this.issuePlatformAdmin(adminUser);
@@ -385,31 +403,41 @@ export class FilmAuthService implements OnModuleInit {
           throw new UnauthorizedException("Mật khẩu không chính xác");
         }
 
-        // Sync / update mirror user in Film DB for CMS operations
-        const filmRepo = this.db.getRepository(FilmUser);
-        let filmUser = await filmRepo.findOne({
-          where: [{ id: platformUser.id }, { email: platformUser.email ?? undefined }],
-        });
-
-        if (!filmUser) {
-          filmUser = filmRepo.create({
-            id: platformUser.id,
-            email: platformUser.email,
-            username: platformUser.userName,
-            name: platformUser.userName || "Admin",
-            role: FilmUserRole.ADMIN,
-            status: FilmUserStatus.ACTIVE,
-            lastLoginAt: new Date(),
+        // Sync / update mirror user in Film DB for CMS operations (optional / safe)
+        try {
+          const filmRepo = this.db.getRepository(FilmUser);
+          let filmUser = await filmRepo.findOne({
+            where: [{ id: platformUser.id }, { email: platformUser.email ?? undefined }],
+            withDeleted: true,
           });
-          await filmRepo.save(filmUser);
-        } else {
-          filmUser.role = FilmUserRole.ADMIN;
-          filmUser.status = FilmUserStatus.ACTIVE;
-          filmUser.lastLoginAt = new Date();
-          await filmRepo.save(filmUser);
+
+          if (filmUser?.deletedAt) {
+            await filmRepo.restore(filmUser.id);
+            filmUser.deletedAt = null;
+          }
+
+          if (!filmUser) {
+            filmUser = filmRepo.create({
+              id: platformUser.id,
+              email: platformUser.email,
+              username: platformUser.userName,
+              name: platformUser.userName || "Admin",
+              role: FilmUserRole.ADMIN,
+              status: FilmUserStatus.ACTIVE,
+              lastLoginAt: new Date(),
+            });
+            await filmRepo.save(filmUser);
+          } else {
+            filmUser.role = FilmUserRole.ADMIN;
+            filmUser.status = FilmUserStatus.ACTIVE;
+            filmUser.lastLoginAt = new Date();
+            await filmRepo.save(filmUser);
+          }
+        } catch (mirrorErr) {
+          this.logger.warn(`Skipping FilmUser mirror for platform user: ${mirrorErr}`);
         }
 
-        return this.issue(filmUser);
+        return this.issue(platformUser as any);
       }
     } catch (err) {
       if (err instanceof UnauthorizedException) throw err;
@@ -417,7 +445,7 @@ export class FilmAuthService implements OnModuleInit {
     }
 
     // Admin authentication is intentionally restricted to Platform DB accounts.
-      throw new UnauthorizedException("Thông tin đăng nhập không hợp lệ");
+    throw new UnauthorizedException("Thông tin đăng nhập không hợp lệ");
   }
 
   async refresh(refreshToken: string) {
@@ -469,12 +497,28 @@ export class FilmAuthService implements OnModuleInit {
     return { loggedOut: true };
   }
 
-  async profile(userId: string): Promise<any> {
+  async profile(userId: string, principal?: FilmPrincipal): Promise<any> {
+    const isAdmin =
+      principal?.authSource === "platform-admin" ||
+      principal?.role === FilmUserRole.ADMIN;
+
+    // 1. Lấy profile admin từ Platform DB (kitlabs_platform)
     try {
-      const adminUser = await this.platformDb
-        .getRepository(PlatformAdminUser)
-        .findOne({ where: { id: userId }, relations: ["role"] });
+      const adminRepo = this.platformDb.getRepository(PlatformAdminUser);
+      let adminUser = await adminRepo.findOne({
+        where: { id: userId },
+        relations: ["role"],
+        withDeleted: true,
+      });
+
       if (adminUser) {
+        if (adminUser.deletedAt) {
+          await adminRepo.restore(adminUser.id);
+          adminUser.deletedAt = null;
+          adminUser.isActive = true;
+          await adminRepo.save(adminUser);
+        }
+
         return {
           id: adminUser.id,
           username: adminUser.userName,
@@ -488,11 +532,65 @@ export class FilmAuthService implements OnModuleInit {
           roleInfo: adminUser.role,
         };
       }
-    } catch {
-      // ignore
+
+      // 2. Fallback: Kiểm tra bảng users trong Platform DB
+      const platformUserRepo = this.platformDb.getRepository(PlatformUser);
+      const platformUser = await platformUserRepo.findOne({ where: { id: userId } });
+      if (
+        platformUser &&
+        (platformUser.role === PlatformUserRole.ADMIN || platformUser.role === "ADMIN" || isAdmin)
+      ) {
+        return {
+          id: platformUser.id,
+          username: platformUser.userName,
+          email: platformUser.email,
+          fullName: platformUser.userName || "Admin",
+          avatarUrl: null,
+          phone: null,
+          isSuperAdmin: true,
+          role: "ADMIN",
+          permissions: { "*": ["*"] },
+          roleInfo: null,
+        };
+      }
+    } catch (err) {
+      if (isAdmin) {
+        this.logger.error(`Error querying platform admin for profile: ${err}`);
+        throw new NotFoundException("Tài khoản quản trị không tồn tại trong Platform DB");
+      }
     }
+
+    // Bắt buộc: Nếu là tài khoản quản trị (từ token), TUYỆT ĐỐI không fallback sang DB film
+    if (isAdmin) {
+      throw new NotFoundException("Tài khoản quản trị không tồn tại trong Platform DB");
+    }
+
+    // Table `users` trong DB film chỉ dùng cho người xem phim
     this.missionService.recordCheckin(userId).catch(() => { });
-    const user = await this.db.getRepository(FilmUser).findOneByOrFail({ id: userId });
+
+    const filmUserRepo = this.db.getRepository(FilmUser);
+    let user: FilmUser;
+    if (typeof filmUserRepo.findOne === "function") {
+      const found = await filmUserRepo.findOne({
+        where: { id: userId },
+        withDeleted: true,
+      });
+      if (!found) {
+        user = await filmUserRepo.findOneByOrFail({ id: userId });
+      } else {
+        user = found;
+      }
+    } else {
+      user = await filmUserRepo.findOneByOrFail({ id: userId });
+    }
+    if (user.deletedAt) {
+      if (typeof filmUserRepo.restore === "function") {
+        await filmUserRepo.restore(user.id);
+      }
+      user.deletedAt = null;
+      user.status = FilmUserStatus.ACTIVE;
+      await filmUserRepo.save(user);
+    }
     const equippedTitle = await this.db
       .getRepository(FilmUserInventory)
       .createQueryBuilder("inventory")
@@ -521,7 +619,28 @@ export class FilmAuthService implements OnModuleInit {
     };
   }
 
-  async updateProfile(userId: string, dto: { name?: string; avatarUrl?: string }) {
+  async updateProfile(userId: string, dto: { name?: string; avatarUrl?: string }, principal?: FilmPrincipal) {
+    const isAdmin =
+      principal?.authSource === "platform-admin" ||
+      principal?.role === FilmUserRole.ADMIN;
+
+    if (isAdmin) {
+      const adminRepo = this.platformDb.getRepository(PlatformAdminUser);
+      let admin = await adminRepo.findOne({ where: { id: userId }, withDeleted: true });
+      if (admin) {
+        if (admin.deletedAt) {
+          await adminRepo.restore(admin.id);
+          admin.deletedAt = null;
+          admin.isActive = true;
+        }
+        if (dto.name !== undefined) admin.fullName = dto.name.trim();
+        if (dto.avatarUrl !== undefined) admin.avatarUrl = dto.avatarUrl?.trim() || null;
+        await adminRepo.save(admin);
+        return this.profile(userId, principal);
+      }
+      throw new NotFoundException("Tài khoản quản trị không tồn tại trong Platform DB");
+    }
+
     const filmRepo = this.db.getRepository(FilmUser);
     const user = await filmRepo.findOneByOrFail({ id: userId });
     if (dto.name !== undefined) {

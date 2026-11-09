@@ -1,6 +1,10 @@
+import { NotFoundException } from "@nestjs/common";
 import { JwtService } from "@nestjs/jwt";
 import { DataSource } from "typeorm";
-import { FilmItem, FilmUser, FilmUserInventory, ItemType } from "../entities/film.entities";
+import { FilmItem, FilmUser, FilmUserInventory, FilmUserRole, ItemType } from "../entities/film.entities";
+import { PlatformAdminUser } from "../../platform/entities/platform-admin-user.entity";
+import { PlatformUser } from "../../platform/entities/platform-user.entity";
+import { FilmPrincipal } from "./film-auth";
 import { FilmAuthService } from "./film-auth.service";
 
 describe("FilmAuthService.profile", () => {
@@ -89,6 +93,97 @@ describe("FilmAuthService.profile", () => {
 
     await expect(service.profile(user.id)).rejects.toBe(error);
     expect(inventoryRepository.createQueryBuilder).not.toHaveBeenCalled();
+  });
+
+  it("fetches admin profile strictly from Platform DB and restores if soft-deleted", async () => {
+    const adminUser = {
+      id: "admin-1",
+      userName: "admin",
+      email: "admin@kitlabs.space",
+      fullName: "Admin Kitlabs",
+      avatarUrl: null,
+      phone: null,
+      isSuperAdmin: true,
+      role: { code: "SUPER_ADMIN", permissions: {} },
+      deletedAt: new Date(),
+      isActive: false,
+    };
+    const platformAdminRepo = {
+      findOne: jest.fn().mockResolvedValue(adminUser),
+      restore: jest.fn().mockResolvedValue({}),
+      save: jest.fn().mockImplementation((u) => Promise.resolve(u)),
+    };
+    const platformDb = {
+      getRepository: jest.fn((entity) => {
+        if (entity === PlatformAdminUser) return platformAdminRepo;
+        throw new Error("Unexpected entity");
+      }),
+    } as unknown as DataSource;
+    const filmUserRepo = {
+      findOneByOrFail: jest.fn(),
+    };
+    const filmDb = {
+      getRepository: jest.fn(() => filmUserRepo),
+    } as unknown as DataSource;
+
+    const service = new FilmAuthService(filmDb, platformDb, {} as JwtService, {} as any);
+    const principal: FilmPrincipal = {
+      userId: "admin-1",
+      deviceId: null,
+      role: FilmUserRole.ADMIN,
+      tokenType: "access",
+      authSource: "platform-admin",
+    };
+
+    const res = await service.profile("admin-1", principal);
+    expect(res).toEqual({
+      id: "admin-1",
+      username: "admin",
+      email: "admin@kitlabs.space",
+      fullName: "Admin Kitlabs",
+      avatarUrl: null,
+      phone: null,
+      isSuperAdmin: true,
+      role: "SUPER_ADMIN",
+      permissions: {},
+      roleInfo: adminUser.role,
+    });
+    expect(platformAdminRepo.restore).toHaveBeenCalledWith("admin-1");
+    expect(filmUserRepo.findOneByOrFail).not.toHaveBeenCalled();
+  });
+
+  it("throws NotFoundException without fallback to FilmUser if admin is not found in Platform DB", async () => {
+    const platformAdminRepo = {
+      findOne: jest.fn().mockResolvedValue(null),
+    };
+    const platformUserRepo = {
+      findOne: jest.fn().mockResolvedValue(null),
+    };
+    const platformDb = {
+      getRepository: jest.fn((entity) => {
+        if (entity === PlatformAdminUser) return platformAdminRepo;
+        if (entity === PlatformUser) return platformUserRepo;
+        throw new Error("Unexpected entity");
+      }),
+    } as unknown as DataSource;
+    const filmUserRepo = {
+      findOneByOrFail: jest.fn(),
+    };
+    const filmDb = {
+      getRepository: jest.fn(() => filmUserRepo),
+    } as unknown as DataSource;
+
+    const service = new FilmAuthService(filmDb, platformDb, {} as JwtService, {} as any);
+    const principal: FilmPrincipal = {
+      userId: "admin-missing",
+      deviceId: null,
+      role: FilmUserRole.ADMIN,
+      tokenType: "access",
+      authSource: "platform-admin",
+    };
+
+    await expect(service.profile("admin-missing", principal)).rejects.toBeInstanceOf(NotFoundException);
+    expect(filmUserRepo.findOneByOrFail).not.toHaveBeenCalled();
   });
 
   describe("updateProfile", () => {

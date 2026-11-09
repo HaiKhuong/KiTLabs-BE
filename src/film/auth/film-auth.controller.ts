@@ -83,7 +83,7 @@ export class FilmAuthController {
   @UseGuards(FilmJwtGuard)
   @Get("profile")
   profile(@FilmCurrentUser() user: FilmPrincipal) {
-    return this.auth.profile(user.userId);
+    return this.auth.profile(user.userId, user);
   }
 
   @ApiOperation({ summary: "Update user profile" })
@@ -91,7 +91,7 @@ export class FilmAuthController {
   @UseGuards(FilmJwtGuard)
   @Put("profile")
   updateProfile(@FilmCurrentUser() user: FilmPrincipal, @Body() dto: UpdateFilmProfileDto) {
-    return this.auth.updateProfile(user.userId, dto);
+    return this.auth.updateProfile(user.userId, dto, user);
   }
 
   @ApiOperation({ summary: "Patch user profile" })
@@ -99,7 +99,7 @@ export class FilmAuthController {
   @UseGuards(FilmJwtGuard)
   @Patch("profile")
   patchProfile(@FilmCurrentUser() user: FilmPrincipal, @Body() dto: UpdateFilmProfileDto) {
-    return this.auth.updateProfile(user.userId, dto);
+    return this.auth.updateProfile(user.userId, dto, user);
   }
 }
 
