@@ -68,4 +68,14 @@ export class FilmAdminPaginationQueryDto {
   @IsOptional()
   @IsString()
   isRecommended?: string;
+
+  @ApiPropertyOptional({ description: "Filter users by role (ADMIN, USER, GUEST, VIP, MODERATOR)" })
+  @IsOptional()
+  @IsString()
+  role?: string;
+
+  @ApiPropertyOptional({ description: "Filter reports by reason" })
+  @IsOptional()
+  @IsString()
+  reason?: string;
 }

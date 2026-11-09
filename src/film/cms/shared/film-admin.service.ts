@@ -1,6 +1,8 @@
-import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
+import { BadRequestException, Injectable, NotFoundException, Optional } from "@nestjs/common";
 import { InjectDataSource } from "@nestjs/typeorm";
 import { DataSource, EntityTarget, In, IsNull, Not } from "typeorm";
+import { PlatformAdminRole } from "../../../platform/entities/platform-admin-role.entity";
+import { PlatformAdminUser } from "../../../platform/entities/platform-admin-user.entity";
 import {
   DonationStatus,
   FilmActivityLog,
@@ -22,6 +24,8 @@ import {
   FilmRating,
   FilmTag,
   FilmUser,
+  FilmUserRole,
+  FilmUserStatus,
   FilmUserInventory,
   FilmWatchHistory,
   FilmImageUpload,
@@ -60,7 +64,10 @@ const RESOURCES: Record<string, EntityTarget<object>> = {
 
 @Injectable()
 export class FilmAdminService {
-  constructor(@InjectDataSource("film") private readonly db: DataSource) {}
+  constructor(
+    @InjectDataSource("film") private readonly db: DataSource,
+    @Optional() @InjectDataSource() private readonly platformDb?: DataSource,
+  ) {}
 
   private target(resource: string) {
     const target = RESOURCES[resource];
@@ -83,6 +90,8 @@ export class FilmAdminService {
       genreId?: string;
       isHot?: string;
       isRecommended?: string;
+      role?: string;
+      reason?: string;
     },
   ) {
     const repo = this.db.getRepository(this.target(resource));
@@ -91,6 +100,15 @@ export class FilmAdminService {
 
     if (resource === "movies") {
       return this.listMovies(page, take, skip, filter);
+    }
+    if (resource === "users") {
+      return this.listUsers(page, take, skip, filter);
+    }
+    if (resource === "comments") {
+      return this.listComments(page, take, skip, filter);
+    }
+    if (resource === "reports") {
+      return this.listReports(page, take, skip, filter);
     }
 
     const where: Record<string, unknown> = {};
@@ -211,6 +229,145 @@ export class FilmAdminService {
     };
   }
 
+  private async listUsers(
+    page: number,
+    take: number,
+    skip: number,
+    filter?: {
+      status?: string;
+      role?: string;
+      search?: string;
+      deleted?: string;
+    },
+  ) {
+    const query = this.db.getRepository(FilmUser).createQueryBuilder("user").withDeleted();
+    if (filter?.deleted === "true") query.andWhere("user.deletedAt IS NOT NULL");
+    else if (filter?.deleted !== "all") query.andWhere("user.deletedAt IS NULL");
+
+    const search = filter?.search?.trim();
+    if (search) {
+      query.andWhere(
+        "(user.name ILIKE :search OR user.username ILIKE :search OR user.email ILIKE :search)",
+        { search: `%${search}%` },
+      );
+    }
+    if (filter?.status) {
+      query.andWhere("user.status = :status", { status: filter.status });
+    }
+    if (filter?.role) {
+      query.andWhere("user.role = :role", { role: filter.role });
+    }
+
+    const [users, total] = await query
+      .orderBy("user.createdAt", "DESC")
+      .skip(skip)
+      .take(take)
+      .getManyAndCount();
+
+    const usersWithDevices = await this.withDevices(users);
+    return {
+      items: usersWithDevices,
+      total,
+      page: Math.max(1, page),
+      limit: take,
+    };
+  }
+
+  private async listComments(
+    page: number,
+    take: number,
+    skip: number,
+    filter?: {
+      status?: string;
+      movieId?: string;
+      search?: string;
+      deleted?: string;
+    },
+  ) {
+    const query = this.db.getRepository(FilmComment).createQueryBuilder("comment").withDeleted();
+    if (filter?.deleted === "true") query.andWhere("comment.deletedAt IS NOT NULL");
+    else if (filter?.deleted !== "all") query.andWhere("comment.deletedAt IS NULL");
+
+    if (filter?.status) {
+      query.andWhere("comment.status = :status", { status: filter.status });
+    }
+    if (filter?.movieId) {
+      query.andWhere("comment.movieId = :movieId", { movieId: filter.movieId });
+    }
+
+    const search = filter?.search?.trim();
+    if (search) {
+      query.leftJoin(FilmUser, "user", "user.id = comment.userId");
+      query.leftJoin(FilmMovie, "movie", "movie.id = comment.movieId");
+      query.andWhere(
+        "(comment.content ILIKE :search OR user.name ILIKE :search OR user.username ILIKE :search OR user.email ILIKE :search OR movie.title ILIKE :search)",
+        { search: `%${search}%` },
+      );
+    }
+
+    const [comments, total] = await query
+      .orderBy("comment.createdAt", "DESC")
+      .skip(skip)
+      .take(take)
+      .getManyAndCount();
+
+    const commentsWithMeta = await this.withCommentMeta(comments);
+    return {
+      items: commentsWithMeta,
+      total,
+      page: Math.max(1, page),
+      limit: take,
+    };
+  }
+
+  private async listReports(
+    page: number,
+    take: number,
+    skip: number,
+    filter?: {
+      status?: string;
+      reason?: string;
+      movieId?: string;
+      search?: string;
+      deleted?: string;
+    },
+  ) {
+    const query = this.db.getRepository(FilmReport).createQueryBuilder("report").withDeleted();
+    if (filter?.deleted === "true") query.andWhere("report.deletedAt IS NOT NULL");
+    else if (filter?.deleted !== "all") query.andWhere("report.deletedAt IS NULL");
+
+    if (filter?.status) {
+      query.andWhere("report.status = :status", { status: filter.status });
+    }
+    if (filter?.reason) {
+      query.andWhere("report.reason = :reason", { reason: filter.reason });
+    }
+    if (filter?.movieId) {
+      query.andWhere("report.movieId = :movieId", { movieId: filter.movieId });
+    }
+
+    const search = filter?.search?.trim();
+    if (search) {
+      query.andWhere(
+        "(report.movieTitle ILIKE :search OR report.episodeTitle ILIKE :search OR report.description ILIKE :search OR report.reason ILIKE :search)",
+        { search: `%${search}%` },
+      );
+    }
+
+    const [reports, total] = await query
+      .orderBy("report.createdAt", "DESC")
+      .skip(skip)
+      .take(take)
+      .getManyAndCount();
+
+    return {
+      items: reports,
+      total,
+      page: Math.max(1, page),
+      limit: take,
+    };
+  }
+
   async adminOne(resource: string, id: string) {
     const row = await this.db
       .getRepository(this.target(resource))
@@ -252,6 +409,44 @@ export class FilmAdminService {
 
     if (resource === "episode-sources" && cleanData.isActive !== false) {
       return this.saveEpisodeSource(null, cleanData);
+    }
+
+    if (resource === "comments") {
+      let adminUser = await this.db.getRepository(FilmUser).findOne({
+        where: { role: FilmUserRole.ADMIN },
+        order: { createdAt: "ASC" },
+      });
+      if (!adminUser) {
+        adminUser = await this.db.getRepository(FilmUser).findOne({
+          where: [{ username: "admin" }, { email: "admin@kitlabs.io" }],
+        });
+        if (adminUser) {
+          adminUser.role = FilmUserRole.ADMIN;
+          await this.db.getRepository(FilmUser).save(adminUser);
+        }
+      }
+      if (!adminUser) {
+        const newAdmin = this.db.getRepository(FilmUser).create({
+          name: "Ban Quản Trị",
+          username: "admin",
+          email: "admin@kitlabs.io",
+          role: FilmUserRole.ADMIN,
+          sectRank: SectRank.THAN_HOANG,
+          status: FilmUserStatus.ACTIVE,
+        });
+        adminUser = await this.db.getRepository(FilmUser).save(newAdmin);
+      }
+
+      if (cleanData.parentId || !cleanData.userId) {
+        cleanData.userId = adminUser.id;
+        cleanData.userSectRankSnapshot = adminUser.sectRank || "THAN_HOANG";
+      }
+      if (!cleanData.userSectRankSnapshot) {
+        cleanData.userSectRankSnapshot = adminUser.sectRank || "THAN_HOANG";
+      }
+      if (!cleanData.status) {
+        cleanData.status = "APPROVED";
+      }
     }
 
     const repo = this.db.getRepository(this.target(resource));
@@ -554,6 +749,54 @@ export class FilmAdminService {
       movie: movieMap.get(c.movieId) || null,
       episode: c.episodeId ? episodeMap.get(c.episodeId) || null : null,
     }));
+  }
+
+  async getMenuCounts(): Promise<Record<string, number>> {
+    const [movies, genres, banners, missions, comments, reports, users, settings] = await Promise.all([
+      this.db.getRepository(FilmMovie).count({ where: { deletedAt: IsNull() } }).catch(() => 0),
+      this.db.getRepository(FilmGenre).count({ where: { deletedAt: IsNull() } }).catch(() => 0),
+      this.db.getRepository(FilmBanner).count({ where: { deletedAt: IsNull() } }).catch(() => 0),
+      this.db.getRepository(FilmMission).count({ where: { deletedAt: IsNull() } }).catch(() => 0),
+      this.db.getRepository(FilmComment).count({ where: { deletedAt: IsNull() } }).catch(() => 0),
+      this.db.getRepository(FilmReport).count({ where: { deletedAt: IsNull() } }).catch(() => 0),
+      this.db.getRepository(FilmUser).count({ where: { deletedAt: IsNull() } }).catch(() => 0),
+      this.db.getRepository(FilmSetting).count({ where: { deletedAt: IsNull() } }).catch(() => 0),
+    ]);
+
+    let adminUsers = 0;
+    let roles = 0;
+    if (this.platformDb) {
+      try {
+        adminUsers = await this.platformDb.getRepository(PlatformAdminUser).count({ where: { deletedAt: IsNull() } }).catch(() => 0);
+        roles = await this.platformDb.getRepository(PlatformAdminRole).count({ where: { deletedAt: IsNull() } }).catch(() => 0);
+      } catch {
+        // Ignored if platform tables are not present
+      }
+    }
+
+    return {
+      movies,
+      genres,
+      banners,
+      missions,
+      comments,
+      reports,
+      users,
+      settings,
+      admin_users: adminUsers,
+      roles,
+      // Path aliases
+      "/movies": movies,
+      "/genres": genres,
+      "/banners": banners,
+      "/missions": missions,
+      "/comments": comments,
+      "/reports": reports,
+      "/users": users,
+      "/settings": settings,
+      "/admin-users": adminUsers,
+      "/roles": roles,
+    };
   }
 }
 

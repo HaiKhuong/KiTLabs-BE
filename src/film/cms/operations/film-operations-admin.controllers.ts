@@ -1,5 +1,5 @@
-import { Controller } from "@nestjs/common";
-import { ApiTags } from "@nestjs/swagger";
+import { Controller, Get } from "@nestjs/common";
+import { ApiOperation, ApiTags } from "@nestjs/swagger";
 import { FilmAdminService } from "../shared/film-admin.service";
 import { FilmCmsAccess } from "../shared/film-cms.decorators";
 import { FilmCrudController } from "../shared/film-crud.controller";
@@ -104,6 +104,19 @@ export class FilmInventoriesAdminController extends FilmCrudController {
   }
 }
 
+@FilmCmsAccess()
+@ApiTags("Film CMS - Menu Counts")
+@Controller("film/admin/menu-counts")
+export class FilmMenuCountsAdminController {
+  constructor(private readonly service: FilmAdminService) {}
+
+  @ApiOperation({ summary: "Get total record counts for each admin sidebar menu item" })
+  @Get()
+  getCounts() {
+    return this.service.getMenuCounts();
+  }
+}
+
 export const FILM_OPERATIONS_ADMIN_CONTROLLERS = [
   FilmUsersAdminController,
   FilmDevicesAdminController,
@@ -115,4 +128,5 @@ export const FILM_OPERATIONS_ADMIN_CONTROLLERS = [
   FilmRatingsAdminController,
   FilmCommentsAdminController,
   FilmInventoriesAdminController,
+  FilmMenuCountsAdminController,
 ];

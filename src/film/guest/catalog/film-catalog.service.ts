@@ -268,6 +268,7 @@ export class FilmCatalogService {
               avatarUrl: author.avatarUrl,
               sectRank: author.sectRank,
               currentTitle: author.currentTitle,
+              role: author.role,
             }
           : null,
       };
