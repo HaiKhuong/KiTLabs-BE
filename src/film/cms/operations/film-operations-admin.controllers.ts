@@ -92,6 +92,12 @@ export class FilmCommentsAdminController extends FilmCrudController {
   constructor(s: FilmAdminService) {
     super(s);
   }
+
+  @ApiOperation({ summary: "Get quick reply templates for comments" })
+  @Get("templates")
+  getTemplates() {
+    return this.service.getCommentTemplates();
+  }
 }
 
 @FilmCmsAccess()

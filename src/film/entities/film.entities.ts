@@ -260,6 +260,15 @@ export class FilmComment extends FilmBase {
   @Column({ name: "dislikes_count", default: 0 }) dislikesCount!: number;
   @Column({ type: "enum", enum: CommentStatus, default: CommentStatus.APPROVED }) status!: CommentStatus;
 }
+
+@Entity("comment_templates")
+export class FilmCommentTemplate extends FilmBase {
+  @Index() @Column({ length: 100 }) type!: string;
+  @Column({ type: "text" }) message!: string;
+  @Column({ name: "display_order", type: "int", default: 0 }) displayOrder!: number;
+  @Column({ name: "is_active", default: true }) isActive!: boolean;
+}
+
 @Entity("comment_reactions")
 export class FilmCommentReaction {
   @PrimaryColumn("uuid", { name: "user_id" }) userId!: string;
@@ -466,6 +475,7 @@ export const FILM_DB_ENTITIES = [
   FilmFavorite,
   FilmRating,
   FilmComment,
+  FilmCommentTemplate,
   FilmCommentReaction,
   FilmItem,
   FilmUserInventory,

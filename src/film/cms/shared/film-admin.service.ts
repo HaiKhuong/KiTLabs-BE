@@ -10,6 +10,7 @@ import {
   FilmBanner,
   FilmChatMessage,
   FilmComment,
+  FilmCommentTemplate,
   FilmDevice,
   FilmDonation,
   FilmEpisode,
@@ -60,6 +61,7 @@ const RESOURCES: Record<string, EntityTarget<object>> = {
   reports: FilmReport,
   settings: FilmSetting,
   missions: FilmMission,
+  "comment-templates": FilmCommentTemplate,
 };
 
 @Injectable()
@@ -797,6 +799,45 @@ export class FilmAdminService {
       "/admin-users": adminUsers,
       "/roles": roles,
     };
+  }
+
+  async getCommentTemplates() {
+    const repo = this.db.getRepository(FilmCommentTemplate);
+    let items = await repo.find({
+      where: { isActive: true, deletedAt: IsNull() },
+      order: { displayOrder: "ASC", createdAt: "ASC" },
+    });
+
+    if (items.length === 0) {
+      const defaultTemplates = [
+        { type: "Khen phim", message: "Có mắt nhìn đấy, bổn tọa thích!" },
+        { type: "Khen phim", message: "Đạo hữu cũng nghiện rồi à?" },
+        { type: "Hóng tập mới", message: "Gấp gì? Tu tiên cần kiên nhẫn!" },
+        { type: "Giục phim", message: "Giục nữa bổn tọa tẩu hỏa đấy!" },
+        { type: "Giục phim", message: "Ngươi định ép bổn tọa phi thăng à?" },
+        { type: "Phim quá cuốn", message: "Coi chừng nghiện, bổn tọa không cứu!" },
+        { type: "Phim hài", message: "Cười ít thôi, rớt Kim Đan giờ!" },
+        { type: "Chê phim", message: "Khẩu vị ngươi khó chiều thật!" },
+        { type: "Báo lỗi", message: "Kẻ nào dám phá trận pháp của ta!" },
+        { type: "Cảm ơn", message: "Miễn lễ, lui xuống cày phim tiếp!" },
+        { type: "Xin thêm phim", message: "Tham lam! Nhưng bổn tọa thích!" },
+        { type: "Bình luận vui", message: "Ngươi đến tu tiên hay tấu hài?" },
+        { type: "Bình luận vui", message: "Lá gan không nhỏ đấy!" },
+        { type: "Đòi phần tiếp", message: "Bổn tọa còn đang hóng hơn ngươi!" },
+        { type: "Xem xuyên đêm", message: "Tu vi chưa tăng, thâm mắt đã tăng!" },
+        { type: "Chào thành viên", message: "Vào Ma Vực rồi thì khó thoát lắm!" },
+      ];
+      const created = repo.create(
+        defaultTemplates.map((t, idx) => ({
+          ...t,
+          displayOrder: idx + 1,
+          isActive: true,
+        })),
+      );
+      items = await repo.save(created);
+    }
+
+    return items;
   }
 }
 
