@@ -17,22 +17,13 @@ export class FilmAnalyticsAdminController {
     @Query("range") range?: "today" | "yesterday" | "7d" | "30d",
     @Query("date") date?: string,
   ) {
-    const data = await this.analyticsService.getDashboardData({ range, date });
-    return {
-      success: true,
-      data,
-    };
+    return this.analyticsService.getDashboardData({ range, date });
   }
 
   @ApiOperation({ summary: "Manually trigger background scanner to sync raw logs into reports_xxx tables" })
   @Post("sync-now")
   async syncNow(@Body() body?: { dateKey?: string }) {
-    const result = await this.analyticsService.triggerManualSync(body?.dateKey);
-    return {
-      success: true,
-      message: `Scanned and synchronized reports for [${result.dateKey}] in ${result.durationMs}ms`,
-      data: result,
-    };
+    return this.analyticsService.triggerManualSync(body?.dateKey);
   }
 }
 
