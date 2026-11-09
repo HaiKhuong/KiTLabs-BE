@@ -321,25 +321,25 @@ export class FilmSepayTransaction extends FilmBase {
   @Column({ name: "sepay_id", type: "bigint" })
   sepayId!: string;
 
-  @Column({ length: 50 })
+  @Column({ type: "varchar", length: 50 })
   gateway!: string;
 
   @Column({ name: "transaction_date", type: "varchar", length: 50, nullable: true })
   transactionDate!: string | null;
 
-  @Column({ name: "account_number", length: 50 })
+  @Column({ name: "account_number", type: "varchar", length: 50 })
   accountNumber!: string;
 
-  @Column({ name: "sub_account", length: 50, nullable: true })
+  @Column({ name: "sub_account", type: "varchar", length: 50, nullable: true })
   subAccount!: string | null;
 
-  @Column({ length: 100, nullable: true })
+  @Column({ type: "varchar", length: 100, nullable: true })
   code!: string | null;
 
   @Column({ type: "text" })
   content!: string;
 
-  @Column({ name: "transfer_type", length: 20 })
+  @Column({ name: "transfer_type", type: "varchar", length: 20 })
   transferType!: string;
 
   @Column({ type: "text", nullable: true })
@@ -351,7 +351,7 @@ export class FilmSepayTransaction extends FilmBase {
   @Column({ type: "numeric", precision: 15, scale: 2, default: 0 })
   accumulated!: string;
 
-  @Column({ name: "reference_code", length: 100, nullable: true })
+  @Column({ name: "reference_code", type: "varchar", length: 100, nullable: true })
   referenceCode!: string | null;
 
   @Index()
@@ -362,8 +362,8 @@ export class FilmSepayTransaction extends FilmBase {
   rewardExp!: number;
 
   @Column({
-    type: "enum",
-    enum: SepayTransactionStatus,
+    type: "varchar",
+    length: 30,
     default: SepayTransactionStatus.UNMATCHED,
   })
   status!: SepayTransactionStatus;
