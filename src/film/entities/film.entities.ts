@@ -307,6 +307,70 @@ export class FilmDonation extends FilmBase {
   @Column({ type: "varchar", nullable: true }) message!: string | null;
   @Column({ name: "reward_applied_at", type: "timestamptz", nullable: true }) rewardAppliedAt!: Date | null;
 }
+
+export enum SepayTransactionStatus {
+  SUCCESS = "SUCCESS",
+  UNMATCHED = "UNMATCHED",
+  IGNORED = "IGNORED",
+  FAILED = "FAILED",
+}
+
+@Entity("sepay_transactions")
+export class FilmSepayTransaction extends FilmBase {
+  @Index({ unique: true })
+  @Column({ name: "sepay_id", type: "bigint" })
+  sepayId!: string;
+
+  @Column({ length: 50 })
+  gateway!: string;
+
+  @Column({ name: "transaction_date", type: "varchar", length: 50, nullable: true })
+  transactionDate!: string | null;
+
+  @Column({ name: "account_number", length: 50 })
+  accountNumber!: string;
+
+  @Column({ name: "sub_account", length: 50, nullable: true })
+  subAccount!: string | null;
+
+  @Column({ length: 100, nullable: true })
+  code!: string | null;
+
+  @Column({ type: "text" })
+  content!: string;
+
+  @Column({ name: "transfer_type", length: 20 })
+  transferType!: string;
+
+  @Column({ type: "text", nullable: true })
+  description!: string | null;
+
+  @Column({ name: "transfer_amount", type: "numeric", precision: 15, scale: 2 })
+  transferAmount!: string;
+
+  @Column({ type: "numeric", precision: 15, scale: 2, default: 0 })
+  accumulated!: string;
+
+  @Column({ name: "reference_code", length: 100, nullable: true })
+  referenceCode!: string | null;
+
+  @Index()
+  @Column({ name: "user_id", type: "uuid", nullable: true })
+  userId!: string | null;
+
+  @Column({ name: "reward_exp", type: "int", default: 0 })
+  rewardExp!: number;
+
+  @Column({
+    type: "enum",
+    enum: SepayTransactionStatus,
+    default: SepayTransactionStatus.UNMATCHED,
+  })
+  status!: SepayTransactionStatus;
+
+  @Column({ name: "raw_payload", type: "jsonb", nullable: true })
+  rawPayload!: Record<string, any> | null;
+}
 @Entity("world_chat_messages")
 export class FilmChatMessage extends FilmBase {
   @Index() @Column("uuid", { name: "user_id" }) userId!: string;
@@ -480,6 +544,7 @@ export const FILM_DB_ENTITIES = [
   FilmItem,
   FilmUserInventory,
   FilmDonation,
+  FilmSepayTransaction,
   FilmChatMessage,
   FilmNotification,
   FilmBanner,

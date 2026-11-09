@@ -375,7 +375,32 @@ export class FilmCatalogService {
     const setting = await this.db.getRepository(FilmSetting).findOne({
       where: { key: key.trim(), isPublic: true },
     });
-    if (!setting) throw new NotFoundException(`Cấu hình ${key} không tồn tại hoặc không công khai`);
+    if (!setting) {
+      if (key.trim() === "BANK_ACCOUNT") {
+        return {
+          key: "BANK_ACCOUNT",
+          value: {
+            bankId: "MB",
+            bankName: "MBBank - Ngân hàng Quân Đội",
+            accountNo: "0331000123456",
+            accountName: "KITLABS FILM",
+            template: "compact2",
+            defaultMemo: "Ung ho phim",
+            isActive: true,
+          },
+          description: "Cấu hình tài khoản ngân hàng mặc định",
+          isPublic: true,
+        };
+      }
+      throw new NotFoundException(`Cấu hình ${key} không tồn tại hoặc không công khai`);
+    }
+
+    if (setting.key === "BANK_ACCOUNT" && typeof setting.value === "object" && setting.value !== null) {
+      const sanitized = { ...setting.value } as Record<string, any>;
+      delete sanitized.sepayApiKey;
+      return { ...setting, value: sanitized };
+    }
+
     return setting;
   }
 }
