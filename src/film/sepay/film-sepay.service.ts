@@ -268,20 +268,20 @@ export class FilmSepayService {
   }
 
   /**
-   * Get configured EXP reward rate per 1.000 VND
+   * Get configured EXP reward rate per 1.000 VND from Mission settings (DONATE_BANK)
    */
   private async getExpRatePer1k(): Promise<number> {
     try {
-      const setting = await this.dataSource.getRepository(FilmSetting).findOne({
-        where: { key: "BANK_ACCOUNT" },
+      const mission = await this.dataSource.getRepository(FilmMission).findOne({
+        where: { code: "DONATE_BANK" },
       });
-      const val = (setting?.value || {}) as Record<string, any>;
-      const rate = Number(val.expRatePer1k);
-      if (rate > 0) return rate;
-    } catch {
-      // ignore
+      if (mission && typeof mission.rewardExp === "number" && mission.rewardExp > 0) {
+        return mission.rewardExp;
+      }
+    } catch (err) {
+      this.logger.warn(`Failed to fetch DONATE_BANK mission rewardExp: ${(err as Error).message}`);
     }
-    return 3; // Default 3 EXP per 1.000 VND
+    return 3; // Default fallback 3 EXP per 1.000 VND
   }
 
   /**
