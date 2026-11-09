@@ -53,25 +53,38 @@ export class FilmAnalyticsAdminService {
         dateKeys.push(getVietnamDateKey(d));
       }
 
-      const trafficReports = await trafficRepo.find({
+      let trafficReports = await trafficRepo.find({
         where: { dateKey: In(dateKeys) },
         order: { dateKey: "ASC" },
       });
+
+      // If any dateKeys are not yet in reports_daily_traffic, backfill them
+      const scannedKeys = new Set(trafficReports.map((t) => t.dateKey));
+      const missingKeys = dateKeys.filter((dk) => !scannedKeys.has(dk));
+      if (missingKeys.length > 0) {
+        for (const mk of missingKeys) {
+          await this.scanner.syncDate(mk);
+        }
+        trafficReports = await trafficRepo.find({
+          where: { dateKey: In(dateKeys) },
+          order: { dateKey: "ASC" },
+        });
+      }
 
       const userReports = await userRepo.find({
         where: { dateKey: In(dateKeys) },
         order: { dateKey: "ASC" },
       });
 
-      const todayLeaderboard = await leaderboardRepo.find({
-        where: { dateKey: todayKey },
-        order: { rank: "ASC" },
-        take: 5,
+      const contentReports = await contentRepo.find({
+        where: { dateKey: In(dateKeys) },
       });
 
-      const latestContent = await contentRepo.findOne({
-        where: { dateKey: todayKey },
+      const leaderboardReports = await leaderboardRepo.find({
+        where: { dateKey: In(dateKeys) },
       });
+
+      const latestContent = contentReports.find((c) => c.dateKey === todayKey) || contentReports[contentReports.length - 1];
 
       // Combine traffic by day
       let totalViews = 0;
@@ -110,6 +123,67 @@ export class FilmAnalyticsAdminService {
         };
       });
 
+      // Aggregate topPages across the range
+      const pageMap = new Map<string, number>();
+      for (const tr of trafficReports) {
+        for (const p of tr.topPages || []) {
+          pageMap.set(p.path, (pageMap.get(p.path) || 0) + Number(p.views || 0));
+        }
+      }
+      const topPages = Array.from(pageMap.entries())
+        .map(([path, views]) => ({ path, views }))
+        .sort((a, b) => b.views - a.views)
+        .slice(0, 10);
+
+      // Aggregate topSearches across the range
+      const searchMap = new Map<string, number>();
+      for (const tr of trafficReports) {
+        for (const s of tr.topSearches || []) {
+          searchMap.set(s.keyword, (searchMap.get(s.keyword) || 0) + Number(s.count || 0));
+        }
+      }
+      const topSearches = Array.from(searchMap.entries())
+        .map(([keyword, count]) => ({ keyword, count }))
+        .sort((a, b) => b.count - a.count)
+        .slice(0, 10);
+
+      // Aggregate topMovies across the range
+      const movieMap = new Map<string, any>();
+      for (const cr of contentReports) {
+        for (const m of cr.topWatchedMovies || []) {
+          const existing = movieMap.get(m.movieId);
+          if (existing) {
+            existing.views += Number(m.views || 0);
+            if (!existing.bannerUrl && m.bannerUrl) existing.bannerUrl = m.bannerUrl;
+            if (!existing.slug && m.slug) existing.slug = m.slug;
+          } else {
+            movieMap.set(m.movieId, { ...m, views: Number(m.views || 0) });
+          }
+        }
+      }
+      const topMovies = Array.from(movieMap.values())
+        .sort((a, b) => b.views - a.views)
+        .slice(0, 10);
+
+      // Aggregate topExpUsers across the range
+      const expMap = new Map<string, any>();
+      for (const row of leaderboardReports) {
+        const existing = expMap.get(row.userId);
+        if (existing) {
+          existing.totalExpToday += Number(row.totalExpToday || 0);
+          existing.txCount += Number(row.txCount || 0);
+          if (new Date(row.earliestAt) < new Date(existing.earliestAt)) {
+            existing.earliestAt = row.earliestAt;
+          }
+        } else {
+          expMap.set(row.userId, { ...row, totalExpToday: Number(row.totalExpToday || 0) });
+        }
+      }
+      const topExpUsers = Array.from(expMap.values())
+        .sort((a, b) => b.totalExpToday - a.totalExpToday)
+        .slice(0, 5)
+        .map((u, idx) => ({ ...u, rank: idx + 1 }));
+
       const actionRate = totalSessions > 0 ? Number(((actionSessions / totalSessions) * 100).toFixed(2)) : 0;
 
       return {
@@ -125,9 +199,10 @@ export class FilmAnalyticsAdminService {
         },
         timeline,
         actionsBreakdown,
-        topPages: trafficReports[trafficReports.length - 1]?.topPages || [],
-        topExpUsers: todayLeaderboard || [],
-        topMovies: latestContent?.topWatchedMovies || [],
+        topPages,
+        topSearches,
+        topExpUsers,
+        topMovies,
         meta: {
           range,
           dateKey: todayKey,
@@ -199,6 +274,7 @@ export class FilmAnalyticsAdminService {
       timeline: hourlyTimeline,
       actionsBreakdown: traffic?.actionsBreakdown || {},
       topPages: traffic?.topPages || [],
+      topSearches: traffic?.topSearches || [],
       topExpUsers: leaderboard || [],
       topMovies: content?.topWatchedMovies || [],
       meta: {

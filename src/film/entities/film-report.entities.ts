@@ -37,6 +37,9 @@ export class FilmReportDailyTraffic {
   @Column({ name: "top_pages", type: "jsonb", default: () => "'[]'" })
   topPages!: Array<{ path: string; views: number }>;
 
+  @Column({ name: "top_searches", type: "jsonb", default: () => "'[]'" })
+  topSearches!: Array<{ keyword: string; count: number }>;
+
   @Column({ name: "last_scanned_at", type: "timestamptz", default: () => "CURRENT_TIMESTAMP" })
   lastScannedAt!: Date;
 
@@ -139,7 +142,13 @@ export class FilmReportDailyContent {
   dateKey!: string; // 'YYYY-MM-DD'
 
   @Column({ name: "top_watched_movies", type: "jsonb", default: () => "'[]'" })
-  topWatchedMovies!: Array<{ movieId: string; title: string; views: number }>;
+  topWatchedMovies!: Array<{
+    movieId: string;
+    title: string;
+    slug?: string;
+    bannerUrl?: string | null;
+    views: number;
+  }>;
 
   @Column({ name: "pending_reports", type: "int", default: 0 })
   pendingReports!: number;

@@ -48,12 +48,14 @@ export class FilmAnalyticsScannerService implements OnModuleInit, OnApplicationB
           "hourly_stats" jsonb NOT NULL DEFAULT '[]',
           "actions_breakdown" jsonb NOT NULL DEFAULT '{}',
           "top_pages" jsonb NOT NULL DEFAULT '[]',
+          "top_searches" jsonb NOT NULL DEFAULT '[]',
           "last_scanned_at" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
           "created_at" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
           "updated_at" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
           CONSTRAINT "PK_reports_daily_traffic_id" PRIMARY KEY ("id")
         );
         CREATE UNIQUE INDEX IF NOT EXISTS "IDX_reports_daily_traffic_date_key" ON "reports_daily_traffic" ("date_key");
+        ALTER TABLE "reports_daily_traffic" ADD COLUMN IF NOT EXISTS "top_searches" jsonb NOT NULL DEFAULT '[]';
 
         CREATE TABLE IF NOT EXISTS "reports_daily_users" (
           "id" uuid NOT NULL DEFAULT uuid_generate_v4(),
@@ -110,12 +112,25 @@ export class FilmAnalyticsScannerService implements OnModuleInit, OnApplicationB
   }
 
   async onApplicationBootstrap() {
-    // Initial scan on startup so reports have today's data immediately
+    // Initial scan and backfill for the last 7 days so reports have complete data immediately
     setTimeout(() => {
-      this.syncDate().catch((err) =>
-        this.logger.error(`Initial analytics scan failed: ${err.message}`, err.stack),
+      this.backfillDays(7).catch((err) =>
+        this.logger.error(`Initial analytics scan and backfill failed: ${err.message}`, err.stack),
       );
     }, 3000);
+  }
+
+  /**
+   * Backfills reports for the past N days sequentially
+   */
+  async backfillDays(daysCount = 7): Promise<void> {
+    this.logger.log(`Starting analytics backfill for the past ${daysCount} days...`);
+    for (let i = daysCount - 1; i >= 0; i--) {
+      const d = new Date(Date.now() - i * 24 * 60 * 60 * 1000);
+      const dk = getVietnamDateKey(d);
+      await this.syncDate(dk);
+    }
+    this.logger.log(`Analytics backfill for the past ${daysCount} days completed.`);
   }
 
   /**
@@ -158,7 +173,8 @@ export class FilmAnalyticsScannerService implements OnModuleInit, OnApplicationB
       let hourlyStats: Array<{ hour: number; views: number; actionSessions: number }> = [];
       let actionsBreakdown: Record<string, number> = {};
       let topPages: Array<{ path: string; views: number }> = [];
-      let topWatchedMovies: Array<{ movieId: string; title: string; views: number }> = [];
+      let topSearches: Array<{ keyword: string; count: number }> = [];
+      let topWatchedMovies: Array<{ movieId: string; title: string; slug?: string; bannerUrl?: string | null; views: number }> = [];
 
       try {
         // A. Total views & Session Conversion
@@ -240,7 +256,26 @@ export class FilmAnalyticsScannerService implements OnModuleInit, OnApplicationB
           views: Number(r.views || 0),
         }));
 
-        // E. Top Watched Movies (from play_movie)
+        // E. Top Search Keywords
+        const topSearchesQuery = `
+          SELECT 
+            COALESCE(object_name, object_id, metadata->>'query') AS keyword,
+            COUNT(*)::int AS count
+          FROM audit_logs
+          WHERE module = 'film' AND event = 'search' AND created_at >= $1 AND created_at <= $2
+            AND COALESCE(object_name, object_id, metadata->>'query') IS NOT NULL
+            AND TRIM(COALESCE(object_name, object_id, metadata->>'query')) != ''
+          GROUP BY keyword
+          ORDER BY count DESC
+          LIMIT 10;
+        `;
+        const topSearchesRes = await this.auditDb.query(topSearchesQuery, [start, end]);
+        topSearches = (topSearchesRes || []).map((r: any) => ({
+          keyword: String(r.keyword || "").trim(),
+          count: Number(r.count || 0),
+        }));
+
+        // F. Top Watched Movies (from play_movie merged with real movie metadata)
         const topMoviesQuery = `
           SELECT 
             object_id AS "movieId",
@@ -253,11 +288,42 @@ export class FilmAnalyticsScannerService implements OnModuleInit, OnApplicationB
           LIMIT 10;
         `;
         const topMoviesRes = await this.auditDb.query(topMoviesQuery, [start, end]);
-        topWatchedMovies = (topMoviesRes || []).map((r: any) => ({
-          movieId: String(r.movieId || ""),
-          title: String(r.title || ""),
-          views: Number(r.views || 0),
-        }));
+
+        if (topMoviesRes?.length) {
+          const rawIds = topMoviesRes
+            .map((r: any) => String(r.movieId || ""))
+            .filter((id: string) => id && id.length > 5);
+
+          let moviesInfo: any[] = [];
+          if (rawIds.length > 0) {
+            try {
+              moviesInfo = await this.filmDb.query(
+                `SELECT id, title, slug, banner_url AS "bannerUrl", thumbnail_url AS "thumbnailUrl" 
+                 FROM movies 
+                 WHERE id::text = ANY($1::text[])`,
+                [rawIds],
+              );
+            } catch (movieErr) {
+              this.logger.warn(`Could not join movies table: ${(movieErr as Error).message}`);
+            }
+          }
+
+          const movieMap = new Map<string, any>();
+          for (const m of moviesInfo || []) {
+            movieMap.set(String(m.id), m);
+          }
+
+          topWatchedMovies = topMoviesRes.map((r: any) => {
+            const m = movieMap.get(String(r.movieId));
+            return {
+              movieId: String(r.movieId || ""),
+              title: m?.title || String(r.title || "Phim chưa đặt tên"),
+              slug: m?.slug || "",
+              bannerUrl: m?.bannerUrl || m?.thumbnailUrl || null,
+              views: Number(r.views || 0),
+            };
+          });
+        }
       } catch (auditErr) {
         this.logger.error(`Failed to scan audit_logs: ${(auditErr as Error).message}`);
       }
@@ -361,6 +427,7 @@ export class FilmAnalyticsScannerService implements OnModuleInit, OnApplicationB
           hourlyStats,
           actionsBreakdown,
           topPages,
+          topSearches,
           lastScannedAt: new Date(),
         },
         ["dateKey"],
