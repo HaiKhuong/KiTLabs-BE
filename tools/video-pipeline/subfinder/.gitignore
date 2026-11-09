@@ -1,6 +1,6 @@
 # VideoSubFinder host binaries (download / docker — do not commit ~45MB+)
 linux/
-windows/
+# windows/
 macos/
 
 # Keep docs + Docker build context

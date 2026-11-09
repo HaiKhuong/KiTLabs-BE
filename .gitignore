@@ -40,7 +40,7 @@ tools/video-pipeline/cache/
 tools/video-pipeline/.cache/
 tools/video-pipeline/**/*.log
 tools/video-pipeline/subfinder/linux/
-tools/video-pipeline/subfinder/windows/
+# tools/video-pipeline/subfinder/windows/
 tools/video-pipeline/subfinder/macos/
 
 .cursor
