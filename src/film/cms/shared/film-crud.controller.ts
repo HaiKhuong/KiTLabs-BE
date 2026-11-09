@@ -1,4 +1,4 @@
-import { Body, Delete, Get, Param, Patch, Post, Query } from "@nestjs/common";
+import { BadRequestException, Body, Delete, Get, Param, Patch, Post, Query } from "@nestjs/common";
 import { ApiOperation, ApiParam } from "@nestjs/swagger";
 import { FilmAdminPaginationQueryDto, FilmAdminPayloadDto } from "./dto";
 import { FilmAdminService } from "./film-admin.service";
@@ -50,6 +50,9 @@ export abstract class FilmCrudController {
   @ApiParam({ name: "id", description: "Resource UUID" })
   @Get(":id")
   one(@Param("id") id: string) {
+    if (!id || id === "undefined" || id === "null") {
+      throw new BadRequestException("ID tài nguyên không hợp lệ");
+    }
     return this.service.adminOne(this.resource, id);
   }
 
@@ -63,6 +66,9 @@ export abstract class FilmCrudController {
   @ApiParam({ name: "id", description: "Resource UUID" })
   @Patch(":id")
   update(@Param("id") id: string, @Body() dto: FilmAdminPayloadDto) {
+    if (!id || id === "undefined" || id === "null") {
+      throw new BadRequestException("ID tài nguyên không hợp lệ");
+    }
     const data = this.safe(dto.data);
     return this.resource === "donations"
       ? this.service.updateDonation(id, data)
@@ -73,6 +79,9 @@ export abstract class FilmCrudController {
   @ApiParam({ name: "id", description: "Resource UUID" })
   @Delete(":id")
   remove(@Param("id") id: string) {
+    if (!id || id === "undefined" || id === "null") {
+      throw new BadRequestException("ID tài nguyên không hợp lệ");
+    }
     return this.service.adminDelete(this.resource, id);
   }
 
@@ -80,6 +89,9 @@ export abstract class FilmCrudController {
   @ApiParam({ name: "id", description: "Resource UUID" })
   @Post(":id/restore")
   restore(@Param("id") id: string) {
+    if (!id || id === "undefined" || id === "null") {
+      throw new BadRequestException("ID tài nguyên không hợp lệ");
+    }
     return this.service.adminRestore(this.resource, id);
   }
 
