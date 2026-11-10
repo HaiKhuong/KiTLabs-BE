@@ -309,6 +309,7 @@ export class FilmDonation extends FilmBase {
 }
 
 export enum SepayTransactionStatus {
+  PENDING = "PENDING",
   SUCCESS = "SUCCESS",
   UNMATCHED = "UNMATCHED",
   IGNORED = "IGNORED",
@@ -367,6 +368,9 @@ export class FilmSepayTransaction extends FilmBase {
     default: SepayTransactionStatus.UNMATCHED,
   })
   status!: SepayTransactionStatus;
+
+  @Column({ name: "error_message", type: "text", nullable: true })
+  errorMessage!: string | null;
 
   @Column({ name: "raw_payload", type: "jsonb", nullable: true })
   rawPayload!: Record<string, any> | null;

@@ -75,179 +75,207 @@ export class FilmSepayService {
     authContext?: SepayWebhookAuthContext | string,
   ): Promise<{ success: boolean; message: string }> {
     this.logger.log(
-      `Received SePay webhook: id=${payload.id}, amount=${payload.transferAmount}, type=${payload.transferType}, content="${payload.content}"`,
+      `Received SePay webhook: id=${payload?.id}, amount=${payload?.transferAmount}, type=${payload?.transferType}, content="${payload?.content}"`,
     );
 
-    // 1. Authenticate webhook request (HMAC-SHA256 signature / API key fallback)
-    await this.verifyAuthentication(authContext);
-
-    // 2. Filter transaction: only process incoming money with amount > 0
-    if (payload.transferType !== "in" || Number(payload.transferAmount) <= 0) {
-      this.logger.log(`Ignoring SePay transaction id=${payload.id}: not an incoming transfer or amount <= 0`);
-      return { success: true, message: "Non-incoming transfer ignored" };
+    if (!payload || !payload.id) {
+      this.logger.error("SePay webhook payload is missing required field 'id'");
+      throw new BadRequestException("Payload missing required 'id'");
     }
 
-    // 3. Idempotency check: prevent duplicate processing if SePay retries
-    const existing = await this.dataSource.getRepository(FilmSepayTransaction).findOne({
+    const txRepo = this.dataSource.getRepository(FilmSepayTransaction);
+
+    // 1. Idempotency check: if transaction was already processed successfully or ignored, return immediately
+    let txRecord = await txRepo.findOne({
       where: { sepayId: String(payload.id) },
     });
-    if (existing) {
-      this.logger.log(`SePay transaction id=${payload.id} already processed at ${existing.createdAt}`);
+
+    if (
+      txRecord &&
+      (txRecord.status === SepayTransactionStatus.SUCCESS || txRecord.status === SepayTransactionStatus.IGNORED)
+    ) {
+      this.logger.log(`SePay transaction id=${payload.id} already processed with status ${txRecord.status}`);
       return { success: true, message: "Transaction already processed" };
     }
 
-    // 4. Extract user code from memo / content
-    const userCode = extractDonationUserCode(payload);
-    this.logger.log(`Extracted user code from SePay memo: "${userCode}"`);
-
-    // 5. Read bank configuration to get EXP rate (default 3 EXP / 1.000 VND)
-    const expRatePer1k = await this.getExpRatePer1k();
-    const transferAmount = Number(payload.transferAmount);
-    const rewardExp = Math.max(0, Math.floor((transferAmount / 1000) * expRatePer1k));
-
-    // 6. Execute database transaction
-    let matchedUserId: string | null = null;
-    let newTotalExpStr: string | null = null;
-    let newSectRankStr: string | null = null;
-
-    await this.dataSource.transaction(async (manager: EntityManager) => {
-      let user: FilmUser | null = null;
-      if (userCode) {
-        user = await this.findUserByCode(manager, userCode);
-      }
-
-      if (user) {
-        matchedUserId = user.id;
-        this.logger.log(`Matched user: ${user.name} (${user.id}) for SePay transaction id=${payload.id}`);
-
-        // Update user stats
-        const currentExp = BigInt(user.exp || 0);
-        const newExpBig = currentExp + BigInt(rewardExp);
-        const newExp = newExpBig.toString();
-        const currentDonated = BigInt(user.totalDonatedVnd || 0);
-        const newDonated = (currentDonated + BigInt(transferAmount)).toString();
-
-        const ranks = await resolveCultivationRanks(manager);
-        const newRank = filmRankFor(Number(newExp), ranks);
-        const newTitle = filmTitleFor(Number(newExp), ranks);
-
-        user.exp = newExp;
-        user.totalDonatedVnd = newDonated;
-        user.sectRank = newRank;
-        user.currentTitle = newTitle;
-        await manager.save(user);
-
-        newTotalExpStr = newExp;
-        newSectRankStr = newRank;
-
-        // Auto unlock / equip new title if cultivation rank updated
-        await this.ensureTitleEquipped(manager, user.id, newTitle);
-
-        // Update mission progress for DONATE_BANK
-        await this.updateDonateMissionProgress(manager, user.id, transferAmount, rewardExp);
-
-        // Record to EXP history
-        const expHistory = manager.create(FilmUserExpHistory, {
-          userId: user.id,
-          missionCode: "DONATE_BANK",
-          amount: rewardExp,
-          balanceAfter: newExp,
-          title: "Donate ủng hộ ngân hàng",
-          description: `Ủng hộ ${transferAmount.toLocaleString("vi-VN")}đ qua SePay (+${rewardExp} EXP)`,
-          rawData: {
-            sepayId: payload.id,
-            gateway: payload.gateway,
-            accountNumber: payload.accountNumber,
-            transferAmount,
-            transactionDate: payload.transactionDate,
-            content: payload.content,
-            referenceCode: payload.referenceCode,
-          },
-        });
-        await manager.save(expHistory);
-
-        // Record to donations table
-        const donation = manager.create(FilmDonation, {
-          userId: user.id,
-          movieId: null,
-          amountVnd: transferAmount.toString(),
-          spiritStonesConverted: "0",
-          paymentMethod: PaymentMethod.BANK_TRANSFER,
-          transactionCode: `sepay_${payload.id}`,
-          status: DonationStatus.SUCCESS,
-          message: payload.content,
-          rewardAppliedAt: new Date(),
-        });
-        await manager.save(donation);
-
-        // Save SePay transaction record as SUCCESS
-        const txRecord = manager.create(FilmSepayTransaction, {
-          sepayId: String(payload.id),
-          gateway: payload.gateway,
-          transactionDate: payload.transactionDate || null,
-          accountNumber: payload.accountNumber,
-          subAccount: payload.subAccount || null,
-          code: payload.code || null,
-          content: payload.content,
-          transferType: payload.transferType,
-          description: payload.description || null,
-          transferAmount: transferAmount.toString(),
-          accumulated: String(payload.accumulated || 0),
-          referenceCode: payload.referenceCode || null,
-          userId: user.id,
-          rewardExp,
-          status: SepayTransactionStatus.SUCCESS,
-          rawPayload: payload as unknown as Record<string, any>,
-        });
-        await manager.save(txRecord);
-      } else {
-        this.logger.warn(
-          `No user matched for SePay transaction id=${payload.id}, memo="${payload.content}", code="${userCode}"`,
-        );
-
-        // Save as UNMATCHED transaction for admin inspection
-        const txRecord = manager.create(FilmSepayTransaction, {
-          sepayId: String(payload.id),
-          gateway: payload.gateway,
-          transactionDate: payload.transactionDate || null,
-          accountNumber: payload.accountNumber,
-          subAccount: payload.subAccount || null,
-          code: payload.code || null,
-          content: payload.content,
-          transferType: payload.transferType,
-          description: payload.description || null,
-          transferAmount: transferAmount.toString(),
-          accumulated: String(payload.accumulated || 0),
-          referenceCode: payload.referenceCode || null,
-          userId: null,
-          rewardExp: 0,
-          status: SepayTransactionStatus.UNMATCHED,
-          rawPayload: payload as unknown as Record<string, any>,
-        });
-        await manager.save(txRecord);
-      }
-    });
-
-    // 7. Send real-time notification to user via WebSocket if connected
-    if (matchedUserId && newTotalExpStr && newSectRankStr) {
-      try {
-        await this.chatGateway.notifyMissionReward(matchedUserId, {
-          missionCode: "DONATE_BANK",
-          claimedExp: rewardExp,
-          newTotalExp: newTotalExpStr,
-          newSectRank: newSectRankStr,
-          message: `Đa tạ đạo hữu đã cống hiến ${transferAmount.toLocaleString("vi-VN")}đ! Bạn nhận được +${rewardExp} EXP!`,
-          claimedAt: new Date().toISOString(),
-        });
-      } catch (err) {
-        this.logger.warn(`Failed to dispatch socket reward to user ${matchedUserId}: ${(err as Error).message}`);
-      }
+    // 2. Insert into DB immediately with PENDING status so that the raw payload and record are saved
+    const transferAmount = Number(payload.transferAmount || 0);
+    if (!txRecord) {
+      txRecord = txRepo.create({
+        sepayId: String(payload.id),
+        gateway: payload.gateway || "UNKNOWN",
+        transactionDate: payload.transactionDate || null,
+        accountNumber: payload.accountNumber || "",
+        subAccount: payload.subAccount || null,
+        code: payload.code || null,
+        content: payload.content || "",
+        transferType: payload.transferType || "in",
+        description: payload.description || null,
+        transferAmount: transferAmount.toString(),
+        accumulated: String(payload.accumulated || 0),
+        referenceCode: payload.referenceCode || null,
+        userId: null,
+        rewardExp: 0,
+        status: SepayTransactionStatus.PENDING,
+        errorMessage: null,
+        rawPayload: payload as unknown as Record<string, any>,
+      });
+    } else {
+      txRecord.status = SepayTransactionStatus.PENDING;
+      txRecord.errorMessage = null;
+      txRecord.rawPayload = payload as unknown as Record<string, any>;
     }
+    txRecord = await txRepo.save(txRecord);
 
-    return {
-      success: true,
-      message: matchedUserId ? "Donation processed and EXP awarded" : "Donation recorded as unmatched",
-    };
+    try {
+      // 3. Authenticate webhook request (HMAC-SHA256 signature / API key fallback)
+      await this.verifyAuthentication(authContext);
+
+      // 4. Filter transaction: only process incoming money with amount > 0
+      if (payload.transferType !== "in" || transferAmount <= 0) {
+        this.logger.log(`Ignoring SePay transaction id=${payload.id}: not an incoming transfer or amount <= 0`);
+        txRecord.status = SepayTransactionStatus.IGNORED;
+        txRecord.errorMessage = "Non-incoming transfer or amount <= 0";
+        await txRepo.save(txRecord);
+        return { success: true, message: "Non-incoming transfer ignored" };
+      }
+
+      // 5. Extract user code from memo / content
+      const userCode = extractDonationUserCode(payload);
+      this.logger.log(`Extracted user code from SePay memo: "${userCode}"`);
+
+      // 6. Read bank configuration to get EXP rate (default 3 EXP / 1.000 VND)
+      const expRatePer1k = await this.getExpRatePer1k();
+      const rewardExp = Math.max(0, Math.floor((transferAmount / 1000) * expRatePer1k));
+
+      // 7. Execute database transaction
+      let matchedUserId: string | null = null;
+      let newTotalExpStr: string | null = null;
+      let newSectRankStr: string | null = null;
+
+      await this.dataSource.transaction(async (manager: EntityManager) => {
+        let user: FilmUser | null = null;
+        if (userCode) {
+          user = await this.findUserByCode(manager, userCode);
+        }
+
+        if (user) {
+          matchedUserId = user.id;
+          this.logger.log(`Matched user: ${user.name} (${user.id}) for SePay transaction id=${payload.id}`);
+
+          // Update user stats
+          const currentExp = BigInt(user.exp || 0);
+          const newExpBig = currentExp + BigInt(rewardExp);
+          const newExp = newExpBig.toString();
+          const currentDonated = BigInt(user.totalDonatedVnd || 0);
+          const newDonated = (currentDonated + BigInt(transferAmount)).toString();
+
+          const ranks = await resolveCultivationRanks(manager);
+          const newRank = filmRankFor(Number(newExp), ranks);
+          const newTitle = filmTitleFor(Number(newExp), ranks);
+
+          user.exp = newExp;
+          user.totalDonatedVnd = newDonated;
+          user.sectRank = newRank;
+          user.currentTitle = newTitle;
+          await manager.save(user);
+
+          newTotalExpStr = newExp;
+          newSectRankStr = newRank;
+
+          // Auto unlock / equip new title if cultivation rank updated
+          await this.ensureTitleEquipped(manager, user.id, newTitle);
+
+          // Update mission progress for DONATE_BANK
+          await this.updateDonateMissionProgress(manager, user.id, transferAmount, rewardExp);
+
+          // Record to EXP history
+          const expHistory = manager.create(FilmUserExpHistory, {
+            userId: user.id,
+            missionCode: "DONATE_BANK",
+            amount: rewardExp,
+            balanceAfter: newExp,
+            title: "Donate ủng hộ ngân hàng",
+            description: `Ủng hộ ${transferAmount.toLocaleString("vi-VN")}đ qua SePay (+${rewardExp} EXP)`,
+            rawData: {
+              sepayId: payload.id,
+              gateway: payload.gateway,
+              accountNumber: payload.accountNumber,
+              transferAmount,
+              transactionDate: payload.transactionDate,
+              content: payload.content,
+              referenceCode: payload.referenceCode,
+            },
+          });
+          await manager.save(expHistory);
+
+          // Record to donations table
+          const donation = manager.create(FilmDonation, {
+            userId: user.id,
+            movieId: null,
+            amountVnd: transferAmount.toString(),
+            spiritStonesConverted: "0",
+            paymentMethod: PaymentMethod.BANK_TRANSFER,
+            transactionCode: `sepay_${payload.id}`,
+            status: DonationStatus.SUCCESS,
+            message: payload.content,
+            rewardAppliedAt: new Date(),
+          });
+          await manager.save(donation);
+
+          // Update SePay transaction record as SUCCESS
+          txRecord.userId = user.id;
+          txRecord.rewardExp = rewardExp;
+          txRecord.status = SepayTransactionStatus.SUCCESS;
+          txRecord.errorMessage = null;
+          await manager.save(txRecord);
+        } else {
+          this.logger.warn(
+            `No user matched for SePay transaction id=${payload.id}, memo="${payload.content}", code="${userCode}"`,
+          );
+
+          // Update as UNMATCHED transaction for admin inspection
+          txRecord.userId = null;
+          txRecord.rewardExp = 0;
+          txRecord.status = SepayTransactionStatus.UNMATCHED;
+          txRecord.errorMessage = null;
+          await manager.save(txRecord);
+        }
+      });
+
+      // 8. Send real-time notification to user via WebSocket if connected
+      if (matchedUserId && newTotalExpStr && newSectRankStr) {
+        try {
+          await this.chatGateway.notifyMissionReward(matchedUserId, {
+            missionCode: "DONATE_BANK",
+            claimedExp: rewardExp,
+            newTotalExp: newTotalExpStr,
+            newSectRank: newSectRankStr,
+            message: `Đa tạ đạo hữu đã cống hiến ${transferAmount.toLocaleString("vi-VN")}đ! Bạn nhận được +${rewardExp} EXP!`,
+            claimedAt: new Date().toISOString(),
+          });
+        } catch (err) {
+          this.logger.warn(`Failed to dispatch socket reward to user ${matchedUserId}: ${(err as Error).message}`);
+        }
+      }
+
+      return {
+        success: true,
+        message: matchedUserId ? "Donation processed and EXP awarded" : "Donation recorded as unmatched",
+      };
+    } catch (err: any) {
+      this.logger.error(`Error executing SePay transaction id=${payload.id}: ${err?.message || err}`, err?.stack);
+
+      try {
+        txRecord.status = SepayTransactionStatus.FAILED;
+        txRecord.errorMessage = err?.message || String(err);
+        await txRepo.save(txRecord);
+      } catch (saveErr: any) {
+        this.logger.error(`Failed to save FAILED status for SePay transaction id=${payload.id}: ${saveErr?.message}`);
+      }
+
+      throw err;
+    }
   }
 
   /**
@@ -350,8 +378,8 @@ export class FilmSepayService {
     if (cleanCode.length >= 6) {
       const user = await manager
         .getRepository(FilmUser)
-        .createQueryBuilder("user")
-        .where("REPLACE(user.id::text, '-', '') ILIKE :prefix", { prefix: `${cleanCode}%` })
+        .createQueryBuilder("u")
+        .where("REPLACE(u.id::text, '-', '') ILIKE :prefix", { prefix: `${cleanCode}%` })
         .getOne();
       if (user) return user;
     }
