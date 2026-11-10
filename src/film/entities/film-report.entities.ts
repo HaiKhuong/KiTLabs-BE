@@ -150,6 +150,39 @@ export class FilmReportDailyContent {
     views: number;
   }>;
 
+  @Column({ name: "top_favorited_movies", type: "jsonb", default: () => "'[]'" })
+  topFavoritedMovies!: Array<{
+    movieId: string;
+    title: string;
+    slug?: string;
+    bannerUrl?: string | null;
+    favoritesCount: number;
+  }>;
+
+  @Column({ name: "top_commenters", type: "jsonb", default: () => "'[]'" })
+  topCommenters!: Array<{
+    rank: number;
+    userId: string;
+    userName: string;
+    username?: string | null;
+    avatarUrl?: string | null;
+    sectRank?: string;
+    currentTitle?: string | null;
+    commentCount: number;
+  }>;
+
+  @Column({ name: "top_sharers", type: "jsonb", default: () => "'[]'" })
+  topSharers!: Array<{
+    rank: number;
+    userId: string;
+    userName: string;
+    username?: string | null;
+    avatarUrl?: string | null;
+    sectRank?: string;
+    currentTitle?: string | null;
+    shareCount: number;
+  }>;
+
   @Column({ name: "pending_reports", type: "int", default: 0 })
   pendingReports!: number;
 

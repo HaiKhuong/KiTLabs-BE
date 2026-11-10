@@ -104,6 +104,9 @@ export class FilmAnalyticsScannerService implements OnModuleInit, OnApplicationB
           CONSTRAINT "PK_reports_daily_content_id" PRIMARY KEY ("id")
         );
         CREATE UNIQUE INDEX IF NOT EXISTS "IDX_reports_daily_content_date_key" ON "reports_daily_content" ("date_key");
+        ALTER TABLE "reports_daily_content" ADD COLUMN IF NOT EXISTS "top_favorited_movies" jsonb NOT NULL DEFAULT '[]';
+        ALTER TABLE "reports_daily_content" ADD COLUMN IF NOT EXISTS "top_commenters" jsonb NOT NULL DEFAULT '[]';
+        ALTER TABLE "reports_daily_content" ADD COLUMN IF NOT EXISTS "top_sharers" jsonb NOT NULL DEFAULT '[]';
       `);
       this.logger.log("Reports tables (reports_xxx) verified successfully in film database.");
     } catch (err) {
@@ -175,9 +178,10 @@ export class FilmAnalyticsScannerService implements OnModuleInit, OnApplicationB
       let topPages: Array<{ path: string; views: number }> = [];
       let topSearches: Array<{ keyword: string; count: number }> = [];
       let topWatchedMovies: Array<{ movieId: string; title: string; slug?: string; bannerUrl?: string | null; views: number }> = [];
+      let topSharersRes: Array<{ userId: string; shareCount: number }> = [];
 
       try {
-        // A. Total views & Session Conversion
+        // A. Total views & Session Conversion (Actions exclude chat_room comment)
         const sessionStatsQuery = `
           WITH page_sessions AS (
             SELECT DISTINCT session_id
@@ -187,7 +191,9 @@ export class FilmAnalyticsScannerService implements OnModuleInit, OnApplicationB
           action_sessions AS (
             SELECT DISTINCT session_id
             FROM audit_logs
-            WHERE module = 'film' AND event != 'load_page' AND created_at >= $1 AND created_at <= $2
+            WHERE module = 'film' AND event != 'load_page'
+              AND NOT (event = 'comment' AND (object_id = 'chat_room' OR object_type = 'chat_message'))
+              AND created_at >= $1 AND created_at <= $2
           )
           SELECT 
             (SELECT count(*)::int FROM audit_logs WHERE module = 'film' AND event = 'load_page' AND created_at >= $1 AND created_at <= $2) AS "totalPageViews",
@@ -207,7 +213,7 @@ export class FilmAnalyticsScannerService implements OnModuleInit, OnApplicationB
           SELECT 
             EXTRACT(HOUR FROM created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Ho_Chi_Minh')::int AS hour,
             COUNT(CASE WHEN event = 'load_page' THEN 1 END)::int AS views,
-            COUNT(DISTINCT CASE WHEN event != 'load_page' THEN session_id END)::int AS "actionSessions"
+            COUNT(DISTINCT CASE WHEN event != 'load_page' AND NOT (event = 'comment' AND (object_id = 'chat_room' OR object_type = 'chat_message')) THEN session_id END)::int AS "actionSessions"
           FROM audit_logs
           WHERE module = 'film' AND created_at >= $1 AND created_at <= $2
           GROUP BY hour
@@ -228,11 +234,13 @@ export class FilmAnalyticsScannerService implements OnModuleInit, OnApplicationB
           actionSessions: val.actionSessions,
         }));
 
-        // C. Actions Breakdown
+        // C. Actions Breakdown (Exclude comments from chat_room)
         const actionsQuery = `
           SELECT event, COUNT(*)::int AS count
           FROM audit_logs
-          WHERE module = 'film' AND event != 'load_page' AND created_at >= $1 AND created_at <= $2
+          WHERE module = 'film' AND event != 'load_page'
+            AND NOT (event = 'comment' AND (object_id = 'chat_room' OR object_type = 'chat_message'))
+            AND created_at >= $1 AND created_at <= $2
           GROUP BY event
           ORDER BY count DESC;
         `;
@@ -324,6 +332,21 @@ export class FilmAnalyticsScannerService implements OnModuleInit, OnApplicationB
             };
           });
         }
+
+        // G. Raw Top Sharers from audit_logs
+        const topSharersQuery = `
+          SELECT 
+            user_id AS "userId",
+            COUNT(*)::int AS "shareCount"
+          FROM audit_logs
+          WHERE module = 'film' AND event = 'share'
+            AND user_id IS NOT NULL AND user_id != ''
+            AND created_at >= $1 AND created_at <= $2
+          GROUP BY user_id
+          ORDER BY "shareCount" DESC
+          LIMIT 20;
+        `;
+        topSharersRes = await this.auditDb.query(topSharersQuery, [start, end]);
       } catch (auditErr) {
         this.logger.error(`Failed to scan audit_logs: ${(auditErr as Error).message}`);
       }
@@ -337,6 +360,33 @@ export class FilmAnalyticsScannerService implements OnModuleInit, OnApplicationB
       let leaderboard: any[] = [];
       let pendingReports = 0;
       let pendingComments = 0;
+      let topFavoritedMovies: Array<{
+        movieId: string;
+        title: string;
+        slug?: string;
+        bannerUrl?: string | null;
+        favoritesCount: number;
+      }> = [];
+      let topCommenters: Array<{
+        rank: number;
+        userId: string;
+        userName: string;
+        username?: string | null;
+        avatarUrl?: string | null;
+        sectRank?: string;
+        currentTitle?: string | null;
+        commentCount: number;
+      }> = [];
+      let topSharers: Array<{
+        rank: number;
+        userId: string;
+        userName: string;
+        username?: string | null;
+        avatarUrl?: string | null;
+        sectRank?: string;
+        currentTitle?: string | null;
+        shareCount: number;
+      }> = [];
 
       try {
         // A. New Users Today
@@ -403,6 +453,95 @@ export class FilmAnalyticsScannerService implements OnModuleInit, OnApplicationB
         if (pendingRes?.length) {
           pendingReports = Number(pendingRes[0].pendingReports || 0);
           pendingComments = Number(pendingRes[0].pendingComments || 0);
+        }
+
+        // E. Top 5 Favorited Movies (Cumulative favorites created up to end of dateKey)
+        const topFavoritesQuery = `
+          SELECT 
+            f.movie_id AS "movieId",
+            m.title AS "title",
+            m.slug AS "slug",
+            COALESCE(m.banner_url, m.thumbnail_url) AS "bannerUrl",
+            COUNT(*)::int AS "favoritesCount"
+          FROM favorites f
+          JOIN movies m ON m.id = f.movie_id
+          WHERE f.deleted_at IS NULL AND m.deleted_at IS NULL
+            AND f.created_at <= $2
+          GROUP BY f.movie_id, m.title, m.slug, m.banner_url, m.thumbnail_url
+          ORDER BY "favoritesCount" DESC
+          LIMIT 5;
+        `;
+        const topFavoritesRes = await this.filmDb.query(topFavoritesQuery, [start, end]);
+        topFavoritedMovies = (topFavoritesRes || []).map((r: any) => ({
+          movieId: String(r.movieId || ""),
+          title: String(r.title || "Phim chưa đặt tên"),
+          slug: String(r.slug || ""),
+          bannerUrl: r.bannerUrl || null,
+          favoritesCount: Number(r.favoritesCount || 0),
+        }));
+
+        // F. Top Commenters (excluding ADMIN role)
+        const topCommentersQuery = `
+          SELECT 
+            c.user_id AS "userId",
+            COALESCE(u.name, u.username, 'Đạo hữu ẩn danh') AS "userName",
+            u.username AS "username",
+            u.avatar_url AS "avatarUrl",
+            COALESCE(u.sect_rank, 'LUYEN_KHI') AS "sectRank",
+            u.current_title AS "currentTitle",
+            COUNT(*)::int AS "commentCount"
+          FROM comments c
+          JOIN users u ON u.id = c.user_id
+          WHERE c.deleted_at IS NULL
+            AND u.deleted_at IS NULL
+            AND u.role != 'ADMIN'
+            AND c.created_at >= $1 AND c.created_at <= $2
+          GROUP BY c.user_id, u.name, u.username, u.avatar_url, u.sect_rank, u.current_title
+          ORDER BY "commentCount" DESC
+          LIMIT 5;
+        `;
+        const topCommentersRes = await this.filmDb.query(topCommentersQuery, [start, end]);
+        topCommenters = (topCommentersRes || []).map((r: any, idx: number) => ({
+          rank: idx + 1,
+          userId: String(r.userId || ""),
+          userName: String(r.userName || "Đạo hữu ẩn danh"),
+          username: r.username || null,
+          avatarUrl: r.avatarUrl || null,
+          sectRank: r.sectRank || "LUYEN_KHI",
+          currentTitle: r.currentTitle || null,
+          commentCount: Number(r.commentCount || 0),
+        }));
+
+        // G. Resolve Top Sharers with user details (excluding ADMIN role)
+        if (topSharersRes?.length) {
+          const rawUserIds = topSharersRes
+            .map((r: any) => String(r.userId || ""))
+            .filter((id: string) => id && id.length > 5);
+          if (rawUserIds.length > 0) {
+            const usersInfo = await this.filmDb.query(
+              `SELECT id, name, username, avatar_url AS "avatarUrl", sect_rank AS "sectRank", current_title AS "currentTitle", role
+               FROM users
+               WHERE id::text = ANY($1::text[]) AND deleted_at IS NULL AND role != 'ADMIN'`,
+              [rawUserIds],
+            );
+            const userMap = new Map<string, any>(usersInfo.map((u: any) => [String(u.id), u]));
+            topSharers = topSharersRes
+              .filter((r: any) => userMap.has(String(r.userId)))
+              .slice(0, 5)
+              .map((r: any, idx: number) => {
+                const u = userMap.get(String(r.userId));
+                return {
+                  rank: idx + 1,
+                  userId: String(r.userId),
+                  userName: u?.name || u?.username || "Đạo hữu ẩn danh",
+                  username: u?.username || null,
+                  avatarUrl: u?.avatarUrl || null,
+                  sectRank: u?.sectRank || "LUYEN_KHI",
+                  currentTitle: u?.currentTitle || null,
+                  shareCount: Number(r.shareCount || 0),
+                };
+              });
+          }
         }
       } catch (filmErr) {
         this.logger.error(`Failed to scan film database: ${(filmErr as Error).message}`);
@@ -472,6 +611,9 @@ export class FilmAnalyticsScannerService implements OnModuleInit, OnApplicationB
         {
           dateKey,
           topWatchedMovies,
+          topFavoritedMovies,
+          topCommenters,
+          topSharers,
           pendingReports,
           pendingComments,
           lastScannedAt: new Date(),

@@ -38,7 +38,15 @@ async function bootstrap() {
     res.setHeader("x-request-id", requestId);
     next();
   });
-  app.use(json({ limit: process.env.JSON_LIMIT ?? "500mb", type: ["application/json", "text/plain"] }));
+  app.use(
+    json({
+      limit: process.env.JSON_LIMIT ?? "500mb",
+      type: ["application/json", "text/plain"],
+      verify: (req: any, _res: any, buf: Buffer) => {
+        req.rawBody = buf;
+      },
+    }),
+  );
   app.use(urlencoded({ limit: process.env.JSON_LIMIT ?? "500mb", extended: true }));
   app.useGlobalPipes(
     new ValidationPipe({

@@ -186,6 +186,43 @@ export class FilmAnalyticsAdminService {
 
       const actionRate = totalSessions > 0 ? Number(((actionSessions / totalSessions) * 100).toFixed(2)) : 0;
 
+      // Latest or cumulative topFavoritedMovies
+      const topFavoritedMovies = latestContent?.topFavoritedMovies || [];
+
+      // Aggregate topCommenters across range
+      const commenterMap = new Map<string, any>();
+      for (const cr of contentReports) {
+        for (const u of cr.topCommenters || []) {
+          const existing = commenterMap.get(u.userId);
+          if (existing) {
+            existing.commentCount += Number(u.commentCount || 0);
+          } else {
+            commenterMap.set(u.userId, { ...u, commentCount: Number(u.commentCount || 0) });
+          }
+        }
+      }
+      const topCommenters = Array.from(commenterMap.values())
+        .sort((a, b) => b.commentCount - a.commentCount)
+        .slice(0, 5)
+        .map((u, idx) => ({ ...u, rank: idx + 1 }));
+
+      // Aggregate topSharers across range
+      const sharerMap = new Map<string, any>();
+      for (const cr of contentReports) {
+        for (const u of cr.topSharers || []) {
+          const existing = sharerMap.get(u.userId);
+          if (existing) {
+            existing.shareCount += Number(u.shareCount || 0);
+          } else {
+            sharerMap.set(u.userId, { ...u, shareCount: Number(u.shareCount || 0) });
+          }
+        }
+      }
+      const topSharers = Array.from(sharerMap.values())
+        .sort((a, b) => b.shareCount - a.shareCount)
+        .slice(0, 5)
+        .map((u, idx) => ({ ...u, rank: idx + 1 }));
+
       return {
         summary: {
           totalPageViews: totalViews,
@@ -203,6 +240,9 @@ export class FilmAnalyticsAdminService {
         topSearches,
         topExpUsers,
         topMovies,
+        topFavoritedMovies,
+        topCommenters,
+        topSharers,
         meta: {
           range,
           dateKey: todayKey,
@@ -277,6 +317,9 @@ export class FilmAnalyticsAdminService {
       topSearches: traffic?.topSearches || [],
       topExpUsers: leaderboard || [],
       topMovies: content?.topWatchedMovies || [],
+      topFavoritedMovies: content?.topFavoritedMovies || [],
+      topCommenters: content?.topCommenters || [],
+      topSharers: content?.topSharers || [],
       meta: {
         range,
         dateKey: targetDateKey,

@@ -1,5 +1,6 @@
-import { Body, Controller, Get, Headers, HttpCode, HttpStatus, Post } from "@nestjs/common";
+import { Body, Controller, Get, Headers, HttpCode, HttpStatus, Post, Req } from "@nestjs/common";
 import { ApiOperation, ApiTags } from "@nestjs/swagger";
+import { Request } from "express";
 import { Public } from "../../common/decorators/public.decorator";
 import { SepayWebhookDto } from "./film-sepay.dto";
 import { FilmSepayService } from "./film-sepay.service";
@@ -26,11 +27,20 @@ export class FilmSepayController {
   @Post(["sepay/webhook", "webhooks/sepay"])
   async handleWebhook(
     @Body() payload: SepayWebhookDto,
+    @Req() req: Request,
+    @Headers("x-sepay-signature") signatureHeader?: string,
+    @Headers("x-sepay-timestamp") timestampHeader?: string,
     @Headers("authorization") authHeader?: string,
     @Headers("x-api-key") xApiKey?: string,
   ) {
-    const token = authHeader || (xApiKey ? `Apikey ${xApiKey}` : undefined);
-    return this.sepayService.processWebhook(payload, token);
+    const rawBody = (req as any).rawBody ? (req as any).rawBody.toString("utf8") : JSON.stringify(payload);
+    return this.sepayService.processWebhook(payload, {
+      signature: signatureHeader,
+      timestamp: timestampHeader,
+      rawBody,
+      authHeader,
+      xApiKey,
+    });
   }
 }
 
