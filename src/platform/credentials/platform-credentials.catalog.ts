@@ -1,5 +1,5 @@
 export type PlatformCredentialDef = {
-  provider: "facebook" | "tiktok";
+  provider: "facebook" | "tiktok" | "telegram";
   code: string;
   isSecret: boolean;
   label: string;
@@ -17,5 +17,8 @@ export const PLATFORM_CREDENTIAL_CATALOG: PlatformCredentialDef[] = [
   { provider: "tiktok", code: "TIKTOK_CLIENT_SECRET", isSecret: true, label: "TikTok Client Secret" },
   { provider: "tiktok", code: "TIKTOK_REDIRECT_URI", isSecret: false, label: "TikTok Redirect URI" },
   { provider: "tiktok", code: "TIKTOK_SCOPES", isSecret: false, label: "TikTok Scopes", defaultValue: "user.info.basic,video.publish,video.list" },
+
+  { provider: "telegram", code: "TELEGRAM_BOT_TOKEN", isSecret: true, label: "Telegram Bot Token" },
+  { provider: "telegram", code: "TELEGRAM_CHAT_ID", isSecret: false, label: "Telegram Chat ID" },
 ];
 

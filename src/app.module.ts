@@ -47,6 +47,7 @@ import { TikTokModule } from "./tools/tiktok/tiktok.module";
 import { FacebookModule } from "./tools/facebook/facebook.module";
 import { TelegramModule } from "./tools/telegram/telegram.module";
 import { PlatformModule } from "./platform/platform.module";
+import { PlatformTelegramModule } from "./telegram/telegram.module";
 
 const isDesktop = process.env.KITLABS_DESKTOP === "1";
 
@@ -174,6 +175,7 @@ if (!isDesktop) {
     FacebookModule,
     TelegramModule,
     PlatformModule,
+    PlatformTelegramModule,
   ],
   controllers: [AppController],
   providers: [

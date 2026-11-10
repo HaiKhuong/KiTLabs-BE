@@ -26,6 +26,7 @@ import {
 } from "../entities/film.entities";
 import { FilmChatGateway } from "../film-chat.gateway";
 import { filmRankFor, filmTitleFor, resolveCultivationRanks } from "../shared/film-rank.util";
+import { TelegramService } from "../../telegram/telegram.service";
 import { SepayWebhookDto } from "./film-sepay.dto";
 
 export interface SepayWebhookAuthContext {
@@ -67,6 +68,7 @@ export class FilmSepayService {
   constructor(
     @InjectDataSource("film") private readonly dataSource: DataSource,
     private readonly chatGateway: FilmChatGateway,
+    private readonly telegramService: TelegramService,
   ) {}
 
   /**
@@ -132,6 +134,8 @@ export class FilmSepayService {
     }
     txRecord = await txRepo.save(txRecord);
 
+    const userCode = extractDonationUserCode(payload);
+
     try {
       // 3. Authenticate webhook request (HMAC-SHA256 signature / API key fallback)
       await this.verifyAuthentication(authContext);
@@ -145,8 +149,7 @@ export class FilmSepayService {
         return { success: true, message: "Non-incoming transfer ignored" };
       }
 
-      // 5. Extract user code from memo / content
-      const userCode = extractDonationUserCode(payload);
+      // 5. Log extracted user code
       this.logger.log(`Extracted user code from SePay memo: "${userCode}"`);
 
       // 6. Read bank configuration to get EXP rate (default 3 EXP / 1.000 VND)
@@ -155,6 +158,7 @@ export class FilmSepayService {
 
       // 7. Execute database transaction
       let matchedUserId: string | null = null;
+      let matchedUserName: string | null = null;
       let newTotalExpStr: string | null = null;
       let newSectRankStr: string | null = null;
 
@@ -166,6 +170,7 @@ export class FilmSepayService {
 
         if (user) {
           matchedUserId = user.id;
+          matchedUserName = user.name || user.username || "Vô danh đạo hữu";
           this.logger.log(`Matched user: ${user.name} (${user.id}) for SePay transaction id=${payload.id}`);
 
           // Update user stats (safely handle decimal strings like "0.00" from postgres numeric columns)
@@ -276,6 +281,41 @@ export class FilmSepayService {
         }
       }
 
+      // 9. Send notification to Telegram Chat ID
+      if (matchedUserId) {
+        try {
+          await this.telegramService.sendDonationSuccessNotification({
+            donorName: matchedUserName || "Vô danh đạo hữu",
+            userCode: userCode || String(matchedUserId).slice(0, 8),
+            amount: transferAmount,
+            exp: rewardExp,
+            transactionCode: `sepay_${payload.id}`,
+            sepayId: String(payload.id),
+            gateway: payload.gateway || payload.accountNumber,
+            content: payload.content,
+            transactionDate: payload.transactionDate,
+          });
+        } catch (tgErr: any) {
+          this.logger.warn(`Failed to dispatch Telegram success alert: ${tgErr?.message}`);
+        }
+      } else {
+        try {
+          await this.telegramService.sendDonationFailedNotification({
+            amount: transferAmount,
+            error: `Không tìm thấy người dùng khớp với mã '${userCode || "N/A"}' trong nội dung chuyển khoản`,
+            status: "UNMATCHED",
+            userCode,
+            sepayId: String(payload.id),
+            transactionCode: `sepay_${payload.id}`,
+            gateway: payload.gateway || payload.accountNumber,
+            content: payload.content,
+            transactionDate: payload.transactionDate,
+          });
+        } catch (tgErr: any) {
+          this.logger.warn(`Failed to dispatch Telegram unmatched alert: ${tgErr?.message}`);
+        }
+      }
+
       return {
         success: true,
         message: matchedUserId ? "Donation processed and EXP awarded" : "Donation recorded as unmatched",
@@ -289,6 +329,23 @@ export class FilmSepayService {
         await txRepo.save(txRecord);
       } catch (saveErr: any) {
         this.logger.error(`Failed to save FAILED status for SePay transaction id=${payload.id}: ${saveErr?.message}`);
+      }
+
+      // Send Telegram alert for transaction processing failure
+      try {
+        await this.telegramService.sendDonationFailedNotification({
+          amount: transferAmount,
+          error: err?.message || String(err),
+          status: "FAILED",
+          userCode,
+          sepayId: String(payload?.id || "N/A"),
+          transactionCode: payload?.id ? `sepay_${payload.id}` : undefined,
+          gateway: payload?.gateway || payload?.accountNumber,
+          content: payload?.content,
+          transactionDate: payload?.transactionDate,
+        });
+      } catch (tgErr: any) {
+        this.logger.warn(`Failed to dispatch Telegram failure alert: ${tgErr?.message}`);
       }
 
       throw err;
