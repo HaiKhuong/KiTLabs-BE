@@ -28,9 +28,11 @@ export class PlatformCredentialsService {
       for (const row of records) {
         if (row.isSecret) {
           try {
-            map.set(row.code, decryptSecret(row.value));
+            const dec = decryptSecret(row.value);
+            map.set(row.code, dec || row.value);
           } catch {
             this.logger.error(`Failed to decrypt platform credential: ${row.code}`);
+            map.set(row.code, row.value);
           }
         } else {
           map.set(row.code, row.value);

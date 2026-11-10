@@ -284,7 +284,8 @@ export class FilmSepayService {
       // 9. Send notification to Telegram Chat ID
       if (matchedUserId) {
         try {
-          await this.telegramService.sendDonationSuccessNotification({
+          this.logger.log(`Calling telegramService.sendDonationSuccessNotification for matched user ${matchedUserId}`);
+          const sent = await this.telegramService.sendDonationSuccessNotification({
             donorName: matchedUserName || "Vô danh đạo hữu",
             userCode: userCode || String(matchedUserId).slice(0, 8),
             amount: transferAmount,
@@ -295,12 +296,16 @@ export class FilmSepayService {
             content: payload.content,
             transactionDate: payload.transactionDate,
           });
+          if (!sent) {
+            this.logger.warn("Telegram success notification was not sent (check Telegram credentials in DB platform)");
+          }
         } catch (tgErr: any) {
           this.logger.warn(`Failed to dispatch Telegram success alert: ${tgErr?.message}`);
         }
       } else {
         try {
-          await this.telegramService.sendDonationFailedNotification({
+          this.logger.log(`Calling telegramService.sendDonationFailedNotification for UNMATCHED memo "${payload.content}"`);
+          const sent = await this.telegramService.sendDonationFailedNotification({
             amount: transferAmount,
             error: `Không tìm thấy người dùng khớp với mã '${userCode || "N/A"}' trong nội dung chuyển khoản`,
             status: "UNMATCHED",
@@ -311,6 +316,9 @@ export class FilmSepayService {
             content: payload.content,
             transactionDate: payload.transactionDate,
           });
+          if (!sent) {
+            this.logger.warn("Telegram unmatched notification was not sent (check Telegram credentials in DB platform)");
+          }
         } catch (tgErr: any) {
           this.logger.warn(`Failed to dispatch Telegram unmatched alert: ${tgErr?.message}`);
         }

@@ -72,17 +72,40 @@ export class TelegramService {
       const chatId = options?.chatId || (await this.getChatId());
 
       if (!botToken || !chatId) {
-        this.logger.warn("Telegram not configured (missing BOT_TOKEN or CHAT_ID), skipping notification");
+        this.logger.warn(
+          `Telegram not configured (BOT_TOKEN=${botToken ? "CONFIGURED" : "MISSING"}, CHAT_ID=${chatId ? "CONFIGURED" : "MISSING"}), skipping notification`,
+        );
         return { success: false, error: "Telegram Bot Token or Chat ID not configured" };
       }
 
-      const res = await this.http.post(`/bot${botToken}/sendMessage`, {
+      const postBody: Record<string, any> = {
         chat_id: chatId,
         text,
-        parse_mode: options?.parseMode || "HTML",
-        disable_notification: Boolean(options?.disableNotification),
-        disable_web_page_preview: options?.disableWebPagePreview ?? true,
-      });
+      };
+
+      if (options?.parseMode) {
+        postBody.parse_mode = options.parseMode;
+      }
+      if (options?.disableNotification) {
+        postBody.disable_notification = true;
+      }
+
+      let res;
+      try {
+        res = await this.http.post(`/bot${botToken}/sendMessage`, postBody);
+      } catch (postErr: any) {
+        // If HTML entity parsing fails, fallback cleanly to plain text (strip tags)
+        if (postBody.parse_mode && postErr?.response?.data?.description?.includes("parse entities")) {
+          this.logger.warn(
+            `Telegram HTML parse error: ${postErr.response.data.description}. Retrying with plain text.`,
+          );
+          delete postBody.parse_mode;
+          postBody.text = text.replace(/<[^>]*>/g, "");
+          res = await this.http.post(`/bot${botToken}/sendMessage`, postBody);
+        } else {
+          throw postErr;
+        }
+      }
 
       if (res.data?.ok) {
         return { success: true, messageId: res.data?.result?.message_id };
@@ -101,6 +124,10 @@ export class TelegramService {
    * Send notification for a successful donation
    */
   async sendDonationSuccessNotification(data: DonationSuccessTelegramData): Promise<boolean> {
+    this.logger.log(
+      `Dispatching Telegram donation success notification for donor="${data.donorName}", amount=${data.amount}, sepayId=${data.sepayId}`,
+    );
+
     const amountStr = this.numberFormatter.format(data.amount);
     const expStr = this.numberFormatter.format(data.exp);
     const timeStr = data.transactionDate || new Date().toLocaleString("vi-VN", { timeZone: "Asia/Ho_Chi_Minh" });
@@ -113,11 +140,16 @@ export class TelegramService {
       `✨ <b>EXP nhận:</b> <code>+${expStr} EXP</code>`,
       `🏦 <b>Cổng / Ngân hàng:</b> <code>${this.escapeHtml(data.gateway || "Chuyển khoản QR")}</code>`,
       `📝 <b>Nội dung CK:</b> <code>${this.escapeHtml(data.content || "N/A")}</code>`,
-      `🆔 <b>Mã SePay:</b> <code>#${data.sepayId || data.transactionCode}</code>`,
+      `🆔 <b>Mã SePay:</b> <code>#${this.escapeHtml(String(data.sepayId || data.transactionCode || "N/A"))}</code>`,
       `⏰ <b>Thời gian:</b> <i>${this.escapeHtml(timeStr)}</i>`,
     ].join("\n");
 
     const result = await this.sendMessage(html, { parseMode: "HTML" });
+    if (result.success) {
+      this.logger.log(`Telegram donation success notification sent (messageId=${result.messageId})`);
+    } else {
+      this.logger.warn(`Telegram donation success notification failed: ${result.error}`);
+    }
     return result.success;
   }
 
@@ -125,6 +157,8 @@ export class TelegramService {
    * Send notification for a failed or unmatched donation
    */
   async sendDonationFailedNotification(data: DonationFailedTelegramData): Promise<boolean> {
+    this.logger.log(`Dispatching Telegram donation alert (status=${data.status}): ${data.error}`);
+
     const amountStr = data.amount != null ? this.numberFormatter.format(data.amount) : "N/A";
     const timeStr = data.transactionDate || new Date().toLocaleString("vi-VN", { timeZone: "Asia/Ho_Chi_Minh" });
     const isUnmatched = data.status === "UNMATCHED";
@@ -136,7 +170,7 @@ export class TelegramService {
       `💵 <b>Số tiền:</b> <code>${amountStr} đ</code>`,
       `🏦 <b>Cổng / Ngân hàng:</b> <code>${this.escapeHtml(data.gateway || "N/A")}</code>`,
       `📝 <b>Nội dung CK:</b> <code>${this.escapeHtml(data.content || "N/A")}</code>`,
-      `🆔 <b>Mã SePay:</b> <code>#${data.sepayId || data.transactionCode || "N/A"}</code>`,
+      `🆔 <b>Mã SePay:</b> <code>#${this.escapeHtml(String(data.sepayId || data.transactionCode || "N/A"))}</code>`,
       `❌ <b>Chi tiết lỗi:</b> <code>${this.escapeHtml(data.error)}</code>`,
       `⏰ <b>Thời gian:</b> <i>${this.escapeHtml(timeStr)}</i>`,
       ``,
@@ -144,6 +178,11 @@ export class TelegramService {
     ].join("\n");
 
     const result = await this.sendMessage(html, { parseMode: "HTML" });
+    if (result.success) {
+      this.logger.log(`Telegram donation alert sent (messageId=${result.messageId})`);
+    } else {
+      this.logger.warn(`Telegram donation alert failed: ${result.error}`);
+    }
     return result.success;
   }
 
