@@ -1,6 +1,6 @@
 import { Injectable, NotFoundException } from "@nestjs/common";
 import { InjectDataSource } from "@nestjs/typeorm";
-import { DataSource, In } from "typeorm";
+import { DataSource, In, Not } from "typeorm";
 import { CreateFilmReportDto, FilmMovieBannersQueryDto, FilmMoviesQueryDto } from "./dto";
 import {
   FilmAdvertisement,
@@ -225,9 +225,11 @@ export class FilmCatalogService {
     return Promise.all([
       this.db
         .getRepository(FilmUser)
-        .find({ where: { role: FilmUserRole.GUEST }, order: { totalDonatedVnd: "DESC" }, take: 20 }),
-      this.db.getRepository(FilmUser).find({ where: { role: FilmUserRole.GUEST }, order: { exp: "DESC" }, take: 20 }),
-      this.db.getRepository(FilmMovie).find({ order: { rankScore: "DESC" }, take: 20 }),
+        .find({ where: { role: Not(FilmUserRole.ADMIN) }, order: { totalDonatedVnd: "DESC" }, take: 10 }),
+      this.db
+        .getRepository(FilmUser)
+        .find({ where: { role: Not(FilmUserRole.ADMIN) }, order: { exp: "DESC" }, take: 10 }),
+      this.db.getRepository(FilmMovie).find({ order: { rankScore: "DESC" }, take: 10 }),
     ]).then(([donors, cultivators, movies]) => ({ donors, cultivators, movies }));
   }
 
