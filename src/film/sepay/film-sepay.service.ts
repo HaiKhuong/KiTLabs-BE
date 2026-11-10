@@ -631,7 +631,7 @@ export class FilmSepayService {
             if (candidate) {
               user = {
                 id: candidate.id,
-                name: `${candidate.name} (Gợi ý khớp)`,
+                name: candidate.name,
                 avatarUrl: candidate.avatarUrl,
                 avatarFrameId: candidate.avatarFrameId,
                 currentTitle: candidate.currentTitle,
