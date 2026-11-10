@@ -221,8 +221,8 @@ export class FilmCatalogService {
     return this.db.getRepository(FilmAdvertisement).find({ where: { isActive: true } });
   }
 
-  leaderboards() {
-    return Promise.all([
+  async leaderboards() {
+    const [donors, cultivators, movies] = await Promise.all([
       this.db
         .getRepository(FilmUser)
         .find({ where: { role: Not(FilmUserRole.ADMIN) }, order: { totalDonatedVnd: "DESC" }, take: 10 }),
@@ -230,7 +230,26 @@ export class FilmCatalogService {
         .getRepository(FilmUser)
         .find({ where: { role: Not(FilmUserRole.ADMIN) }, order: { exp: "DESC" }, take: 10 }),
       this.db.getRepository(FilmMovie).find({ order: { rankScore: "DESC" }, take: 10 }),
-    ]).then(([donors, cultivators, movies]) => ({ donors, cultivators, movies }));
+    ]);
+
+    const numberFormatter = new Intl.NumberFormat("vi-VN");
+    const maskedDonors = donors.map((donor) => {
+      const num = Math.round(Number(donor.totalDonatedVnd ?? 0));
+      let masked: string;
+      if (num >= 1_000_000) {
+        masked = `${numberFormatter.format(num).replace(/\d/g, "x")} đ`;
+      } else if (num >= 1_000 || num <= 0) {
+        masked = "xxx.xxx đ";
+      } else {
+        masked = "xxx đ";
+      }
+      return {
+        ...donor,
+        totalDonatedVnd: masked as any,
+      };
+    });
+
+    return { donors: maskedDonors, cultivators, movies };
   }
 
   async comments(movieId: string, cursor?: string) {
