@@ -13,16 +13,17 @@ import {
 import { ApiOperation, ApiTags } from "@nestjs/swagger";
 import { Request } from "express";
 import { Public } from "../../common/decorators/public.decorator";
+import { PlatformAdminAccess } from "../../platform/credentials/platform-admin-access.decorator";
 import { SepayWebhookDto } from "./film-sepay.dto";
 import { FilmSepayService } from "./film-sepay.service";
 
-@Public()
 @ApiTags("Film - SePay Webhook")
 @Controller("film")
 export class FilmSepayController {
   constructor(private readonly sepayService: FilmSepayService) {}
 
-  @ApiOperation({ summary: "Get list of SePay donate transactions" })
+  @PlatformAdminAccess()
+  @ApiOperation({ summary: "Get list of SePay donate transactions (Admin only)" })
   @Get("sepay/transactions")
   async getTransactions(
     @Query("limit") limit?: string,
@@ -39,7 +40,8 @@ export class FilmSepayController {
     return { success: true, data };
   }
 
-  @ApiOperation({ summary: "Retry a SePay transaction" })
+  @PlatformAdminAccess()
+  @ApiOperation({ summary: "Retry a SePay transaction (Admin only)" })
   @HttpCode(HttpStatus.OK)
   @Post("sepay/transactions/:id/retry")
   async retryTransaction(@Param("id") id: string) {
@@ -47,6 +49,7 @@ export class FilmSepayController {
     return { success: true, data };
   }
 
+  @Public()
   @ApiOperation({ summary: "Health check for SePay webhook" })
   @Get(["sepay/webhook", "webhooks/sepay"])
   healthcheck() {
@@ -58,6 +61,7 @@ export class FilmSepayController {
     };
   }
 
+  @Public()
   @ApiOperation({ summary: "Process SePay balance change webhook" })
   @HttpCode(HttpStatus.OK)
   @Post(["sepay/webhook", "webhooks/sepay"])

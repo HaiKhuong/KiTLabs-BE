@@ -37,7 +37,7 @@ export class PlatformAdminGuard implements CanActivate {
       try {
         const decoded = jwt.verify(token, secret) as any;
         const role = String(decoded?.role ?? "").toUpperCase();
-        if (role === "ADMIN" || role === "SUPER_ADMIN") {
+        if (role === "ADMIN" || role === "SUPER_ADMIN" || role === "MODERATOR") {
           return true;
         }
       } catch {
