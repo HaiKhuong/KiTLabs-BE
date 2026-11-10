@@ -144,6 +144,9 @@ export class FilmAnalyticsScannerService implements OnModuleInit, OnApplicationB
     this.logger.log("Running scheduled analytics scanner (every 10 minutes)...");
     try {
       await this.syncDate();
+      // Also sync yesterday to ensure late activities from previous day are finalized
+      const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000);
+      await this.syncDate(getVietnamDateKey(yesterday));
     } catch (err) {
       this.logger.error(`Scheduled analytics scanner error: ${(err as Error).message}`, (err as Error).stack);
     }
@@ -192,7 +195,13 @@ export class FilmAnalyticsScannerService implements OnModuleInit, OnApplicationB
             SELECT DISTINCT session_id
             FROM audit_logs
             WHERE module = 'film' AND event != 'load_page'
-              AND NOT (event = 'comment' AND (object_id = 'chat_room' OR object_type = 'chat_message'))
+              AND (
+                (event != 'comment' AND event != 'movie_comment')
+                OR (
+                  COALESCE(object_id, '') != 'chat_room' 
+                  AND COALESCE(object_type, '') != 'chat_message'
+                )
+              )
               AND created_at >= $1 AND created_at <= $2
           )
           SELECT 
@@ -213,7 +222,17 @@ export class FilmAnalyticsScannerService implements OnModuleInit, OnApplicationB
           SELECT 
             EXTRACT(HOUR FROM created_at AT TIME ZONE 'Asia/Ho_Chi_Minh')::int AS hour,
             COUNT(CASE WHEN event = 'load_page' THEN 1 END)::int AS views,
-            COUNT(DISTINCT CASE WHEN event != 'load_page' AND NOT (event = 'comment' AND (object_id = 'chat_room' OR object_type = 'chat_message')) THEN session_id END)::int AS "actionSessions"
+            COUNT(DISTINCT CASE 
+              WHEN event != 'load_page' 
+                AND (
+                  (event != 'comment' AND event != 'movie_comment')
+                  OR (
+                    COALESCE(object_id, '') != 'chat_room' 
+                    AND COALESCE(object_type, '') != 'chat_message'
+                  )
+                )
+              THEN session_id 
+            END)::int AS "actionSessions"
           FROM audit_logs
           WHERE module = 'film' AND created_at >= $1 AND created_at <= $2
           GROUP BY hour
@@ -234,14 +253,29 @@ export class FilmAnalyticsScannerService implements OnModuleInit, OnApplicationB
           actionSessions: val.actionSessions,
         }));
 
-        // C. Actions Breakdown (Exclude comments from chat_room)
+        // C. Actions Breakdown (Exclude comments from chat_room, normalize movie_comment -> comment)
         const actionsQuery = `
-          SELECT event, COUNT(*)::int AS count
+          SELECT 
+            CASE 
+              WHEN event = 'movie_comment' THEN 'comment'
+              ELSE event 
+            END AS event,
+            COUNT(*)::int AS count
           FROM audit_logs
           WHERE module = 'film' AND event != 'load_page'
-            AND NOT (event = 'comment' AND (object_id = 'chat_room' OR object_type = 'chat_message'))
+            AND (
+              (event != 'comment' AND event != 'movie_comment')
+              OR (
+                COALESCE(object_id, '') != 'chat_room' 
+                AND COALESCE(object_type, '') != 'chat_message'
+              )
+            )
             AND created_at >= $1 AND created_at <= $2
-          GROUP BY event
+          GROUP BY 
+            CASE 
+              WHEN event = 'movie_comment' THEN 'comment'
+              ELSE event 
+            END
           ORDER BY count DESC;
         `;
         const actionsRes = await this.auditDb.query(actionsQuery, [start, end]);

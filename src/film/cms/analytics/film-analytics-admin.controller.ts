@@ -22,8 +22,8 @@ export class FilmAnalyticsAdminController {
 
   @ApiOperation({ summary: "Manually trigger background scanner to sync raw logs into reports_xxx tables" })
   @Post("sync-now")
-  async syncNow(@Body() body?: { dateKey?: string }) {
-    return this.analyticsService.triggerManualSync(body?.dateKey);
+  async syncNow(@Body() body?: { dateKey?: string; range?: string }) {
+    return this.analyticsService.triggerManualSync(body?.dateKey, body?.range);
   }
 }
 

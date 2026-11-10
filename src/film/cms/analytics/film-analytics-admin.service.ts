@@ -261,9 +261,14 @@ export class FilmAnalyticsAdminService {
       take: 5,
     });
 
-    // If no report exists yet for today, trigger a quick initial sync
-    if (!traffic && targetDateKey === todayKey) {
-      await this.scanner.syncDate(todayKey);
+    // If no report exists yet for targetDateKey, or if today's report is stale (> 5 mins), trigger sync
+    const isTodayStale =
+      targetDateKey === todayKey &&
+      (!traffic || (traffic.lastScannedAt && Date.now() - new Date(traffic.lastScannedAt).getTime() > 5 * 60 * 1000));
+    const isMissingTarget = !traffic;
+
+    if (isMissingTarget || isTodayStale) {
+      await this.scanner.syncDate(targetDateKey);
       traffic = await trafficRepo.findOne({ where: { dateKey: targetDateKey } });
       users = await userRepo.findOne({ where: { dateKey: targetDateKey } });
       content = await contentRepo.findOne({ where: { dateKey: targetDateKey } });
@@ -329,9 +334,21 @@ export class FilmAnalyticsAdminService {
   }
 
   /**
-   * Manually triggers scanner for a specific date or today
+   * Manually triggers scanner for a specific date or today or range
    */
-  async triggerManualSync(dateKey?: string) {
+  async triggerManualSync(dateKey?: string, range?: string) {
+    if (range === "yesterday") {
+      const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000);
+      return this.scanner.syncDate(getVietnamDateKey(yesterday));
+    }
+    if (range === "7d" || range === "30d") {
+      const daysCount = range === "7d" ? 7 : 30;
+      for (let i = daysCount - 1; i >= 0; i--) {
+        const d = new Date(Date.now() - i * 24 * 60 * 60 * 1000);
+        await this.scanner.syncDate(getVietnamDateKey(d));
+      }
+      return this.scanner.syncDate();
+    }
     return this.scanner.syncDate(dateKey);
   }
 }
