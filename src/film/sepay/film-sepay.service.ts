@@ -27,6 +27,14 @@ import { FilmChatGateway } from "../film-chat.gateway";
 import { filmRankFor, filmTitleFor, resolveCultivationRanks } from "../shared/film-rank.util";
 import { SepayWebhookDto } from "./film-sepay.dto";
 
+export interface SepayWebhookAuthContext {
+  signature?: string;
+  timestamp?: string;
+  rawBody?: string;
+  authHeader?: string;
+  xApiKey?: string;
+}
+
 export function extractDonationUserCode(payload: {
   code?: string | null;
   content?: string | null;
@@ -62,13 +70,16 @@ export class FilmSepayService {
   /**
    * Process incoming SePay transaction webhook
    */
-  async processWebhook(payload: SepayWebhookDto, authHeader?: string): Promise<{ success: boolean; message: string }> {
+  async processWebhook(
+    payload: SepayWebhookDto,
+    authContext?: SepayWebhookAuthContext | string,
+  ): Promise<{ success: boolean; message: string }> {
     this.logger.log(
       `Received SePay webhook: id=${payload.id}, amount=${payload.transferAmount}, type=${payload.transferType}, content="${payload.content}"`,
     );
 
-    // 1. Authenticate webhook request
-    await this.verifyAuthentication(authHeader);
+    // 1. Authenticate webhook request (HMAC-SHA256 signature / API key fallback)
+    await this.verifyAuthentication(authContext);
 
     // 2. Filter transaction: only process incoming money with amount > 0
     if (payload.transferType !== "in" || Number(payload.transferAmount) <= 0) {
@@ -240,32 +251,75 @@ export class FilmSepayService {
   }
 
   /**
-   * Verify Authorization header against configured SePay API key
+   * Verify HMAC-SHA256 signature (X-SePay-Signature) or Authorization header against configured SePay Secret Key
    */
-  private async verifyAuthentication(authHeader?: string): Promise<void> {
+  private async verifyAuthentication(authContext?: SepayWebhookAuthContext | string): Promise<void> {
+    const ctx: SepayWebhookAuthContext =
+      typeof authContext === "string" ? { authHeader: authContext } : authContext || {};
+
     const setting = await this.dataSource.getRepository(FilmSetting).findOne({
       where: { key: "BANK_ACCOUNT" },
     });
     const configValue = (setting?.value || {}) as Record<string, any>;
-    const expectedKey: string =
+    const secretKey: string =
+      (configValue.sepaySecretKey?.trim() as string) ||
       (configValue.sepayApiKey?.trim() as string) ||
-      (process.env.SEPAY_API_KEY?.trim() as string) ||
+      (process.env.SEPAY_SECRET_KEY?.trim() as string) ||
       (process.env.SEPAY_WEBHOOK_SECRET?.trim() as string) ||
+      (process.env.SEPAY_API_KEY?.trim() as string) ||
       "";
 
-    // If an API key is configured on server/admin, enforce it strictly
-    if (expectedKey) {
-      let receivedKey = "";
-      if (authHeader) {
-        const parts = authHeader.trim().split(" ");
-        receivedKey = parts.length >= 2 ? parts[1].trim() : parts[0].trim();
+    // If no secret key is configured on server/admin, allow request
+    if (!secretKey) {
+      return;
+    }
+
+    // 1. Primary: HMAC-SHA256 signature verification (X-SePay-Signature & X-SePay-Timestamp)
+    if (ctx.signature) {
+      // Replay attack protection: ensure timestamp is within 10 minutes (600s)
+      if (ctx.timestamp) {
+        const ts = Number(ctx.timestamp);
+        const now = Math.floor(Date.now() / 1000);
+        if (!isNaN(ts) && Math.abs(now - ts) > 600) {
+          this.logger.warn(`SePay webhook timestamp expired: timestamp=${ts}, now=${now}`);
+          throw new UnauthorizedException("SePay webhook timestamp expired (replay protection)");
+        }
       }
 
-      if (!receivedKey || receivedKey !== expectedKey) {
-        this.logger.warn(`Unauthorized SePay webhook attempt: receivedKey="${receivedKey}"`);
-        throw new UnauthorizedException("Invalid or missing SePay API Key");
+      const payloadToSign = `${ctx.timestamp || ""}.${ctx.rawBody || ""}`;
+      const hmacHex = crypto.createHmac("sha256", secretKey).update(payloadToSign).digest("hex");
+      const expectedSignature = `sha256=${hmacHex}`;
+
+      const receivedSig = ctx.signature.trim();
+      const isMatch = receivedSig === expectedSignature || receivedSig === hmacHex;
+
+      if (!isMatch) {
+        this.logger.warn(
+          `Invalid SePay HMAC-SHA256 signature. Expected="${expectedSignature}", Received="${receivedSig}"`,
+        );
+        throw new UnauthorizedException("Invalid SePay webhook signature (HMAC-SHA256 mismatch)");
       }
+
+      this.logger.log("SePay webhook verified successfully via HMAC-SHA256 signature.");
+      return;
     }
+
+    // 2. Fallback: Legacy API Key verification (Authorization: Apikey ...)
+    let receivedKey = "";
+    if (ctx.authHeader) {
+      const parts = ctx.authHeader.trim().split(" ");
+      receivedKey = parts.length >= 2 ? parts[1].trim() : parts[0].trim();
+    } else if (ctx.xApiKey) {
+      receivedKey = ctx.xApiKey.trim();
+    }
+
+    if (receivedKey && receivedKey === secretKey) {
+      this.logger.log("SePay webhook authenticated via API Key token fallback.");
+      return;
+    }
+
+    this.logger.warn("Unauthorized SePay webhook attempt: missing valid X-SePay-Signature or API Key");
+    throw new UnauthorizedException("Invalid or missing SePay HMAC signature / API Key");
   }
 
   /**
