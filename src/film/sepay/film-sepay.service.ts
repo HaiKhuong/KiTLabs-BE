@@ -163,12 +163,24 @@ export class FilmSepayService {
           matchedUserId = user.id;
           this.logger.log(`Matched user: ${user.name} (${user.id}) for SePay transaction id=${payload.id}`);
 
-          // Update user stats
-          const currentExp = BigInt(user.exp || 0);
-          const newExpBig = currentExp + BigInt(rewardExp);
+          // Update user stats (safely handle decimal strings like "0.00" from postgres numeric columns)
+          const toBigIntSafe = (val: unknown): bigint => {
+            if (val === null || val === undefined) return BigInt(0);
+            if (typeof val === "bigint") return val;
+            if (typeof val === "number") return BigInt(Math.floor(val));
+            const s = String(val).trim().split(".")[0];
+            try {
+              return BigInt(s || 0);
+            } catch {
+              return BigInt(0);
+            }
+          };
+
+          const currentExp = toBigIntSafe(user.exp);
+          const newExpBig = currentExp + toBigIntSafe(rewardExp);
           const newExp = newExpBig.toString();
-          const currentDonated = BigInt(user.totalDonatedVnd || 0);
-          const newDonated = (currentDonated + BigInt(transferAmount)).toString();
+          const currentDonated = toBigIntSafe(user.totalDonatedVnd);
+          const newDonated = (currentDonated + toBigIntSafe(transferAmount)).toString();
 
           const ranks = await resolveCultivationRanks(manager);
           const newRank = filmRankFor(Number(newExp), ranks);
