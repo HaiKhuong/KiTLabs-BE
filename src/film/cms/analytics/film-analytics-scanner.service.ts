@@ -211,7 +211,7 @@ export class FilmAnalyticsScannerService implements OnModuleInit, OnApplicationB
         // B. Hourly Breakdown (0 - 23h GMT+7)
         const hourlyQuery = `
           SELECT 
-            EXTRACT(HOUR FROM created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Ho_Chi_Minh')::int AS hour,
+            EXTRACT(HOUR FROM created_at AT TIME ZONE 'Asia/Ho_Chi_Minh')::int AS hour,
             COUNT(CASE WHEN event = 'load_page' THEN 1 END)::int AS views,
             COUNT(DISTINCT CASE WHEN event != 'load_page' AND NOT (event = 'comment' AND (object_id = 'chat_room' OR object_type = 'chat_message')) THEN session_id END)::int AS "actionSessions"
           FROM audit_logs
@@ -406,7 +406,7 @@ export class FilmAnalyticsScannerService implements OnModuleInit, OnApplicationB
         // B. Hourly New Users
         const hourlyUsersQuery = `
           SELECT 
-            EXTRACT(HOUR FROM created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Ho_Chi_Minh')::int AS hour,
+            EXTRACT(HOUR FROM created_at AT TIME ZONE 'Asia/Ho_Chi_Minh')::int AS hour,
             COUNT(*)::int AS count
           FROM users
           WHERE created_at >= $1 AND created_at <= $2 AND deleted_at IS NULL
@@ -466,12 +466,12 @@ export class FilmAnalyticsScannerService implements OnModuleInit, OnApplicationB
           FROM favorites f
           JOIN movies m ON m.id = f.movie_id
           WHERE f.deleted_at IS NULL AND m.deleted_at IS NULL
-            AND f.created_at <= $2
+            AND f.created_at <= $1
           GROUP BY f.movie_id, m.title, m.slug, m.banner_url, m.thumbnail_url
           ORDER BY "favoritesCount" DESC
           LIMIT 5;
         `;
-        const topFavoritesRes = await this.filmDb.query(topFavoritesQuery, [start, end]);
+        const topFavoritesRes = await this.filmDb.query(topFavoritesQuery, [end]);
         topFavoritedMovies = (topFavoritesRes || []).map((r: any) => ({
           movieId: String(r.movieId || ""),
           title: String(r.title || "Phim chưa đặt tên"),
