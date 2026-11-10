@@ -61,9 +61,18 @@ export class FilmAnalyticsAdminService {
       // If any dateKeys are not yet in reports_daily_traffic, backfill them
       const scannedKeys = new Set(trafficReports.map((t) => t.dateKey));
       const missingKeys = dateKeys.filter((dk) => !scannedKeys.has(dk));
-      if (missingKeys.length > 0) {
+      const todayReport = trafficReports.find((t) => t.dateKey === todayKey);
+      const isTodayStale =
+        !todayReport ||
+        (todayReport.lastScannedAt &&
+          Date.now() - new Date(todayReport.lastScannedAt).getTime() > 5 * 60 * 1000);
+
+      if (missingKeys.length > 0 || isTodayStale) {
         for (const mk of missingKeys) {
           await this.scanner.syncDate(mk);
+        }
+        if (isTodayStale) {
+          await this.scanner.syncDate(todayKey);
         }
         trafficReports = await trafficRepo.find({
           where: { dateKey: In(dateKeys) },
@@ -108,8 +117,19 @@ export class FilmAnalyticsAdminService {
         totalNewUsers += newUsers;
 
         if (tr?.actionsBreakdown) {
-          for (const [k, v] of Object.entries(tr.actionsBreakdown)) {
-            actionsBreakdown[k] = (actionsBreakdown[k] || 0) + Number(v);
+          let bObj: any = tr.actionsBreakdown;
+          if (typeof bObj === "string") {
+            try {
+              bObj = JSON.parse(bObj);
+            } catch {
+              bObj = {};
+            }
+          }
+          if (bObj && typeof bObj === "object") {
+            for (const [rawK, v] of Object.entries(bObj)) {
+              const k = rawK === "movie_comment" ? "comment" : rawK;
+              actionsBreakdown[k] = (actionsBreakdown[k] || 0) + (Number(v) || 0);
+            }
           }
         }
 
