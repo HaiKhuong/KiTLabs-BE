@@ -31,6 +31,7 @@ import {
   FilmWatchHistory,
   FilmImageUpload,
   FilmReport,
+  FilmSepayTransaction,
   FilmSetting,
   ItemType,
   SectRank,
@@ -765,7 +766,7 @@ export class FilmAdminService {
   }
 
   async getMenuCounts(): Promise<Record<string, number>> {
-    const [movies, genres, banners, missions, comments, reports, users, settings] = await Promise.all([
+    const [movies, genres, banners, missions, comments, reports, users, settings, donates] = await Promise.all([
       this.db.getRepository(FilmMovie).count({ where: { deletedAt: IsNull() } }).catch(() => 0),
       this.db.getRepository(FilmGenre).count({ where: { deletedAt: IsNull() } }).catch(() => 0),
       this.db.getRepository(FilmBanner).count({ where: { deletedAt: IsNull() } }).catch(() => 0),
@@ -774,6 +775,7 @@ export class FilmAdminService {
       this.db.getRepository(FilmReport).count({ where: { deletedAt: IsNull() } }).catch(() => 0),
       this.db.getRepository(FilmUser).count({ where: { deletedAt: IsNull() } }).catch(() => 0),
       this.db.getRepository(FilmSetting).count({ where: { deletedAt: IsNull() } }).catch(() => 0),
+      this.db.getRepository(FilmSepayTransaction).count({ where: { deletedAt: IsNull() } }).catch(() => 0),
     ]);
 
     let adminUsers = 0;
@@ -796,6 +798,7 @@ export class FilmAdminService {
       reports,
       users,
       settings,
+      donates,
       admin_users: adminUsers,
       roles,
       // Path aliases
@@ -807,6 +810,7 @@ export class FilmAdminService {
       "/reports": reports,
       "/users": users,
       "/settings": settings,
+      "/donates": donates,
       "/admin-users": adminUsers,
       "/roles": roles,
     };

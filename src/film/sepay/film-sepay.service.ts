@@ -3,6 +3,7 @@ import {
   BadRequestException,
   Injectable,
   Logger,
+  NotFoundException,
   UnauthorizedException,
 } from "@nestjs/common";
 import { InjectDataSource } from "@nestjs/typeorm";
@@ -33,6 +34,7 @@ export interface SepayWebhookAuthContext {
   rawBody?: string;
   authHeader?: string;
   xApiKey?: string;
+  isInternalRetry?: boolean;
 }
 
 export function extractDonationUserCode(payload: {
@@ -85,13 +87,16 @@ export class FilmSepayService {
 
     const txRepo = this.dataSource.getRepository(FilmSepayTransaction);
 
-    // 1. Idempotency check: if transaction was already processed successfully or ignored, return immediately
+    const isRetry = typeof authContext === "object" && Boolean(authContext?.isInternalRetry);
+
+    // 1. Idempotency check: if transaction was already processed successfully or ignored, return immediately (unless forced retry)
     let txRecord = await txRepo.findOne({
       where: { sepayId: String(payload.id) },
     });
 
     if (
       txRecord &&
+      !isRetry &&
       (txRecord.status === SepayTransactionStatus.SUCCESS || txRecord.status === SepayTransactionStatus.IGNORED)
     ) {
       this.logger.log(`SePay transaction id=${payload.id} already processed with status ${txRecord.status}`);
@@ -297,6 +302,11 @@ export class FilmSepayService {
     const ctx: SepayWebhookAuthContext =
       typeof authContext === "string" ? { authHeader: authContext } : authContext || {};
 
+    if (ctx.isInternalRetry) {
+      this.logger.log("Bypassing webhook signature verification for internal retry request");
+      return;
+    }
+
     const setting = await this.dataSource.getRepository(FilmSetting).findOne({
       where: { key: "BANK_ACCOUNT" },
     });
@@ -493,5 +503,200 @@ export class FilmSepayService {
     } catch (err) {
       this.logger.warn(`Failed to update DONATE_BANK mission progress for user ${userId}: ${(err as Error).message}`);
     }
+  }
+
+  /**
+   * Get list of SePay transactions with user profile and aggregate counts
+   */
+  async getTransactions(query?: {
+    limit?: number;
+    offset?: number;
+    status?: string;
+    search?: string;
+  }): Promise<{
+    items: any[];
+    total: number;
+    counts: {
+      total: number;
+      success: number;
+      unmatched: number;
+      failed: number;
+      pending: number;
+      ignored: number;
+    };
+  }> {
+    const txRepo = this.dataSource.getRepository(FilmSepayTransaction);
+    const limit = Math.min(Math.max(1, query?.limit || 50), 100);
+    const offset = Math.max(0, query?.offset || 0);
+
+    const qb = txRepo
+      .createQueryBuilder("tx")
+      .leftJoin(FilmUser, "u", "u.id = tx.userId")
+      .select([
+        "tx.id AS id",
+        "tx.sepayId AS sepay_id",
+        "tx.gateway AS gateway",
+        "tx.transactionDate AS transaction_date",
+        "tx.accountNumber AS account_number",
+        "tx.subAccount AS sub_account",
+        "tx.code AS code",
+        "tx.content AS content",
+        "tx.transferType AS transfer_type",
+        "tx.description AS description",
+        "tx.transferAmount AS transfer_amount",
+        "tx.accumulated AS accumulated",
+        "tx.referenceCode AS reference_code",
+        "tx.userId AS user_id",
+        "tx.rewardExp AS reward_exp",
+        "tx.status AS status",
+        "tx.errorMessage AS error_message",
+        "tx.rawPayload AS raw_payload",
+        "tx.createdAt AS created_at",
+        "tx.updatedAt AS updated_at",
+        "u.id AS user_user_id",
+        "u.name AS user_name",
+        "u.avatarUrl AS user_avatar_url",
+        "u.avatarFrameId AS user_avatar_frame_id",
+        "u.currentTitle AS user_current_title",
+        "u.sectRank AS user_sect_rank",
+      ])
+      .orderBy("tx.createdAt", "DESC");
+
+    if (query?.status) {
+      qb.andWhere("tx.status = :status", { status: query.status.toUpperCase() });
+    }
+
+    if (query?.search) {
+      const s = `%${query.search.trim()}%`;
+      qb.andWhere(
+        "(tx.content ILIKE :s OR tx.referenceCode ILIKE :s OR CAST(tx.sepayId AS text) ILIKE :s OR u.name ILIKE :s)",
+        { s },
+      );
+    }
+
+    // Counts by status
+    const countRows = await txRepo
+      .createQueryBuilder("tx")
+      .select("tx.status", "status")
+      .addSelect("COUNT(*)", "count")
+      .groupBy("tx.status")
+      .getRawMany();
+
+    const counts = {
+      total: 0,
+      success: 0,
+      unmatched: 0,
+      failed: 0,
+      pending: 0,
+      ignored: 0,
+    };
+
+    for (const r of countRows) {
+      const c = Number(r.count || 0);
+      counts.total += c;
+      const st = String(r.status || "").toLowerCase();
+      if (st === "success") counts.success = c;
+      else if (st === "unmatched") counts.unmatched = c;
+      else if (st === "failed") counts.failed = c;
+      else if (st === "pending") counts.pending = c;
+      else if (st === "ignored") counts.ignored = c;
+    }
+
+    const total = await qb.getCount();
+    const rawItems = await qb.offset(offset).limit(limit).getRawMany();
+
+    // Map rawItems to clean items
+    const items = await Promise.all(
+      rawItems.map(async (row) => {
+        let user = row.user_user_id
+          ? {
+              id: row.user_user_id,
+              name: row.user_name,
+              avatarUrl: row.user_avatar_url,
+              avatarFrameId: row.user_avatar_frame_id,
+              currentTitle: row.user_current_title,
+              sectRank: row.user_sect_rank,
+            }
+          : null;
+
+        // If user not linked yet (e.g. UNMATCHED or FAILED), try candidate lookup from memo
+        if (!user) {
+          const userCode = extractDonationUserCode({
+            code: row.code,
+            content: row.content,
+            description: row.description,
+          });
+          if (userCode) {
+            const candidate = await this.findUserByCode(this.dataSource.manager, userCode);
+            if (candidate) {
+              user = {
+                id: candidate.id,
+                name: `${candidate.name} (Gợi ý khớp)`,
+                avatarUrl: candidate.avatarUrl,
+                avatarFrameId: candidate.avatarFrameId,
+                currentTitle: candidate.currentTitle,
+                sectRank: candidate.sectRank,
+              };
+            }
+          }
+        }
+
+        return {
+          id: row.id,
+          sepayId: String(row.sepay_id),
+          gateway: row.gateway,
+          transactionDate: row.transaction_date,
+          accountNumber: row.account_number,
+          subAccount: row.sub_account,
+          code: row.code,
+          content: row.content,
+          transferType: row.transfer_type,
+          description: row.description,
+          transferAmount: row.transfer_amount,
+          accumulated: row.accumulated,
+          referenceCode: row.reference_code,
+          userId: row.user_id,
+          rewardExp: Number(row.reward_exp || 0),
+          status: row.status,
+          errorMessage: row.error_message,
+          rawPayload: row.raw_payload,
+          createdAt: row.created_at,
+          updatedAt: row.updated_at,
+          user,
+        };
+      }),
+    );
+
+    return {
+      items,
+      total,
+      counts,
+    };
+  }
+
+  /**
+   * Re-execute a previously failed or unmatched SePay transaction
+   */
+  async retryTransaction(idOrSepayId: string): Promise<{ success: boolean; message: string }> {
+    const txRepo = this.dataSource.getRepository(FilmSepayTransaction);
+    let tx = await txRepo.findOne({
+      where: [{ id: idOrSepayId }],
+    });
+    if (!tx && !isNaN(Number(idOrSepayId))) {
+      tx = await txRepo.findOne({
+        where: [{ sepayId: idOrSepayId }],
+      });
+    }
+
+    if (!tx) {
+      throw new NotFoundException(`Giao dịch "${idOrSepayId}" không tồn tại trong hệ thống`);
+    }
+
+    if (!tx.rawPayload) {
+      throw new BadRequestException("Giao dịch không có dữ liệu gốc (rawPayload) để chạy lại");
+    }
+
+    this.logger.log(`Re-executing SePay transaction id=${tx.sepayId}...`);
+    return this.processWebhook(tx.rawPayload as any, { isInternalRetry: true });
   }
 }
