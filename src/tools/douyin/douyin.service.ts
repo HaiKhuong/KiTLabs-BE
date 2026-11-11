@@ -1,4 +1,9 @@
-import { Injectable, Logger } from "@nestjs/common";
+import {
+  BadGatewayException,
+  GatewayTimeoutException,
+  Injectable,
+  Logger,
+} from "@nestjs/common";
 import axios, { AxiosResponse } from "axios";
 
 import { AppConfigService } from "../../common/config/app-config.service";
@@ -176,6 +181,27 @@ export class DouyinService {
     return cookieContent;
   }
 
+  private throwPlaywrightError(error: unknown): never {
+    if (axios.isAxiosError(error)) {
+      const status = error.response?.status;
+      const payload = error.response?.data as
+        | { message?: string; detail?: string; code?: string; retryable?: boolean }
+        | undefined;
+      const upstreamMessage = payload?.message || payload?.detail || error.message;
+      const response = {
+        message: upstreamMessage,
+        code: payload?.code || (status === 504 ? "DOUYIN_TIMEOUT" : "DOUYIN_UPSTREAM_ERROR"),
+        retryable: payload?.retryable ?? status !== 400,
+      };
+
+      if (status === 504 || error.code === "ECONNABORTED") {
+        throw new GatewayTimeoutException(response);
+      }
+      throw new BadGatewayException(response);
+    }
+    throw error;
+  }
+
   private heightToLabel(height: number | null): string {
     if (!height) return "Unknown";
     if (height >= 4320) return "8K";
@@ -250,14 +276,19 @@ export class DouyinService {
 
   private async extractVideoViaPlaywright(url: string): Promise<ExtractedVideoInfo> {
     const cookieContent = this.resolveCookieContent();
-    const response = await axios.post<PlaywrightExtractResponse>(
-      `${this.playwrightUrl()}/extract`,
-      {
-        url,
-        cookie_content: cookieContent,
-      },
-      { timeout: 120_000 },
-    );
+    let response: AxiosResponse<PlaywrightExtractResponse>;
+    try {
+      response = await axios.post<PlaywrightExtractResponse>(
+        `${this.playwrightUrl()}/extract`,
+        {
+          url,
+          cookie_content: cookieContent,
+        },
+        { timeout: 55_000 },
+      );
+    } catch (error) {
+      this.throwPlaywrightError(error);
+    }
 
     const data = response.data;
 
@@ -317,16 +348,21 @@ export class DouyinService {
     cursor = 0,
   ): Promise<ExtractedProfileInfo> {
     const cookieContent = this.resolveCookieContent();
-    const response = await axios.post<PlaywrightProfileResponse>(
-      `${this.playwrightUrl()}/extract-profile`,
-      {
-        url,
-        cookie_content: cookieContent,
-        max_videos: maxVideos,
-        cursor,
-      },
-      { timeout: 300_000 },
-    );
+    let response: AxiosResponse<PlaywrightProfileResponse>;
+    try {
+      response = await axios.post<PlaywrightProfileResponse>(
+        `${this.playwrightUrl()}/extract-profile`,
+        {
+          url,
+          cookie_content: cookieContent,
+          max_videos: maxVideos,
+          cursor,
+        },
+        { timeout: 90_000 },
+      );
+    } catch (error) {
+      this.throwPlaywrightError(error);
+    }
 
     const data = response.data;
 

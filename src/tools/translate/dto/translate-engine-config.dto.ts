@@ -489,13 +489,13 @@ export class TranslateEngineConfigDto {
   @IsString()
   tts_acronym_rules_json?: string;
 
-  /** edge | omnivoice | voxcpm2 */
+  /** edge | omnivoice | voxcpm2 | vieneu */
   @IsOptional()
-  @IsIn(["edge", "omnivoice", "voxcpm2"])
+  @IsIn(["edge", "omnivoice", "voxcpm2", "vieneu"])
   step3TtsEngine?: string;
 
   @IsOptional()
-  @IsIn(["edge", "omnivoice", "voxcpm2"])
+  @IsIn(["edge", "omnivoice", "voxcpm2", "vieneu"])
   step3_tts_engine?: string;
 
   @IsOptional()

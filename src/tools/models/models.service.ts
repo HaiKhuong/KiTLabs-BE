@@ -100,9 +100,12 @@ export class ModelsService {
     if (stepNbr.includes(1) && source === "whisper") {
       needed.push("whisper-large-v3");
     }
-    const tts = String(engineConfig?.step3TtsEngine ?? engineConfig?.ttsEngine ?? "");
+    const tts = String(
+      engineConfig?.step3TtsEngine ?? engineConfig?.step3_tts_engine ?? engineConfig?.ttsEngine ?? "",
+    ).toLowerCase();
     if (stepNbr.includes(3) && tts === "omnivoice") needed.push("omnivoice");
     if (stepNbr.includes(3) && (tts === "voxcpm2" || tts === "voxcpm")) needed.push("voxcpm2");
+    if (stepNbr.includes(3) && tts === "vieneu") needed.push("vieneu");
     return needed;
   }
 

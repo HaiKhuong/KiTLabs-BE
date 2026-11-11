@@ -180,13 +180,6 @@ async function createDouyinPage(cookieContent) {
 
   if (cookies.length > 0) {
     await context.addCookies(cookies);
-    await page
-      .goto(DOUYIN_ORIGIN, {
-        waitUntil: "domcontentloaded",
-        timeout: 30_000,
-      })
-      .catch(() => {});
-    await page.waitForTimeout(1_000);
   }
 
   return { context, page };

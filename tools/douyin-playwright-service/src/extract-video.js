@@ -28,19 +28,24 @@ async function resolveAwemeId(page, context, inputUrl) {
     throw new Error("URL must be a douyin.com video link");
   }
 
-  const response = await context.request.get(inputUrl, {
-    maxRedirects: 10,
-    timeout: 30_000,
-  });
-  const finalUrl = response.url();
-  const fromFinalUrl = parseAwemeIdFromUrl(finalUrl);
-  if (fromFinalUrl) return fromFinalUrl;
+  let finalUrl = inputUrl;
+  try {
+    const response = await context.request.get(inputUrl, {
+      maxRedirects: 10,
+      timeout: 10_000,
+    });
+    finalUrl = response.url();
+    const fromFinalUrl = parseAwemeIdFromUrl(finalUrl);
+    if (fromFinalUrl) return fromFinalUrl;
+  } catch {
+    // Browser navigation below is the fallback for transient redirect failures.
+  }
 
   await page.goto(finalUrl, {
     waitUntil: "domcontentloaded",
-    timeout: 60_000,
+    timeout: 20_000,
   });
-  await page.waitForTimeout(1_500);
+  await page.waitForTimeout(500);
 
   const fromPage = await page.evaluate(() => {
     const href = window.location.href;
@@ -137,7 +142,7 @@ async function fetchAwemeDetailViaRequest(context, awemeId, videoPageUrl) {
       "accept-language": "vi",
       referer: videoPageUrl,
     },
-    timeout: 30_000,
+    timeout: 8_000,
   });
 
   const text = await response.text();
@@ -194,6 +199,16 @@ async function fetchAwemeDetailFromBrowser(page, awemeId, videoPageUrl) {
 async function loadVideoDetail(page, context, awemeId) {
   const videoPageUrl = `${DOUYIN_ORIGIN}/video/${awemeId}`;
   let interceptedDetail = null;
+  let lastError = null;
+
+  // Fast path: cookies are already installed in the context and the API often
+  // succeeds without paying the cost of a full browser navigation.
+  try {
+    const direct = await fetchAwemeDetailViaRequest(context, awemeId, videoPageUrl);
+    if (direct) return direct;
+  } catch (error) {
+    lastError = error;
+  }
 
   const onResponse = async (response) => {
     if (!response.url().includes("/aweme/v1/web/aweme/detail")) return;
@@ -214,22 +229,27 @@ async function loadVideoDetail(page, context, awemeId) {
   try {
     await page.goto(videoPageUrl, {
       waitUntil: "domcontentloaded",
-      timeout: 60_000,
+      timeout: 20_000,
     });
 
-    await page.waitForTimeout(2_000);
+    await page.waitForTimeout(1_000);
 
     if (interceptedDetail) return interceptedDetail;
 
     const fromSsr = await parseAwemeDetailFromPage(page);
     if (fromSsr) return fromSsr;
 
-    const fromRequest = await fetchAwemeDetailViaRequest(
-      context,
-      awemeId,
-      videoPageUrl,
-    );
-    if (fromRequest) return fromRequest;
+    // Retry after navigation has warmed the Douyin session.
+    try {
+      const fromRequest = await fetchAwemeDetailViaRequest(
+        context,
+        awemeId,
+        videoPageUrl,
+      );
+      if (fromRequest) return fromRequest;
+    } catch (error) {
+      lastError = error;
+    }
 
     const apiResult = await fetchAwemeDetailFromBrowser(
       page,
@@ -243,6 +263,10 @@ async function loadVideoDetail(page, context, awemeId) {
       );
     }
 
+    if (lastError) {
+      const detail = lastError instanceof Error ? lastError.message : String(lastError);
+      throw new Error(`Douyin detail request failed: ${detail}`);
+    }
     return null;
   } finally {
     page.off("response", onResponse);
@@ -266,22 +290,33 @@ function mapAwemeToExtractResponse(entry) {
 }
 
 async function extractVideo({ url, cookieContent }) {
-  const { context, page } = await createDouyinPage(cookieContent);
+  const maxAttempts = 2;
+  let lastError = null;
 
-  try {
-    const awemeId = await resolveAwemeId(page, context, url);
-    const detail = await loadVideoDetail(page, context, awemeId);
-    if (!detail) {
-      throw new Error(
-        "Could not extract video info. Pass cookie_content (Netscape format from cookies.txt).",
-      );
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const { context, page } = await createDouyinPage(cookieContent);
+    try {
+      const awemeId = await resolveAwemeId(page, context, url);
+      const detail = await loadVideoDetail(page, context, awemeId);
+      if (!detail) {
+        throw new Error(
+          "Douyin returned no video data. Cookies may be expired or the video is unavailable.",
+        );
+      }
+      return mapAwemeToExtractResponse(detail);
+    } catch (error) {
+      lastError = error;
+      if (attempt < maxAttempts) {
+        await new Promise((resolve) => setTimeout(resolve, 350));
+      }
+    } finally {
+      await page.close().catch(() => {});
+      await context.close().catch(() => {});
     }
-
-    return mapAwemeToExtractResponse(detail);
-  } finally {
-    await page.close().catch(() => {});
-    await context.close().catch(() => {});
   }
+
+  const detail = lastError instanceof Error ? lastError.message : "Unknown upstream error";
+  throw new Error(`Unable to extract this Douyin video after ${maxAttempts} attempts: ${detail}`);
 }
 
 module.exports = {

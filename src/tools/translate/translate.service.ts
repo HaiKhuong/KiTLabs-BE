@@ -647,7 +647,7 @@ export class TranslateService {
   }
 
   /**
-   * Validate giọng mẫu OmniVoice/VoxCPM2 và rewrite engineConfig:
+   * Validate giọng mẫu OmniVoice/VoxCPM2/VieNeu và rewrite engineConfig:
    * - omnivoiceRefWav → absolute path (clone nằm dưới voice/{userId}/)
    * - omnivoiceRefText → bổ sung từ DB/sidecar nếu thiếu
    * - omnivoiceLanguage → từ FE, hoặc DB clone, hoặc mặc định vietnamese (preset)
@@ -665,7 +665,7 @@ export class TranslateService {
     const ttsEngine = String(
       this.pickConfigValue(config, ["step3TtsEngine", "step3_tts_engine"]) ?? "edge",
     ).toLowerCase();
-    if (ttsEngine !== "omnivoice" && ttsEngine !== "voxcpm2") {
+    if (ttsEngine !== "omnivoice" && ttsEngine !== "voxcpm2" && ttsEngine !== "vieneu") {
       return;
     }
 
