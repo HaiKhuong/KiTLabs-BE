@@ -295,10 +295,10 @@ def _build_translate_prompt(batch: list, payload_text: str, translation_context:
     line_count = len(batch)
     last_id = line_count - 1
     prompt_parts = [
-        "Translate Chinese subtitles into Vietnamese.\n",
-        "Write very concise, subtitle-friendly Vietnamese.\n",
-        "Keep original meaning and emotional tone, but simplify phrasing.\n",
-        "Preserve historical tone, titles, names, and relationships.\n",
+        "Translate the source subtitles into natural, idiomatic Vietnamese.\n",
+        "Write very concise, subtitle-friendly Vietnamese suitable for video dubbing and reading.\n",
+        "Keep original meaning, context, and emotional tone, but simplify phrasing.\n",
+        "Preserve proper nouns, titles, names, character relationships, and appropriate honorifics according to context.\n",
         "Drop leftover filler/junk that repeats and does not help the sentence (ASR artifacts). "
         'Example: a trailing "Đây." with no role in the line — omit it in Vietnamese. '
         "Still return every line id; never drop a whole cue.\n",
@@ -311,7 +311,7 @@ def _build_translate_prompt(batch: list, payload_text: str, translation_context:
     if translation_context and translation_context.strip():
         prompt_parts.append(f"{translation_context.strip()}\n")
     else:
-        prompt_parts.append("Han-Viet terms OK. Historical/wuxia context.\n")
+        prompt_parts.append("Translate accurately and adapt vocabulary naturally according to the video genre and subject matter.\n")
 
     prompt_parts.append(
         f"INPUT: exactly {line_count} lines (ids 0 to {last_id}):\n"
@@ -320,7 +320,7 @@ def _build_translate_prompt(batch: list, payload_text: str, translation_context:
         f"- Return exactly {line_count} lines with ids 0 to {last_id}, same order as input.\n"
         "- ONE INPUT LINE = ONE OUTPUT LINE. Translate only the words on that line.\n"
         "- NEVER merge lines. NEVER fold two or more source lines into one Vietnamese sentence.\n"
-        "- If a Chinese sentence is split across cues, keep the split. Leave each Vietnamese line incomplete if the source line is incomplete. Continue on the next id.\n"
+        "- If a sentence is split across cues, keep the split. Leave each Vietnamese line incomplete if the source line is incomplete. Continue on the next id.\n"
         "- Do NOT pull words from the next or previous line into the current line.\n"
         "- Do NOT skip, drop, split, or reorder lines. Do not summarize across lines.\n"
         "- Dropping filler words inside a single line is allowed; compressing a long line is allowed. Combining lines is not.\n"
@@ -329,8 +329,8 @@ def _build_translate_prompt(batch: list, payload_text: str, translation_context:
         "LINE LOCK EXAMPLE (pattern only — do not copy these ids; use the INPUT ids above):\n"
         "Source stays split. Each id translates only itself.\n"
         "436:|...(cue before)\n"
-        "437:|最空旷的地方了\n"
-        "438:|而且谁说容不下的\n"
+        "437:|最空旷的地方了 (or English clause)\n"
+        "438:|而且谁说容不下的 (or next clause)\n"
         "WRONG — several cues fused into one line, later words pulled upward:\n"
         "436:|không gian này cũng không chứa nổi Hỗn Độn thế giới của chúng ta.\n"
         "REQUIRED — same split, one Vietnamese line per source line:\n"

@@ -2,6 +2,7 @@ import { Logger } from "@nestjs/common";
 import { Processor, WorkerHost } from "@nestjs/bullmq";
 import { Job, UnrecoverableError } from "bullmq";
 import { spawn } from "child_process";
+import { existsSync } from "fs";
 import { basename, dirname, extname, isAbsolute, join, resolve } from "path";
 
 import { QueueJobStatus } from "../../common/enums/domain.enums";
@@ -260,6 +261,11 @@ const OPTION_MAPPINGS: Array<{
   {
     cliFlag: "--step1-subtitle-source",
     keys: ["step1SubtitleSource", "step1_subtitle_source"],
+    allowedTypes: ["string"],
+  },
+  {
+    cliFlag: "--whisper-language",
+    keys: ["whisperLanguage", "whisper_language"],
     allowedTypes: ["string"],
   },
   {
@@ -989,6 +995,10 @@ export class TranslateProcessor extends WorkerHost {
     const lastStep = uniqueSorted.length > 0 ? uniqueSorted[uniqueSorted.length - 1] : null;
 
     if (lastStep === 1) {
+      const standardPath = join(workspaceDir, "subtitles", `${workName}.srt`);
+      if (existsSync(standardPath)) {
+        return standardPath;
+      }
       return join(workspaceDir, "subtitles", `${workName}.zh.srt`);
     }
 

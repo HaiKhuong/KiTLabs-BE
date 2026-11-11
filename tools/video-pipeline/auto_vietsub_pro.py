@@ -89,7 +89,7 @@ if _SCRIPT_DIR_STR not in sys.path:
     sys.path.insert(0, _SCRIPT_DIR_STR)
 
 WHISPER_MODEL = "large-v3"
-WHISPER_LANGUAGE = "zh"
+WHISPER_LANGUAGE = None  # None = tự động nhận diện ngôn ngữ (hoặc mã ngôn ngữ: zh, en, vi...)
 STEP1_SUBTITLE_SOURCE = "embedded"
 GEMINI_MODEL_NAME = "gemini-2.5-flash"
 # standard = GEMINI_API_KEY (+ GOOGLE_API_KEY); vip = GEMINI_API_KEY_VIP
@@ -1512,8 +1512,18 @@ def _step3_save_voice_checkpoint(srt_path, chunk_dir, blocks, done_indices):
         log_step3(f"Step3: không ghi voice_ok_srt.txt: {e}", important=True)
 
 
+def get_source_srt_path():
+    """Đường dẫn SRT nguồn: chuẩn mới là <WORK_NAME>.srt; fallback <WORK_NAME>.zh.srt nếu đã có từ trước."""
+    standard = SUBTITLE_DIR / f"{WORK_NAME}.srt"
+    legacy = SUBTITLE_DIR / f"{WORK_NAME}.zh.srt"
+    if not standard.is_file() and legacy.is_file():
+        return legacy
+    return standard
+
+
 def get_zh_srt_path():
-    return SUBTITLE_DIR / f"{WORK_NAME}.zh.srt"
+    """Alias giữ tương thích cho các hàm OCR và module khác."""
+    return get_source_srt_path()
 
 
 def get_vi_srt_path():
@@ -1591,7 +1601,7 @@ def clean_and_filter_existing_srt_blocks(blocks, log=None):
 
 
 def _try_prefetch_step1_zh_srt_from_existing_dir():
-    """Nếu --existing-srt-dir-path có {WORK_NAME}.srt thì lọc nhiễu & convert sang subtitles/{WORK_NAME}.zh.srt và bỏ Step1."""
+    """Nếu --existing-srt-dir-path có {WORK_NAME}.srt (hoặc {WORK_NAME}.zh.srt) thì lọc nhiễu & convert sang subtitles/{WORK_NAME}.srt và bỏ Step1."""
     raw = str(EXISTING_SRT_DIR_PATH or "").strip()
     if not raw:
         return None
@@ -1603,12 +1613,16 @@ def _try_prefetch_step1_zh_srt_from_existing_dir():
 
     source = folder / f"{WORK_NAME}.srt"
     if not file_ready(source):
-        log(
-            f"Step1: không thấy {source.name} trong existing-srt-dir-path, chạy Step1 bình thường."
-        )
-        return None
+        source_legacy = folder / f"{WORK_NAME}.zh.srt"
+        if file_ready(source_legacy):
+            source = source_legacy
+        else:
+            log(
+                f"Step1: không thấy {source.name} trong existing-srt-dir-path, chạy Step1 bình thường."
+            )
+            return None
 
-    dest = get_zh_srt_path()
+    dest = get_source_srt_path()
     SUBTITLE_DIR.mkdir(parents=True, exist_ok=True)
 
     with open(source, encoding="utf8") as f:
@@ -1631,7 +1645,7 @@ def _try_prefetch_step1_zh_srt_from_existing_dir():
 
     log(
         f"Step1: dùng SRT có sẵn từ {source} (tổng {len(raw_blocks)} cues, "
-        f"sau lọc còn {len(cleaned_blocks)} cues) -> {dest} (bỏ qua Whisper/EasyOCR)."
+        f"sau lọc còn {len(cleaned_blocks)} cues) -> {dest} (bỏ qua Whisper/OCR)."
     )
     return dest
 
@@ -2325,7 +2339,7 @@ def _step1_transcribe_with_whisper(video_path):
     def _transcribe_with_device(device_name, out_path):
         whisper_model = WhisperModel(WHISPER_MODEL, device=device_name)
         transcribe_kwargs = {
-            "language": WHISPER_LANGUAGE,
+            "language": WHISPER_LANGUAGE or None,
             "vad_filter": STEP1_VAD_FILTER,
             "no_speech_threshold": float(STEP1_NO_SPEECH_THRESHOLD),
             "log_prob_threshold": float(STEP1_LOGPROB_THRESHOLD),
@@ -2340,9 +2354,13 @@ def _step1_transcribe_with_whisper(video_path):
                 "min_speech_duration_ms": int(STEP1_MIN_SPEECH_MS),
                 "speech_pad_ms": int(STEP1_SPEECH_PAD_MS),
             }
-        segments, _info = whisper_model.transcribe(
+        segments, info = whisper_model.transcribe(
             str(step1_audio), **transcribe_kwargs
         )
+        detected_lang = getattr(info, "language", None)
+        if detected_lang:
+            prob = getattr(info, "language_probability", 0.0)
+            log(f"Step1 (Whisper): Ngôn ngữ nhận diện '{detected_lang}' (độ tin cậy: {prob:.1%})")
         count = 0
         last_end_ms = 0
         prev_end_sec = 0.0
@@ -4470,8 +4488,8 @@ def parse_cli_args():
     )
     parser.add_argument(
         "--whisper-language",
-        default=WHISPER_LANGUAGE,
-        help="Whisper language code. Example: zh, en, vi.",
+        default="",
+        help="Whisper language code (e.g. zh, en, vi). Để trống để tự động nhận diện ngôn ngữ.",
     )
     parser.add_argument(
         "--step1-subtitle-source",
@@ -4707,8 +4725,8 @@ def parse_cli_args():
         "--existing-srt-dir-path",
         default="",
         help=(
-            "Thư mục chứa SRT có sẵn. Nếu có {video_stem}.srt thì copy sang "
-            "subtitles/{video_stem}.zh.srt và bỏ qua Step1 (Whisper/EasyOCR)."
+            "Thư mục chứa SRT có sẵn. Nếu có {video_stem}.srt (hoặc .zh.srt) thì copy sang "
+            "subtitles/{video_stem}.srt và bỏ qua Step1 (Whisper/OCR)."
         ),
     )
     parser.add_argument(
@@ -5098,7 +5116,7 @@ def apply_cli_config(args):
     global VOICE_SYNC_TTS_TAIL_MS
     global VOICE_SYNC_SHORT_TEXT_MAX_CHARS
     global VOICE_SYNC_SHORT_TIMELINE_MAX_MS
-    WHISPER_LANGUAGE = str(args.whisper_language).strip() or None
+    WHISPER_LANGUAGE = str(args.whisper_language or "").strip() or None
     STEP1_SUBTITLE_SOURCE = (
         str(args.step1_subtitle_source or STEP1_SUBTITLE_SOURCE).strip().lower()
     )
@@ -5629,7 +5647,11 @@ def publish_deliverables(preferred: Path | None = None) -> Path | None:
             shutil.copy2(src, dst)
             published_final = dst
 
-    for src in (get_zh_srt_path(), get_vi_srt_path()):
+    for src in (
+        SUBTITLE_DIR / f"{WORK_NAME}.srt",
+        SUBTITLE_DIR / f"{WORK_NAME}.zh.srt",
+        get_vi_srt_path(),
+    ):
         if src.is_file():
             shutil.copy2(src, out_subs / src.name)
 
@@ -5727,7 +5749,7 @@ def run_pipeline(video, step_arg=None):
             2,
             "Step2",
             lambda: (
-                require_ready(zh_srt, "Step2 input zh subtitle"),
+                require_ready(zh_srt, "Step2 input source subtitle"),
                 get_or_run(vi_srt, "Step2", step2_translate_srt, zh_srt),
             )[1],
         )
