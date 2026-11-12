@@ -344,6 +344,108 @@ export class FacebookProviderAdapter {
     return { id: data.id };
   }
 
+  async updateComment(pageToken: string, commentId: string, message: string): Promise<{ success: boolean }> {
+    const data = await this.postForm<{ success?: boolean }>(`/${commentId}`, pageToken, { message });
+    return { success: data.success ?? true };
+  }
+
+  async getVideos(
+    pageToken: string,
+    pageId: string,
+    limit = 50,
+  ): Promise<{ data: Array<{ id: string; title?: string; description?: string; permalink_url?: string; created_time?: string; length?: number; picture?: string }> }> {
+    return this.get(`/${pageId}/videos`, pageToken, {
+      fields: "id,title,description,permalink_url,created_time,length,picture",
+      limit: String(limit),
+    });
+  }
+
+  async getVideoLists(
+    pageToken: string,
+    pageId: string,
+  ): Promise<{ data: Array<{ id: string; title?: string; name?: string; description?: string; creation_time?: string; last_modified?: string; videos?: { data?: Array<{ id: string; title?: string }> } }> }> {
+    // 1. Try field expansion on Page node (fetches video_lists AND nested videos in one call)
+    try {
+      const pageWithPl = await this.get<{ video_lists?: { data?: any[] } }>(
+        `/${pageId}`,
+        pageToken,
+        { fields: "video_lists{id,title,description,creation_time,videos{id,title}}" },
+      );
+      if (pageWithPl.video_lists?.data && pageWithPl.video_lists.data.length > 0) {
+        return { data: pageWithPl.video_lists.data };
+      }
+    } catch {
+      // fallback to next attempt
+    }
+
+    // 2. Try direct /{pageId}/video_lists with clean params
+    try {
+      const res = await this.get<{ data?: any[] }>(`/${pageId}/video_lists`, pageToken, {});
+      if (res.data && res.data.length > 0) return { data: res.data };
+    } catch {
+      // fallback
+    }
+
+    // 3. Try with safe fields id,title,description
+    try {
+      const res = await this.get<{ data?: any[] }>(`/${pageId}/video_lists`, pageToken, {
+        fields: "id,title,description",
+      });
+      if (res.data && res.data.length > 0) return { data: res.data };
+    } catch {
+      // fallback
+    }
+
+    // 4. Try with fields id,description
+    try {
+      const res = await this.get<{ data?: any[] }>(`/${pageId}/video_lists`, pageToken, {
+        fields: "id,description",
+      });
+      return { data: res.data || [] };
+    } catch {
+      return { data: [] };
+    }
+  }
+
+  async getVideoListDetail(
+    pageToken: string,
+    videoListId: string,
+  ): Promise<{ id: string; title?: string; name?: string; description?: string }> {
+    try {
+      return await this.get(`/${videoListId}`, pageToken, {});
+    } catch {
+      try {
+        return await this.get(`/${videoListId}`, pageToken, { fields: "id,title,description" });
+      } catch {
+        return await this.get(`/${videoListId}`, pageToken, { fields: "id,description" });
+      }
+    }
+  }
+
+  async getVideoListVideos(
+    pageToken: string,
+    videoListId: string,
+  ): Promise<{ data: Array<{ id: string; title?: string; permalink_url?: string; length?: number; picture?: string; created_time?: string }> }> {
+    try {
+      return await this.get(`/${videoListId}/videos`, pageToken, {});
+    } catch {
+      try {
+        return await this.get(`/${videoListId}/videos`, pageToken, {
+          fields: "id,title,permalink_url",
+        });
+      } catch {
+        return { data: [] };
+      }
+    }
+  }
+
+  async addVideoToPlaylist(pageToken: string, videoListId: string, videoId: string): Promise<{ success: boolean }> {
+    const data = await this.postForm<{ success?: boolean }>(`/${videoListId}/videos`, pageToken, {
+      video_id: videoId,
+    });
+    return { success: data.success ?? true };
+  }
+
   private version(): string {
     return process.env.META_GRAPH_VERSION ?? "v21.0";
   }

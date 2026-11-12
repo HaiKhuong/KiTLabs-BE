@@ -6,6 +6,9 @@ import { PlatformModule } from "../../platform/platform.module";
 import { FacebookAccount } from "./facebook-account.entity";
 import { FacebookAffiliateLink } from "./facebook-affiliate-link.entity";
 import { FacebookCommentSettings } from "./facebook-comment-settings.entity";
+import { FacebookPageCommentSettings } from "./facebook-page-settings.entity";
+import { FacebookPlaylist } from "./facebook-playlist.entity";
+import { FacebookVideo } from "./facebook-video.entity";
 import { FacebookController } from "./facebook.controller";
 import { FacebookPage } from "./facebook-page.entity";
 import { FacebookPost } from "./facebook-post.entity";
@@ -27,6 +30,9 @@ import { FacebookFilmIntegrationClient } from "./facebook-film-integration.clien
         FacebookPost,
         FacebookAffiliateLink,
         FacebookCommentSettings,
+        FacebookPageCommentSettings,
+        FacebookPlaylist,
+        FacebookVideo,
         FacebookTaskLog,
       ],
       "tool",

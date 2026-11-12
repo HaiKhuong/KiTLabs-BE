@@ -3,10 +3,17 @@ import { ApiBearerAuth, ApiTags } from "@nestjs/swagger";
 import { CurrentUser } from "../../common/decorators/current-user.decorator";
 import { isAppPlatform } from "../../common/desktop/request-platform";
 import {
+  AssignVideoPlaylistDto,
+  CommentOnVideoDto,
   CreateFacebookPostDto,
+  CreatePlaylistDto,
+  FacebookPlaylistQueryDto,
   FacebookPostQueryDto,
   FacebookTaskQueryDto,
+  FacebookVideoQueryDto,
   SaveCommentSettingsDto,
+  SavePageCommentSettingsDto,
+  SyncFacebookVideosDto,
   UpdateFacebookPostDto,
   UpsertAffiliateLinkDto,
 } from "./facebook.types";
@@ -108,6 +115,62 @@ export class FacebookController {
   tasks(@CurrentUser() user: AuthUser, @Query() query: FacebookTaskQueryDto) {
     this.desktopOnly();
     return this.service.listTasks(user.userId, query);
+  }
+
+  @Post("sync-videos")
+  syncVideos(@CurrentUser() user: AuthUser, @Body() dto: SyncFacebookVideosDto) {
+    this.desktopOnly();
+    return this.service.syncVideos(user.userId, dto.pageId);
+  }
+
+  @Get("videos")
+  videos(@CurrentUser() user: AuthUser, @Query() query: FacebookVideoQueryDto) {
+    this.desktopOnly();
+    return this.service.listVideos(user.userId, query);
+  }
+
+  @Get("playlists")
+  playlists(@CurrentUser() user: AuthUser, @Query() query: FacebookPlaylistQueryDto) {
+    this.desktopOnly();
+    return this.service.listPlaylists(user.userId, query);
+  }
+
+  @Post("playlists")
+  createPlaylist(@CurrentUser() user: AuthUser, @Body() dto: CreatePlaylistDto) {
+    this.desktopOnly();
+    return this.service.createPlaylist(user.userId, dto);
+  }
+
+  @Post("videos/:id/playlist")
+  assignPlaylist(
+    @CurrentUser() user: AuthUser,
+    @Param("id") id: string,
+    @Body() dto: AssignVideoPlaylistDto,
+  ) {
+    this.desktopOnly();
+    return this.service.assignVideoToPlaylist(user.userId, id, dto);
+  }
+
+  @Get("page-comment-settings")
+  pageCommentSettings(@CurrentUser() user: AuthUser, @Query("pageId") pageId: string) {
+    this.desktopOnly();
+    return this.service.getPageCommentSettings(user.userId, pageId);
+  }
+
+  @Put("page-comment-settings")
+  savePageCommentSettings(@CurrentUser() user: AuthUser, @Body() dto: SavePageCommentSettingsDto) {
+    this.desktopOnly();
+    return this.service.savePageCommentSettings(user.userId, dto);
+  }
+
+  @Post("videos/:id/comment")
+  commentVideo(
+    @CurrentUser() user: AuthUser,
+    @Param("id") id: string,
+    @Body() dto: CommentOnVideoDto,
+  ) {
+    this.desktopOnly();
+    return this.service.commentOnVideo(user.userId, id, dto);
   }
 
   private desktopOnly(): void {

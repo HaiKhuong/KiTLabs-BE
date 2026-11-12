@@ -40,8 +40,35 @@ export {
 
 export type CommentTemplate = {
   id: string;
+  name?: string;
   body: string;
   enabled: boolean;
+};
+
+export type MoviePlaylistTemplate = {
+  id: string;
+  name: string;
+  body: string;
+  enabled: boolean;
+};
+
+export type CrossPromoTemplate = {
+  id: string;
+  name: string;
+  platform: "youtube" | "facebook";
+  body: string;
+  enabled: boolean;
+};
+
+export type FacebookVideoCommentAttempt = {
+  type: "affiliate" | "movie_playlist" | "cross_promo";
+  linkId?: string | null;
+  message: string;
+  commentId: string | null;
+  status: "pending" | "done" | "uncertain" | "failed";
+  errorCode: string | null;
+  createdAt: string;
+  updatedAt?: string;
 };
 
 export type FacebookCommentAttempt = {
@@ -278,4 +305,159 @@ export class FacebookTaskQueryDto {
   @Min(1)
   @Max(50)
   limit = 20;
+}
+
+export class SyncFacebookVideosDto {
+  @IsUUID()
+  pageId!: string;
+}
+
+export class AssignVideoPlaylistDto {
+  @IsOptional()
+  @IsString()
+  playlistId?: string | null;
+
+  @IsOptional()
+  @IsString()
+  playlistTitle?: string | null;
+}
+
+export class MoviePlaylistTemplateDto {
+  @IsString()
+  @MaxLength(80)
+  id!: string;
+
+  @IsString()
+  @MaxLength(120)
+  name!: string;
+
+  @IsString()
+  @MaxLength(5000)
+  body!: string;
+
+  @IsBoolean()
+  enabled!: boolean;
+}
+
+export class CrossPromoTemplateDto {
+  @IsString()
+  @MaxLength(80)
+  id!: string;
+
+  @IsString()
+  @MaxLength(120)
+  name!: string;
+
+  @IsString()
+  @MaxLength(20)
+  platform!: "youtube" | "facebook";
+
+  @IsString()
+  @MaxLength(5000)
+  body!: string;
+
+  @IsBoolean()
+  enabled!: boolean;
+}
+
+export class SavePageCommentSettingsDto {
+  @IsUUID()
+  pageId!: string;
+
+  @IsEnum(FacebookSelectionRule)
+  selectionRule!: FacebookSelectionRule;
+
+  @IsArray()
+  @ArrayMaxSize(20)
+  @ValidateNested({ each: true })
+  @Type(() => CommentTemplateDto)
+  affiliateTemplates!: CommentTemplateDto[];
+
+  @IsArray()
+  @ArrayMaxSize(20)
+  @ValidateNested({ each: true })
+  @Type(() => MoviePlaylistTemplateDto)
+  moviePlaylistTemplates!: MoviePlaylistTemplateDto[];
+
+  @IsArray()
+  @ArrayMaxSize(20)
+  @ValidateNested({ each: true })
+  @Type(() => CrossPromoTemplateDto)
+  crossPromoTemplates!: CrossPromoTemplateDto[];
+}
+
+export class CommentOnVideoDto {
+  @IsString()
+  type!: "affiliate" | "movie_playlist" | "cross_promo";
+
+  @IsOptional()
+  @IsString()
+  templateId?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(8000)
+  customMessage?: string;
+
+  @IsOptional()
+  @IsString()
+  targetMovieTitle?: string;
+
+  @IsOptional()
+  @IsString()
+  targetMovieUrl?: string;
+
+  @IsOptional()
+  @IsString()
+  platform?: "youtube" | "facebook";
+
+  @IsOptional()
+  @IsBoolean()
+  forceCreate?: boolean;
+}
+
+export class FacebookVideoQueryDto {
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  page = 1;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  limit = 20;
+
+  @IsOptional()
+  @IsString()
+  pageId?: string;
+
+  @IsOptional()
+  @IsString()
+  playlistId?: string;
+
+  @IsOptional()
+  @IsString()
+  search?: string;
+}
+
+export class FacebookPlaylistQueryDto {
+  @IsOptional()
+  @IsString()
+  pageId?: string;
+}
+
+export class CreatePlaylistDto {
+  @IsString()
+  pageId!: string;
+
+  @IsString()
+  @MaxLength(500)
+  title!: string;
+
+  @IsOptional()
+  @IsString()
+  description?: string;
 }

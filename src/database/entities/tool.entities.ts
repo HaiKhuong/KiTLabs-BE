@@ -32,6 +32,9 @@ import { FacebookPost } from "../../tools/facebook/facebook-post.entity";
 import { FacebookAffiliateLink } from "../../tools/facebook/facebook-affiliate-link.entity";
 import { FacebookCommentSettings } from "../../tools/facebook/facebook-comment-settings.entity";
 import { FacebookTaskLog } from "../../tools/facebook/facebook-task-log.entity";
+import { FacebookVideo } from "../../tools/facebook/facebook-video.entity";
+import { FacebookPlaylist } from "../../tools/facebook/facebook-playlist.entity";
+import { FacebookPageCommentSettings } from "../../tools/facebook/facebook-page-settings.entity";
 import { TelegramUserConfig } from "../../tools/telegram/telegram-user-config.entity";
 
 export const TOOL_DB_ENTITIES = [
@@ -69,5 +72,8 @@ export const TOOL_DB_ENTITIES = [
   FacebookAffiliateLink,
   FacebookCommentSettings,
   FacebookTaskLog,
+  FacebookVideo,
+  FacebookPlaylist,
+  FacebookPageCommentSettings,
   TelegramUserConfig,
 ];

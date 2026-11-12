@@ -16,12 +16,17 @@ import { existsSync, mkdirSync } from "fs";
 import { copyFile } from "fs/promises";
 import { extname, join, resolve } from "path";
 import { pathToFileURL } from "url";
-import { LessThanOrEqual, Repository } from "typeorm";
+import { LessThanOrEqual, Like, Repository } from "typeorm";
 
 import { PlatformFacebookService } from "../../platform/facebook/platform-facebook.service";
 import { ToolsRealtimeGateway } from "../realtime/tools-realtime.gateway";
 import { FacebookAffiliateLink } from "./facebook-affiliate-link.entity";
+import { renderCommentTemplate, selectAffiliateLinks } from "./facebook-affiliate.selector";
 import { FacebookCommentSettings } from "./facebook-comment-settings.entity";
+import { FacebookPageCommentSettings } from "./facebook-page-settings.entity";
+import { FacebookPlaylist } from "./facebook-playlist.entity";
+import { FacebookVideo } from "./facebook-video.entity";
+import { FacebookProviderAdapter } from "./facebook-provider.adapter";
 import { assertHttpsUrl, validateFacebookMedia } from "./facebook-media.validation";
 import { FacebookPage } from "./facebook-page.entity";
 import { FacebookPost } from "./facebook-post.entity";
@@ -29,20 +34,102 @@ import { FacebookPublishRunner, formatCaptionWithTitle } from "./facebook-publis
 import { FacebookTaskLog } from "./facebook-task-log.entity";
 import { FacebookFilmIntegrationClient } from "./facebook-film-integration.client";
 import {
+  AssignVideoPlaylistDto,
+  CommentOnVideoDto,
   CreateFacebookPostDto,
   FACEBOOK_PUBLISH_QUEUE,
   FacebookAffiliateStatus,
   FacebookContentKind,
+  FacebookPlaylistQueryDto,
   FacebookPostQueryDto,
   FacebookPageStatus,
   FacebookPostStatus,
   FacebookSelectionRule,
   FacebookTaskQueryDto,
   FacebookUploadPhase,
+  FacebookVideoCommentAttempt,
+  FacebookVideoQueryDto,
   SaveCommentSettingsDto,
+  SavePageCommentSettingsDto,
   UpdateFacebookPostDto,
   UpsertAffiliateLinkDto,
 } from "./facebook.types";
+
+export function parseVideoMovieInfo(title?: string | null, description?: string | null): {
+  seasonLabel: string;
+  movieTitle: string;
+  rawHeader: string;
+  cleanDescription: string;
+} {
+  const t = (title || "").trim();
+  const descLines = (description || "")
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean);
+  const firstDescLine = descLines[0] || "";
+
+  let header = t;
+  const seasonRegex = /(?:Mùa|Season|Phần|Tập|Ep)\s*\d+(\s*[pP]\d+)?|Full\s*\d+\s*Mùa/i;
+  if (!header || header.toLowerCase() === "video" || (!seasonRegex.test(header) && seasonRegex.test(firstDescLine))) {
+    header = firstDescLine || header || "Video";
+  }
+
+  let seasonLabel = "";
+  const seasonMatch = header.match(seasonRegex);
+  if (seasonMatch) {
+    seasonLabel = seasonMatch[0].trim();
+    if (/season/i.test(seasonLabel)) {
+      seasonLabel = seasonLabel.replace(/season/i, "Mùa");
+    }
+  }
+
+  let clean = header.replace(/\[[^\]]*\]/g, " ").replace(/\([^\)]*\)/g, " ");
+  if (seasonMatch) {
+    clean = clean.replace(seasonMatch[0], " ");
+  }
+
+  clean = clean
+    .replace(/^[\s|\-–—:;./]+/, "")
+    .replace(/[\s|\-–—:;./]+$/, "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (!clean) clean = header;
+
+  let remainingDesc = "";
+  if (descLines.length > 0 && descLines[0] === header) {
+    remainingDesc = descLines.slice(1).join("\n").trim();
+  } else {
+    remainingDesc = (description || "").trim();
+  }
+  const cleanDescription = remainingDesc.slice(0, 300);
+
+  return { seasonLabel, movieTitle: clean, rawHeader: header, cleanDescription };
+}
+
+export function normalizeMovieTitle(str: string): string {
+  return (str || "")
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .trim();
+}
+
+export function parseSeasonNumber(label?: string | null): number {
+  if (!label) return 9999;
+  const match = label.match(/(\d+)(?:\s*[pP](\d+))?/);
+  if (!match) return 9999;
+  const main = parseInt(match[1], 10);
+  const sub = match[2] ? parseInt(match[2], 10) / 10 : 0;
+  return main + sub;
+}
+
+export function extractSeasonOrEpisodeLabel(title: string): string {
+  return parseVideoMovieInfo(title, "").seasonLabel;
+}
+
+export function extractMovieCleanTitle(title: string): string {
+  return parseVideoMovieInfo(title, "").movieTitle;
+}
 
 @Injectable()
 export class FacebookService implements OnModuleInit, OnModuleDestroy {
@@ -54,9 +141,13 @@ export class FacebookService implements OnModuleInit, OnModuleDestroy {
     @InjectRepository(FacebookPost, "tool") private readonly posts: Repository<FacebookPost>,
     @InjectRepository(FacebookAffiliateLink, "tool") private readonly links: Repository<FacebookAffiliateLink>,
     @InjectRepository(FacebookCommentSettings, "tool") private readonly commentSettings: Repository<FacebookCommentSettings>,
+    @InjectRepository(FacebookPageCommentSettings, "tool") private readonly pageCommentSettings: Repository<FacebookPageCommentSettings>,
+    @InjectRepository(FacebookPlaylist, "tool") private readonly playlists: Repository<FacebookPlaylist>,
+    @InjectRepository(FacebookVideo, "tool") private readonly videos: Repository<FacebookVideo>,
     @InjectRepository(FacebookTaskLog, "tool") private readonly tasks: Repository<FacebookTaskLog>,
     @InjectQueue(FACEBOOK_PUBLISH_QUEUE) private readonly queue: Queue,
     private readonly platformFb: PlatformFacebookService,
+    private readonly provider: FacebookProviderAdapter,
     private readonly realtime: ToolsRealtimeGateway,
     private readonly publishRunner: FacebookPublishRunner,
     private readonly filmIntegration: FacebookFilmIntegrationClient,
@@ -69,6 +160,57 @@ export class FacebookService implements OnModuleInit, OnModuleDestroy {
         ALTER TABLE "facebook_pages" DROP CONSTRAINT IF EXISTS "UQ_facebook_pages_account_page";
         ALTER TABLE "facebook_pages" ALTER COLUMN "account_id" DROP NOT NULL;
         ALTER TABLE "facebook_posts" ADD COLUMN IF NOT EXISTS "thumbnail_path" text;
+
+        CREATE TABLE IF NOT EXISTS "facebook_playlists" (
+          "id" uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+          "user_id" uuid NOT NULL,
+          "page_id" uuid NOT NULL,
+          "facebook_playlist_id" varchar(128) NOT NULL,
+          "title" varchar(500) NOT NULL,
+          "description" text,
+          "video_count" integer DEFAULT 0,
+          "synced_at" timestamptz DEFAULT CURRENT_TIMESTAMP,
+          "created_at" timestamptz DEFAULT CURRENT_TIMESTAMP,
+          "updated_at" timestamptz DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS "UQ_facebook_playlists_page_fb_id" ON "facebook_playlists" ("page_id", "facebook_playlist_id");
+
+        CREATE TABLE IF NOT EXISTS "facebook_videos" (
+          "id" uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+          "user_id" uuid NOT NULL,
+          "page_id" uuid NOT NULL,
+          "playlist_id" uuid,
+          "playlist_title" varchar(500),
+          "facebook_video_id" varchar(128) NOT NULL,
+          "title" varchar(1000) NOT NULL,
+          "description" text,
+          "permalink" varchar(2000) NOT NULL,
+          "picture_url" text,
+          "length" numeric(10,2),
+          "published_at" timestamptz,
+          "season_label" varchar(100),
+          "comment_results" jsonb DEFAULT '[]'::jsonb,
+          "created_at" timestamptz DEFAULT CURRENT_TIMESTAMP,
+          "updated_at" timestamptz DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS "UQ_facebook_videos_page_fb_id" ON "facebook_videos" ("page_id", "facebook_video_id");
+
+        CREATE TABLE IF NOT EXISTS "facebook_page_comment_settings" (
+          "id" uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+          "user_id" uuid NOT NULL,
+          "page_id" uuid NOT NULL,
+          "selection_rule" varchar(16) DEFAULT 'random',
+          "sequential_cursor" integer DEFAULT 0,
+          "affiliate_templates" jsonb DEFAULT '[]'::jsonb,
+          "movie_playlist_templates" jsonb DEFAULT '[]'::jsonb,
+          "cross_promo_templates" jsonb DEFAULT '[]'::jsonb,
+          "created_at" timestamptz DEFAULT CURRENT_TIMESTAMP,
+          "updated_at" timestamptz DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS "UQ_facebook_page_comment_settings_user_page" ON "facebook_page_comment_settings" ("user_id", "page_id");
+
+        DELETE FROM "facebook_playlists" WHERE "facebook_playlist_id" LIKE 'auto_%';
+        UPDATE "facebook_videos" SET "playlist_title" = NULL WHERE "playlist_id" IS NULL;
       `);
     } catch {
       // Ignore if table does not exist yet or already altered
@@ -632,6 +774,453 @@ export class FacebookService implements OnModuleInit, OnModuleDestroy {
       selectionRule: row.selectionRule,
       sequentialCursor: row.sequentialCursor,
       templates: row.templates,
+    };
+  }
+
+  async syncVideos(userId: string, pageId: string) {
+    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(pageId);
+    let page = await this.pages.findOne({
+      where: isUuid ? [{ id: pageId }, { pageId }] : { pageId },
+    });
+    if (!page) {
+      page = await this.ownedPage(userId, pageId);
+    }
+    if (!page) throw new NotFoundException("Không tìm thấy trang Facebook");
+
+    const { token } = await this.platformFb.getValidPageAccessToken(userId, page.pageId);
+
+    // Sync videos directly from Meta Graph API
+    let videosSynced = 0;
+    const vRes = await this.provider.getVideos(token, page.pageId, 100);
+    for (const v of vRes.data || []) {
+      const { seasonLabel, movieTitle } = parseVideoMovieInfo(v.title, v.description);
+      const title = (v.title?.trim() && v.title.toLowerCase() !== "video")
+        ? v.title.trim()
+        : (movieTitle || "Video");
+
+      const permalink = v.permalink_url
+        ? (v.permalink_url.startsWith("http") ? v.permalink_url : `https://www.facebook.com${v.permalink_url}`)
+        : `https://www.facebook.com/${page.pageId}/videos/${v.id}/`;
+
+      let video = await this.videos.findOne({
+        where: { pageId: page.id, facebookVideoId: v.id },
+      });
+
+      if (!video) {
+        video = this.videos.create({
+          userId,
+          pageId: page.id,
+          facebookVideoId: v.id,
+          title,
+          description: v.description || null,
+          permalink,
+          pictureUrl: v.picture || null,
+          length: v.length != null ? String(v.length) : null,
+          publishedAt: v.created_time ? new Date(v.created_time) : null,
+          seasonLabel: seasonLabel || null,
+          playlistId: null,
+          playlistTitle: null,
+          commentResults: [],
+        });
+      } else {
+        video.title = title;
+        video.description = v.description ?? video.description;
+        video.permalink = permalink;
+        video.pictureUrl = v.picture ?? video.pictureUrl;
+        video.length = v.length != null ? String(v.length) : video.length;
+        video.publishedAt = v.created_time ? new Date(v.created_time) : video.publishedAt;
+        video.seasonLabel = seasonLabel || video.seasonLabel;
+      }
+      await this.videos.save(video);
+      videosSynced++;
+    }
+
+    return { success: true, videosSynced, playlistsSynced: 0 };
+  }
+
+  async listVideos(userId: string, query: FacebookVideoQueryDto) {
+    const page = Math.max(1, query.page || 1);
+    const limit = Math.min(100, Math.max(1, query.limit || 20));
+
+    const qb = this.videos.createQueryBuilder("video");
+
+    if (query.pageId) {
+      const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(query.pageId);
+      let pageRecord = await this.pages.findOne({
+        where: isUuid ? [{ id: query.pageId }, { pageId: query.pageId }] : { pageId: query.pageId },
+      });
+      if (!pageRecord) {
+        try {
+          pageRecord = await this.ownedPage(userId, query.pageId);
+        } catch {
+          // ignore
+        }
+      }
+
+      if (pageRecord) {
+        qb.where("video.pageId = :pId", { pId: pageRecord.id });
+      } else if (isUuid) {
+        qb.where("video.pageId = :pageId", { pageId: query.pageId });
+      } else {
+        return { items: [], total: 0, page, limit };
+      }
+    } else {
+      qb.where("video.userId = :userId", { userId });
+    }
+
+    if (query.playlistId) {
+      qb.andWhere("video.playlistId = :playlistId", { playlistId: query.playlistId });
+    }
+    if (query.search?.trim()) {
+      qb.andWhere("video.title ILIKE :search", { search: `%${query.search.trim()}%` });
+    }
+
+    qb.orderBy("video.publishedAt", "DESC", "NULLS LAST")
+      .addOrderBy("video.createdAt", "DESC")
+      .skip((page - 1) * limit)
+      .take(limit);
+
+    const [items, total] = await qb.getManyAndCount();
+    return { items, total, page, limit };
+  }
+
+  async listPlaylists(userId: string, query: FacebookPlaylistQueryDto) {
+    const qb = this.playlists.createQueryBuilder("playlist");
+
+    if (query.pageId) {
+      const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(query.pageId);
+      let pageRecord = await this.pages.findOne({
+        where: isUuid ? [{ id: query.pageId }, { pageId: query.pageId }] : { pageId: query.pageId },
+      });
+      if (!pageRecord) {
+        try {
+          pageRecord = await this.ownedPage(userId, query.pageId);
+        } catch {
+          // ignore
+        }
+      }
+
+      if (pageRecord) {
+        qb.where("playlist.pageId = :pId", { pId: pageRecord.id });
+      } else if (isUuid) {
+        qb.where("playlist.pageId = :pageId", { pageId: query.pageId });
+      } else {
+        return { items: [] };
+      }
+    } else {
+      qb.where("playlist.userId = :userId", { userId });
+    }
+
+    qb.orderBy("playlist.syncedAt", "DESC", "NULLS LAST")
+      .addOrderBy("playlist.updatedAt", "DESC");
+
+    const items = await qb.getMany();
+    return { items };
+  }
+
+  async createPlaylist(
+    userId: string,
+    dto: { pageId: string; title: string; description?: string },
+  ) {
+    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(dto.pageId);
+    const page = await this.pages.findOne({
+      where: isUuid ? [{ id: dto.pageId }, { pageId: dto.pageId }] : { pageId: dto.pageId },
+    });
+    if (!page) throw new NotFoundException("Không tìm thấy trang Facebook");
+
+    const playlist = this.playlists.create({
+      userId,
+      pageId: page.id,
+      facebookPlaylistId: `local_${randomUUID().slice(0, 16)}`,
+      title: dto.title.trim(),
+      description: dto.description?.trim() || null,
+      videoCount: 0,
+      syncedAt: new Date(),
+    });
+    return this.playlists.save(playlist);
+  }
+
+  async assignVideoToPlaylist(userId: string, videoId: string, dto: AssignVideoPlaylistDto) {
+    const video = await this.videos.findOne({ where: { id: videoId, userId } });
+    if (!video) throw new NotFoundException("Không tìm thấy video");
+
+    const oldPlaylistId = video.playlistId;
+
+    if (dto.playlistId) {
+      const playlist = await this.playlists.findOne({ where: { id: dto.playlistId, userId } });
+      if (!playlist) throw new NotFoundException("Không tìm thấy playlist");
+
+      video.playlistId = playlist.id;
+      video.playlistTitle = playlist.title;
+      await this.videos.save(video);
+
+      // Attempt to sync to Facebook Graph API if it's a real Facebook playlist
+      if (!playlist.facebookPlaylistId.startsWith("auto_") && !playlist.facebookPlaylistId.startsWith("local_")) {
+        const page = await this.pages.findOne({ where: { id: video.pageId } });
+        if (page) {
+          try {
+            const { token } = await this.platformFb.getValidPageAccessToken(userId, page.pageId);
+            await this.provider.addVideoToPlaylist(token, playlist.facebookPlaylistId, video.facebookVideoId);
+          } catch (fbErr) {
+            this.logger.warn(`Failed to add video ${video.facebookVideoId} to FB playlist ${playlist.facebookPlaylistId}: ${fbErr}`);
+          }
+        }
+      }
+
+      playlist.videoCount = await this.videos.count({ where: { playlistId: playlist.id } });
+      await this.playlists.save(playlist);
+    } else {
+      video.playlistId = null;
+      video.playlistTitle = null;
+      await this.videos.save(video);
+    }
+
+    if (oldPlaylistId && oldPlaylistId !== dto.playlistId) {
+      const oldPl = await this.playlists.findOne({ where: { id: oldPlaylistId } });
+      if (oldPl) {
+        oldPl.videoCount = await this.videos.count({ where: { playlistId: oldPl.id } });
+        await this.playlists.save(oldPl);
+      }
+    }
+
+    return video;
+  }
+
+  async getPageCommentSettings(userId: string, pageId: string): Promise<FacebookPageCommentSettings> {
+    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(pageId);
+    const page = await this.pages.findOne({
+      where: isUuid ? [{ id: pageId }, { pageId }] : { pageId },
+    });
+    if (!page) throw new NotFoundException("Không tìm thấy trang");
+
+    let settings = await this.pageCommentSettings.findOne({
+      where: { userId, pageId: page.id },
+    });
+
+    if (!settings) {
+      settings = this.pageCommentSettings.create({
+        userId,
+        pageId: page.id,
+        selectionRule: FacebookSelectionRule.RANDOM,
+        sequentialCursor: 0,
+        affiliateTemplates: [
+          {
+            id: randomUUID(),
+            name: "Mặc định Affiliate",
+            body: "🔥 Tham khảo ngay {name} chính hãng tại đây:\n👉 {link}",
+            enabled: true,
+          },
+        ],
+        moviePlaylistTemplates: [
+          {
+            id: randomUUID(),
+            name: "Mặc định (Playlist Các Mùa)",
+            body: "TRỌN BỘ | {movie_title}\n{movie_description}\nCác mùa phim tiếp theo:\nChư vị đạo hữu chọn mùa để tiếp tục hành trình nhé!\n{playlist_links}\nĐừng quên LIKE & FOLLOW {page_title} để không bỏ lỡ những bộ phim hấp dẫn tiếp theo!\nRồng Con chiếu phim – Chư vị cứ việc cày!",
+            enabled: true,
+          },
+        ],
+        crossPromoTemplates: [
+          {
+            id: randomUUID(),
+            name: "Mặc định (YouTube)",
+            platform: "youtube",
+            body: "Xem full {target_movie_title} tại Youtube: {target_movie_url}",
+            enabled: true,
+          },
+          {
+            id: randomUUID(),
+            name: "Mặc định (Facebook)",
+            platform: "facebook",
+            body: "Xem full {target_movie_title} tại Facebook: {target_movie_url}",
+            enabled: true,
+          },
+        ],
+      });
+      await this.pageCommentSettings.save(settings);
+    }
+    return settings;
+  }
+
+  async savePageCommentSettings(userId: string, dto: SavePageCommentSettingsDto) {
+    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(dto.pageId);
+    const page = await this.pages.findOne({
+      where: isUuid ? [{ id: dto.pageId }, { pageId: dto.pageId }] : { pageId: dto.pageId },
+    });
+    if (!page) throw new NotFoundException("Không tìm thấy trang");
+
+    let settings = await this.pageCommentSettings.findOne({
+      where: { userId, pageId: page.id },
+    });
+
+    if (!settings) {
+      settings = this.pageCommentSettings.create({
+        userId,
+        pageId: page.id,
+        selectionRule: dto.selectionRule,
+        sequentialCursor: 0,
+        affiliateTemplates: dto.affiliateTemplates || [],
+        moviePlaylistTemplates: dto.moviePlaylistTemplates || [],
+        crossPromoTemplates: dto.crossPromoTemplates || [],
+      });
+    } else {
+      settings.selectionRule = dto.selectionRule;
+      settings.affiliateTemplates = dto.affiliateTemplates || [];
+      settings.moviePlaylistTemplates = dto.moviePlaylistTemplates || [];
+      settings.crossPromoTemplates = dto.crossPromoTemplates || [];
+    }
+    return this.pageCommentSettings.save(settings);
+  }
+
+  async commentOnVideo(userId: string, videoId: string, dto: CommentOnVideoDto) {
+    const video = await this.videos.findOne({ where: { id: videoId, userId } });
+    if (!video) throw new NotFoundException("Không tìm thấy video");
+
+    const page = await this.pages.findOne({ where: { id: video.pageId } });
+    if (!page) throw new NotFoundException("Không tìm thấy trang của video");
+
+    const { token } = await this.platformFb.getValidPageAccessToken(userId, page.pageId);
+    const pageSettings = await this.getPageCommentSettings(userId, page.id);
+
+    let message = (dto.customMessage || "").trim();
+
+    if (!message) {
+      if (dto.type === "affiliate") {
+        const links = await this.links.find({ where: { userId }, order: { createdAt: "ASC" } });
+        const selected = selectAffiliateLinks({
+          links,
+          pageGraphId: page.pageId,
+          content: `${video.title}\n${video.description || ""}`,
+          count: 1,
+          rule: pageSettings.selectionRule,
+          cursor: pageSettings.sequentialCursor,
+          now: new Date(),
+        });
+        const templates = (pageSettings.affiliateTemplates || []).filter((t) => t.enabled && t.body.trim());
+        const tpl = dto.templateId
+          ? templates.find((t) => t.id === dto.templateId)?.body
+          : templates[0]?.body;
+        const fallback = "🔥 Tham khảo ngay {name} chính hãng tại đây:\n👉 {link}";
+        const chosenLink = selected.picked[0];
+        if (!chosenLink) {
+          throw new BadRequestException("Không tìm thấy liên kết Affiliate khả dụng phù hợp cấu hình");
+        }
+        message = renderCommentTemplate(tpl || fallback, chosenLink);
+        pageSettings.sequentialCursor = selected.nextCursor;
+        await this.pageCommentSettings.save(pageSettings);
+      } else if (dto.type === "movie_playlist") {
+        const templates = (pageSettings.moviePlaylistTemplates || []).filter((t) => t.enabled && t.body.trim());
+        const tpl = dto.templateId
+          ? templates.find((t) => t.id === dto.templateId)?.body
+          : templates[0]?.body;
+        const fallback = "TRỌN BỘ | {movie_title}\n{movie_description}\nCác mùa phim tiếp theo:\nChư vị đạo hữu chọn mùa để tiếp tục hành trình nhé!\n{playlist_links}\nĐừng quên LIKE & FOLLOW {page_title} để không bỏ lỡ những bộ phim hấp dẫn tiếp theo!\nRồng Con chiếu phim – Chư vị cứ việc cày!";
+
+        let playlistLinks = "";
+        const currentInfo = parseVideoMovieInfo(video.title, video.description);
+        const normTarget = normalizeMovieTitle(currentInfo.movieTitle);
+
+        // Fetch all videos of this page to match seasons
+        const pageVideos = await this.videos.find({
+          where: { pageId: video.pageId },
+          order: { publishedAt: "ASC", createdAt: "ASC" },
+        });
+
+        // Match videos with identical or matching clean movie titles
+        const matched = pageVideos.filter((v) => {
+          if (v.id === video.id) return true;
+          const vInfo = parseVideoMovieInfo(v.title, v.description);
+          const vNorm = normalizeMovieTitle(vInfo.movieTitle);
+          if (!normTarget || !vNorm) return false;
+          return (
+            normTarget === vNorm ||
+            (normTarget.length >= 10 && (normTarget.includes(vNorm) || vNorm.includes(normTarget)))
+          );
+        });
+
+        // Sort matched videos by season number
+        const sorted = matched.sort((a, b) => {
+          const infoA = parseVideoMovieInfo(a.title, a.description);
+          const infoB = parseVideoMovieInfo(b.title, b.description);
+          const numA = parseSeasonNumber(infoA.seasonLabel || a.seasonLabel);
+          const numB = parseSeasonNumber(infoB.seasonLabel || b.seasonLabel);
+          if (numA !== numB) return numA - numB;
+          const timeA = a.publishedAt ? new Date(a.publishedAt).getTime() : 0;
+          const timeB = b.publishedAt ? new Date(b.publishedAt).getTime() : 0;
+          return timeA - timeB;
+        });
+
+        playlistLinks = sorted
+          .map((v) => {
+            const vInfo = parseVideoMovieInfo(v.title, v.description);
+            const label = vInfo.seasonLabel || v.seasonLabel || v.title;
+            return `${label}: ${v.permalink}`;
+          })
+          .join("\n");
+
+        const movieTitle = currentInfo.movieTitle.toUpperCase() || video.title.toUpperCase();
+        const movieDesc = currentInfo.cleanDescription || (video.description || "").slice(0, 300);
+
+        message = (tpl || fallback)
+          .replaceAll("{movie_title}", movieTitle)
+          .replaceAll("{movie_description}", movieDesc)
+          .replaceAll("{playlist_links}", playlistLinks)
+          .replaceAll("{page_title}", page.name || "Rồng Con Review");
+      } else if (dto.type === "cross_promo") {
+        const platform = dto.platform || "youtube";
+        const templates = (pageSettings.crossPromoTemplates || []).filter(
+          (t) => t.enabled && t.body.trim() && (t.platform === platform || t.platform === ("both" as any)),
+        );
+        const tpl = dto.templateId
+          ? templates.find((t) => t.id === dto.templateId)?.body
+          : templates[0]?.body;
+        const fallback = platform === "youtube"
+          ? "Xem full {target_movie_title} tại Youtube: {target_movie_url}"
+          : "Xem full {target_movie_title} tại Facebook: {target_movie_url}";
+
+        message = (tpl || fallback)
+          .replaceAll("{target_movie_title}", dto.targetMovieTitle || "phim")
+          .replaceAll("{target_movie_url}", dto.targetMovieUrl || "")
+          .replaceAll("{platform}", platform === "youtube" ? "Youtube" : "Facebook");
+      }
+    }
+
+    if (!message) throw new BadRequestException("Nội dung bình luận trống");
+
+    // Check if we should UPDATE existing comment (Types 2 & 3 only)
+    if ((dto.type === "movie_playlist" || dto.type === "cross_promo") && !dto.forceCreate) {
+      const existingAttempt = (video.commentResults || []).find(
+        (c) => c.type === dto.type && c.status === "done" && c.commentId,
+      );
+
+      if (existingAttempt && existingAttempt.commentId) {
+        await this.provider.updateComment(token, existingAttempt.commentId, message);
+        existingAttempt.message = message;
+        existingAttempt.updatedAt = new Date().toISOString();
+        await this.videos.save(video);
+        return {
+          action: "updated",
+          commentId: existingAttempt.commentId,
+          message,
+        };
+      }
+    }
+
+    // Otherwise create new comment
+    const created = await this.provider.comment(token, video.facebookVideoId, message);
+    const newAttempt: FacebookVideoCommentAttempt = {
+      type: dto.type,
+      message,
+      commentId: created.id,
+      status: "done",
+      errorCode: null,
+      createdAt: new Date().toISOString(),
+    };
+    video.commentResults = [...(video.commentResults || []), newAttempt];
+    await this.videos.save(video);
+
+    return {
+      action: "created",
+      commentId: created.id,
+      message,
     };
   }
 }
