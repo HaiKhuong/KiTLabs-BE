@@ -110,7 +110,7 @@ OMNIVOICE_MODEL_ID = "k2-fsa/OmniVoice"
 OMNIVOICE_REF_WAV = str(SCRIPT_DIR / "voice" / "RongConVietsub.wav")
 OMNIVOICE_REF_TEXT = "Chào bạn, tôi đang thực hiện một thử nghiệm để tạo ra bản sao kỹ thuật số cho giọng nói của mình. Quá trình này đòi hỏi sự rõ ràng, nhịp điệu tự nhiên và một chút cảm xúc trong từng câu chữ."
 OMNIVOICE_DEVICE_MAP = ""  # rỗng = tự chọn cuda:0 hoặc cpu
-OMNIVOICE_DTYPE = "float16"  # float16 | float32 | bfloat16
+OMNIVOICE_DTYPE = "auto"  # auto (bfloat16 trên RTX 30xx/40xx+, float16 trên GPU cũ) | float16 | float32 | bfloat16
 OMNIVOICE_LANGUAGE = "vietnamese"
 OMNIVOICE_NUM_STEP = 32
 OMNIVOICE_GUIDANCE_SCALE = 2.0
@@ -135,7 +135,8 @@ VOXCPM2_OPTIMIZE = False
 VOXCPM2_TRIM_TRAILING_SILENCE = True
 # VieNeu-TTS v3 Turbo
 VIENEU_MODEL_ID = "pnnbao-ump/VieNeu-TTS-v3-Turbo"
-VIENEU_BACKEND = "onnx"
+VIENEU_BACKEND = "auto"
+VIENEU_PRECISION = "int8"
 VIENEU_SEED = 42
 VIENEU_VOICE = ""
 VIENEU_BATCH_SIZE = 8
@@ -532,10 +533,37 @@ def _load_env_files():
 
 _load_env_files()
 
-# Env override (sau _load_env_files để đọc .env khi chạy script trực tiếp).
+# Env override (sau _load_env_files để đọc .env / Settings runtime khi chạy script).
 OMNIVOICE_NORMALIZE_TEXT = _env_flag("OMNIVOICE_NORMALIZE_TEXT", OMNIVOICE_NORMALIZE_TEXT)
+OMNIVOICE_DENOISE = _env_flag("OMNIVOICE_DENOISE", OMNIVOICE_DENOISE)
+OMNIVOICE_PREPROCESS_PROMPT = _env_flag("OMNIVOICE_PREPROCESS_PROMPT", OMNIVOICE_PREPROCESS_PROMPT)
+OMNIVOICE_POSTPROCESS_OUTPUT = _env_flag("OMNIVOICE_POSTPROCESS_OUTPUT", OMNIVOICE_POSTPROCESS_OUTPUT)
 VOXCPM2_NORMALIZE_TEXT = _env_flag("VOXCPM2_NORMALIZE_TEXT", VOXCPM2_NORMALIZE_TEXT)
 STEP3_VERBOSE_LOG = _env_flag("STEP3_VERBOSE_LOG", STEP3_VERBOSE_LOG)
+_omni_dtype_env = (os.getenv("OMNIVOICE_DTYPE") or "").strip()
+if _omni_dtype_env:
+    OMNIVOICE_DTYPE = _omni_dtype_env
+_omni_step_env = (os.getenv("OMNIVOICE_NUM_STEP") or "").strip()
+if _omni_step_env:
+    try:
+        OMNIVOICE_NUM_STEP = max(1, int(_omni_step_env))
+    except ValueError:
+        pass
+_omni_gs_env = (os.getenv("OMNIVOICE_GUIDANCE_SCALE") or "").strip()
+if _omni_gs_env:
+    try:
+        OMNIVOICE_GUIDANCE_SCALE = float(_omni_gs_env)
+    except ValueError:
+        pass
+_omni_seed_env = (os.getenv("OMNIVOICE_SEED") or "").strip()
+if _omni_seed_env:
+    if _omni_seed_env.lower() in ("none", "null"):
+        OMNIVOICE_SEED = None
+    else:
+        try:
+            OMNIVOICE_SEED = int(_omni_seed_env)
+        except ValueError:
+            pass
 _omni_batch_env = (os.getenv("OMNIVOICE_BATCH_SIZE") or "").strip()
 if _omni_batch_env:
     try:
@@ -550,6 +578,15 @@ if _vie_batch_env:
         pass
 else:
     VIENEU_BATCH_SIZE = OMNIVOICE_BATCH_SIZE
+_vie_seed_env = (os.getenv("VIENEU_SEED") or "").strip()
+if _vie_seed_env:
+    if _vie_seed_env.lower() in ("none", "null"):
+        VIENEU_SEED = None
+    else:
+        try:
+            VIENEU_SEED = int(_vie_seed_env)
+        except ValueError:
+            pass
 
 
 def parse_api_keys(raw_value):
@@ -2333,6 +2370,13 @@ def _step1_transcribe_with_whisper(video_path):
     except Exception:
         pass
 
+    try:
+        from tts_warm_worker import shutdown_tts_warm_worker
+
+        shutdown_tts_warm_worker()
+    except Exception:
+        pass
+
     from faster_whisper import WhisperModel
 
     # Decode to stable WAV first to avoid truncated decode from some video sources.
@@ -2681,7 +2725,7 @@ def _step3_omnivoice_synth_kwargs(omni_ref_prepared, omni_device):
         "ref_text": str(OMNIVOICE_REF_TEXT or ""),
         "model_id": str(OMNIVOICE_MODEL_ID or "").strip(),
         "device_map": omni_device,
-        "dtype_str": str(OMNIVOICE_DTYPE or "float16").strip() or "float16",
+        "dtype_str": str(OMNIVOICE_DTYPE or "auto").strip() or "auto",
         "language": str(OMNIVOICE_LANGUAGE or "vietnamese").strip() or "vietnamese",
         "num_step": ns if ns > 0 else None,
         "guidance_scale": gs if ns > 0 else None,
@@ -2702,7 +2746,12 @@ def _step3_prefetch_omnivoice_batches(
     tts_engine="omnivoice",
 ):
     """Phase A: batch generate raw_*.wav trước timeline loop (khi batch_size > 1)."""
-    batch_size = max(1, int(VIENEU_BATCH_SIZE if tts_engine == "vieneu" else OMNIVOICE_BATCH_SIZE))
+    if tts_engine == "vieneu":
+        batch_size = max(1, int(VIENEU_BATCH_SIZE))
+    else:
+        from omnivoice_tts import resolve_omnivoice_batch_size
+
+        batch_size = resolve_omnivoice_batch_size(OMNIVOICE_BATCH_SIZE)
     if batch_size <= 1:
         return
 
@@ -2741,8 +2790,15 @@ def _step3_prefetch_omnivoice_batches(
             time.sleep(sleep_ms / 1000.0)
         batch_kw = _step3_omnivoice_synth_kwargs(omni_ref_prepared, omni_device)
         bs = batch_size
-        for start in range(0, len(jobs), bs):
-            chunk = jobs[start : start + bs]
+        # Length-Sorted Batching cho OmniVoice: gom các câu có độ dài tương đương vào cùng batch
+        # để tránh câu dài nhất bắt các câu ngắn trong batch phải tính toán theo max_c_len.
+        ordered_jobs = (
+            sorted(jobs, key=lambda j: len(str(j.get("text") or "")))
+            if tts_engine != "vieneu"
+            else jobs
+        )
+        for start in range(0, len(ordered_jobs), bs):
+            chunk = ordered_jobs[start : start + bs]
             if STEP3_VERBOSE_LOG:
                 log_step3(
                     f"Step3 {label}: batch {start // bs + 1} "
@@ -2756,7 +2812,8 @@ def _step3_prefetch_omnivoice_batches(
                     ref_audio=str(omni_ref_prepared) if omni_ref_prepared else None,
                     voice=VIENEU_VOICE or None,
                     model_id=str(VIENEU_MODEL_ID or "pnnbao-ump/VieNeu-TTS-v3-Turbo"),
-                    backend=str(os.getenv("VIENEU_BACKEND") or VIENEU_BACKEND or "onnx"),
+                    backend=str(os.getenv("VIENEU_BACKEND") or VIENEU_BACKEND or "auto"),
+                    precision=str(os.getenv("VIENEU_PRECISION") or VIENEU_PRECISION or "int8"),
                     device=omni_device or "auto",
                     seed=VIENEU_SEED,
                 )
@@ -2809,8 +2866,9 @@ def step2b_voice_sync_srt(vi_srt_path, video_duration_ms=None):
     write_srt(optimized, vi_path)
     log(
         "VoiceSync: "
-        f"extended={report.extended}, overlaps_fixed={report.overlaps_fixed}, "
-        f"unchanged={report.unchanged}, target_cps={VOICE_SYNC_TARGET_CPS}"
+        f"extended={report.extended}, rebalanced={report.rebalanced}, "
+        f"overlaps_fixed={report.overlaps_fixed}, unchanged={report.unchanged}, "
+        f"target_cps={VOICE_SYNC_TARGET_CPS}"
     )
     if VOICE_SYNC_ENABLED and STEP3_TTS_BORROW_GAP:
         log(
@@ -2841,6 +2899,12 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
     )
 
     if use_voice_clone:
+        try:
+            from tts_warm_worker import shutdown_tts_warm_worker
+
+            shutdown_tts_warm_worker()
+        except Exception:
+            pass
         engine_label = "VieNeu" if use_vieneu else "VoxCPM2" if use_voxcpm2 else "OmniVoice"
         if use_omnivoice:
             _omni_mid = str(OMNIVOICE_MODEL_ID or "").strip()
@@ -2875,9 +2939,10 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
             else "batch=-"
         )
         dev_hint = f"device={omni_device}" if (use_omnivoice or use_vieneu) else "device=-"
+        step_hint = f" | steps={int(OMNIVOICE_NUM_STEP)}" if use_omnivoice else ""
         ref_desc = spk.name if (spk and spk.is_file()) else f"preset:{VIENEU_VOICE}"
         log_step3(
-            f"Step3: {engine_label} | ref={ref_desc} | {batch_hint} | {dev_hint}",
+            f"Step3: {engine_label} | ref={ref_desc} | {batch_hint} | {dev_hint}{step_hint}",
             important=True,
         )
         if STEP3_VERBOSE_LOG:
@@ -3059,7 +3124,8 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
                     ref_audio=str(omni_ref_prepared) if omni_ref_prepared else None,
                     voice=VIENEU_VOICE or None,
                     model_id=str(VIENEU_MODEL_ID or "pnnbao-ump/VieNeu-TTS-v3-Turbo"),
-                    backend=str(os.getenv("VIENEU_BACKEND") or VIENEU_BACKEND or "onnx"),
+                    backend=str(os.getenv("VIENEU_BACKEND") or VIENEU_BACKEND or "auto"),
+                    precision=str(os.getenv("VIENEU_PRECISION") or VIENEU_PRECISION or "int8"),
                     device=omni_device or "auto",
                     seed=VIENEU_SEED,
                 )

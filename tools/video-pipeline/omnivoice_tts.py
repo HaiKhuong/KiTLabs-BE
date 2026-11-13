@@ -35,9 +35,10 @@ from tts_text_normalize import ensure_tts_trailing_period, prepare_tts_input_tex
 # Cache theo (model_id, device_map, dtype_str)
 _session_model: Optional[Any] = None
 _session_model_key: Optional[Tuple[str, str, str]] = None
-# Cache prompt theo (resolved ref_audio, ref_text, preprocess_prompt)
+# Cache prompt theo (resolved ref_audio, ref_text, preprocess_prompt) + dict multi-voice
 _session_prompt: Optional[Any] = None
 _session_prompt_key: Optional[Tuple[str, str, bool]] = None
+_session_prompts: dict[Tuple[str, int, int, str, bool, str], Any] = {}
 
 # Defaults khớp OmniVoice demo / OmniVoiceGenerationConfig upstream (0.2.x)
 DEFAULT_OMNIVOICE_NUM_STEP = 32
@@ -83,13 +84,57 @@ def resolve_omnivoice_batch_size(raw: Union[str, int, None] = None) -> int:
     if raw is None or str(raw).strip() == "":
         env = os.getenv("OMNIVOICE_BATCH_SIZE")
         if env is None or str(env).strip() == "":
-            return int(DEFAULT_OMNIVOICE_BATCH_SIZE)
+            n = int(DEFAULT_OMNIVOICE_BATCH_SIZE)
+        else:
+            try:
+                n = int(env)
+            except (TypeError, ValueError):
+                raise ValueError(f"omnivoice: batch_size không hợp lệ: {env!r}")
+    else:
+        try:
+            n = int(raw)
+        except (TypeError, ValueError):
+            raise ValueError(f"omnivoice: batch_size không hợp lệ: {raw!r}")
+    n = max(1, n)
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            total_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+            # Trên GPU <= 6.5 GB VRAM (vd RTX 3050 4GB/6GB), giới hạn batch <= 4 để tránh tràn sang Shared RAM.
+            if total_gb <= 6.5:
+                n = min(n, 4)
+    except Exception:
+        pass
+    return n
+
+
+def resolve_omnivoice_num_step(raw: Union[str, int, None] = None) -> int:
+    """Chuẩn hóa số bước lặp OmniVoice từ arg hoặc env ``OMNIVOICE_NUM_STEP`` (Settings)."""
+    if raw is None or str(raw).strip() == "":
+        env = os.getenv("OMNIVOICE_NUM_STEP")
+        if env is None or str(env).strip() == "":
+            return int(DEFAULT_OMNIVOICE_NUM_STEP)
         raw = env
     try:
         n = int(raw)
     except (TypeError, ValueError):
-        raise ValueError(f"omnivoice: batch_size không hợp lệ: {raw!r}")
+        return int(DEFAULT_OMNIVOICE_NUM_STEP)
     return max(1, n)
+
+
+def resolve_omnivoice_guidance_scale(raw: Union[str, float, int, None] = None) -> float:
+    """Chuẩn hóa CFG scale OmniVoice từ arg hoặc env ``OMNIVOICE_GUIDANCE_SCALE`` (Settings)."""
+    if raw is None or str(raw).strip() == "":
+        env = os.getenv("OMNIVOICE_GUIDANCE_SCALE")
+        if env is None or str(env).strip() == "":
+            return float(DEFAULT_OMNIVOICE_GUIDANCE_SCALE)
+        raw = env
+    try:
+        val = float(raw)
+    except (TypeError, ValueError):
+        return float(DEFAULT_OMNIVOICE_GUIDANCE_SCALE)
+    return max(0.0, val)
 
 
 def _resolve_hf_token() -> str:
@@ -115,6 +160,16 @@ def reset_omnivoice_session() -> None:
     _session_model_key = None
     _session_prompt = None
     _session_prompt_key = None
+    _session_prompts.clear()
+    try:
+        import gc
+        import torch
+
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:
+        pass
 
 
 def prepare_omnivoice_input_text(
@@ -141,9 +196,31 @@ def _resolve_dtype(dtype_str: str):
     raise ValueError(f"omnivoice: dtype không hỗ trợ: {dtype_str!r}")
 
 
+def _ensure_cuda_and_tf32(device_map: str | None = None) -> None:
+    if device_map and str(device_map).strip().lower() == "cpu":
+        return
+    try:
+        from cuda_dlls import ensure_windows_cuda_dlls
+
+        ensure_windows_cuda_dlls()
+    except Exception:
+        pass
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            torch.backends.cuda.matmul.allow_tf32 = True
+            torch.backends.cudnn.allow_tf32 = True
+            if hasattr(torch, "set_float32_matmul_precision"):
+                torch.set_float32_matmul_precision("high")
+    except Exception:
+        pass
+
+
 def resolve_omnivoice_device_map(raw: str | None = None) -> str:
     """Chọn device: env/arg → cuda nếu có GPU, ngược lại cpu."""
     s = str(raw if raw is not None else os.getenv("OMNIVOICE_DEVICE_MAP") or "").strip()
+    _ensure_cuda_and_tf32(s)
     try:
         import torch
 
@@ -161,16 +238,29 @@ def resolve_omnivoice_device_map(raw: str | None = None) -> str:
 
 
 def resolve_omnivoice_dtype(dtype_str: str | None, device_map: str | None = None) -> str:
-    """CPU nên dùng float32; GPU mặc định float16."""
-    raw = str(dtype_str if dtype_str is not None else os.getenv("OMNIVOICE_DTYPE") or "").strip()
+    """CPU dùng float32; GPU Ampere+ (RTX 30xx/40xx) ưu tiên bfloat16, GPU cũ dùng float16."""
+    env_dtype = str(os.getenv("OMNIVOICE_DTYPE") or "").strip().lower()
+    raw = str(dtype_str if dtype_str is not None else env_dtype).strip().lower()
     dev = resolve_omnivoice_device_map(device_map).lower()
     if dev == "cpu" or dev.startswith("cpu"):
-        return raw or "float32"
+        return raw if raw in ("float32", "fp32") else "float32"
+    if raw in ("bfloat16", "bf16", "float32", "fp32"):
+        return raw
+    if raw in ("float16", "fp16") and env_dtype in ("float16", "fp16"):
+        return "float16"
+    try:
+        import torch
+
+        if torch.cuda.is_available() and torch.cuda.is_bf16_supported():
+            return "bfloat16"
+    except Exception:
+        pass
     return raw or "float16"
 
 
 def _get_model(*, model_id: str, device_map: str, dtype_str: str):
     global _session_model, _session_model_key
+    _ensure_cuda_and_tf32(device_map)
     try:
         import torch
         from omnivoice import OmniVoice
@@ -228,8 +318,32 @@ def _get_model(*, model_id: str, device_map: str, dtype_str: str):
                 "and ensure HF_HUB_DISABLE_XET=1 (set by pipeline_cache)."
             ) from exc
         raise
+    # Tắt KV cache của Qwen3 LLM vì OmniVoice chạy non-autoregressive (tránh cấp phát thừa ở 32 bước lặp)
+    if hasattr(_session_model, "llm") and hasattr(_session_model.llm, "config"):
+        _session_model.llm.config.use_cache = False
     _session_model_key = key
     return _session_model
+
+
+def _resolve_voice_prompt_disk_paths(ref_path: Path, hash12: str) -> list[Path]:
+    """Danh sách đường dẫn ứng viên lưu/đọc file cache `.prompt.pt` cho từng giọng."""
+    filename = f"{ref_path.stem}.{hash12}.prompt.pt"
+    candidates = [ref_path.parent / filename]
+    try:
+        cache_dir = pipeline_cache.resolve_pipeline_cache_root() / "voice_prompts"
+        candidates.append(cache_dir / filename)
+    except Exception:
+        pass
+    return candidates
+
+
+def _cleanup_stale_voice_prompt_files(directory: Path, stem: str, keep_name: str) -> None:
+    try:
+        for old_pt in directory.glob(f"{stem}.*.prompt.pt"):
+            if old_pt.name != keep_name:
+                old_pt.unlink(missing_ok=True)
+    except Exception:
+        pass
 
 
 def ensure_voice_clone_prompt(
@@ -242,44 +356,52 @@ def ensure_voice_clone_prompt(
     preprocess_prompt: bool = DEFAULT_OMNIVOICE_PREPROCESS_PROMPT,
 ) -> Any:
     """
-    Tạo / cache voice_clone_prompt từ file giọng mẫu + transcript.
-    
-    ⚠️ QUAN TRỌNG - VOICE CONSISTENCY:
-    Đây là KEY để đảm bảo tone giọng nhất quán giữa các câu!
-    
-    Voice clone prompt chứa embedding của đặc trưng giọng nói từ ref_audio.
-    Bằng cách tạo và cache prompt này một lần duy nhất, tất cả các câu sau đó
-    sẽ sử dụng cùng một embedding → tone giọng giữ nguyên 100%.
-    
-    Nếu mỗi lần generate đều encode lại từ raw audio thì:
-    - Neural network có tính stochastic → embedding hơi khác mỗi lần
-    - Dẫn đến tone giọng "nhảy" giữa các câu
-    
-    Cache key: (resolved ref_audio path, ref_text, preprocess_prompt)
-    - Chỉ tạo lại khi đổi file audio mẫu, transcript hoặc preprocess flag
-    - Cùng file audio + transcript + preprocess → tái sử dụng prompt đã cache
-    
-    Args:
-        ref_audio: Đường dẫn file audio mẫu (nên là transcript khớp với audio)
-        ref_text: Transcript của audio mẫu (giúp model align tốt hơn)
-        model_id: HuggingFace model ID
-        device_map: Device để chạy model
-        dtype_str: Data type của model
-        preprocess_prompt: Trim silence / punctuation trên ref (default True)
-        
-    Returns:
-        Cached voice clone prompt object (dùng cho model.generate())
+    Tạo / cache voice_clone_prompt từ file giọng mẫu + transcript (RAM + Disk `.prompt.pt`).
+    Mỗi giọng có 1 file `.prompt.pt` riêng theo hash (path + size + mtime + ref_text + preprocess + model_id).
     """
+    import hashlib
+
     global _session_prompt, _session_prompt_key
-    ra = str(Path(ref_audio).resolve())
-    if not Path(ra).is_file():
-        raise FileNotFoundError(f"OmniVoice: không tìm thấy ref_audio: {ra}")
+    ref_path = Path(ref_audio).resolve()
+    if not ref_path.is_file():
+        raise FileNotFoundError(f"OmniVoice: không tìm thấy ref_audio: {ref_path}")
+    ra = str(ref_path)
     rt = str(ref_text or "")
     pp = bool(preprocess_prompt)
+    mid = str(model_id or "k2-fsa/OmniVoice").strip()
+    stat = ref_path.stat()
+    mem_key = (ra, int(stat.st_size), int(stat.st_mtime_ns), rt, pp, mid)
     pk = (ra, rt, pp)
-    if _session_prompt is not None and _session_prompt_key == pk:
+
+    if mem_key in _session_prompts:
+        _session_prompt = _session_prompts[mem_key]
+        _session_prompt_key = pk
         return _session_prompt
 
+    hash_input = f"{ra}|{stat.st_size}|{stat.st_mtime_ns}|{rt}|{int(pp)}|{mid}".encode("utf-8")
+    hash12 = hashlib.sha256(hash_input).hexdigest()[:12]
+    disk_candidates = _resolve_voice_prompt_disk_paths(ref_path, hash12)
+
+    # 1. Thử đọc từ disk cache (.prompt.pt) trước — chỉ tốn ~2ms thay vì ~3.2s encode
+    for pt_path in disk_candidates:
+        if pt_path.is_file() and pt_path.stat().st_size > 0:
+            try:
+                from omnivoice.models.omnivoice import VoiceClonePrompt
+
+                loaded = VoiceClonePrompt.load(str(pt_path), map_location="cpu")
+                _session_prompt = loaded
+                _session_prompt_key = pk
+                if len(_session_prompts) >= 16:
+                    _session_prompts.pop(next(iter(_session_prompts)), None)
+                _session_prompts[mem_key] = loaded
+                return loaded
+            except Exception:
+                try:
+                    pt_path.unlink(missing_ok=True)
+                except Exception:
+                    pass
+
+    # 2. Chưa có trên disk → encode từ model và lưu `.prompt.pt` cho các lần sau
     model = _get_model(model_id=model_id, device_map=device_map, dtype_str=dtype_str)
     try:
         _session_prompt = model.create_voice_clone_prompt(
@@ -290,7 +412,30 @@ def ensure_voice_clone_prompt(
     except TypeError:
         # Version cũ không nhận preprocess_prompt
         _session_prompt = model.create_voice_clone_prompt(ref_audio=ra, ref_text=rt)
+
+    if hasattr(_session_prompt, "save"):
+        for pt_path in disk_candidates:
+            try:
+                pt_path.parent.mkdir(parents=True, exist_ok=True)
+                tmp_pt = pt_path.with_suffix(".pt.tmp")
+                _session_prompt.save(str(tmp_pt))
+                tmp_pt.replace(pt_path)
+                _cleanup_stale_voice_prompt_files(pt_path.parent, ref_path.stem, pt_path.name)
+                break
+            except Exception:
+                continue
+
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:
+        pass
     _session_prompt_key = pk
+    if len(_session_prompts) >= 16:
+        _session_prompts.pop(next(iter(_session_prompts)), None)
+    _session_prompts[mem_key] = _session_prompt
     return _session_prompt
 
 
@@ -476,6 +621,159 @@ def _apply_omnivoice_compat_patches() -> None:
         return torch.tensor([combined], dtype=torch.long)
 
     ov_mod._tokenize_with_nonverbal_tags = _patched_tokenize_with_nonverbal_tags
+
+    # 1. Ưu tiên đọc model từ HF cache cục bộ trước khi gọi mạng (tiết kiệm 1-3s lúc khởi tạo)
+    _orig_resolve_model_path = getattr(ov_mod, "_resolve_model_path", None)
+    if callable(_orig_resolve_model_path):
+        def _fast_resolve_model_path(name_or_path: str) -> str:
+            if os.path.isdir(name_or_path):
+                return name_or_path
+            try:
+                from huggingface_hub import snapshot_download
+
+                return snapshot_download(name_or_path, local_files_only=True)
+            except Exception:
+                return _orig_resolve_model_path(name_or_path)
+
+        ov_mod._resolve_model_path = _fast_resolve_model_path
+
+    # 2. Tối ưu _generate_iterative: tắt use_cache của LLM và chỉ chiếu audio_heads trên lát cắt target (t_len)
+    # thay vì chiếu toàn bộ max_c_len (gồm ~250 prompt tokens + padding), giảm ~70% tính toán audio_heads & VRAM.
+    _omni_cls = getattr(ov_mod, "OmniVoice", None)
+    _get_time_steps = getattr(ov_mod, "_get_time_steps", None)
+    _gumbel_sample = getattr(ov_mod, "_gumbel_sample", None)
+    if _omni_cls is not None and callable(_get_time_steps) and callable(_gumbel_sample):
+        import math
+
+        def _fast_generate_iterative(self, task, gen_config):
+            B = task.batch_size
+            inputs_list = [
+                self._prepare_inference_inputs(
+                    task.texts[i],
+                    task.target_lens[i],
+                    task.ref_texts[i],
+                    task.ref_audio_tokens[i],
+                    task.langs[i],
+                    task.instructs[i],
+                    gen_config.denoise,
+                )
+                for i in range(B)
+            ]
+            c_lens = [inp["input_ids"].size(2) for inp in inputs_list]
+            max_c_len = max(c_lens)
+            pad_id = self.config.audio_mask_id
+            num_cb = self.config.num_audio_codebook
+            vocab_sz = self.config.audio_vocab_size
+
+            batch_input_ids = torch.full(
+                (2 * B, num_cb, max_c_len),
+                pad_id,
+                dtype=torch.long,
+                device=self.device,
+            )
+            batch_audio_mask = torch.zeros(
+                (2 * B, max_c_len), dtype=torch.bool, device=self.device
+            )
+            batch_attention_mask = torch.zeros(
+                (2 * B, 1, max_c_len, max_c_len), dtype=torch.bool, device=self.device
+            )
+
+            for i, inp in enumerate(inputs_list):
+                c_len, u_len = c_lens[i], task.target_lens[i]
+                batch_input_ids[i, :, :c_len] = inp["input_ids"]
+                batch_audio_mask[i, :c_len] = inp["audio_mask"]
+                batch_attention_mask[i, :, :c_len, :c_len] = True
+
+                batch_input_ids[B + i, :, :u_len] = inp["input_ids"][..., -u_len:]
+                batch_audio_mask[B + i, :u_len] = inp["audio_mask"][..., -u_len:]
+                batch_attention_mask[B + i, :, :u_len, :u_len] = True
+                if max_c_len > u_len:
+                    pad_diag = torch.arange(u_len, max_c_len, device=self.device)
+                    batch_attention_mask[B + i, :, pad_diag, pad_diag] = True
+
+            tokens = torch.full(
+                (B, num_cb, max(task.target_lens)),
+                pad_id,
+                dtype=torch.long,
+                device=self.device,
+            )
+
+            timesteps = _get_time_steps(
+                t_start=0.0,
+                t_end=1.0,
+                num_step=gen_config.num_step,
+                t_shift=gen_config.t_shift,
+            ).tolist()
+            schedules = []
+            for t_len in task.target_lens:
+                total_mask = t_len * num_cb
+                rem = total_mask
+                sched = []
+                for step in range(gen_config.num_step):
+                    num = (
+                        rem
+                        if step == gen_config.num_step - 1
+                        else min(
+                            math.ceil(total_mask * (timesteps[step + 1] - timesteps[step])),
+                            rem,
+                        )
+                    )
+                    sched.append(int(num))
+                    rem -= int(num)
+                schedules.append(sched)
+
+            layer_ids = torch.arange(num_cb, device=self.device).view(1, -1, 1)
+
+            for step in range(gen_config.num_step):
+                inputs_embeds = self._prepare_embed_inputs(batch_input_ids, batch_audio_mask)
+                llm_outputs = self.llm(
+                    inputs_embeds=inputs_embeds,
+                    attention_mask=batch_attention_mask,
+                    return_dict=True,
+                    use_cache=False,
+                )
+                hidden_states = llm_outputs[0]
+
+                for i in range(B):
+                    k = schedules[i][step]
+                    if k <= 0:
+                        continue
+                    c_len, t_len = c_lens[i], task.target_lens[i]
+                    c_h = hidden_states[i : i + 1, c_len - t_len : c_len, :]
+                    u_h = hidden_states[B + i : B + i + 1, :t_len, :]
+                    pair_h = torch.cat([c_h, u_h], dim=0)
+                    pair_logits = (
+                        self.audio_heads(pair_h)
+                        .view(2, t_len, num_cb, vocab_sz)
+                        .permute(0, 2, 1, 3)
+                        .to(torch.float32)
+                    )
+                    c_logits = pair_logits[0:1]
+                    u_logits = pair_logits[1:2]
+
+                    pred_tokens, scores = self._predict_tokens_with_scoring(
+                        c_logits, u_logits, gen_config
+                    )
+                    scores = scores - (layer_ids * gen_config.layer_penalty_factor)
+                    if gen_config.position_temperature > 0.0:
+                        scores = _gumbel_sample(scores, gen_config.position_temperature)
+
+                    sample_tokens = tokens[i : i + 1, :, :t_len]
+                    scores.masked_fill_(sample_tokens != pad_id, -float("inf"))
+
+                    _, topk_idx = torch.topk(scores.flatten(), k)
+                    flat_tokens = sample_tokens.flatten()
+                    flat_tokens[topk_idx] = pred_tokens.flatten()[topk_idx]
+                    sample_tokens.copy_(flat_tokens.view_as(sample_tokens))
+
+                    tokens[i : i + 1, :, :t_len] = sample_tokens
+                    batch_input_ids[i : i + 1, :, c_len - t_len : c_len] = sample_tokens
+                    batch_input_ids[B + i : B + i + 1, :, :t_len] = sample_tokens
+
+            return [tokens[i, :, : task.target_lens[i]] for i in range(B)]
+
+        _omni_cls._generate_iterative = _fast_generate_iterative
+
     _OMNIVOICE_COMPAT_PATCHED = True
 
 
@@ -504,13 +802,11 @@ def _run_omnivoice_generate(
 
     pp = bool(preprocess_prompt)
     langs = [language] * len(text_list)
+    resolved_steps = resolve_omnivoice_num_step(num_step)
+    resolved_cfg = resolve_omnivoice_guidance_scale(guidance_scale)
     gen_config = OmniVoiceGenerationConfig(
-        num_step=int(num_step) if num_step is not None else DEFAULT_OMNIVOICE_NUM_STEP,
-        guidance_scale=(
-            float(guidance_scale)
-            if guidance_scale is not None
-            else DEFAULT_OMNIVOICE_GUIDANCE_SCALE
-        ),
+        num_step=resolved_steps,
+        guidance_scale=resolved_cfg,
         denoise=bool(denoise),
         preprocess_prompt=pp,
         postprocess_output=bool(postprocess_output),
@@ -529,6 +825,13 @@ def _run_omnivoice_generate(
         language=gen_lang,
         generation_config=gen_config,
     )
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:
+        pass
 
     waves = _normalize_generate_audios(audio)
     if len(waves) != len(text_list):
@@ -613,10 +916,10 @@ def synthesize_batch_to_wavs(
     ref_text: str,
     model_id: str,
     device_map: str,
-    dtype_str: str = "float16",
+    dtype_str: str = "auto",
     language: str | None = None,
-    num_step: Optional[int] = DEFAULT_OMNIVOICE_NUM_STEP,
-    guidance_scale: Optional[float] = DEFAULT_OMNIVOICE_GUIDANCE_SCALE,
+    num_step: Optional[int] = None,
+    guidance_scale: Optional[float] = None,
     denoise: bool = DEFAULT_OMNIVOICE_DENOISE,
     preprocess_prompt: bool = DEFAULT_OMNIVOICE_PREPROCESS_PROMPT,
     postprocess_output: bool = DEFAULT_OMNIVOICE_POSTPROCESS_OUTPUT,
@@ -679,10 +982,10 @@ def synthesize_many_to_wavs(
     ref_text: str,
     model_id: str,
     device_map: str,
-    dtype_str: str = "float16",
+    dtype_str: str = "auto",
     language: str | None = None,
-    num_step: Optional[int] = DEFAULT_OMNIVOICE_NUM_STEP,
-    guidance_scale: Optional[float] = DEFAULT_OMNIVOICE_GUIDANCE_SCALE,
+    num_step: Optional[int] = None,
+    guidance_scale: Optional[float] = None,
     denoise: bool = DEFAULT_OMNIVOICE_DENOISE,
     preprocess_prompt: bool = DEFAULT_OMNIVOICE_PREPROCESS_PROMPT,
     postprocess_output: bool = DEFAULT_OMNIVOICE_POSTPROCESS_OUTPUT,
@@ -691,8 +994,9 @@ def synthesize_many_to_wavs(
     fallback_sequential: bool = True,
 ) -> None:
     """
-    Chia ``items`` (mỗi phần tử có ``text``, ``out_wav``) thành batch và gọi
-    ``synthesize_batch_to_wavs``. Batch lỗi → fallback tuần tự nếu ``fallback_sequential``.
+    Chia ``items`` (mỗi phần tử có ``text``, ``out_wav``) thành batch (đã sắp xếp theo độ dài text
+    để giảm padding trên GPU) và gọi ``synthesize_batch_to_wavs``.
+    Batch lỗi → fallback tuần tự nếu ``fallback_sequential``.
     """
     if not items:
         return
@@ -714,8 +1018,15 @@ def synthesize_many_to_wavs(
         seed=seed,
     )
 
+    # Length-sorted batching: gom các câu có độ dài tương đương vào cùng 1 batch để giảm padding
+    sorted_items = (
+        sorted(items, key=lambda x: len(str(x.get("text") or "")))
+        if bs > 1 and len(items) > 1
+        else list(items)
+    )
+
     chunk: list[dict[str, Any]] = []
-    for item in items:
+    for item in sorted_items:
         chunk.append(item)
         if len(chunk) >= bs:
             _synthesize_many_chunk(chunk, shared_kw=shared_kw, fallback_sequential=fallback_sequential)
@@ -765,10 +1076,10 @@ def synthesize_to_wav(
     ref_text: str,
     model_id: str,
     device_map: str,
-    dtype_str: str = "float16",
+    dtype_str: str = "auto",
     language: str | None = None,
-    num_step: Optional[int] = DEFAULT_OMNIVOICE_NUM_STEP,
-    guidance_scale: Optional[float] = DEFAULT_OMNIVOICE_GUIDANCE_SCALE,
+    num_step: Optional[int] = None,
+    guidance_scale: Optional[float] = None,
     denoise: bool = DEFAULT_OMNIVOICE_DENOISE,
     preprocess_prompt: bool = DEFAULT_OMNIVOICE_PREPROCESS_PROMPT,
     postprocess_output: bool = DEFAULT_OMNIVOICE_POSTPROCESS_OUTPUT,

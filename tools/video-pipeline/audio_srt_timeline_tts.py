@@ -201,7 +201,7 @@ def parse_srt(text: str) -> list[dict[str, Any]]:
     return blocks
 
 
-def run_srt_timeline(payload: dict[str, Any]) -> dict[str, Any]:
+def _run_srt_timeline_direct(payload: dict[str, Any]) -> dict[str, Any]:
     out_wav = Path(str(payload["out_wav"]))
     out_wav.parent.mkdir(parents=True, exist_ok=True)
     sample_rate = int(payload.get("sample_rate") or SAMPLE_RATE)
@@ -251,7 +251,8 @@ def run_srt_timeline(payload: dict[str, Any]) -> dict[str, Any]:
             ref_audio=str(ref_audio),
             model_id=model_id,
             device=str(payload.get("device_map") or "auto"),
-            backend=str(payload.get("backend") or os.getenv("VIENEU_BACKEND") or "onnx"),
+            backend=str(payload.get("backend") or os.getenv("VIENEU_BACKEND") or "auto"),
+            precision=str(payload.get("precision") or os.getenv("VIENEU_PRECISION") or "int8"),
             denoise=bool(payload.get("denoise", True)),
             seed=int(seed) if seed not in (None, "") else None,
         )
@@ -295,11 +296,17 @@ def run_srt_timeline(payload: dict[str, Any]) -> dict[str, Any]:
                 seed=int(seed) if seed not in (None, "") else None,
             )
     else:
-        device_map = str(payload.get("device_map") or "cpu").strip() or "cpu"
-        dtype_str = str(payload.get("dtype_str") or "float16").strip() or "float16"
-        language = resolve_omnivoice_language(str(payload.get("language") or "vietnamese"))
+        from omnivoice_tts import resolve_omnivoice_device_map
+
+        device_map = resolve_omnivoice_device_map(payload.get("device_map"))
+        dtype_str = str(payload.get("dtype_str") or os.getenv("OMNIVOICE_DTYPE") or "auto").strip() or "auto"
+        language = resolve_omnivoice_language(str(payload.get("language") or os.getenv("OMNIVOICE_LANGUAGE") or "vietnamese"))
         num_step = payload.get("num_step")
+        if num_step in (None, ""):
+            num_step = os.getenv("OMNIVOICE_NUM_STEP")
         guidance_scale = payload.get("guidance_scale")
+        if guidance_scale in (None, ""):
+            guidance_scale = os.getenv("OMNIVOICE_GUIDANCE_SCALE")
 
         def _env_flag(name: str, default: bool = True) -> bool:
             raw = os.getenv(name)
@@ -423,6 +430,20 @@ def run_srt_timeline(payload: dict[str, Any]) -> dict[str, Any]:
         "speak_count": speak_count,
         "gap_count": gap_count,
     }
+
+
+def run_srt_timeline(payload: dict[str, Any]) -> dict[str, Any]:
+    try:
+        from tts_warm_worker import run_via_warm_worker
+
+        resp = run_via_warm_worker("srt_timeline_tts", payload)
+        if resp is not None and isinstance(resp.get("result"), dict):
+            return resp["result"]
+    except RuntimeError:
+        raise
+    except Exception:
+        pass
+    return _run_srt_timeline_direct(payload)
 
 
 def main() -> int:

@@ -887,6 +887,20 @@ export class AudioService {
       }
     }
 
+    try {
+      const voiceDir = dirname(sidecar);
+      const stem = basename(safeName, extname(safeName));
+      if (existsSync(voiceDir)) {
+        for (const entry of readdirSync(voiceDir)) {
+          if (entry.startsWith(`${stem}.`) && entry.endsWith(".prompt.pt")) {
+            await unlink(join(voiceDir, entry)).catch(() => undefined);
+          }
+        }
+      }
+    } catch {
+      /* ignore prompt cache cleanup error */
+    }
+
     await this.cloneVoiceRepository.delete({ id: row.id });
 
     await this.logsService.createLog({

@@ -71,11 +71,11 @@ class TestOptimizeSubtitleTimings(unittest.TestCase):
         self.assertEqual(report.extended, 0)
 
     def test_case2_extend_into_gap(self):
-        # Need more time; gap 400ms after cue
+        # Need more time; gap 400ms after cue (cue 2 is full so only gap is taken)
         text = "A" * 42  # speech ~3000ms + overhead
         blocks = [
             _block(1, "00:00:03,600", "00:00:04,200", text),
-            _block(2, "00:00:04,600", "00:00:06,200", "B"),
+            _block(2, "00:00:04,600", "00:00:06,200", "B" * 28),
         ]
         out, report = optimize_subtitle_timings(blocks, **self.kw)
         self.assertGreater(_end_ms(out[0]), 4200)
@@ -88,7 +88,7 @@ class TestOptimizeSubtitleTimings(unittest.TestCase):
         text = "A" * 56
         blocks = [
             _block(1, "00:00:03,600", "00:00:04,200", text),
-            _block(2, "00:00:04,300", "00:00:06,200", "B"),
+            _block(2, "00:00:04,300", "00:00:06,200", "B" * 28),
         ]
         out, _ = optimize_subtitle_timings(blocks, **self.kw)
         # After overlap fix, then extend at most available gap
@@ -105,10 +105,10 @@ class TestOptimizeSubtitleTimings(unittest.TestCase):
         self.assertEqual(report.extended, 0)
 
     def test_case5_large_gap_take_only_deficit(self):
-        text = "A" * 28
+        text = "A" * 20
         blocks = [
             _block(1, "00:00:03,600", "00:00:04,000", text),
-            _block(2, "00:00:06,000", "00:00:07,000", "B"),
+            _block(2, "00:00:06,000", "00:00:07,000", "B" * 28),
         ]
         out, report = optimize_subtitle_timings(blocks, **self.kw)
         self.assertGreater(_end_ms(out[0]), 4000)
@@ -118,7 +118,7 @@ class TestOptimizeSubtitleTimings(unittest.TestCase):
         text = "A" * 42
         blocks = [
             _block(1, "00:00:03,600", "00:00:04,200", text),
-            _block(2, "00:00:04,200", "00:00:06,200", "B"),
+            _block(2, "00:00:04,200", "00:00:06,200", "B" * 28),
         ]
         out, report = optimize_subtitle_timings(blocks, **self.kw)
         self.assertEqual(_end_ms(out[0]), 4200)
@@ -182,7 +182,7 @@ class TestOptimizeSubtitleTimings(unittest.TestCase):
         text = "A" * 56
         blocks = [
             _block(1, "00:00:03,600", "00:00:04,200", text),
-            _block(2, "00:00:04,205", "00:00:06,200", "B"),
+            _block(2, "00:00:04,205", "00:00:06,200", "B" * 28),
         ]
         out, report = optimize_subtitle_timings(blocks, **self.kw)
         self.assertEqual(_end_ms(out[0]), 4200)
@@ -204,6 +204,101 @@ class TestOptimizeSubtitleTimings(unittest.TestCase):
             tts_tail_ms=120,
         )
         self.assertGreater(req_pause, req_plain)
+
+    def test_rebalance_5_cues_shift_neighbors_2_and_4(self):
+        """
+        Ví dụ thực tế:
+        - SRT 1: dư 0.02s (20ms)
+        - SRT 2: đủ (0ms dư)
+        - SRT 3: thiếu 0.04s (40ms)
+        - SRT 4: đủ (0ms dư)
+        - SRT 5: dư 0.02s (20ms)
+        -> Dịch chuyển điểm bắt đầu/kết thúc của SRT 2 (-20ms) & SRT 4 (+20ms)
+           để lắp khoảng trống vào SRT 3, giúp SRT 3 mở rộng thêm đúng +40ms (0.04s).
+        """
+        # Với target_cps=14.0, text 28 ký tự cần: 2000 (speech) + 350 (tail_pad) + 50 (head) + 120 (tail) = 2520ms
+        text_2520 = "A" * 28
+        req_ms = estimate_required_ms(
+            text_2520,
+            2520,
+            target_cps=14.0,
+            tts_head_ms=50,
+            tts_tail_ms=120,
+            short_text_max_chars=14,
+            short_timeline_max_ms=1500,
+        )
+        self.assertEqual(req_ms, 2520)
+
+        # Thiết lập 5 SRT liền kề:
+        # SRT 1: 0 -> 2540 (dư 20ms)
+        # SRT 2: 2540 -> 5060 (2520ms = đủ)
+        # SRT 3: 5060 -> 7540 (2480ms = thiếu 40ms)
+        # SRT 4: 7540 -> 10060 (2520ms = đủ)
+        # SRT 5: 10060 -> 12600 (2540ms = dư 20ms)
+        blocks = [
+            _block(1, "00:00:00,000", "00:00:02,540", text_2520),
+            _block(2, "00:00:02,540", "00:00:05,060", text_2520),
+            _block(3, "00:00:05,060", "00:00:07,540", text_2520),
+            _block(4, "00:00:07,540", "00:00:10,060", text_2520),
+            _block(5, "00:00:10,060", "00:00:12,600", text_2520),
+        ]
+        out, report = optimize_subtitle_timings(blocks, **self.kw)
+
+        # Kiểm tra SRT 1 thu gọn 20ms ở cuối
+        self.assertEqual(_start_ms(out[0]), 0)
+        self.assertEqual(_end_ms(out[0]), 2520)
+
+        # Kiểm tra SRT 2 dịch lùi 20ms, giữ nguyên độ dài 2520ms
+        self.assertEqual(_start_ms(out[1]), 2520)
+        self.assertEqual(_end_ms(out[1]), 5040)
+        self.assertEqual(_end_ms(out[1]) - _start_ms(out[1]), 2520)
+
+        # Kiểm tra SRT 3 mở rộng thêm 40ms (từ 2480ms lên 2520ms: 5040 -> 7560)
+        self.assertEqual(_start_ms(out[2]), 5040)
+        self.assertEqual(_end_ms(out[2]), 7560)
+        self.assertEqual(_end_ms(out[2]) - _start_ms(out[2]), 2520)
+
+        # Kiểm tra SRT 4 dịch tiến 20ms, giữ nguyên độ dài 2520ms
+        self.assertEqual(_start_ms(out[3]), 7560)
+        self.assertEqual(_end_ms(out[3]), 10080)
+        self.assertEqual(_end_ms(out[3]) - _start_ms(out[3]), 2520)
+
+        # Kiểm tra SRT 5 lùi điểm bắt đầu +20ms, giữ nguyên điểm kết thúc 12600ms
+        self.assertEqual(_start_ms(out[4]), 10080)
+        self.assertEqual(_end_ms(out[4]), 12600)
+        self.assertEqual(_end_ms(out[4]) - _start_ms(out[4]), 2520)
+
+        self.assertEqual(report.rebalanced, 1)
+
+    def test_rebalance_distant_gaps_via_shifting_neighbors(self):
+        """
+        Khi SRT 1..5 đều chỉ vừa đủ (không dư nội tại), nhưng giữa SRT 1-2 có gap dư 20ms
+        và giữa SRT 4-5 có gap dư 20ms -> dịch SRT 2 và SRT 4 để lấy 40ms cho SRT 3.
+        """
+        text_2520 = "A" * 28
+        # min_gap_ms = 10 -> để lấy được 20ms từ gap thì gap = 30ms (> min_borrow_gap_ms=20)
+        blocks = [
+            _block(1, "00:00:00,000", "00:00:02,520", text_2520),
+            # gap 30ms (dư 20ms sau khi chừa min_gap_ms=10)
+            _block(2, "00:00:02,550", "00:00:05,070", text_2520),
+            # SRT 3 thiếu 40ms (2480ms)
+            _block(3, "00:00:05,070", "00:00:07,550", text_2520),
+            _block(4, "00:00:07,550", "00:00:10,070", text_2520),
+            # gap 30ms (dư 20ms sau khi chừa min_gap_ms=10)
+            _block(5, "00:00:10,100", "00:00:12,620", text_2520),
+        ]
+        out, report = optimize_subtitle_timings(blocks, **self.kw)
+
+        # SRT 2 lùi 20ms (2530 -> 5050)
+        self.assertEqual(_start_ms(out[1]), 2530)
+        self.assertEqual(_end_ms(out[1]), 5050)
+        # SRT 3 mở rộng 40ms (5050 -> 7570 = 2520ms)
+        self.assertEqual(_start_ms(out[2]), 5050)
+        self.assertEqual(_end_ms(out[2]), 7570)
+        # SRT 4 tiến 20ms (7570 -> 10090)
+        self.assertEqual(_start_ms(out[3]), 7570)
+        self.assertEqual(_end_ms(out[3]), 10090)
+        self.assertEqual(report.rebalanced, 1)
 
 
 if __name__ == "__main__":

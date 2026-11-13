@@ -189,6 +189,40 @@ def synthesize_segments(
             raise ValueError(f"{eng}: omnivoiceRefText (transcript of ref audio) is required")
         lang = str(language or "vietnamese").strip() or "vietnamese"
 
+        if eng == "omnivoice":
+            uncached_jobs: list[dict[str, Any]] = []
+            for i, text in enumerate(narrations):
+                wav = out_dir / f"seg_{i:03d}.wav"
+                if _maybe_reuse(i, text, wav) is None:
+                    uncached_jobs.append({"text": text or ".", "out_wav": wav})
+            if len(uncached_jobs) > 1:
+                from omnivoice_tts import (
+                    resolve_omnivoice_batch_size,
+                    resolve_omnivoice_device_map,
+                    resolve_omnivoice_dtype,
+                    resolve_omnivoice_language,
+                    synthesize_many_to_wavs,
+                )
+
+                dev = resolve_omnivoice_device_map(os.getenv("OMNIVOICE_DEVICE_MAP"))
+                synthesize_many_to_wavs(
+                    uncached_jobs,
+                    batch_size=resolve_omnivoice_batch_size(os.getenv("OMNIVOICE_BATCH_SIZE")),
+                    ref_audio=str(_prepare_ref_audio(ref_path)),
+                    ref_text=rt,
+                    model_id=(os.getenv("OMNIVOICE_MODEL_ID") or "k2-fsa/OmniVoice").strip(),
+                    device_map=dev,
+                    dtype_str=resolve_omnivoice_dtype(os.getenv("OMNIVOICE_DTYPE"), dev),
+                    language=resolve_omnivoice_language(lang),
+                    num_step=int(os.getenv("OMNIVOICE_NUM_STEP") or 32),
+                    guidance_scale=float(os.getenv("OMNIVOICE_GUIDANCE_SCALE") or 2),
+                    denoise=_env_flag("OMNIVOICE_DENOISE", True),
+                    preprocess_prompt=_env_flag("OMNIVOICE_PREPROCESS_PROMPT", True),
+                    postprocess_output=_env_flag("OMNIVOICE_POSTPROCESS_OUTPUT", True),
+                    normalize_text=_env_flag("OMNIVOICE_NORMALIZE_TEXT", False),
+                    seed=_resolve_seed("OMNIVOICE_SEED"),
+                )
+
         for i, text in enumerate(narrations):
             wav = out_dir / f"seg_{i:03d}.wav"
             cached = _maybe_reuse(i, text, wav)
@@ -196,10 +230,11 @@ def synthesize_segments(
                 meta.append(cached)
                 progress(LOG, "TTS", i, total, every=10)
                 continue
-            if eng == "voxcpm2":
-                _voxcpm2_tts(text, wav, ref_path=ref_path, ref_text=rt, language=lang)
-            else:
-                _omnivoice_tts(text, wav, ref_path=ref_path, ref_text=rt, language=lang)
+            if not (wav.is_file() and wav.stat().st_size > 44):
+                if eng == "voxcpm2":
+                    _voxcpm2_tts(text, wav, ref_path=ref_path, ref_text=rt, language=lang)
+                else:
+                    _omnivoice_tts(text, wav, ref_path=ref_path, ref_text=rt, language=lang)
             dur = _probe_duration(wav)
             meta.append(_tts_row(i, text, wav, dur, eng, signature))
             progress(LOG, "TTS", i, total, every=10)

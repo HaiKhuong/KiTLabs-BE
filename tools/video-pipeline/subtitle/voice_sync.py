@@ -22,6 +22,7 @@ from audio_tts_with_pauses import (
 @dataclass
 class VoiceSyncReport:
     extended: int = 0
+    rebalanced: int = 0
     overlaps_fixed: int = 0
     unchanged: int = 0
     details: list[str] = field(default_factory=list)
@@ -212,6 +213,149 @@ def _extend_cue_ends(
     return extended
 
 
+def _rebalance_neighbor_cues(
+    cues: list[_CueState],
+    *,
+    target_cps: float,
+    min_gap_ms: int,
+    min_borrow_gap_ms: int,
+    tts_head_ms: int,
+    tts_tail_ms: int,
+    short_text_max_chars: int,
+    short_timeline_max_ms: int,
+    neighbor_window: int = 2,
+) -> int:
+    """
+    Dò tối đa `neighbor_window` (mặc định 2) SRT trước & sau câu đang thiếu thời lượng
+    (`deficit = required_ms - current_ms > 0`).
+    Nếu câu lân cận có khoảng trống (`gap`) hoặc dư thời lượng nội tại (`surplus = current_ms - required_ms > 0`),
+    dịch chuyển điểm bắt đầu/kết thúc của các câu trung gian để lấp khoảng trống đó vào câu đang thiếu.
+    """
+    if len(cues) < 2 or neighbor_window <= 0:
+        return 0
+
+    def _req_ms(cue: _CueState) -> int:
+        cur_ms = max(0, cue.end_ms - cue.start_ms)
+        return estimate_required_ms(
+            cue.text,
+            cur_ms,
+            target_cps=target_cps,
+            tts_head_ms=tts_head_ms,
+            tts_tail_ms=tts_tail_ms,
+            short_text_max_chars=short_text_max_chars,
+            short_timeline_max_ms=short_timeline_max_ms,
+        )
+
+    rebalanced_count = 0
+    n = len(cues)
+
+    for i, cue in enumerate(cues):
+        current_ms = cue.end_ms - cue.start_ms
+        if current_ms <= 0:
+            continue
+
+        deficit = _req_ms(cue) - current_ms
+        if deficit <= 0:
+            continue
+
+        gained_total = 0
+
+        # ------------------------------------------------------------------
+        # 1. Dò `neighbor_window` SRT phía trước (i - 1, i - 2, ...)
+        # ------------------------------------------------------------------
+        for dist in range(1, neighbor_window + 1):
+            donor_idx = i - dist
+            if donor_idx < 0 or deficit <= 0:
+                break
+
+            # Không dịch chuyển qua các cặp cue có cùng start_ms
+            if any(
+                cues[m].start_ms == cues[m + 1].start_ms
+                for m in range(donor_idx, i)
+            ):
+                break
+
+            donor = cues[donor_idx]
+            after_donor = cues[donor_idx + 1]
+
+            # 1a. Mượn khoảng trống (gap) giữa donor và câu kế tiếp nó
+            gap = after_donor.start_ms - donor.end_ms
+            avail_gap = (gap - min_gap_ms) if gap > min_borrow_gap_ms else 0
+            take_gap = min(deficit, max(0, int(avail_gap)))
+            if take_gap > 0:
+                for m in range(donor_idx + 1, i):
+                    cues[m].start_ms -= take_gap
+                    cues[m].end_ms -= take_gap
+                cue.start_ms -= take_gap
+                deficit -= take_gap
+                gained_total += take_gap
+
+            # 1b. Mượn phần dư nội tại (surplus) của donor
+            if deficit > 0:
+                donor_cur_ms = donor.end_ms - donor.start_ms
+                donor_req_ms = _req_ms(donor)
+                surplus = max(0, donor_cur_ms - donor_req_ms)
+                take_surplus = min(deficit, int(surplus))
+                if take_surplus > 0:
+                    donor.end_ms -= take_surplus
+                    for m in range(donor_idx + 1, i):
+                        cues[m].start_ms -= take_surplus
+                        cues[m].end_ms -= take_surplus
+                    cue.start_ms -= take_surplus
+                    deficit -= take_surplus
+                    gained_total += take_surplus
+
+        # ------------------------------------------------------------------
+        # 2. Dò `neighbor_window` SRT phía sau (i + 1, i + 2, ...)
+        # ------------------------------------------------------------------
+        for dist in range(1, neighbor_window + 1):
+            donor_idx = i + dist
+            if donor_idx >= n or deficit <= 0:
+                break
+
+            # Không dịch chuyển qua các cặp cue có cùng start_ms
+            if any(
+                cues[m].start_ms == cues[m + 1].start_ms
+                for m in range(i, donor_idx)
+            ):
+                break
+
+            donor = cues[donor_idx]
+            before_donor = cues[donor_idx - 1]
+
+            # 2a. Mượn khoảng trống (gap) giữa câu trước donor và donor
+            gap = donor.start_ms - before_donor.end_ms
+            avail_gap = (gap - min_gap_ms) if gap > min_borrow_gap_ms else 0
+            take_gap = min(deficit, max(0, int(avail_gap)))
+            if take_gap > 0:
+                for m in range(i + 1, donor_idx):
+                    cues[m].start_ms += take_gap
+                    cues[m].end_ms += take_gap
+                cue.end_ms += take_gap
+                deficit -= take_gap
+                gained_total += take_gap
+
+            # 2b. Mượn phần dư nội tại (surplus) của donor
+            if deficit > 0:
+                donor_cur_ms = donor.end_ms - donor.start_ms
+                donor_req_ms = _req_ms(donor)
+                surplus = max(0, donor_cur_ms - donor_req_ms)
+                take_surplus = min(deficit, int(surplus))
+                if take_surplus > 0:
+                    donor.start_ms += take_surplus
+                    for m in range(i + 1, donor_idx):
+                        cues[m].start_ms += take_surplus
+                        cues[m].end_ms += take_surplus
+                    cue.end_ms += take_surplus
+                    deficit -= take_surplus
+                    gained_total += take_surplus
+
+        if gained_total > 0:
+            rebalanced_count += 1
+
+    return rebalanced_count
+
+
 def optimize_subtitle_timings(
     blocks: list[dict[str, Any]],
     *,
@@ -223,6 +367,8 @@ def optimize_subtitle_timings(
     short_text_max_chars: int = 14,
     short_timeline_max_ms: int = 1500,
     video_duration_ms: int | None = None,
+    rebalance_neighbors: bool = True,
+    neighbor_window: int = 2,
 ) -> tuple[list[dict[str, Any]], VoiceSyncReport]:
     del video_duration_ms  # reserved; last cue never extends per spec
 
@@ -244,6 +390,19 @@ def optimize_subtitle_timings(
         short_text_max_chars=short_text_max_chars,
         short_timeline_max_ms=short_timeline_max_ms,
     )
+    rebalanced = 0
+    if rebalance_neighbors and neighbor_window > 0:
+        rebalanced = _rebalance_neighbor_cues(
+            cues,
+            target_cps=target_cps,
+            min_gap_ms=min_gap_ms,
+            min_borrow_gap_ms=min_borrow_gap_ms,
+            tts_head_ms=tts_head_ms,
+            tts_tail_ms=tts_tail_ms,
+            short_text_max_chars=short_text_max_chars,
+            short_timeline_max_ms=short_timeline_max_ms,
+            neighbor_window=neighbor_window,
+        )
 
     out_blocks: list[dict[str, Any]] = []
     unchanged = 0
@@ -263,6 +422,7 @@ def optimize_subtitle_timings(
 
     report = VoiceSyncReport(
         extended=extended,
+        rebalanced=rebalanced,
         overlaps_fixed=overlaps_fixed,
         unchanged=unchanged,
     )

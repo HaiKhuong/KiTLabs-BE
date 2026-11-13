@@ -380,7 +380,7 @@ def _concat_wavs(paths: List[Path], out_wav: Path) -> None:
         pass
 
 
-def synthesize_with_pause_settings(
+def _synthesize_with_pause_settings_direct(
     *,
     text: str,
     out_wav: str | Path,
@@ -426,7 +426,8 @@ def synthesize_with_pause_settings(
             ref_audio=str(ref_prepared),
             model_id=model_id or "pnnbao-ump/VieNeu-TTS-v3-Turbo",
             device=device_map or "auto",
-            backend=os.getenv("VIENEU_BACKEND", "onnx"),
+            backend=os.getenv("VIENEU_BACKEND", "auto"),
+            precision=os.getenv("VIENEU_PRECISION", "int8"),
             denoise=True if denoise is None else bool(denoise),
             seed=resolved_seed,
         )
@@ -557,6 +558,62 @@ def synthesize_with_pause_settings(
         _concat_wavs(timeline, out)
 
     _apply_playback_speed(out, speed)
+
+
+def synthesize_with_pause_settings(
+    *,
+    text: str,
+    out_wav: str | Path,
+    ref_audio: str | Path,
+    ref_text: str,
+    model_id: str,
+    device_map: str = "",
+    dtype_str: str = "",
+    language: str | None = None,
+    num_step: Optional[int] = 32,
+    guidance_scale: Optional[float] = 2.0,
+    denoise: Optional[bool] = True,
+    preprocess_prompt: Optional[bool] = True,
+    postprocess_output: Optional[bool] = True,
+    cfg_value: Optional[float] = 2.0,
+    inference_timesteps: Optional[int] = 10,
+    seed: Optional[int] = None,
+    pause_settings: Optional[Dict[str, Any]] = None,
+    playback_speed: Optional[float] = None,
+    engine: str = "omnivoice",
+) -> None:
+    kwargs: Dict[str, Any] = dict(
+        text=text,
+        out_wav=str(out_wav),
+        ref_audio=str(ref_audio),
+        ref_text=ref_text,
+        model_id=model_id,
+        device_map=device_map,
+        dtype_str=dtype_str,
+        language=language,
+        num_step=num_step,
+        guidance_scale=guidance_scale,
+        denoise=denoise,
+        preprocess_prompt=preprocess_prompt,
+        postprocess_output=postprocess_output,
+        cfg_value=cfg_value,
+        inference_timesteps=inference_timesteps,
+        seed=seed,
+        pause_settings=pause_settings,
+        playback_speed=playback_speed,
+        engine=engine,
+    )
+    try:
+        from tts_warm_worker import run_via_warm_worker
+
+        resp = run_via_warm_worker("pause_tts", kwargs)
+        if resp is not None and Path(out_wav).is_file():
+            return
+    except RuntimeError:
+        raise
+    except Exception:
+        pass
+    _synthesize_with_pause_settings_direct(**kwargs)
 
 
 if __name__ == "__main__":

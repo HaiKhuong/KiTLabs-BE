@@ -41,23 +41,27 @@ def _add_dir(directory: Path) -> None:
 
 
 def _candidate_dirs() -> list[Path]:
-    dirs: list[Path] = []
-    try:
-        import torch
+    import importlib.util
 
-        dirs.append(Path(torch.__file__).resolve().parent / "lib")
+    dirs: list[Path] = []
+    site = Path(sys.prefix) / "Lib" / "site-packages"
+    dirs.append(site / "torch" / "lib")
+    dirs.append(site / "ctranslate2")
+    try:
+        spec = importlib.util.find_spec("torch")
+        if spec and spec.origin:
+            dirs.append(Path(spec.origin).resolve().parent / "lib")
     except Exception:
         pass
     try:
-        import ctranslate2
-
-        dirs.append(Path(ctranslate2.__file__).resolve().parent)
+        spec = importlib.util.find_spec("ctranslate2")
+        if spec and spec.origin:
+            dirs.append(Path(spec.origin).resolve().parent)
     except Exception:
         pass
     cuda_home = (os.environ.get("CUDA_PATH") or os.environ.get("CUDA_HOME") or "").strip()
     if cuda_home:
         dirs.append(Path(cuda_home) / "bin")
-    site = Path(sys.prefix) / "Lib" / "site-packages"
     for rel in (
         Path("nvidia") / "cublas" / "bin",
         Path("nvidia") / "cuda_runtime" / "bin",
