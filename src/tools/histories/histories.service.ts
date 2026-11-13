@@ -1,10 +1,11 @@
 import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
 import { InjectDataSource } from "@nestjs/typeorm";
-import { existsSync, statSync } from "fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, statSync } from "fs";
 import { basename, dirname, extname, join } from "path";
 import { DataSource } from "typeorm";
 
 import { resolveTranslateWorkRoot } from "../../common/desktop/data-path";
+import { ensureVideoFirstFrameSnapshot } from "../../common/http/stream-media-non-locking";
 import {
   HISTORY_SOFT_DELETE_TABLES,
   UNIFIED_HISTORY_DEFAULT_LIMIT,
@@ -25,6 +26,7 @@ export type UnifiedHistoryItemDto = {
   mediaKind: UnifiedHistoryMediaKind;
   playable: boolean;
   playUrl: string | null;
+  thumbnailUrl?: string | null;
   folderPath: string | null;
   previewText: string | null;
   /** pending/running media jobs only. Completed rows omit this. */
@@ -254,6 +256,10 @@ export class HistoriesService {
     const jobStatus = String(row.job_status ?? "completed").trim().toLowerCase();
     const rendering = jobStatus === "pending" || jobStatus === "running";
     const currentStep = rendering ? readPipelineStepFromVideoPath(row.video_path) : null;
+    const thumbnailUrl =
+      playable && mediaKind === "video"
+        ? `/api/tools/histories/${encodeURIComponent(source)}/${encodeURIComponent(row.id)}/thumbnail`
+        : null;
 
     return {
       id: row.id,
@@ -263,6 +269,7 @@ export class HistoriesService {
       mediaKind,
       playable,
       playUrl,
+      thumbnailUrl,
       folderPath: (resultPath || rawPath) ? dirname(resultPath || rawPath) : null,
       previewText: previewText || null,
       status: rendering ? (jobStatus as "pending" | "running") : "completed",
@@ -270,4 +277,77 @@ export class HistoriesService {
     };
   }
 
+  private resolveThumbCachePath(sourceKey: UnifiedHistorySource, id: string): string {
+    const thumbDir = join(resolveTranslateWorkRoot(), ".thumbnails");
+    mkdirSync(thumbDir, { recursive: true });
+    const safeId = id.replace(/[^a-zA-Z0-9_-]/g, "");
+    return join(thumbDir, `${sourceKey}_${safeId}.jpg`);
+  }
+
+  async getOrCreateThumbnailBuffer(source: string, id: string): Promise<Buffer> {
+    const trimmedId = id?.trim();
+    if (!trimmedId) {
+      throw new BadRequestException("id is required");
+    }
+    const sourceKey = this.resolveSourceFilter(source);
+    if (sourceKey === "all" || sourceKey === "voice") {
+      throw new BadRequestException("Thumbnail is only supported for video sources");
+    }
+
+    const thumbPath = this.resolveThumbCachePath(sourceKey, trimmedId);
+    if (existsSync(thumbPath)) {
+      try {
+        const stat = statSync(thumbPath);
+        if (stat.isFile() && stat.size > 0) {
+          return readFileSync(thumbPath);
+        }
+      } catch {
+        // fallback to regenerate
+      }
+    }
+
+    const tables = HISTORY_SOFT_DELETE_TABLES[sourceKey];
+    let rawResultPath = "";
+    for (const table of tables) {
+      const rows = await this.dataSource.query<{ result_path: string | null }[]>(
+        `SELECT result_path FROM "${table}" WHERE id = $1::uuid AND deleted_at IS NULL LIMIT 1`,
+        [trimmedId],
+      );
+      if (rows?.[0]?.result_path) {
+        rawResultPath = String(rows[0].result_path).trim();
+        break;
+      }
+    }
+
+    if (!rawResultPath) {
+      throw new NotFoundException("History video not found");
+    }
+
+    const videoPath =
+      sourceKey === "media"
+        ? this.resolveMediaVideoPath(rawResultPath)
+        : this.resolveExistingResultPath(rawResultPath);
+
+    if (!videoPath || !existsSync(videoPath) || !statSync(videoPath).isFile()) {
+      throw new NotFoundException("Video file not found on disk");
+    }
+
+    // Check if pipeline pre-generated a snapshot in workspace logs/thumb.jpg
+    const videoDir = dirname(videoPath);
+    const workLogsThumb = join(dirname(videoDir), "logs", "thumb.jpg");
+    if (existsSync(workLogsThumb) && statSync(workLogsThumb).size > 0) {
+      try {
+        copyFileSync(workLogsThumb, thumbPath);
+        return readFileSync(thumbPath);
+      } catch {
+        // fallback to ffmpeg extraction
+      }
+    }
+
+    const ok = await ensureVideoFirstFrameSnapshot(videoPath, thumbPath);
+    if (!ok || !existsSync(thumbPath)) {
+      throw new NotFoundException("Could not generate video thumbnail");
+    }
+    return readFileSync(thumbPath);
+  }
 }

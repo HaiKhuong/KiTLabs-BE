@@ -16,10 +16,11 @@ import {
 import { FileFieldsInterceptor } from "@nestjs/platform-express";
 import { ApiBearerAuth, ApiBody, ApiConsumes, ApiOperation, ApiQuery, ApiTags } from "@nestjs/swagger";
 import { Request, Response } from "express";
-import { createReadStream, existsSync, statSync } from "fs";
+import { existsSync } from "fs";
 import { memoryStorage } from "multer";
 
 import { Public } from "../../common/decorators/public.decorator";
+import { streamMediaFileNonLocking } from "../../common/http/stream-media-non-locking";
 import { CreateShortVideoJobDto } from "./dto/create-shortvideo-job.dto";
 import { GenerateShortVideoSpecDto } from "./dto/generate-shortvideo-spec.dto";
 import { RenderShortVideoUploadDto } from "./dto/render-shortvideo-upload.dto";
@@ -197,35 +198,9 @@ export class ShortVideoController {
     const filePath = this.shortVideoService.resolveArtifactPath(history);
     if (!existsSync(filePath)) throw new NotFoundException("Artifact not found");
 
-    const { size: fileSize } = statSync(filePath);
-    res.setHeader("Accept-Ranges", "bytes");
-    res.setHeader("Content-Type", "video/mp4");
-    res.setHeader("Content-Disposition", `inline; filename="${history.resultFileName ?? "short_video.mp4"}"`);
-    res.setHeader("Access-Control-Expose-Headers", "Accept-Ranges, Content-Range, Content-Length, Content-Type");
-
-    const range = req.headers.range;
-    if (range) {
-      const match = /^bytes=(\d*)-(\d*)$/.exec(range);
-      if (!match) {
-        res.status(416);
-        res.setHeader("Content-Range", `bytes */${fileSize}`);
-        return res.end();
-      }
-      const start = match[1] ? Number(match[1]) : 0;
-      const end = match[2] ? Number(match[2]) : fileSize - 1;
-      if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end >= fileSize || start > end) {
-        res.status(416);
-        res.setHeader("Content-Range", `bytes */${fileSize}`);
-        return res.end();
-      }
-      const chunkSize = end - start + 1;
-      res.status(206);
-      res.setHeader("Content-Range", `bytes ${start}-${end}/${fileSize}`);
-      res.setHeader("Content-Length", String(chunkSize));
-      return createReadStream(filePath, { start, end }).pipe(res);
-    }
-
-    res.setHeader("Content-Length", String(fileSize));
-    return createReadStream(filePath).pipe(res);
+    return streamMediaFileNonLocking(filePath, req, res, {
+      contentType: "video/mp4",
+      fileName: history.resultFileName ?? "short_video.mp4",
+    });
   }
 }

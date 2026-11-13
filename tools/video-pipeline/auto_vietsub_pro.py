@@ -5980,12 +5980,51 @@ def run_pipeline(video, step_arg=None):
         preferred=Path(last_output) if last_output else None,
     )
     final_result = str(published) if published is not None else last_output
+    if final_result and str(final_result).lower().endswith(".mp4") and Path(final_result).is_file():
+        _generate_first_frame_snapshot(Path(final_result))
     _send_python_telegram_notification(
         "completed",
         Path(video_path).name,
         duration=_format_dur_seconds(dur_s),
     )
     return final_result
+
+
+def _generate_first_frame_snapshot(video_file: Path) -> None:
+    """Trích xuất 1 frame đầu của video thành logs/thumb.jpg để hiển thị trên UI Histories."""
+    try:
+        out_logs = video_file.resolve().parent.parent / "logs"
+        out_logs.mkdir(parents=True, exist_ok=True)
+        thumb_path = out_logs / "thumb.jpg"
+        for seek_sec in ("0.1", "0"):
+            proc = subprocess.run(
+                [
+                    FFMPEG_BIN,
+                    "-y",
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-ss",
+                    seek_sec,
+                    "-i",
+                    str(video_file),
+                    "-frames:v",
+                    "1",
+                    "-vf",
+                    "scale='min(640,iw)':-2",
+                    "-q:v",
+                    "4",
+                    str(thumb_path),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=15,
+                check=False,
+            )
+            if proc.returncode == 0 and thumb_path.is_file() and thumb_path.stat().st_size > 0:
+                break
+    except Exception as exc:
+        log(f"Warning: could not generate first-frame snapshot: {exc}")
 
 
 

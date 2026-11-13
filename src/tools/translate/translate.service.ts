@@ -14,6 +14,7 @@ import { NotificationsService } from "../notifications/notifications.service";
 import { User } from "../users/user.entity";
 import { QueueJobStatus } from "../../common/enums/domain.enums";
 import { resolveTranslateWorkRoot } from "../../common/desktop/data-path";
+import { ensureVideoFirstFrameSnapshot } from "../../common/http/stream-media-non-locking";
 import {
   CANCELLED_BY_USER_MESSAGE,
   type CancelRenderResult,
@@ -177,6 +178,13 @@ export class TranslateService {
     history.resultFileName = basename(resultPath);
     history.errorMessage = null;
     await this.translateRepository.save(history);
+
+    const playableVideo = this.resolvePlayableVideoPath(history);
+    if (playableVideo && existsSync(playableVideo)) {
+      const safeId = String(translateHistoryId).replace(/[^a-zA-Z0-9_-]/g, "");
+      const thumbPath = join(resolveTranslateWorkRoot(), ".thumbnails", `media_${safeId}.jpg`);
+      void ensureVideoFirstFrameSnapshot(playableVideo, thumbPath).catch(() => undefined);
+    }
 
     const user = await this.userRepository.findOne({ where: { id: history.userId } });
     if (user) {

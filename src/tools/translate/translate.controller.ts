@@ -1,10 +1,11 @@
 import { BadRequestException, Body, Controller, Get, NotFoundException, Param, Post, Query, Req, Res } from "@nestjs/common";
 import { ApiBearerAuth, ApiBody, ApiOperation, ApiQuery, ApiTags } from "@nestjs/swagger";
 import { Request, Response } from "express";
-import { createReadStream, existsSync, statSync } from "fs";
+import { existsSync, readFileSync } from "fs";
 import { basename } from "path";
 
 import { Public } from "../../common/decorators/public.decorator";
+import { streamMediaFileNonLocking } from "../../common/http/stream-media-non-locking";
 import { CreateTranslateJobDto } from "./dto/create-translate-job.dto";
 import { TranslateCompareSubtitleDto } from "./dto/translate-compare-subtitle.dto";
 import { GeminiSubtitleTranslateService } from "./gemini-subtitle-translate.service";
@@ -69,37 +70,11 @@ export class TranslateController {
       throw new NotFoundException("Artifact not found");
     }
 
-    const { size: fileSize } = statSync(filePath);
     const fileName = history.resultFileName || basename(filePath);
-    res.setHeader("Accept-Ranges", "bytes");
-    res.setHeader("Content-Type", "video/mp4");
-    res.setHeader("Content-Disposition", `inline; filename="${fileName}"`);
-    res.setHeader("Access-Control-Expose-Headers", "Accept-Ranges, Content-Range, Content-Length, Content-Type");
-
-    const range = req.headers.range;
-    if (range) {
-      const match = /^bytes=(\d*)-(\d*)$/.exec(range);
-      if (!match) {
-        res.status(416);
-        res.setHeader("Content-Range", `bytes */${fileSize}`);
-        return res.end();
-      }
-      const start = match[1] ? Number(match[1]) : 0;
-      const end = match[2] ? Number(match[2]) : fileSize - 1;
-      if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end >= fileSize || start > end) {
-        res.status(416);
-        res.setHeader("Content-Range", `bytes */${fileSize}`);
-        return res.end();
-      }
-      const chunkSize = end - start + 1;
-      res.status(206);
-      res.setHeader("Content-Range", `bytes ${start}-${end}/${fileSize}`);
-      res.setHeader("Content-Length", String(chunkSize));
-      return createReadStream(filePath, { start, end }).pipe(res);
-    }
-
-    res.setHeader("Content-Length", String(fileSize));
-    return createReadStream(filePath).pipe(res);
+    return streamMediaFileNonLocking(filePath, req, res, {
+      contentType: "video/mp4",
+      fileName,
+    });
   }
 
   @ApiOperation({ summary: "Cancel a running translate render" })
@@ -130,6 +105,7 @@ export class TranslateController {
   async artifact(
     @Query("resultPath") resultPath: string | undefined,
     @Query("type") type: string | undefined,
+    @Req() req: Request,
     @Res() res: Response,
   ) {
     if (!resultPath) {
@@ -139,8 +115,16 @@ export class TranslateController {
     const parsedType = this.translateService.parseArtifactType(type);
     const artifact = this.translateService.resolveArtifact(resultPath, parsedType);
 
+    if (parsedType === "video" || parsedType === "audio") {
+      return streamMediaFileNonLocking(artifact.absolutePath, req, res, {
+        contentType: artifact.contentType,
+      });
+    }
+
+    const buf = readFileSync(artifact.absolutePath);
     res.setHeader("Content-Type", artifact.contentType);
-    return res.sendFile(artifact.absolutePath);
+    res.setHeader("Content-Length", String(buf.length));
+    return res.end(buf);
   }
 
   @ApiOperation({ summary: "Check if the translate work folder exists for a video file name" })

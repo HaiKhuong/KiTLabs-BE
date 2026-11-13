@@ -1,5 +1,6 @@
-import { BadRequestException, Controller, Delete, Get, Param, Query } from "@nestjs/common";
+import { BadRequestException, Controller, Delete, Get, Param, Query, Res } from "@nestjs/common";
 import { ApiBearerAuth, ApiOperation, ApiQuery, ApiTags } from "@nestjs/swagger";
+import { Response } from "express";
 
 import { Public } from "../../common/decorators/public.decorator";
 import { UNIFIED_HISTORY_SOURCES } from "./histories.constants";
@@ -37,6 +38,22 @@ export class HistoriesController {
       Number(limit) || undefined,
       source,
     );
+  }
+
+  @ApiOperation({ summary: "Get first-frame JPEG snapshot for a completed history video" })
+  @Public()
+  @Get(":source/:id/thumbnail")
+  async thumbnail(
+    @Param("source") source: string,
+    @Param("id") id: string,
+    @Res() res: Response,
+  ) {
+    const buf = await this.historiesService.getOrCreateThumbnailBuffer(source, id);
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Content-Type", "image/jpeg");
+    res.setHeader("Content-Length", String(buf.length));
+    res.setHeader("Cache-Control", "public, max-age=86400");
+    return res.end(buf);
   }
 
   @ApiOperation({ summary: "Soft-delete a completed history item (hidden from Histories, files kept)" })
