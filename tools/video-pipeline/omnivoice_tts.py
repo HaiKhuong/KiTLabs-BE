@@ -30,7 +30,7 @@ from typing import Any, Optional, Sequence, Tuple, Union
 
 import pipeline_cache  # noqa: F401 — HF cache → tools/video-pipeline/cache
 
-from tts_text_normalize import prepare_tts_input_text, sanitize_tts_unicode
+from tts_text_normalize import ensure_tts_trailing_period, prepare_tts_input_text, sanitize_tts_unicode
 
 # Cache theo (model_id, device_map, dtype_str)
 _session_model: Optional[Any] = None

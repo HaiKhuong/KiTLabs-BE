@@ -269,6 +269,11 @@ const OPTION_MAPPINGS: Array<{
     allowedTypes: ["string"],
   },
   {
+    cliFlag: "--whisper-candidate-languages",
+    keys: ["whisperCandidateLanguages", "whisper_candidate_languages"],
+    allowedTypes: ["string"],
+  },
+  {
     cliFlag: "--easyocr-crop-band-hi",
     keys: ["easyOcrCropBandHi", "easy_ocr_crop_band_hi"],
     allowedTypes: ["number", "string"],

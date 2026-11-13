@@ -90,6 +90,11 @@ if _SCRIPT_DIR_STR not in sys.path:
 
 WHISPER_MODEL = "large-v3"
 WHISPER_LANGUAGE = None  # None = tự động nhận diện ngôn ngữ (hoặc mã ngôn ngữ: zh, en, vi...)
+WHISPER_CANDIDATE_LANGUAGES = [
+    lang.strip().lower()
+    for lang in os.environ.get("WHISPER_CANDIDATE_LANGUAGES", "zh,vi,en,ja,ko").split(",")
+    if lang.strip()
+]
 STEP1_SUBTITLE_SOURCE = "embedded"
 GEMINI_MODEL_NAME = "gemini-2.5-flash"
 # standard = GEMINI_API_KEY (+ GOOGLE_API_KEY); vip = GEMINI_API_KEY_VIP
@@ -2309,6 +2314,25 @@ def _step1_extract_embedded_subtitle(video_path):
 
 def _step1_transcribe_with_whisper(video_path):
     log("Step1: transcribe (Whisper)…")
+    # Patch PyAV if av >= 18 dropped metadata_errors argument
+    try:
+        import av
+
+        _orig_av_open = av.open
+
+        def _safe_av_open(*args, **kwargs):
+            try:
+                return _orig_av_open(*args, **kwargs)
+            except TypeError as exc:
+                if "metadata_errors" in str(exc) and "metadata_errors" in kwargs:
+                    kwargs.pop("metadata_errors", None)
+                    return _orig_av_open(*args, **kwargs)
+                raise
+
+        av.open = _safe_av_open
+    except Exception:
+        pass
+
     from faster_whisper import WhisperModel
 
     # Decode to stable WAV first to avoid truncated decode from some video sources.
@@ -2336,83 +2360,127 @@ def _step1_transcribe_with_whisper(video_path):
     )
     min_expected_ms = int(source_duration_ms * 0.40) if source_duration_ms else None
 
+    from faster_whisper.audio import decode_audio
+
+    raw_audio = decode_audio(str(step1_audio), sampling_rate=16000)
+    resolved_language = [WHISPER_LANGUAGE or None]
+
+    def _resolve_language_if_needed(whisper_model):
+        if resolved_language[0]:
+            return resolved_language[0]
+        # Luôn nhận diện ngôn ngữ trên raw_audio không qua VAD
+        # để tránh trường hợp VAD lọc sạch âm thanh vì nhạc nền/tiếng động lớn.
+        raw_lang, raw_prob, all_probs = whisper_model.detect_language(
+            raw_audio, vad_filter=False, language_detection_segments=2
+        )
+        if WHISPER_CANDIDATE_LANGUAGES and all_probs:
+            candidate_set = {c.lower() for c in WHISPER_CANDIDATE_LANGUAGES}
+            cand_probs = [item for item in all_probs if item[0].lower() in candidate_set]
+            if cand_probs:
+                cand_probs.sort(key=lambda x: x[1], reverse=True)
+                chosen_lang, chosen_prob = cand_probs[0]
+                if chosen_lang.lower() != str(raw_lang or "").lower():
+                    log(
+                        f"Step1 (Whisper): Ngôn ngữ nhận diện thô '{raw_lang}' ({raw_prob:.1%}) ngoài danh sách ứng viên; "
+                        f"đã chọn '{chosen_lang}' ({chosen_prob:.1%}) theo danh sách ứng viên {WHISPER_CANDIDATE_LANGUAGES}"
+                    )
+                else:
+                    log(
+                        f"Step1 (Whisper): Ngôn ngữ nhận diện '{chosen_lang}' ({chosen_prob:.1%}) "
+                        f"thuộc danh sách ứng viên {WHISPER_CANDIDATE_LANGUAGES}"
+                    )
+                resolved_language[0] = chosen_lang
+                return chosen_lang
+        resolved_language[0] = raw_lang
+        log(f"Step1 (Whisper): Ngôn ngữ nhận diện '{raw_lang}' (độ tin cậy: {raw_prob:.1%})")
+        return raw_lang
+
     def _transcribe_with_device(device_name, out_path):
         whisper_model = WhisperModel(WHISPER_MODEL, device=device_name)
-        transcribe_kwargs = {
-            "language": WHISPER_LANGUAGE or None,
-            "vad_filter": STEP1_VAD_FILTER,
-            "no_speech_threshold": float(STEP1_NO_SPEECH_THRESHOLD),
-            "log_prob_threshold": float(STEP1_LOGPROB_THRESHOLD),
-            "condition_on_previous_text": bool(STEP1_CONDITION_ON_PREVIOUS_TEXT),
-            "temperature": 0.0,
-            "word_timestamps": True,
-        }
-        if STEP1_VAD_FILTER:
-            transcribe_kwargs["vad_parameters"] = {
-                "threshold": float(STEP1_VAD_THRESHOLD),
-                "min_silence_duration_ms": int(STEP1_MIN_SILENCE_MS),
-                "min_speech_duration_ms": int(STEP1_MIN_SPEECH_MS),
-                "speech_pad_ms": int(STEP1_SPEECH_PAD_MS),
+        target_lang = _resolve_language_if_needed(whisper_model)
+
+        def _do_transcribe(use_vad: bool):
+            transcribe_kwargs = {
+                "language": target_lang,
+                "vad_filter": use_vad,
+                "no_speech_threshold": float(STEP1_NO_SPEECH_THRESHOLD),
+                "log_prob_threshold": float(STEP1_LOGPROB_THRESHOLD),
+                "condition_on_previous_text": bool(STEP1_CONDITION_ON_PREVIOUS_TEXT),
+                "temperature": 0.0,
+                "word_timestamps": True,
             }
-        segments, info = whisper_model.transcribe(
-            str(step1_audio), **transcribe_kwargs
-        )
-        detected_lang = getattr(info, "language", None)
-        if detected_lang:
-            prob = getattr(info, "language_probability", 0.0)
-            log(f"Step1 (Whisper): Ngôn ngữ nhận diện '{detected_lang}' (độ tin cậy: {prob:.1%})")
-        count = 0
-        last_end_ms = 0
-        prev_end_sec = 0.0
-        with open(out_path, "w", encoding="utf8") as f:
-            for i, segment in enumerate(
-                progressbar(segments, desc=f"Transcribe ({device_name})")
-            ):
-                seg_start = float(segment.start)
-                seg_end = float(segment.end)
-                words = getattr(segment, "words", None) or []
-                timed_words = [
-                    (
-                        float(w.start),
-                        float(w.end),
-                        str(getattr(w, "word", "") or "").strip(),
-                    )
-                    for w in words
-                    if getattr(w, "start", None) is not None
-                    and getattr(w, "end", None) is not None
-                ]
-                if timed_words:
-                    seg_start = min(start for start, _end, _text in timed_words)
-                    seg_end = max(end for _start, end, _text in timed_words)
+            if use_vad:
+                transcribe_kwargs["vad_parameters"] = {
+                    "threshold": float(STEP1_VAD_THRESHOLD),
+                    "min_silence_duration_ms": int(STEP1_MIN_SILENCE_MS),
+                    "min_speech_duration_ms": int(STEP1_MIN_SPEECH_MS),
+                    "speech_pad_ms": int(STEP1_SPEECH_PAD_MS),
+                }
+            segments, info = whisper_model.transcribe(
+                raw_audio, **transcribe_kwargs
+            )
+            count = 0
+            last_end_ms = 0
+            prev_end_sec = 0.0
+            with open(out_path, "w", encoding="utf8") as f:
+                for i, segment in enumerate(
+                    progressbar(segments, desc=f"Transcribe ({device_name})")
+                ):
+                    seg_start = float(segment.start)
+                    seg_end = float(segment.end)
+                    words = getattr(segment, "words", None) or []
+                    timed_words = [
+                        (
+                            float(w.start),
+                            float(w.end),
+                            str(getattr(w, "word", "") or "").strip(),
+                        )
+                        for w in words
+                        if getattr(w, "start", None) is not None
+                        and getattr(w, "end", None) is not None
+                    ]
+                    if timed_words:
+                        seg_start = min(start for start, _end, _text in timed_words)
+                        seg_end = max(end for _start, end, _text in timed_words)
 
-                # Prevent local drift from producing overlaps/inversions in the middle of the video.
-                if seg_start < prev_end_sec:
-                    seg_start = prev_end_sec
-                if seg_end <= seg_start:
-                    seg_end = seg_start + 0.2
+                    # Prevent local drift from producing overlaps/inversions in the middle of the video.
+                    if seg_start < prev_end_sec:
+                        seg_start = prev_end_sec
+                    if seg_end <= seg_start:
+                        seg_end = seg_start + 0.2
 
-                split_chunks = split_segment_to_timed_chunks(
-                    segment.text.strip(), seg_start, seg_end, timed_words
-                )
-                if not split_chunks:
-                    continue
+                    split_chunks = split_segment_to_timed_chunks(
+                        segment.text.strip(), seg_start, seg_end, timed_words
+                    )
+                    if not split_chunks:
+                        continue
 
-                for chunk_start_ms, chunk_end_ms, chunk_text in split_chunks:
-                    chunk_start_ms, chunk_end_ms, _ = tighten_sparse_subtitle_timing(
-                        chunk_start_ms,
-                        chunk_end_ms,
-                        chunk_text,
-                    )
-                    chunk_start_sec = max(prev_end_sec, chunk_start_ms / 1000.0)
-                    chunk_end_sec = max(chunk_end_ms / 1000.0, chunk_start_sec + 0.2)
-                    prev_end_sec = chunk_end_sec
-                    last_end_ms = int(chunk_end_sec * 1000)
-                    count += 1
-                    f.write(f"{count}\n")
-                    f.write(
-                        f"{fmt_time(chunk_start_sec)} --> {fmt_time(chunk_end_sec)}\n"
-                    )
-                    f.write(f"{chunk_text}\n\n")
+                    for chunk_start_ms, chunk_end_ms, chunk_text in split_chunks:
+                        chunk_start_ms, chunk_end_ms, _ = tighten_sparse_subtitle_timing(
+                            chunk_start_ms,
+                            chunk_end_ms,
+                            chunk_text,
+                        )
+                        chunk_start_sec = max(prev_end_sec, chunk_start_ms / 1000.0)
+                        chunk_end_sec = max(chunk_end_ms / 1000.0, chunk_start_sec + 0.2)
+                        prev_end_sec = chunk_end_sec
+                        last_end_ms = int(chunk_end_sec * 1000)
+                        count += 1
+                        f.write(f"{count}\n")
+                        f.write(
+                            f"{fmt_time(chunk_start_sec)} --> {fmt_time(chunk_end_sec)}\n"
+                        )
+                        f.write(f"{chunk_text}\n\n")
+
+            return count, last_end_ms
+
+        count, last_end_ms = _do_transcribe(use_vad=STEP1_VAD_FILTER)
+        if count == 0 and STEP1_VAD_FILTER:
+            log(
+                f"Step1 ({device_name}): VAD lọc 0 segment (do nhạc nền/tiếng ồn lấn át) -> "
+                f"tự động thử lại với vad_filter=False..."
+            )
+            count, last_end_ms = _do_transcribe(use_vad=False)
 
         return count, last_end_ms
 
@@ -4492,6 +4560,11 @@ def parse_cli_args():
         help="Whisper language code (e.g. zh, en, vi). Để trống để tự động nhận diện ngôn ngữ.",
     )
     parser.add_argument(
+        "--whisper-candidate-languages",
+        default=os.environ.get("WHISPER_CANDIDATE_LANGUAGES", "zh,vi,en,ja,ko"),
+        help="Danh sách mã ngôn ngữ ứng viên cho Whisper tự nhận diện (vd: zh,vi,en,ja,ko). Đặt 'all' để nhận diện không giới hạn.",
+    )
+    parser.add_argument(
         "--step1-subtitle-source",
         choices=["whisper", "embedded", "easyocr", "paddleocr", "vse"],
         default=STEP1_SUBTITLE_SOURCE,
@@ -5116,7 +5189,13 @@ def apply_cli_config(args):
     global VOICE_SYNC_TTS_TAIL_MS
     global VOICE_SYNC_SHORT_TEXT_MAX_CHARS
     global VOICE_SYNC_SHORT_TIMELINE_MAX_MS
+    global WHISPER_CANDIDATE_LANGUAGES
     WHISPER_LANGUAGE = str(args.whisper_language or "").strip() or None
+    cand_raw = str(getattr(args, "whisper_candidate_languages", "") or "").strip().lower()
+    if cand_raw in ("all", "none", "*"):
+        WHISPER_CANDIDATE_LANGUAGES = []
+    elif cand_raw:
+        WHISPER_CANDIDATE_LANGUAGES = [l.strip() for l in cand_raw.split(",") if l.strip()]
     STEP1_SUBTITLE_SOURCE = (
         str(args.step1_subtitle_source or STEP1_SUBTITLE_SOURCE).strip().lower()
     )

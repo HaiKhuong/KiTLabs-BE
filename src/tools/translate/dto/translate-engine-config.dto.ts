@@ -662,6 +662,22 @@ export class TranslateEngineConfigDto {
 
   @IsOptional()
   @IsString()
+  whisperLanguage?: string;
+
+  @IsOptional()
+  @IsString()
+  whisper_language?: string;
+
+  @IsOptional()
+  @IsString()
+  whisperCandidateLanguages?: string;
+
+  @IsOptional()
+  @IsString()
+  whisper_candidate_languages?: string;
+
+  @IsOptional()
+  @IsString()
   vseUseCuda?: string;
 
   @IsOptional()

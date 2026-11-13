@@ -1,6 +1,6 @@
 import { BadRequestException, Injectable, Logger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
-import { google, sheets_v4 } from "googleapis";
+import type { sheets_v4 } from "googleapis";
 import { readFileSync, existsSync } from "fs";
 import { join } from "path";
 
@@ -166,7 +166,9 @@ export class GoogleSheetsService {
   } {
     const creds = this.resolveCredentials(userCredentials);
 
-    const auth = new google.auth.GoogleAuth({
+    const { sheets: createSheets, auth: googleAuth } = require("googleapis/build/src/apis/sheets");
+
+    const auth = new googleAuth.GoogleAuth({
       credentials: {
         client_email: creds.client_email,
         private_key: (creds.private_key || "").includes("\\n") ? (creds.private_key || "").replace(/\\n/g, "\n") : creds.private_key,
@@ -175,7 +177,7 @@ export class GoogleSheetsService {
       scopes: [GOOGLE_SHEETS_AUTH_SCOPE],
     });
 
-    const sheets = google.sheets({ version: "v4", auth });
+    const sheets = createSheets({ version: "v4", auth });
     return { sheets, clientEmail: creds.client_email || "N/A" };
   }
 
