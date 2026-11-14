@@ -13,6 +13,7 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from subtitle.voice_sync import (  # noqa: E402
+    apply_speed_factor_ms,
     estimate_required_ms,
     optimize_subtitle_timings,
     parse_srt_time_range,
@@ -60,7 +61,23 @@ class TestOptimizeSubtitleTimings(unittest.TestCase):
             tts_tail_ms=120,
             short_text_max_chars=14,
             short_timeline_max_ms=1500,
+            max_start_shift_ms=400,
+            speed_factor=1.0,
         )
+
+    def test_speed_factor_reduces_deficit_before_borrowing_timeline(self):
+        text_2520 = "A" * 28
+        blocks = [
+            _block(1, "00:00:00,000", "00:00:02,000", text_2520),
+            _block(2, "00:00:04,000", "00:00:06,520", text_2520),
+        ]
+        kw = {**self.kw, "speed_factor": 1.1}
+
+        out, report = optimize_subtitle_timings(blocks, **kw)
+
+        self.assertEqual(apply_speed_factor_ms(2520, 1.1), 2291)
+        self.assertEqual(_end_ms(out[0]), 2291)
+        self.assertEqual(report.extended, 1)
 
     def test_case1_timeline_sufficient(self):
         # 28 chars → speech ~2000ms; slot 2500ms → no change
@@ -299,6 +316,42 @@ class TestOptimizeSubtitleTimings(unittest.TestCase):
         self.assertEqual(_start_ms(out[3]), 7570)
         self.assertEqual(_end_ms(out[3]), 10090)
         self.assertEqual(report.rebalanced, 1)
+
+    def test_rebalance_caps_first_earlier_shift_at_400ms(self):
+        text_2520 = "A" * 28
+        blocks = [
+            # Cue 1 has 1000ms surplus; cue 3 lacks 1000ms.
+            _block(1, "00:00:00,000", "00:00:03,520", text_2520),
+            _block(2, "00:00:03,520", "00:00:06,040", text_2520),
+            _block(3, "00:00:06,040", "00:00:07,560", text_2520),
+            _block(4, "00:00:07,560", "00:00:10,080", text_2520),
+        ]
+
+        out, report = optimize_subtitle_timings(blocks, **self.kw)
+
+        self.assertEqual(_start_ms(out[1]), 3520 - 400)
+        self.assertEqual(_start_ms(out[2]), 6040 - 400)
+        self.assertEqual(report.max_abs_start_shift_ms, 400)
+        self.assertGreater(report.start_shift_capped, 0)
+
+    def test_rebalance_allows_multiple_subtractions_with_cumulative_budget(self):
+        text_2520 = "A" * 28
+        blocks = [
+            # Cue 2 first borrows 300ms from cue 1.
+            _block(1, "00:00:00,000", "00:00:03,120", text_2520),
+            _block(2, "00:00:03,120", "00:00:05,340", text_2520),
+            # Cue 3 asks for another 300ms through cue 2, but cue 2 has only
+            # 100ms left in its cumulative subtraction budget.
+            _block(3, "00:00:05,340", "00:00:07,560", text_2520),
+        ]
+
+        out, report = optimize_subtitle_timings(blocks, **self.kw)
+
+        self.assertEqual(_start_ms(out[1]), 3120 - 400)
+        self.assertEqual(_start_ms(out[2]), 5340 - 100)
+        self.assertEqual(_end_ms(out[2]) - _start_ms(out[2]), 2320)
+        self.assertEqual(report.max_abs_start_shift_ms, 400)
+        self.assertGreater(report.start_shift_capped, 0)
 
 
 if __name__ == "__main__":

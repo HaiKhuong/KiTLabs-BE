@@ -187,6 +187,8 @@ VOICE_SYNC_TTS_HEAD_MS = 50
 VOICE_SYNC_TTS_TAIL_MS = 120
 VOICE_SYNC_SHORT_TEXT_MAX_CHARS = 14
 VOICE_SYNC_SHORT_TIMELINE_MAX_MS = 1500
+VOICE_SYNC_MAX_START_SHIFT_MS = 400
+VOICE_SYNC_SPEED_FACTOR = 1.1
 # Optional: set absolute ffmpeg.exe path here if needed.
 FFMPEG_PATH = ""
 
@@ -2861,6 +2863,8 @@ def step2b_voice_sync_srt(vi_srt_path, video_duration_ms=None):
         tts_tail_ms=int(VOICE_SYNC_TTS_TAIL_MS),
         short_text_max_chars=int(VOICE_SYNC_SHORT_TEXT_MAX_CHARS),
         short_timeline_max_ms=int(VOICE_SYNC_SHORT_TIMELINE_MAX_MS),
+        max_start_shift_ms=int(VOICE_SYNC_MAX_START_SHIFT_MS),
+        speed_factor=float(VOICE_SYNC_SPEED_FACTOR),
         video_duration_ms=video_duration_ms,
     )
     write_srt(optimized, vi_path)
@@ -2868,6 +2872,9 @@ def step2b_voice_sync_srt(vi_srt_path, video_duration_ms=None):
         "VoiceSync: "
         f"extended={report.extended}, rebalanced={report.rebalanced}, "
         f"overlaps_fixed={report.overlaps_fixed}, unchanged={report.unchanged}, "
+        f"start_shift_capped={report.start_shift_capped}, "
+        f"max_start_shift={report.max_abs_start_shift_ms}ms/"
+        f"{VOICE_SYNC_MAX_START_SHIFT_MS}ms, speed_factor={VOICE_SYNC_SPEED_FACTOR}, "
         f"target_cps={VOICE_SYNC_TARGET_CPS}"
     )
     if VOICE_SYNC_ENABLED and STEP3_TTS_BORROW_GAP:
@@ -5149,6 +5156,18 @@ def parse_cli_args():
         help="Slot ngắn (ms) để dùng tail pad 1/2 cùng với text ngắn.",
     )
     parser.add_argument(
+        "--voice-sync-max-start-shift-ms",
+        type=int,
+        default=VOICE_SYNC_MAX_START_SHIFT_MS,
+        help="Độ lệch start tối đa mỗi chiều khi cân bằng cue; tổng các lần kéo sớm của mỗi cue không vượt mức này.",
+    )
+    parser.add_argument(
+        "--voice-sync-speed-factor",
+        type=float,
+        default=VOICE_SYNC_SPEED_FACTOR,
+        help="Hệ số speed giả định trước khi tính số ms còn thiếu để cân bằng cue.",
+    )
+    parser.add_argument(
         "--step",
         default=None,
         help="Run only selected steps: N or A,B (inclusive). Example: --step 3 or --step 1,5",
@@ -5255,6 +5274,8 @@ def apply_cli_config(args):
     global VOICE_SYNC_TTS_TAIL_MS
     global VOICE_SYNC_SHORT_TEXT_MAX_CHARS
     global VOICE_SYNC_SHORT_TIMELINE_MAX_MS
+    global VOICE_SYNC_MAX_START_SHIFT_MS
+    global VOICE_SYNC_SPEED_FACTOR
     global WHISPER_CANDIDATE_LANGUAGES
     WHISPER_LANGUAGE = str(args.whisper_language or "").strip() or None
     cand_raw = str(getattr(args, "whisper_candidate_languages", "") or "").strip().lower()
@@ -5472,6 +5493,14 @@ def apply_cli_config(args):
     )
     VOICE_SYNC_SHORT_TIMELINE_MAX_MS = int(
         getattr(args, "voice_sync_short_timeline_max_ms", VOICE_SYNC_SHORT_TIMELINE_MAX_MS)
+    )
+    VOICE_SYNC_MAX_START_SHIFT_MS = max(
+        0,
+        int(getattr(args, "voice_sync_max_start_shift_ms", VOICE_SYNC_MAX_START_SHIFT_MS)),
+    )
+    VOICE_SYNC_SPEED_FACTOR = max(
+        1.0,
+        float(getattr(args, "voice_sync_speed_factor", VOICE_SYNC_SPEED_FACTOR)),
     )
 
     prof = STEP1_PROFILES[args.mode]

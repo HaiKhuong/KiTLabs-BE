@@ -25,6 +25,8 @@ class VoiceSyncReport:
     rebalanced: int = 0
     overlaps_fixed: int = 0
     unchanged: int = 0
+    start_shift_capped: int = 0
+    max_abs_start_shift_ms: int = 0
     details: list[str] = field(default_factory=list)
 
 
@@ -106,6 +108,12 @@ def estimate_required_ms(
     )
 
 
+def apply_speed_factor_ms(required_ms: int, speed_factor: float) -> int:
+    """Return timeline needed after allowing audio to play at `speed_factor`."""
+    speed = max(1.0, float(speed_factor))
+    return int(math.ceil(max(0, int(required_ms)) / speed))
+
+
 def srt_time_to_ms(time_str: str) -> int:
     hms, ms = time_str.strip().split(",")
     h, m, s = hms.split(":")
@@ -173,6 +181,7 @@ def _extend_cue_ends(
     tts_tail_ms: int,
     short_text_max_chars: int,
     short_timeline_max_ms: int,
+    speed_factor: float,
 ) -> int:
     extended = 0
     last_idx = len(cues) - 1
@@ -187,14 +196,17 @@ def _extend_cue_ends(
         if cue.start_ms == nxt.start_ms:
             continue
 
-        required_ms = estimate_required_ms(
-            cue.text,
-            current_ms,
-            target_cps=target_cps,
-            tts_head_ms=tts_head_ms,
-            tts_tail_ms=tts_tail_ms,
-            short_text_max_chars=short_text_max_chars,
-            short_timeline_max_ms=short_timeline_max_ms,
+        required_ms = apply_speed_factor_ms(
+            estimate_required_ms(
+                cue.text,
+                current_ms,
+                target_cps=target_cps,
+                tts_head_ms=tts_head_ms,
+                tts_tail_ms=tts_tail_ms,
+                short_text_max_chars=short_text_max_chars,
+                short_timeline_max_ms=short_timeline_max_ms,
+            ),
+            speed_factor,
         )
         deficit = required_ms - current_ms
         if deficit <= 0:
@@ -223,8 +235,11 @@ def _rebalance_neighbor_cues(
     tts_tail_ms: int,
     short_text_max_chars: int,
     short_timeline_max_ms: int,
+    speed_factor: float,
+    max_start_shift_ms: int,
+    anchor_starts: list[int],
     neighbor_window: int = 2,
-) -> int:
+) -> tuple[int, int]:
     """
     Dò tối đa `neighbor_window` (mặc định 2) SRT trước & sau câu đang thiếu thời lượng
     (`deficit = required_ms - current_ms > 0`).
@@ -232,18 +247,64 @@ def _rebalance_neighbor_cues(
     dịch chuyển điểm bắt đầu/kết thúc của các câu trung gian để lấp khoảng trống đó vào câu đang thiếu.
     """
     if len(cues) < 2 or neighbor_window <= 0:
-        return 0
+        return 0, 0
+
+    max_start_shift_ms = max(0, int(max_start_shift_ms))
+    # Track the total amount subtracted from each cue across the sequential
+    # scan. A cue may move earlier multiple times, but its cumulative
+    # subtraction may never exceed the configured limit.
+    subtracted_start_ms = [0] * len(cues)
+    start_shift_capped = 0
+
+    def _limit_start_shift(
+        requested_ms: int,
+        affected_indices: range,
+        *,
+        earlier: bool,
+    ) -> tuple[int, bool]:
+        requested = max(0, int(requested_ms))
+        indices = list(affected_indices)
+        if requested <= 0 or not indices:
+            return requested, False
+
+        if earlier:
+            remaining_from_anchor = min(
+                cues[idx].start_ms - (anchor_starts[idx] - max_start_shift_ms)
+                for idx in indices
+            )
+            remaining_subtraction = min(
+                max_start_shift_ms - subtracted_start_ms[idx] for idx in indices
+            )
+            allowed = min(
+                requested,
+                max(0, remaining_from_anchor),
+                max(0, remaining_subtraction),
+            )
+        else:
+            remaining = min(
+                (anchor_starts[idx] + max_start_shift_ms) - cues[idx].start_ms
+                for idx in indices
+            )
+            allowed = min(requested, max(0, remaining))
+        return int(allowed), allowed < requested
+
+    def _record_shifted_earlier(affected_indices: range, amount_ms: int) -> None:
+        for idx in affected_indices:
+            subtracted_start_ms[idx] += int(amount_ms)
 
     def _req_ms(cue: _CueState) -> int:
         cur_ms = max(0, cue.end_ms - cue.start_ms)
-        return estimate_required_ms(
-            cue.text,
-            cur_ms,
-            target_cps=target_cps,
-            tts_head_ms=tts_head_ms,
-            tts_tail_ms=tts_tail_ms,
-            short_text_max_chars=short_text_max_chars,
-            short_timeline_max_ms=short_timeline_max_ms,
+        return apply_speed_factor_ms(
+            estimate_required_ms(
+                cue.text,
+                cur_ms,
+                target_cps=target_cps,
+                tts_head_ms=tts_head_ms,
+                tts_tail_ms=tts_tail_ms,
+                short_text_max_chars=short_text_max_chars,
+                short_timeline_max_ms=short_timeline_max_ms,
+            ),
+            speed_factor,
         )
 
     rebalanced_count = 0
@@ -281,12 +342,19 @@ def _rebalance_neighbor_cues(
             # 1a. Mượn khoảng trống (gap) giữa donor và câu kế tiếp nó
             gap = after_donor.start_ms - donor.end_ms
             avail_gap = (gap - min_gap_ms) if gap > min_borrow_gap_ms else 0
-            take_gap = min(deficit, max(0, int(avail_gap)))
+            requested_gap = min(deficit, max(0, int(avail_gap)))
+            affected = range(donor_idx + 1, i + 1)
+            take_gap, was_capped = _limit_start_shift(
+                requested_gap, affected, earlier=True
+            )
+            if was_capped:
+                start_shift_capped += 1
             if take_gap > 0:
                 for m in range(donor_idx + 1, i):
                     cues[m].start_ms -= take_gap
                     cues[m].end_ms -= take_gap
                 cue.start_ms -= take_gap
+                _record_shifted_earlier(affected, take_gap)
                 deficit -= take_gap
                 gained_total += take_gap
 
@@ -295,13 +363,20 @@ def _rebalance_neighbor_cues(
                 donor_cur_ms = donor.end_ms - donor.start_ms
                 donor_req_ms = _req_ms(donor)
                 surplus = max(0, donor_cur_ms - donor_req_ms)
-                take_surplus = min(deficit, int(surplus))
+                requested_surplus = min(deficit, int(surplus))
+                affected = range(donor_idx + 1, i + 1)
+                take_surplus, was_capped = _limit_start_shift(
+                    requested_surplus, affected, earlier=True
+                )
+                if was_capped:
+                    start_shift_capped += 1
                 if take_surplus > 0:
                     donor.end_ms -= take_surplus
                     for m in range(donor_idx + 1, i):
                         cues[m].start_ms -= take_surplus
                         cues[m].end_ms -= take_surplus
                     cue.start_ms -= take_surplus
+                    _record_shifted_earlier(affected, take_surplus)
                     deficit -= take_surplus
                     gained_total += take_surplus
 
@@ -326,7 +401,13 @@ def _rebalance_neighbor_cues(
             # 2a. Mượn khoảng trống (gap) giữa câu trước donor và donor
             gap = donor.start_ms - before_donor.end_ms
             avail_gap = (gap - min_gap_ms) if gap > min_borrow_gap_ms else 0
-            take_gap = min(deficit, max(0, int(avail_gap)))
+            requested_gap = min(deficit, max(0, int(avail_gap)))
+            affected = range(i + 1, donor_idx)
+            take_gap, was_capped = _limit_start_shift(
+                requested_gap, affected, earlier=False
+            )
+            if was_capped:
+                start_shift_capped += 1
             if take_gap > 0:
                 for m in range(i + 1, donor_idx):
                     cues[m].start_ms += take_gap
@@ -340,7 +421,13 @@ def _rebalance_neighbor_cues(
                 donor_cur_ms = donor.end_ms - donor.start_ms
                 donor_req_ms = _req_ms(donor)
                 surplus = max(0, donor_cur_ms - donor_req_ms)
-                take_surplus = min(deficit, int(surplus))
+                requested_surplus = min(deficit, int(surplus))
+                affected = range(i + 1, donor_idx + 1)
+                take_surplus, was_capped = _limit_start_shift(
+                    requested_surplus, affected, earlier=False
+                )
+                if was_capped:
+                    start_shift_capped += 1
                 if take_surplus > 0:
                     donor.start_ms += take_surplus
                     for m in range(i + 1, donor_idx):
@@ -353,7 +440,7 @@ def _rebalance_neighbor_cues(
         if gained_total > 0:
             rebalanced_count += 1
 
-    return rebalanced_count
+    return rebalanced_count, start_shift_capped
 
 
 def optimize_subtitle_timings(
@@ -369,6 +456,8 @@ def optimize_subtitle_timings(
     video_duration_ms: int | None = None,
     rebalance_neighbors: bool = True,
     neighbor_window: int = 2,
+    max_start_shift_ms: int = 400,
+    speed_factor: float = 1.1,
 ) -> tuple[list[dict[str, Any]], VoiceSyncReport]:
     del video_duration_ms  # reserved; last cue never extends per spec
 
@@ -380,6 +469,9 @@ def optimize_subtitle_timings(
     original_starts = [c.start_ms for c in cues]
 
     overlaps_fixed = _resolve_overlaps(cues, min_gap_ms=min_gap_ms)
+    # Rebalance limits are anchored after overlap repair, so overlap repair is
+    # intentionally exempt from the +/- start-shift cap.
+    rebalance_anchor_starts = [c.start_ms for c in cues]
     extended = _extend_cue_ends(
         cues,
         target_cps=target_cps,
@@ -389,10 +481,12 @@ def optimize_subtitle_timings(
         tts_tail_ms=tts_tail_ms,
         short_text_max_chars=short_text_max_chars,
         short_timeline_max_ms=short_timeline_max_ms,
+        speed_factor=speed_factor,
     )
     rebalanced = 0
+    start_shift_capped = 0
     if rebalance_neighbors and neighbor_window > 0:
-        rebalanced = _rebalance_neighbor_cues(
+        rebalanced, start_shift_capped = _rebalance_neighbor_cues(
             cues,
             target_cps=target_cps,
             min_gap_ms=min_gap_ms,
@@ -401,8 +495,19 @@ def optimize_subtitle_timings(
             tts_tail_ms=tts_tail_ms,
             short_text_max_chars=short_text_max_chars,
             short_timeline_max_ms=short_timeline_max_ms,
+            speed_factor=speed_factor,
+            max_start_shift_ms=max_start_shift_ms,
+            anchor_starts=rebalance_anchor_starts,
             neighbor_window=neighbor_window,
         )
+
+    max_abs_start_shift_ms = max(
+        (
+            abs(cue.start_ms - rebalance_anchor_starts[idx])
+            for idx, cue in enumerate(cues)
+        ),
+        default=0,
+    )
 
     out_blocks: list[dict[str, Any]] = []
     unchanged = 0
@@ -425,6 +530,8 @@ def optimize_subtitle_timings(
         rebalanced=rebalanced,
         overlaps_fixed=overlaps_fixed,
         unchanged=unchanged,
+        start_shift_capped=start_shift_capped,
+        max_abs_start_shift_ms=max_abs_start_shift_ms,
     )
     return out_blocks, report
 

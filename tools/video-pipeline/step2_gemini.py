@@ -184,9 +184,6 @@ def _validate_batch_mapping(mapped: dict[int, str], expected_count: int) -> None
             f"Gemini line count mismatch: got {len(mapped)}/{expected_count} lines; "
             f"missing ids: {missing}"
         )
-    empty = [i for i in range(expected_count) if not str(mapped[i]).strip()]
-    if empty:
-        raise ValueError(f"Gemini returned empty translation for ids: {empty}")
 
 
 def _batch_checkpoint_fingerprint(batch: list, batch_start_index: int) -> str:
@@ -266,7 +263,9 @@ def _normalize_batch_mapping(
         return {}
 
     def complete(local_map: dict[int, str]) -> bool:
-        return all(i in local_map and str(local_map[i]).strip() for i in range(expected_count))
+        # Empty translations are valid. Step 2 later drops those cues from
+        # vi.srt, so only the presence of every expected id matters here.
+        return all(i in local_map for i in range(expected_count))
 
     if complete(mapped):
         return {i: mapped[i] for i in range(expected_count)}

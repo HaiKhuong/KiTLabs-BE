@@ -42,6 +42,22 @@ def write_srt(blocks: list[dict], path: Path) -> None:
 
 
 class Step2GeminiCheckpointTest(unittest.TestCase):
+    def test_complete_mapping_accepts_empty_translations(self) -> None:
+        batch = [
+            {"index": index + 501, "time": "00:00:00,000 --> 00:00:00,500", "text": "source"}
+            for index in range(500)
+        ]
+        mapping = {index: f"dịch {index}" for index in range(500)}
+        for index in (308, 350, 411, 420, 421):
+            mapping[index] = ""
+
+        normalized = step2_gemini._normalize_batch_mapping(mapping, batch, 500)
+        step2_gemini._validate_batch_mapping(normalized, 500)
+
+        self.assertEqual(len(normalized), 500)
+        self.assertEqual(normalized[499], "dịch 499")
+        self.assertEqual(normalized[308], "")
+
     def test_payload_flattens_visual_line_breaks_within_each_cue(self) -> None:
         batch = [
             {"index": 8, "text": '我的\n“好” 兄弟'},
