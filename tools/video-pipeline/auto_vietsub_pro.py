@@ -6357,7 +6357,9 @@ def run_pipeline(video, step_arg=None):
         last_output = zh_srt
 
     if step_enabled(2):
-        step2_was_cached = file_ready(vi_srt)
+        # VoiceSync is a one-time post-process of a newly generated Gemini SRT.
+        # Do not re-apply it to a cached/already-synced vi.srt on rerenders.
+        step2_generated_this_run = not file_ready(vi_srt)
         vi_srt = run_step(
             2,
             "Step2",
@@ -6366,13 +6368,14 @@ def run_pipeline(video, step_arg=None):
                 get_or_run(vi_srt, "Step2", step2_translate_srt, zh_srt),
             )[1],
         )
-        if not step2_was_cached and VOICE_SYNC_ENABLED and file_ready(vi_srt):
+        last_output = vi_srt
+        if VOICE_SYNC_ENABLED and step2_generated_this_run:
             vi_srt = run_step(
                 2,
                 "VoiceSync",
                 lambda: step2b_voice_sync_srt(vi_srt, video_duration_ms),
             )
-        last_output = vi_srt
+            last_output = vi_srt
 
     if SKIP_VOICE_STEP:
         if step_enabled(3) or step_enabled(4):
