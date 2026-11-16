@@ -189,6 +189,10 @@ VOICE_SYNC_SHORT_TEXT_MAX_CHARS = 14
 VOICE_SYNC_SHORT_TIMELINE_MAX_MS = 1500
 VOICE_SYNC_MAX_START_SHIFT_MS = 400
 VOICE_SYNC_SPEED_FACTOR = 1.1
+# Adaptive AV Sync (2-Tier): nén khoảng lặng + atempo <= 1.20x; vượt 1.20x thì giãn video <= 1.35x (>= 0.74x speed) & dịch timeline.
+ADAPTIVE_AV_SYNC_ENABLED = True
+ADAPTIVE_SAFE_AUDIO_SPEED_MAX = 1.20
+ADAPTIVE_MAX_VIDEO_STRETCH_FACTOR = 1.35
 # Optional: set absolute ffmpeg.exe path here if needed.
 FFMPEG_PATH = ""
 
@@ -2865,6 +2869,7 @@ def step2b_voice_sync_srt(vi_srt_path, video_duration_ms=None):
         short_timeline_max_ms=int(VOICE_SYNC_SHORT_TIMELINE_MAX_MS),
         max_start_shift_ms=int(VOICE_SYNC_MAX_START_SHIFT_MS),
         speed_factor=float(VOICE_SYNC_SPEED_FACTOR),
+        safe_speed_max=float(ADAPTIVE_SAFE_AUDIO_SPEED_MAX),
         video_duration_ms=video_duration_ms,
     )
     write_srt(optimized, vi_path)
@@ -2872,6 +2877,7 @@ def step2b_voice_sync_srt(vi_srt_path, video_duration_ms=None):
         "VoiceSync: "
         f"extended={report.extended}, rebalanced={report.rebalanced}, "
         f"overlaps_fixed={report.overlaps_fixed}, unchanged={report.unchanged}, "
+        f"exceeds_{ADAPTIVE_SAFE_AUDIO_SPEED_MAX:.1f}x={report.exceeds_safe_speed}, "
         f"start_shift_capped={report.start_shift_capped}, "
         f"max_start_shift={report.max_abs_start_shift_ms}ms/"
         f"{VOICE_SYNC_MAX_START_SHIFT_MS}ms, speed_factor={VOICE_SYNC_SPEED_FACTOR}, "
@@ -2882,6 +2888,199 @@ def step2b_voice_sync_srt(vi_srt_path, video_duration_ms=None):
             "VoiceSync: STEP3_TTS_BORROW_GAP đang bật — khuyến nghị tắt khi dùng Voice Sync."
         )
     return vi_path
+
+
+def get_adaptive_av_sync_meta_path() -> Path:
+    return LOG_DIR / "adaptive_av_sync.json"
+
+
+def get_vi_synced_srt_path() -> Path:
+    return SUBTITLE_DIR / f"{WORK_NAME}.vi_synced.srt"
+
+
+def _compute_file_sha256(path: str | Path) -> str:
+    import hashlib
+
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _load_valid_adaptive_av_sync(vi_srt_path: str | Path | None = None):
+    """
+    Đọc metadata Adaptive AV Sync nếu hợp lệ và khớp sha256 với file `vi.srt` gốc.
+    Đảm bảo rerender không bao giờ nhân đôi tốc độ giãn (idempotent).
+    Trả về `(stretch_intervals, original_video_duration_sec, synced_srt_path)`.
+    """
+    if not ADAPTIVE_AV_SYNC_ENABLED:
+        return [], 0.0, None
+    meta_path = get_adaptive_av_sync_meta_path()
+    if not meta_path.is_file():
+        return [], 0.0, None
+    try:
+        data = json.loads(meta_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        log(f"AdaptiveAVSync: không đọc được {meta_path.name}: {exc}")
+        return [], 0.0, None
+
+    base_srt = Path(vi_srt_path) if vi_srt_path else get_vi_srt_path()
+    expected_hash = str(data.get("vi_srt_sha256") or "").strip()
+    if expected_hash and base_srt.is_file():
+        actual_hash = _compute_file_sha256(base_srt)
+        if actual_hash != expected_hash:
+            log(
+                "AdaptiveAVSync: vi.srt đã thay đổi so với lần chạy Step 3 gần nhất — "
+                "bỏ qua stretch_intervals cũ để tránh lệch timeline."
+            )
+            return [], 0.0, None
+
+    from adaptive_av_sync import StretchInterval
+
+    intervals = [
+        StretchInterval(
+            segment_index=int(iv["segment_index"]),
+            orig_start=float(iv["orig_start"]),
+            orig_end=float(iv["orig_end"]),
+            stretch_factor=float(iv["stretch_factor"]),
+            delta_t=float(iv["delta_t"]),
+        )
+        for iv in (data.get("stretch_intervals") or [])
+        if float(iv.get("stretch_factor", 1.0)) > 1.001
+    ]
+    orig_dur = float(data.get("original_video_duration_sec") or 0.0)
+    synced_srt = get_vi_synced_srt_path()
+    return intervals, orig_dur, (synced_srt if synced_srt.is_file() else None)
+
+
+def _resolve_ass_source_srt(vi_srt_path: str | Path) -> Path:
+    """Ưu tiên dùng `vi_synced.srt` nếu Adaptive AV Sync hợp lệ cho `vi.srt` hiện tại."""
+    vi_path = Path(vi_srt_path)
+    intervals, _orig_dur, synced_srt = _load_valid_adaptive_av_sync(vi_path)
+    if intervals and synced_srt and synced_srt.is_file():
+        return synced_srt
+    return vi_path
+
+
+def _ensure_raw_wav_24k_mono(src_path: Path, dst_wav: Path, *, trim_sil_filter: str = "") -> Path:
+    """Chuyển raw TTS (.mp3/.wav) về chuẩn PCM 16-bit 24kHz mono (không atempo) cho AdaptiveAVSync."""
+    af_parts = []
+    if trim_sil_filter:
+        af_parts.append(trim_sil_filter)
+    af_parts.append("aresample=24000")
+    run_command(
+        [
+            FFMPEG_BIN,
+            "-y",
+            "-i",
+            str(src_path),
+            "-af",
+            ",".join(af_parts),
+            "-ac",
+            "1",
+            "-ar",
+            "24000",
+            "-c:a",
+            "pcm_s16le",
+            str(dst_wav),
+        ],
+        f"Prepare raw WAV {dst_wav.name}",
+    )
+    return dst_wav
+
+
+def _run_step3_adaptive_av_sync(
+    *,
+    srt_path: Path,
+    raw_segments: list[dict],
+    out_voice_wav: Path,
+    orig_video_duration_sec: float,
+) -> Path:
+    """
+    Chạy Adaptive AV Sync (2 tầng) từ `vi.srt` chuẩn + các file TTS thô (`raw_XXXX` + `tail_pad`),
+    ghi đè atomic ra `*_voice.wav`, `vi_synced.srt`, và `logs/adaptive_av_sync.json`.
+    """
+    from adaptive_av_sync import AudioOptimizer, DubbingSegment, TimelineSynchronizer
+
+    work_sync_dir = LOG_DIR / "adaptive_av_sync"
+    work_sync_dir.mkdir(parents=True, exist_ok=True)
+
+    optimizer = AudioOptimizer(
+        sample_rate=24000,
+        safe_speed_max=float(ADAPTIVE_SAFE_AUDIO_SPEED_MAX),
+        ffmpeg_bin=FFMPEG_BIN,
+    )
+    synchronizer = TimelineSynchronizer(
+        optimizer,
+        safe_audio_speed_max=float(ADAPTIVE_SAFE_AUDIO_SPEED_MAX),
+        max_video_stretch_factor=float(ADAPTIVE_MAX_VIDEO_STRETCH_FACTOR),
+        borrow_gap_enabled=bool(STEP3_TTS_BORROW_GAP),
+    )
+
+    dub_segments = [
+        DubbingSegment(
+            index=int(item["index"]),
+            start_time=float(item["start_time"]),
+            end_time=float(item["end_time"]),
+            text=str(item["text"]),
+            audio_path=str(item["audio_path"]),
+            available_duration=float(item["available_duration"]),
+        )
+        for item in raw_segments
+    ]
+
+    synced_segs, report = synchronizer.synchronize_segments(
+        dub_segments,
+        work_sync_dir,
+        original_video_duration_sec=float(orig_video_duration_sec),
+    )
+
+    synchronizer.build_master_audio_track(
+        synced_segs,
+        out_voice_wav,
+        total_duration_sec=report.final_video_duration_sec,
+    )
+
+    synced_srt_path = get_vi_synced_srt_path()
+    synchronizer.export_synced_srt(synced_segs, synced_srt_path)
+
+    meta_payload = {
+        "version": 1,
+        "vi_srt_sha256": _compute_file_sha256(srt_path),
+        "safe_audio_speed_max": float(ADAPTIVE_SAFE_AUDIO_SPEED_MAX),
+        "max_video_stretch_factor": float(ADAPTIVE_MAX_VIDEO_STRETCH_FACTOR),
+        "original_video_duration_sec": float(report.original_video_duration_sec),
+        "final_video_duration_sec": float(report.final_video_duration_sec),
+        "total_video_added_sec": float(report.total_video_added_sec),
+        "stretch_intervals": [
+            {
+                "segment_index": iv.segment_index,
+                "orig_start": iv.orig_start,
+                "orig_end": iv.orig_end,
+                "stretch_factor": iv.stretch_factor,
+                "delta_t": iv.delta_t,
+            }
+            for iv in report.stretch_intervals
+        ],
+    }
+    meta_path = get_adaptive_av_sync_meta_path()
+    meta_tmp = meta_path.with_suffix(".json.tmp")
+    meta_tmp.write_text(
+        json.dumps(meta_payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    os.replace(meta_tmp, meta_path)
+
+    log_step3(
+        f"AdaptiveAVSync: total={report.total_segments}, native={report.native_fit_count}, "
+        f"tier1_silence={report.tier1_silence_only_count}, tier1_atempo={report.tier1_atempo_count}, "
+        f"tier2_video_stretch={report.tier2_video_stretch_count}, "
+        f"added_video=+{report.total_video_added_sec:.2f}s "
+        f"({report.original_video_duration_sec:.2f}s -> {report.final_video_duration_sec:.2f}s)",
+        important=True,
+    )
+    return out_voice_wav
 
 
 def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
@@ -2992,6 +3191,7 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
         )
 
     timeline_paths = []
+    adaptive_raw_segments = []
     current_time_ms = 0
 
     for i, block in enumerate(
@@ -3005,8 +3205,8 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
         if end_ms <= start_ms:
             continue
 
-        # Insert silence before subtitle if there is a gap.
-        if start_ms > current_time_ms:
+        # Insert silence before subtitle if there is a gap (legacy path; AdaptiveAVSync builds gaps automatically).
+        if not ADAPTIVE_AV_SYNC_ENABLED and start_ms > current_time_ms:
             gap_ms = start_ms - current_time_ms
             silence_path = chunk_dir / f"gap_{i:04d}.wav"
             run_command(
@@ -3040,6 +3240,16 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
                 and file_ready(empty_path)
             ):
                 timeline_paths.append(empty_path.resolve())
+                adaptive_raw_segments.append(
+                    {
+                        "index": int(block.get("index", i + 1)),
+                        "start_time": start_ms / 1000.0,
+                        "end_time": end_ms / 1000.0,
+                        "text": str(block.get("text") or ""),
+                        "audio_path": str(empty_path.resolve()),
+                        "available_duration": subtitle_duration_ms / 1000.0,
+                    }
+                )
                 current_time_ms = end_ms
                 continue
             run_command(
@@ -3059,6 +3269,16 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
                 f"Create empty subtitle silence {i}",
             )
             timeline_paths.append(empty_path.resolve())
+            adaptive_raw_segments.append(
+                {
+                    "index": int(block.get("index", i + 1)),
+                    "start_time": start_ms / 1000.0,
+                    "end_time": end_ms / 1000.0,
+                    "text": str(block.get("text") or ""),
+                    "audio_path": str(empty_path.resolve()),
+                    "available_duration": subtitle_duration_ms / 1000.0,
+                }
+            )
             current_time_ms = end_ms
             done_block_indices.add(i)
             _step3_save_voice_checkpoint(
@@ -3068,9 +3288,37 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
 
         raw_ext = "wav" if use_voice_clone else "mp3"
         raw_audio_path = chunk_dir / f"raw_{i:04d}.{raw_ext}"
+        raw_clean_path = chunk_dir / f"raw_{i:04d}_clean.wav"
         final_seg_path = chunk_dir / f"part_{i:04d}.wav"
 
-        if (
+        if ADAPTIVE_AV_SYNC_ENABLED:
+            if (
+                STEP3_VOICE_RESUME
+                and i in done_block_indices
+                and file_ready(raw_clean_path)
+            ):
+                if i + 1 < len(blocks):
+                    next_start_ms, _ = parse_srt_time_range(blocks[i + 1]["time"])
+                else:
+                    next_start_ms = end_ms + 86_400_000
+                max_fit_ms = (
+                    max(subtitle_duration_ms, next_start_ms - start_ms)
+                    if STEP3_TTS_BORROW_GAP
+                    else subtitle_duration_ms
+                )
+                adaptive_raw_segments.append(
+                    {
+                        "index": int(block.get("index", i + 1)),
+                        "start_time": start_ms / 1000.0,
+                        "end_time": end_ms / 1000.0,
+                        "text": str(block.get("text") or ""),
+                        "audio_path": str(raw_clean_path.resolve()),
+                        "available_duration": max(subtitle_duration_ms, max_fit_ms) / 1000.0,
+                    }
+                )
+                current_time_ms = end_ms
+                continue
+        elif (
             STEP3_VOICE_RESUME
             and i in done_block_indices
             and file_ready(final_seg_path)
@@ -3166,6 +3414,16 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
                 f"Step3 TTS skip silent idx={i}",
             )
             timeline_paths.append(final_seg_path.resolve())
+            adaptive_raw_segments.append(
+                {
+                    "index": int(block.get("index", i + 1)),
+                    "start_time": start_ms / 1000.0,
+                    "end_time": end_ms / 1000.0,
+                    "text": str(block.get("text") or ""),
+                    "audio_path": str(final_seg_path.resolve()),
+                    "available_duration": subtitle_duration_ms / 1000.0,
+                }
+            )
             current_time_ms = end_ms
             done_block_indices.add(i)
             _step3_save_voice_checkpoint(
@@ -3201,6 +3459,16 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
                     f"Step3 TTS invalid silent idx={i}",
                 )
                 timeline_paths.append(final_seg_path.resolve())
+                adaptive_raw_segments.append(
+                    {
+                        "index": int(block.get("index", i + 1)),
+                        "start_time": start_ms / 1000.0,
+                        "end_time": end_ms / 1000.0,
+                        "text": str(block.get("text") or ""),
+                        "audio_path": str(final_seg_path.resolve()),
+                        "available_duration": subtitle_duration_ms / 1000.0,
+                    }
+                )
                 current_time_ms = end_ms
                 done_block_indices.add(i)
                 _step3_save_voice_checkpoint(
@@ -3293,9 +3561,38 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
                 0.02, float(OMNIVOICE_TRAILING_SILENCE_MIN_MS) / 1000.0
             )
             stop_thr = float(OMNIVOICE_TRAILING_SILENCE_THRESHOLD_DB)
-            fit_filters.append(
+            sil_filter = (
                 f"silenceremove=stop_periods=-1:stop_duration={stop_dur:.3f}:stop_threshold={stop_thr:.1f}dB"
             )
+            fit_filters.append(sil_filter)
+        else:
+            sil_filter = ""
+
+        if ADAPTIVE_AV_SYNC_ENABLED:
+            if sil_filter or Path(fit_audio_path).suffix.lower() != ".wav":
+                _ensure_raw_wav_24k_mono(
+                    Path(fit_audio_path),
+                    raw_clean_path,
+                    trim_sil_filter=sil_filter,
+                )
+            else:
+                shutil.copyfile(fit_audio_path, raw_clean_path)
+
+            adaptive_raw_segments.append(
+                {
+                    "index": int(block.get("index", i + 1)),
+                    "start_time": start_ms / 1000.0,
+                    "end_time": end_ms / 1000.0,
+                    "text": str(block.get("text") or ""),
+                    "audio_path": str(raw_clean_path.resolve()),
+                    "available_duration": max_fit_ms / 1000.0,
+                }
+            )
+            current_time_ms = end_ms
+            done_block_indices.add(i)
+            _step3_save_voice_checkpoint(srt_path, chunk_dir, blocks, done_block_indices)
+            continue
+
         if raw_segment_ms > max_fit_ms:
             stretch_factor = raw_segment_ms / float(max_fit_ms)
             if stretch_factor > 1.02:
@@ -3336,6 +3633,17 @@ def step3_generate_voice_from_srt(srt_path, target_duration_ms=None):
         current_time_ms = start_ms + target_duration_ms
         done_block_indices.add(i)
         _step3_save_voice_checkpoint(srt_path, chunk_dir, blocks, done_block_indices)
+
+    if ADAPTIVE_AV_SYNC_ENABLED and adaptive_raw_segments:
+        _start_ms, last_end_ms = parse_srt_time_range(blocks[-1]["time"])
+        orig_dur_sec = max(last_end_ms, int(target_duration_ms or 0)) / 1000.0
+        audio_path = VIDEO_DIR / f"{WORK_NAME}_voice.wav"
+        return _run_step3_adaptive_av_sync(
+            srt_path=Path(srt_path),
+            raw_segments=adaptive_raw_segments,
+            out_voice_wav=audio_path,
+            orig_video_duration_sec=orig_dur_sec,
+        )
 
     # Ensure final audio length reaches subtitle end or requested target duration.
     _start_ms, last_end_ms = parse_srt_time_range(blocks[-1]["time"])
@@ -3931,22 +4239,19 @@ def build_unified_render_command(
     probe_wh,
     has_video_audio,
     outro_has_audio,
+    stretch_intervals=None,
+    orig_video_duration_sec=0.0,
+    source_fps=30.0,
 ):
     """Build a single FFmpeg command that covers audio mix + visual transform +
-    subtitle burn + logo overlay + speed + resize + outro concat in one pass.
+    per-segment Adaptive AV Sync stretch + subtitle burn + logo overlay + speed + resize + outro concat in one pass.
 
-    Video speed (setpts) runs after ASS burn so subtitles align with source frames;
-    TTS voice receives the same atempo as original audio when speed != 1.
-
-    voice_path   – None when SKIP_VOICE_STEP or no voice available.
-    logo_path    – None when logo disabled or file missing.
-    outro_path   – None when outro disabled.
-    probe_wh     – (w, h) from ffprobe on source video, or None.
-    has_video_audio  – True if source video has an audio stream.
-    outro_has_audio  – True if outro clip has an audio stream (only used when outro_path given).
+    Per-segment Adaptive AV Sync (stretch_intervals) runs BEFORE ASS burn so video and
+    synced ASS subtitles align 1:1. Global video speed (setpts) runs after ASS burn.
     """
     speed = float(SPEED_VIDEO)
     apply_speed = abs(speed - 1.0) > 1e-6
+    stretch_intervals = list(stretch_intervals or [])
 
     source_wh = probe_wh
     target_wh = _resolve_export_target_wh(source_wh)
@@ -3985,7 +4290,26 @@ def build_unified_render_command(
         fc.append(f"{cur_v}{vt}[vtransform]")
         cur_v = "[vtransform]"
 
-    # Subtitle blur strips + ASS burn (source timeline, speed 1.0)
+    # Adaptive AV Sync: kéo giãn từng đoạn video (0.74x .. 1.0x) TRƯỚC khi burn ASS
+    # để timeline video khớp 1:1 với vi_synced.srt / sub.ass.
+    av_renderer = None
+    if stretch_intervals:
+        from adaptive_av_sync import FFmpegRenderer
+
+        av_renderer = FFmpegRenderer(ffmpeg_bin=FFMPEG_BIN or "ffmpeg", ffprobe_bin=FFPROBE_BIN or "ffprobe")
+        eff_orig_dur = float(orig_video_duration_sec or 0.0)
+        if eff_orig_dur <= 0.0:
+            eff_orig_dur = max(0.1, (get_media_duration_ms(video_path) or 1000) / 1000.0)
+        v_stretch_lines, cur_v = av_renderer.build_video_stretch_filter_lines(
+            input_label=cur_v,
+            intervals=stretch_intervals,
+            video_duration=eff_orig_dur,
+            fps=float(source_fps or 30.0),
+            out_label="[vavsync]",
+        )
+        fc.extend(v_stretch_lines)
+
+    # Subtitle blur strips + ASS burn (synced timeline)
     sub_tail = build_subtitle_filter_tail(ass_path)
     if "[vsub]" in sub_tail:
         fc.append(f"{cur_v}{sub_tail}")
@@ -4034,11 +4358,23 @@ def build_unified_render_command(
         return chain
 
     if voice_path and has_video_audio:
+        orig_audio_in = f"[{video_slot}:a]"
+        if stretch_intervals and av_renderer is not None:
+            eff_orig_dur = float(orig_video_duration_sec or 0.0)
+            if eff_orig_dur <= 0.0:
+                eff_orig_dur = max(0.1, (get_media_duration_ms(video_path) or 1000) / 1000.0)
+            a_stretch_lines, orig_audio_in = av_renderer.build_audio_stretch_filter_lines(
+                input_label=orig_audio_in,
+                intervals=stretch_intervals,
+                video_duration=eff_orig_dur,
+                out_label="[aavsync]",
+            )
+            fc.extend(a_stretch_lines)
         # Original audio (attenuated) + TTS narration mixed together
         orig_chain = f"volume={float(ORIGINAL_AUDIO_VOLUME):.6f}"
         if atempo:
             orig_chain = f"{atempo},{orig_chain}"
-        fc.append(f"[{video_slot}:a]{orig_chain}[orig]")
+        fc.append(f"{orig_audio_in}{orig_chain}[orig]")
         fc.append(f"[{voice_slot}:a]{_voice_audio_chain()}[voice_a]")
         fc.append("[orig][voice_a]amix=inputs=2:duration=first:dropout_transition=0[amain]")
         final_a_label = "[amain]"
@@ -4046,14 +4382,26 @@ def build_unified_render_command(
         # Only TTS (source video has no audio track)
         fc.append(f"[{voice_slot}:a]{_voice_audio_chain()}[amain]")
         final_a_label = "[amain]"
-    elif has_video_audio and (apply_speed or outro_path):
+    elif has_video_audio and (apply_speed or outro_path or stretch_intervals):
+        orig_audio_in = f"[{video_slot}:a]"
+        if stretch_intervals and av_renderer is not None:
+            eff_orig_dur = float(orig_video_duration_sec or 0.0)
+            if eff_orig_dur <= 0.0:
+                eff_orig_dur = max(0.1, (get_media_duration_ms(video_path) or 1000) / 1000.0)
+            a_stretch_lines, orig_audio_in = av_renderer.build_audio_stretch_filter_lines(
+                input_label=orig_audio_in,
+                intervals=stretch_intervals,
+                video_duration=eff_orig_dur,
+                out_label="[aavsync]",
+            )
+            fc.extend(a_stretch_lines)
         # No TTS: apply speed or normalize for outro concat
         if atempo:
-            fc.append(f"[{video_slot}:a]{atempo}[amain]")
+            fc.append(f"{orig_audio_in}{atempo}[amain]")
         else:
             # outro concat needs a named audio label; resample for compatibility
             a_fmt = "aresample=44100,aformat=sample_fmts=fltp:channel_layouts=stereo"
-            fc.append(f"[{video_slot}:a]{a_fmt}[amain]")
+            fc.append(f"{orig_audio_in}{a_fmt}[amain]")
         final_a_label = "[amain]"
     elif has_video_audio:
         # No TTS, no speed change, no outro → pass audio through unchanged
@@ -4067,7 +4415,11 @@ def build_unified_render_command(
         scale = _step7_scale_pad_filter(ow, oh)
         a_fmt = "aresample=44100,aformat=sample_fmts=fltp:channel_layouts=stereo"
 
-        main_output_dur_s = max(0.1, (get_media_duration_ms(video_path) or 1000) / 1000.0)
+        main_output_dur_s = max(
+            0.1,
+            ((get_media_duration_ms(video_path) or 1000) / 1000.0)
+            + sum(float(getattr(iv, "delta_t", 0.0) or 0.0) for iv in stretch_intervals),
+        )
         if apply_speed:
             main_output_dur_s /= speed
 
@@ -4120,12 +4472,22 @@ def build_unified_render_command(
     else:
         map_args += ["-an"]
 
+    if stretch_intervals or len(filter_complex) > 3500:
+        from adaptive_av_sync import FFmpegRenderer
+
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        script_path = LOG_DIR / "unified_filter_complex.txt"
+        script_path.write_text(";\n".join(fc) + "\n", encoding="utf-8")
+        script_flag = FFmpegRenderer(ffmpeg_bin=FFMPEG_BIN or "ffmpeg").filter_complex_script_flag()
+        fc_args = [script_flag, str(script_path)]
+    else:
+        fc_args = ["-filter_complex", filter_complex]
+
     return [
         FFMPEG_BIN,
         "-y",
         *input_args,
-        "-filter_complex",
-        filter_complex,
+        *fc_args,
         *map_args,
         *v_enc,
         *a_codec_args,
@@ -4179,6 +4541,30 @@ def step_render_unified(video_path, ass_path, voice_path):
     # (e.g. Step3 was skipped or not run in this session).
     effective_voice_path = voice_path if (voice_path and file_ready(Path(voice_path))) else None
 
+    stretch_intervals, orig_video_dur_sec, _synced_srt = (
+        _load_valid_adaptive_av_sync(get_vi_srt_path())
+        if effective_voice_path
+        else ([], 0.0, None)
+    )
+    source_fps = 30.0
+    if stretch_intervals:
+        try:
+            from adaptive_av_sync import FFmpegRenderer
+
+            vinfo = FFmpegRenderer(
+                ffmpeg_bin=FFMPEG_BIN or "ffmpeg",
+                ffprobe_bin=FFPROBE_BIN or "ffprobe",
+            ).probe_video_info(video_path)
+            source_fps = float(vinfo.get("fps") or 30.0)
+            if orig_video_dur_sec <= 0.0:
+                orig_video_dur_sec = float(vinfo.get("duration") or 0.0)
+        except Exception:
+            pass
+        log(
+            f"Unified render: áp dụng AdaptiveAVSync ({len(stretch_intervals)} đoạn giãn, "
+            f"+{sum(iv.delta_t for iv in stretch_intervals):.2f}s) trên video gốc."
+        )
+
     common_kwargs = dict(
         video_path=video_path,
         out_path=part,
@@ -4191,6 +4577,9 @@ def step_render_unified(video_path, ass_path, voice_path):
         probe_wh=probe_wh,
         has_video_audio=has_video_audio,
         outro_has_audio=outro_has_audio,
+        stretch_intervals=stretch_intervals,
+        orig_video_duration_sec=orig_video_dur_sec,
+        source_fps=source_fps,
     )
 
     gpu_cmd = build_unified_render_command(**common_kwargs, use_gpu=True)
@@ -4344,6 +4733,46 @@ def get_or_run(path, step_name, step_func, *args):
     return result
 
 
+def _invalidate_step3_cache_if_vi_srt_changed(vi_srt_path: Path, voice_path: Path) -> None:
+    """
+    Khi người dùng sửa `vi.srt` rồi rerender (kể cả khi REMOVE_CACHED_VOICE=False),
+    tự động xóa `*_voice.wav` cũ nếu `vi_srt_sha256` trong `adaptive_av_sync.json` không khớp
+    hoặc thiếu metadata, để Step 3 tính lại TTS + `adaptive_av_sync` theo `vi.srt` mới nhất.
+    """
+    if not ADAPTIVE_AV_SYNC_ENABLED or not file_ready(voice_path) or not file_ready(vi_srt_path):
+        return
+    meta_path = get_adaptive_av_sync_meta_path()
+    need_recompute = False
+    if not meta_path.is_file():
+        need_recompute = True
+    else:
+        try:
+            data = json.loads(meta_path.read_text(encoding="utf-8"))
+            expected_hash = str(data.get("vi_srt_sha256") or "").strip()
+            actual_hash = _compute_file_sha256(vi_srt_path)
+            if not expected_hash or expected_hash != actual_hash:
+                need_recompute = True
+        except Exception:
+            need_recompute = True
+
+    if not need_recompute:
+        return
+
+    log_step3(
+        "Step3: phát hiện vi.srt đã thay đổi — tính lại TTS & AdaptiveAVSync theo vi.srt mới nhất.",
+        important=True,
+    )
+    try:
+        voice_path.unlink(missing_ok=True)
+    except OSError:
+        pass
+    for extra in (meta_path, get_vi_synced_srt_path()):
+        try:
+            extra.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
 def _remove_cached_voice_before_step3():
     """Chỉ gọi khi Step3 sắp chạy — không xóa voice trong Step7 finalize."""
     if not REMOVE_CACHED_VOICE:
@@ -4356,6 +4785,12 @@ def _remove_cached_voice_before_step3():
     if chunk_dir.exists():
         shutil.rmtree(chunk_dir, ignore_errors=True)
         log_step3("Step3: removed tts_chunks checkpoint", important=True)
+    for extra in (get_adaptive_av_sync_meta_path(), get_vi_synced_srt_path()):
+        if extra.is_file():
+            extra.unlink(missing_ok=True)
+    sync_dir = LOG_DIR / "adaptive_av_sync"
+    if sync_dir.exists():
+        shutil.rmtree(sync_dir, ignore_errors=True)
 
 
 def _remove_cached_ass_for_rerender():
@@ -5743,7 +6178,10 @@ def _run_step6_and_finalize(
     if not rebuilt_ass_this_run:
         _remove_cached_ass_for_rerender()
         require_ready(vi_srt, "Step6 rebuild ASS input vi.srt")
-        ass = step5_convert_ass(vi_srt)
+        ass_source_srt = (
+            vi_srt if skip_voice_step else _resolve_ass_source_srt(vi_srt)
+        )
+        ass = step5_convert_ass(ass_source_srt)
     require_ready(ass, "Unified render input sub.ass")
     # Re-apply subtitle style even when ASS is reused from cache.
     update_ass_default_style(ass)
@@ -5919,6 +6357,7 @@ def run_pipeline(video, step_arg=None):
         last_output = zh_srt
 
     if step_enabled(2):
+        step2_was_cached = file_ready(vi_srt)
         vi_srt = run_step(
             2,
             "Step2",
@@ -5927,14 +6366,12 @@ def run_pipeline(video, step_arg=None):
                 get_or_run(vi_srt, "Step2", step2_translate_srt, zh_srt),
             )[1],
         )
-        last_output = vi_srt
-
-    if VOICE_SYNC_ENABLED and file_ready(vi_srt) and (step_enabled(3) or step_enabled(5)):
-        vi_srt = run_step(
-            2,
-            "VoiceSync",
-            lambda: step2b_voice_sync_srt(vi_srt, video_duration_ms),
-        )
+        if not step2_was_cached and VOICE_SYNC_ENABLED and file_ready(vi_srt):
+            vi_srt = run_step(
+                2,
+                "VoiceSync",
+                lambda: step2b_voice_sync_srt(vi_srt, video_duration_ms),
+            )
         last_output = vi_srt
 
     if SKIP_VOICE_STEP:
@@ -5943,6 +6380,8 @@ def run_pipeline(video, step_arg=None):
     else:
         if step_enabled(3):
             _remove_cached_voice_before_step3()
+            if file_ready(vi_srt):
+                _invalidate_step3_cache_if_vi_srt_changed(vi_srt, voice)
             voice = run_step(
                 3,
                 "Step3",
@@ -5977,12 +6416,15 @@ def run_pipeline(video, step_arg=None):
 
     if step_enabled(5):
         _remove_cached_ass_for_rerender()
+        ass_source_srt = (
+            vi_srt if SKIP_VOICE_STEP else _resolve_ass_source_srt(vi_srt)
+        )
         ass = run_step(
             5,
             "Step5",
             lambda: (
                 require_ready(vi_srt, "Step5 input vi subtitle"),
-                get_or_run(ass, "Step5", step5_convert_ass, vi_srt),
+                get_or_run(ass, "Step5", step5_convert_ass, ass_source_srt),
             )[1],
         )
         last_output = ass

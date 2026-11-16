@@ -794,9 +794,12 @@ class FFmpegRenderer:
         self,
         intervals: Sequence[StretchInterval],
         video_duration: float,
+        *,
+        input_label: str = "[0:v]",
+        out_label: str = "[vout]",
     ) -> Tuple[List[str], str]:
         """
-        Sinh chuỗi filter `[0:v]trim=...,setpts=...[v0]; ... concat=n=K:v=1:a=0[vout]`.
+        Sinh chuỗi filter `{input_label}trim=...,setpts=...[v0]; ... concat=n=K:v=1:a=0{out_label}`.
         """
         slices: List[Tuple[float, float, float]] = []
         cursor = 0.0
@@ -809,42 +812,57 @@ class FFmpegRenderer:
             slices.append((cursor, video_duration, 1.0))
 
         if not slices:
-            return ["[0:v]null[vout]"], "[vout]"
+            return [f"{input_label}null{out_label}"], out_label
 
+        # Khi input_label là output của filter khác (không phải [0:v]), cần split thành N luồng
+        # hoặc dùng trim trực tiếp nếu input là stream index [0:v].
+        is_raw_stream = input_label.startswith("[0:") and input_label.endswith("]")
         fc_lines: List[str] = []
+        src_labels: List[str] = []
+        if is_raw_stream or len(slices) == 1:
+            src_labels = [input_label] * len(slices)
+        else:
+            split_outs = [f"[avsync_vin_{idx}]" for idx in range(len(slices))]
+            fc_lines.append(f"{input_label}split={len(slices)}{''.join(split_outs)}")
+            src_labels = split_outs
+
         labels: List[str] = []
         for idx, (s, e, factor) in enumerate(slices):
-            lbl = f"[v{idx}]"
+            lbl = f"[avsync_v{idx}]"
             labels.append(lbl)
+            src = src_labels[idx]
             if abs(factor - 1.0) <= 1e-4:
                 fc_lines.append(
-                    f"[0:v]trim=start={s:.4f}:end={e:.4f},setpts=PTS-STARTPTS{lbl}"
+                    f"{src}trim=start={s:.4f}:end={e:.4f},setpts=PTS-STARTPTS{lbl}"
                 )
             else:
                 fc_lines.append(
-                    f"[0:v]trim=start={s:.4f}:end={e:.4f},setpts={factor:.6f}*(PTS-STARTPTS){lbl}"
+                    f"{src}trim=start={s:.4f}:end={e:.4f},setpts={factor:.6f}*(PTS-STARTPTS){lbl}"
                 )
 
         if len(labels) == 1:
-            fc_lines.append(f"{labels[0]}null[vout]")
+            fc_lines.append(f"{labels[0]}null{out_label}")
         else:
-            fc_lines.append(f"{''.join(labels)}concat=n={len(labels)}:v=1:a=0[vout]")
-        return fc_lines, "[vout]"
+            fc_lines.append(f"{''.join(labels)}concat=n={len(labels)}:v=1:a=0{out_label}")
+        return fc_lines, out_label
 
     def _build_piecewise_setpts_video_filter(
         self,
         intervals: Sequence[StretchInterval],
         fps: float,
+        *,
+        input_label: str = "[0:v]",
+        out_label: str = "[vout]",
     ) -> Tuple[List[str], str]:
         """
-        Sinh biểu thức `setpts` liên tục từng khúc trên 1 luồng `[0:v]` duy nhất.
+        Sinh biểu thức `setpts` liên tục từng khúc trên 1 luồng `{input_label}` duy nhất.
         Ưu điểm: O(1) RAM ngay cả khi video 60 phút có > 150 điểm giãn thời gian.
         Công thức:
             t'(T) = T + sum_k clip((T - s_k), 0, e_k - s_k) * (factor_k - 1)
         Vì clip(T - s, 0, d) = max(0, min(T - s, d)), tổng này liên tục tuyệt đối trên toàn trục T!
         """
         if not intervals:
-            return ["[0:v]null[vout]"], "[vout]"
+            return [f"{input_label}null{out_label}"], out_label
 
         terms: List[str] = ["T"]
         for iv in intervals:
@@ -857,8 +875,92 @@ class FFmpegRenderer:
 
         expr = "+".join(terms)
         safe_fps = max(15.0, min(120.0, float(fps or 30.0)))
-        line = f"[0:v]setpts='({expr})/TB',fps={safe_fps:.3f}[vout]"
-        return [line], "[vout]"
+        line = f"{input_label}setpts='({expr})/TB',fps={safe_fps:.3f}{out_label}"
+        return [line], out_label
+
+    def build_video_stretch_filter_lines(
+        self,
+        *,
+        input_label: str,
+        intervals: Sequence[StretchInterval],
+        video_duration: float,
+        fps: float,
+        out_label: str = "[vstretched]",
+    ) -> Tuple[List[str], str]:
+        """Sinh chuỗi filter kéo giãn từng đoạn video (dùng chung cho cả standalone & unified render)."""
+        norm_intervals = self._normalize_stretch_intervals(intervals, video_duration)
+        if not norm_intervals:
+            return [], input_label
+
+        mode = self.filter_mode
+        if mode == "auto":
+            mode = "trim_concat" if len(norm_intervals) <= 40 else "setpts_expr"
+
+        if mode == "trim_concat":
+            return self._build_trim_concat_video_filter(
+                norm_intervals,
+                video_duration,
+                input_label=input_label,
+                out_label=out_label,
+            )
+        return self._build_piecewise_setpts_video_filter(
+            norm_intervals,
+            fps,
+            input_label=input_label,
+            out_label=out_label,
+        )
+
+    def build_audio_stretch_filter_lines(
+        self,
+        *,
+        input_label: str,
+        intervals: Sequence[StretchInterval],
+        video_duration: float,
+        out_label: str = "[astretched]",
+    ) -> Tuple[List[str], str]:
+        """Sinh chuỗi filter kéo giãn audio nền gốc đồng bộ với các đoạn video đã giãn."""
+        norm_intervals = self._normalize_stretch_intervals(intervals, video_duration)
+        if not norm_intervals:
+            return [], input_label
+
+        if len(norm_intervals) <= 40:
+            slices: List[Tuple[float, float, float]] = []
+            cursor = 0.0
+            for iv in norm_intervals:
+                if iv.orig_start > cursor + 0.005:
+                    slices.append((cursor, iv.orig_start, 1.0))
+                slices.append((iv.orig_start, iv.orig_end, iv.stretch_factor))
+                cursor = iv.orig_end
+            if video_duration > cursor + 0.005:
+                slices.append((cursor, video_duration, 1.0))
+
+            if slices:
+                fc_lines: List[str] = []
+                labels: List[str] = []
+                for idx, (s, e, factor) in enumerate(slices):
+                    lbl = f"[avsync_a{idx}]"
+                    labels.append(lbl)
+                    if abs(factor - 1.0) <= 1e-4:
+                        fc_lines.append(
+                            f"{input_label}atrim=start={s:.4f}:end={e:.4f},asetpts=PTS-STARTPTS{lbl}"
+                        )
+                    else:
+                        atempo_c = AudioOptimizer.build_atempo_filter_chain(1.0 / factor)
+                        fc_lines.append(
+                            f"{input_label}atrim=start={s:.4f}:end={e:.4f},asetpts=PTS-STARTPTS,{atempo_c}{lbl}"
+                        )
+                if len(labels) == 1:
+                    fc_lines.append(f"{labels[0]}anull{out_label}")
+                else:
+                    fc_lines.append(f"{''.join(labels)}concat=n={len(labels)}:v=0:a=1{out_label}")
+                return fc_lines, out_label
+
+        total_stretch = (
+            (video_duration + sum(iv.delta_t for iv in norm_intervals))
+            / max(0.1, video_duration)
+        )
+        bg_atempo = AudioOptimizer.build_atempo_filter_chain(1.0 / total_stretch)
+        return [f"{input_label}{bg_atempo}{out_label}"], out_label
 
     def generate_filter_complex_script(
         self,
@@ -884,11 +986,11 @@ class FFmpegRenderer:
 
         if mode == "trim_concat":
             fc_lines, v_label = self._build_trim_concat_video_filter(
-                norm_intervals, video_duration
+                norm_intervals, video_duration, input_label="[0:v]", out_label="[vout]"
             )
         else:
             fc_lines, v_label = self._build_piecewise_setpts_video_filter(
-                norm_intervals, fps
+                norm_intervals, fps, input_label="[0:v]", out_label="[vout]"
             )
 
         # Xử lý Audio: Input [1:a] là master_dubbed_audio.wav đã khớp 100% timeline mới

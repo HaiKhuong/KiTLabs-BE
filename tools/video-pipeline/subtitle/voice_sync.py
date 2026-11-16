@@ -27,6 +27,7 @@ class VoiceSyncReport:
     unchanged: int = 0
     start_shift_capped: int = 0
     max_abs_start_shift_ms: int = 0
+    exceeds_safe_speed: int = 0
     details: list[str] = field(default_factory=list)
 
 
@@ -458,6 +459,7 @@ def optimize_subtitle_timings(
     neighbor_window: int = 2,
     max_start_shift_ms: int = 400,
     speed_factor: float = 1.1,
+    safe_speed_max: float = 1.2,
 ) -> tuple[list[dict[str, Any]], VoiceSyncReport]:
     del video_duration_ms  # reserved; last cue never extends per spec
 
@@ -511,12 +513,29 @@ def optimize_subtitle_timings(
 
     out_blocks: list[dict[str, Any]] = []
     unchanged = 0
+    exceeds_safe_speed = 0
+    safe_cap = max(1.0, float(safe_speed_max or 1.2))
     for idx, (block, cue) in enumerate(zip(blocks, cues)):
         changed = (
             cue.start_ms != original_starts[idx] or cue.end_ms != original_ends[idx]
         )
         if not changed:
             unchanged += 1
+
+        cur_ms = max(0, cue.end_ms - cue.start_ms)
+        if cur_ms > 0 and compact_text_len(cue.text) > 0:
+            raw_req_ms = estimate_required_ms(
+                cue.text,
+                cur_ms,
+                target_cps=target_cps,
+                tts_head_ms=tts_head_ms,
+                tts_tail_ms=tts_tail_ms,
+                short_text_max_chars=short_text_max_chars,
+                short_timeline_max_ms=short_timeline_max_ms,
+            )
+            if (raw_req_ms / float(cur_ms)) > safe_cap + 1e-6:
+                exceeds_safe_speed += 1
+
         out_blocks.append(
             {
                 "index": block["index"],
@@ -532,6 +551,7 @@ def optimize_subtitle_timings(
         unchanged=unchanged,
         start_shift_capped=start_shift_capped,
         max_abs_start_shift_ms=max_abs_start_shift_ms,
+        exceeds_safe_speed=exceeds_safe_speed,
     )
     return out_blocks, report
 

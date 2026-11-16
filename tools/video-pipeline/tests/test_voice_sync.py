@@ -334,6 +334,15 @@ class TestOptimizeSubtitleTimings(unittest.TestCase):
         self.assertEqual(report.max_abs_start_shift_ms, 400)
         self.assertGreater(report.start_shift_capped, 0)
 
+    def test_exceeds_safe_speed_reports_cues_still_over_1_2x(self):
+        # 56 chars (~4520ms required) packed into a 2000ms slot with no gap -> > 1.2x even after rebalance
+        blocks = [
+            _block(1, "00:00:00,000", "00:00:02,000", "A" * 56),
+            _block(2, "00:00:02,000", "00:00:04,520", "B" * 28),
+        ]
+        _out, report = optimize_subtitle_timings(blocks, safe_speed_max=1.2, **self.kw)
+        self.assertEqual(report.exceeds_safe_speed, 1)
+
     def test_rebalance_allows_multiple_subtractions_with_cumulative_budget(self):
         text_2520 = "A" * 28
         blocks = [
