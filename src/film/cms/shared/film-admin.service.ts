@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, NotFoundException, Optional } from "@nestjs/common";
+import { BadRequestException, Injectable, Logger, NotFoundException, Optional } from "@nestjs/common";
 import { InjectDataSource } from "@nestjs/typeorm";
 import { DataSource, EntityTarget, In, IsNull, Not } from "typeorm";
 import { PlatformAdminRole } from "../../../platform/entities/platform-admin-role.entity";
@@ -37,6 +37,7 @@ import {
   SectRank,
 } from "../../entities/film.entities";
 import { filmRankFor } from "../../shared/film-rank.util";
+import { FilmPushService } from "../../push/film-push.service";
 
 const RESOURCES: Record<string, EntityTarget<object>> = {
   movies: FilmMovie,
@@ -67,9 +68,12 @@ const RESOURCES: Record<string, EntityTarget<object>> = {
 
 @Injectable()
 export class FilmAdminService {
+  private readonly logger = new Logger(FilmAdminService.name);
+
   constructor(
     @InjectDataSource("film") private readonly db: DataSource,
     @Optional() @InjectDataSource() private readonly platformDb?: DataSource,
+    @Optional() private readonly pushService?: FilmPushService,
   ) {}
 
   private target(resource: string) {
@@ -415,11 +419,13 @@ export class FilmAdminService {
   async adminCreate(resource: string, data: Record<string, unknown>) {
     const genreIds = (data.genreIds || data.genre_ids) as string[] | undefined;
     const titleItemId = data.titleItemId as string | undefined;
+    const sendNotification = data.sendNotification !== false;
     const cleanData = { ...data };
     delete cleanData.genreIds;
     delete cleanData.genre_ids;
     delete cleanData.genres;
     delete cleanData.titleItemId;
+    delete cleanData.sendNotification;
 
     if (resource === "episode-sources" && cleanData.isActive !== false) {
       return this.saveEpisodeSource(null, cleanData);
@@ -476,17 +482,47 @@ export class FilmAdminService {
       return withG;
     }
 
+    if (resource === "episodes" && sendNotification) {
+      void this.notifyNewEpisode(created as FilmEpisode).catch((err) => {
+        this.logger.warn(`Failed to dispatch new episode notification: ${(err as Error).message}`);
+      });
+    }
+
     return created;
+  }
+
+  private async notifyNewEpisode(episode: FilmEpisode): Promise<void> {
+    if (!this.pushService) return;
+    const movie = await this.db.getRepository(FilmMovie).findOne({
+      where: { id: episode.movieId },
+      select: ["id", "title", "slug"],
+    });
+    const epNum = String(episode.episodeNumber || "").replace(/\.0$/, "");
+    const title = movie ? `${movie.title} - Tập ${epNum}` : `Tập ${epNum} mới`;
+    const content = episode.title
+      ? `${episode.title} đã lên sóng, vào xem ngay!`
+      : `Tập ${epNum} đã lên sóng, vào xem ngay!`;
+    const actionUrl = movie?.slug ? `/phim/${movie.slug}` : "/";
+
+    await this.pushService.createAndDispatchNotification({
+      title,
+      content,
+      type: "NEW_EPISODE",
+      actionUrl,
+      sendPush: true,
+    });
   }
 
   async adminUpdate(resource: string, id: string, data: Record<string, unknown>) {
     const genreIds = (data.genreIds || data.genre_ids) as string[] | undefined;
     const titleItemId = data.titleItemId as string | undefined;
+    const sendNotification = data.sendNotification !== false;
     const cleanData = { ...data };
     delete cleanData.genreIds;
     delete cleanData.genre_ids;
     delete cleanData.genres;
     delete cleanData.titleItemId;
+    delete cleanData.sendNotification;
 
     if (resource === "episode-sources") {
       return this.saveEpisodeSource(id, cleanData);
