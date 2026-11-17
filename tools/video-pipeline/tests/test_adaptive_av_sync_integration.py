@@ -16,6 +16,13 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 import auto_vietsub_pro as avp  # noqa: E402
+from adaptive_av_sync import (  # noqa: E402
+    AudioOptimizer,
+    DubbingSegment,
+    FFmpegRenderer,
+    StretchInterval,
+    TimelineSynchronizer,
+)
 
 
 def _make_speech_wav(path: Path, duration_sec: float, sr: int = 24000) -> None:
@@ -254,6 +261,81 @@ class TestAdaptiveAVSyncIntegration(unittest.TestCase):
         self.assertFalse(out_voice.is_file())
         self.assertFalse(avp.get_adaptive_av_sync_meta_path().is_file())
         self.assertFalse(avp.get_vi_synced_srt_path().is_file())
+
+    def test_small_video_delta_is_absorbed_by_single_audio_speed(self):
+        wav = self.root / "small_delta.wav"
+        _make_speech_wav(wav, 0.99)
+        optimizer = AudioOptimizer(sample_rate=24000, safe_speed_max=1.20)
+        sync = TimelineSynchronizer(
+            optimizer,
+            safe_audio_speed_max=1.20,
+            small_stretch_max_sec=0.100,
+            small_stretch_audio_boost_max=1.08,
+        )
+
+        segments, report = sync.synchronize_segments(
+            [DubbingSegment(1, 0.0, 0.8, "Câu ngắn", str(wav), 0.99, 0.8)],
+            self.root / "small_delta_work",
+            original_video_duration_sec=2.0,
+        )
+
+        self.assertEqual(report.tier2_video_stretch_count, 0)
+        self.assertEqual(report.stretch_intervals, [])
+        self.assertEqual(segments[0].tier_used, "TIER1_SMALL_STRETCH_ATEMPO")
+        self.assertAlmostEqual(segments[0].applied_audio_speed, 0.99 / 0.8, places=3)
+
+    def test_setpts_is_batched_and_later_starts_include_prior_delta(self):
+        intervals = [
+            StretchInterval(i, float(i * 2), float(i * 2 + 1), 1.10, 0.10)
+            for i in range(45)
+        ]
+        lines, label = FFmpegRenderer()._build_piecewise_setpts_video_filter(
+            intervals, 30.0, input_label="[vin]", out_label="[vout]"
+        )
+
+        self.assertEqual(label, "[vout]")
+        self.assertEqual(len(lines), 2)
+        self.assertIn("T-84.0000", lines[1])  # orig 80s + 40 * 0.10s
+        self.assertLessEqual(lines[0].count("*max("), 40)
+        self.assertLessEqual(lines[1].count("*max("), 40)
+
+    def test_micro_stretches_are_grouped_across_nearby_gaps(self):
+        original = [
+            StretchInterval(1, 1.0, 2.0, 1.030, 0.030),
+            StretchInterval(2, 3.0, 4.0, 1.040, 0.040),
+            StretchInterval(3, 5.0, 6.0, 1.020, 0.020),
+            StretchInterval(4, 10.0, 11.0, 1.200, 0.200),
+        ]
+
+        grouped = TimelineSynchronizer._consolidate_micro_stretches(original)
+
+        self.assertEqual(len(grouped), 2)
+        self.assertAlmostEqual(grouped[0].orig_start, 1.0)
+        self.assertAlmostEqual(grouped[0].orig_end, 6.0)
+        self.assertAlmostEqual(grouped[0].delta_t, 0.090)
+        self.assertAlmostEqual(grouped[0].stretch_factor, 1.018)
+        self.assertAlmostEqual(
+            sum(iv.delta_t for iv in grouped), sum(iv.delta_t for iv in original)
+        )
+
+    def test_original_audio_uses_segmented_local_stretch_for_many_intervals(self):
+        intervals = [
+            StretchInterval(i, float(i * 2), float(i * 2 + 1), 1.25, 0.25)
+            for i in range(45)
+        ]
+
+        lines, label = FFmpegRenderer().build_audio_stretch_filter_lines(
+            input_label="[0:a]",
+            intervals=intervals,
+            video_duration=92.0,
+            out_label="[aout]",
+        )
+        graph = ";".join(lines)
+
+        self.assertEqual(label, "[aout]")
+        self.assertIn("asegment=timestamps=", graph)
+        self.assertEqual(graph.count("atempo=0.800000"), 45)
+        self.assertIn("concat=n=91:v=0:a=1[aout]", graph)
 
 
 if __name__ == "__main__":

@@ -40,6 +40,13 @@ import soundfile as sf
 
 SAFE_AUDIO_SPEED_MAX: float = 1.20
 MAX_VIDEO_STRETCH_FACTOR: float = 1.35
+SMALL_STRETCH_MAX_SEC: float = 0.100
+SMALL_STRETCH_AUDIO_BOOST_MAX: float = 1.08
+SETPTS_INTERVAL_BATCH_SIZE: int = 40
+MIN_AUDIO_SEGMENT_SEC: float = 0.050
+MICRO_STRETCH_MAX_SEC: float = 0.050
+MICRO_STRETCH_GROUP_MAX_SEC: float = 0.100
+MICRO_STRETCH_GROUP_MAX_SPAN_SEC: float = 8.0
 DEFAULT_SAMPLE_RATE: int = 48000
 
 INTERNAL_SILENCE_MIN_SEC: float = 0.25
@@ -399,12 +406,101 @@ class TimelineSynchronizer:
         max_video_stretch_factor: float = MAX_VIDEO_STRETCH_FACTOR,
         borrow_gap_enabled: bool = True,
         min_gap_keep_sec: float = 0.05,
+        small_stretch_max_sec: float = SMALL_STRETCH_MAX_SEC,
+        small_stretch_audio_boost_max: float = SMALL_STRETCH_AUDIO_BOOST_MAX,
     ) -> None:
         self.optimizer = optimizer
         self.safe_audio_speed_max = float(safe_audio_speed_max)
         self.max_video_stretch_factor = float(max_video_stretch_factor)
         self.borrow_gap_enabled = bool(borrow_gap_enabled)
         self.min_gap_keep_sec = float(min_gap_keep_sec)
+        self.small_stretch_max_sec = max(0.0, float(small_stretch_max_sec))
+        self.small_stretch_audio_boost_max = max(
+            1.0, float(small_stretch_audio_boost_max)
+        )
+
+    @staticmethod
+    def _consolidate_micro_stretches(
+        intervals: Sequence[StretchInterval],
+        *,
+        micro_max_sec: float = MICRO_STRETCH_MAX_SEC,
+        group_max_sec: float = MICRO_STRETCH_GROUP_MAX_SEC,
+        group_max_span_sec: float = MICRO_STRETCH_GROUP_MAX_SPAN_SEC,
+    ) -> List[StretchInterval]:
+        """Gom nhiều stretch <50ms gần nhau thành một vùng gồm cả gap ở giữa.
+
+        Chỉ gom từ hai interval trở lên, không đi xuyên qua một stretch lớn, không
+        vượt quá 100ms delta/cụm hoặc một vùng 8 giây. Tổng delta được bảo toàn.
+        """
+        ordered = sorted(intervals, key=lambda iv: (iv.orig_start, iv.orig_end))
+        result: List[StretchInterval] = []
+        pending: List[StretchInterval] = []
+
+        def flush() -> None:
+            nonlocal pending
+            if len(pending) < 2:
+                result.extend(pending)
+                pending = []
+                return
+            start = pending[0].orig_start
+            end = pending[-1].orig_end
+            span = max(0.0, end - start)
+            total_delta = sum(iv.delta_t for iv in pending)
+            grouped_factor = 1.0 + total_delta / max(span, 1e-9)
+            if (
+                span <= 0.001
+                or total_delta <= 0.0
+                or grouped_factor > MAX_VIDEO_STRETCH_FACTOR + 1e-9
+            ):
+                result.extend(pending)
+            else:
+                result.append(
+                    StretchInterval(
+                        segment_index=pending[0].segment_index,
+                        orig_start=start,
+                        orig_end=end,
+                        stretch_factor=grouped_factor,
+                        delta_t=total_delta,
+                    )
+                )
+            pending = []
+
+        for iv in ordered:
+            if iv.delta_t >= micro_max_sec - 1e-9:
+                flush()
+                result.append(iv)
+                continue
+            if not pending:
+                pending = [iv]
+                continue
+
+            proposed_delta = sum(item.delta_t for item in pending) + iv.delta_t
+            proposed_span = iv.orig_end - pending[0].orig_start
+            if (
+                proposed_delta <= group_max_sec + 1e-9
+                and proposed_span <= group_max_span_sec + 1e-9
+            ):
+                pending.append(iv)
+            else:
+                flush()
+                pending = [iv]
+
+        flush()
+        return sorted(result, key=lambda iv: (iv.orig_start, iv.orig_end))
+
+    @staticmethod
+    def _timeline_offset_at(
+        original_time: float, intervals: Sequence[StretchInterval]
+    ) -> float:
+        """Độ lệch timeline tại một mốc gốc sau khi áp dụng các interval."""
+        offset = 0.0
+        for iv in intervals:
+            if original_time <= iv.orig_start:
+                break
+            covered = min(original_time, iv.orig_end) - iv.orig_start
+            if covered > 0.0:
+                offset += covered * (iv.stretch_factor - 1.0)
+        return offset
 
     def synchronize_segments(
         self,
@@ -528,6 +624,34 @@ class TimelineSynchronizer:
                 report.tier1_atempo_count += 1
                 continue
 
+            # Một phần video bù rất ngắn tạo nhiều interval setpts nhưng gần như không
+            # đem lại lợi ích cảm nhận. Hấp thụ phần <= 100ms bằng atempo nhẹ, có giới
+            # hạn, rồi encode audio đúng một lần từ comp_wav.
+            nominal_audio_dur = comp_dur / self.safe_audio_speed_max
+            nominal_video_delta = max(0.0, nominal_audio_dur - avail_dur)
+            boosted_speed_max = (
+                self.safe_audio_speed_max * self.small_stretch_audio_boost_max
+            )
+            if (
+                nominal_video_delta <= self.small_stretch_max_sec + 1e-9
+                and required_speed <= boosted_speed_max + 1e-6
+            ):
+                seg.applied_audio_speed = required_speed
+                seg.video_stretch_factor = 1.0
+                seg.delta_t = 0.0
+                seg.tier_used = "TIER1_SMALL_STRETCH_ATEMPO"
+                seg.final_audio_duration = self.optimizer.time_stretch_audio(
+                    comp_wav,
+                    out_seg_wav,
+                    speed_factor=required_speed,
+                    target_duration_sec=avail_dur,
+                )
+                seg.processed_audio_path = str(out_seg_wav)
+                seg.shifted_start_time = seg.start_time + cumulative_offset
+                seg.shifted_end_time = seg.shifted_start_time + seg.final_audio_duration
+                report.tier1_atempo_count += 1
+                continue
+
             # ------------------------------------------------------------------
             # TẦNG 2: Kéo giãn khung hình Video (Video Time-Stretching) & Dịch Timeline
             # ------------------------------------------------------------------
@@ -570,6 +694,20 @@ class TimelineSynchronizer:
 
             # Cộng dồn Δt cho toàn bộ các segment phía sau (i+1 .. N)
             cumulative_offset += delta_t
+
+        consolidated = self._consolidate_micro_stretches(report.stretch_intervals)
+        if len(consolidated) != len(report.stretch_intervals):
+            report.stretch_intervals = consolidated
+            report.total_video_added_sec = sum(iv.delta_t for iv in consolidated)
+            # Phân bố stretch đã đổi vị trí trong các gap, nên timeline voice/subtitle
+            # phải được tính lại từ chính mapping cuối cùng, không dùng offset cũ.
+            for seg in sorted_segs:
+                seg.shifted_start_time = seg.start_time + self._timeline_offset_at(
+                    seg.start_time, consolidated
+                )
+                seg.shifted_end_time = (
+                    seg.shifted_start_time + seg.final_audio_duration
+                )
 
         report.final_video_duration_sec = (
             report.original_video_duration_sec + report.total_video_added_sec
@@ -864,19 +1002,47 @@ class FFmpegRenderer:
         if not intervals:
             return [f"{input_label}null{out_label}"], out_label
 
-        terms: List[str] = ["T"]
-        for iv in intervals:
-            dur = iv.orig_end - iv.orig_start
-            extra_rate = iv.stretch_factor - 1.0
-            if dur > 0.001 and extra_rate > 1e-4:
+        safe_fps = max(15.0, min(120.0, float(fps or 30.0)))
+        valid = [
+            iv
+            for iv in intervals
+            if iv.orig_end - iv.orig_start > 0.001
+            and iv.stretch_factor - 1.0 > 1e-4
+        ]
+        if not valid:
+            return [f"{input_label}null{out_label}"], out_label
+
+        # FFmpeg tạo cây parser rất sâu với hàng trăm số hạng trong một setpts và có
+        # thể trả ENOMEM. Chia interval theo thứ tự thời gian thành nhiều setpts nối
+        # tiếp. Sau mỗi batch, timeline đã dài thêm `prior_delta`, nên mốc bắt đầu của
+        # batch kế tiếp phải được dịch đúng lượng đó. Duration interval không đổi vì
+        # toàn bộ interval của batch trước đều kết thúc trước batch sau.
+        lines: List[str] = []
+        current_label = input_label
+        prior_delta = 0.0
+        batch_size = max(1, SETPTS_INTERVAL_BATCH_SIZE)
+        batches = [valid[i : i + batch_size] for i in range(0, len(valid), batch_size)]
+        for batch_idx, batch in enumerate(batches):
+            terms: List[str] = ["T"]
+            for iv in batch:
+                dur = iv.orig_end - iv.orig_start
+                extra_rate = iv.stretch_factor - 1.0
+                shifted_start = iv.orig_start + prior_delta
                 terms.append(
-                    f"{extra_rate:.6f}*max(0\\,min(T-{iv.orig_start:.4f}\\,{dur:.4f}))"
+                    f"{extra_rate:.6f}*max(0\\,min(T-{shifted_start:.4f}\\,{dur:.4f}))"
                 )
 
-        expr = "+".join(terms)
-        safe_fps = max(15.0, min(120.0, float(fps or 30.0)))
-        line = f"{input_label}setpts='({expr})/TB',fps={safe_fps:.3f}{out_label}"
-        return [line], out_label
+            expr = "+".join(terms)
+            is_last = batch_idx == len(batches) - 1
+            next_label = out_label if is_last else f"[avsync_setpts_{batch_idx}]"
+            fps_tail = f",fps={safe_fps:.3f}" if is_last else ""
+            lines.append(
+                f"{current_label}setpts='({expr})/TB'{fps_tail}{next_label}"
+            )
+            prior_delta += sum(iv.delta_t for iv in batch)
+            current_label = next_label
+
+        return lines, out_label
 
     def build_video_stretch_filter_lines(
         self,
@@ -918,49 +1084,102 @@ class FFmpegRenderer:
         video_duration: float,
         out_label: str = "[astretched]",
     ) -> Tuple[List[str], str]:
-        """Sinh chuỗi filter kéo giãn audio nền gốc đồng bộ với các đoạn video đã giãn."""
+        """Kéo giãn audio nền đúng từng vùng Adaptive AV Sync của video.
+
+        `asegment` tách một input tuần tự tại mọi biên thời gian, mỗi lát stretch dùng
+        `atempo=1/factor`, sau đó concat lại. Cách này chính xác cả khi có hàng trăm
+        interval và không decode lại cùng input qua nhiều nhánh `atrim`.
+        """
         norm_intervals = self._normalize_stretch_intervals(intervals, video_duration)
         if not norm_intervals:
             return [], input_label
 
-        if len(norm_intervals) <= 40:
-            slices: List[Tuple[float, float, float]] = []
-            cursor = 0.0
-            for iv in norm_intervals:
-                if iv.orig_start > cursor + 0.005:
-                    slices.append((cursor, iv.orig_start, 1.0))
-                slices.append((iv.orig_start, iv.orig_end, iv.stretch_factor))
-                cursor = iv.orig_end
-            if video_duration > cursor + 0.005:
-                slices.append((cursor, video_duration, 1.0))
+        # Tuple `(input_start, input_end, target_output_duration)`. Giữ target riêng
+        # để có thể nhập các gap cực ngắn vào lát kế cận mà vẫn bảo toàn tổng timeline.
+        slices: List[Tuple[float, float, float]] = []
+        cursor = 0.0
+        for iv in norm_intervals:
+            if iv.orig_start > cursor + 1e-9:
+                gap = iv.orig_start - cursor
+                slices.append((cursor, iv.orig_start, gap))
+            input_duration = iv.orig_end - iv.orig_start
+            slices.append(
+                (iv.orig_start, iv.orig_end, input_duration * iv.stretch_factor)
+            )
+            cursor = iv.orig_end
+        if video_duration > cursor + 1e-9:
+            slices.append((cursor, video_duration, video_duration - cursor))
+        if not slices:
+            return [], input_label
 
-            if slices:
-                fc_lines: List[str] = []
-                labels: List[str] = []
-                for idx, (s, e, factor) in enumerate(slices):
-                    lbl = f"[avsync_a{idx}]"
-                    labels.append(lbl)
-                    if abs(factor - 1.0) <= 1e-4:
-                        fc_lines.append(
-                            f"{input_label}atrim=start={s:.4f}:end={e:.4f},asetpts=PTS-STARTPTS{lbl}"
-                        )
-                    else:
-                        atempo_c = AudioOptimizer.build_atempo_filter_chain(1.0 / factor)
-                        fc_lines.append(
-                            f"{input_label}atrim=start={s:.4f}:end={e:.4f},asetpts=PTS-STARTPTS,{atempo_c}{lbl}"
-                        )
-                if len(labels) == 1:
-                    fc_lines.append(f"{labels[0]}anull{out_label}")
+        # AAC thường giải mã theo frame ~23ms. asegment tại các gap 1–10ms có thể
+        # tạo output rỗng, làm concat chết giữa render. Nhập mọi lát <50ms vào lát
+        # trước (hoặc lát sau nếu nó đứng đầu), đồng thời cộng target duration để
+        # tổng audio đầu ra không đổi dù tempo được phân bố trên vùng rộng hơn.
+        merged: List[Tuple[float, float, float]] = []
+        pending_head: Optional[Tuple[float, float, float]] = None
+        for item in slices:
+            s, e, target = item
+            if e - s < MIN_AUDIO_SEGMENT_SEC:
+                if merged:
+                    ps, _pe, pt = merged[-1]
+                    merged[-1] = (ps, e, pt + target)
+                elif pending_head is None:
+                    pending_head = item
                 else:
-                    fc_lines.append(f"{''.join(labels)}concat=n={len(labels)}:v=0:a=1{out_label}")
-                return fc_lines, out_label
+                    hs, _he, ht = pending_head
+                    pending_head = (hs, e, ht + target)
+                continue
+            if pending_head is not None:
+                hs, _he, ht = pending_head
+                item = (hs, e, ht + target)
+                pending_head = None
+            merged.append(item)
+        if pending_head is not None:
+            if merged:
+                ps, _pe, pt = merged[-1]
+                merged[-1] = (ps, pending_head[1], pt + pending_head[2])
+            else:
+                merged.append(pending_head)
+        slices = merged
 
-        total_stretch = (
-            (video_duration + sum(iv.delta_t for iv in norm_intervals))
-            / max(0.1, video_duration)
-        )
-        bg_atempo = AudioOptimizer.build_atempo_filter_chain(1.0 / total_stretch)
-        return [f"{input_label}{bg_atempo}{out_label}"], out_label
+        fc_lines: List[str] = []
+        raw_labels = [f"[avsync_araw_{idx}]" for idx in range(len(slices))]
+        if len(slices) == 1:
+            fc_lines.append(f"{input_label}anull{raw_labels[0]}")
+        else:
+            # Mỗi end (trừ lát cuối) là biên của asegment. Dùng `|` theo cú pháp
+            # duration-list của FFmpeg; filter script không cần escape ký tự này.
+            boundaries = "|".join(f"{e:.6f}" for _s, e, _target in slices[:-1])
+            fc_lines.append(
+                f"{input_label}asegment=timestamps={boundaries}{''.join(raw_labels)}"
+            )
+
+        processed_labels: List[str] = []
+        for idx, ((s, e, target_duration), raw_label) in enumerate(zip(slices, raw_labels)):
+            processed = f"[avsync_a_{idx}]"
+            processed_labels.append(processed)
+            chain = "asetpts=PTS-STARTPTS"
+            input_duration = max(0.001, e - s)
+            target_duration = max(0.001, target_duration)
+            tempo = input_duration / target_duration
+            if abs(tempo - 1.0) > 1e-4:
+                chain += "," + AudioOptimizer.build_atempo_filter_chain(tempo)
+            # atempo có thể lệch vài ms ở biên packet; pad/trim từng lát để tổng audio
+            # khớp chính xác mapping video thay vì cộng dồn sai số qua hàng trăm lát.
+            chain += (
+                f",apad=pad_dur={target_duration:.6f}"
+                f",atrim=duration={target_duration:.6f}"
+            )
+            fc_lines.append(f"{raw_label}{chain}{processed}")
+
+        if len(processed_labels) == 1:
+            fc_lines.append(f"{processed_labels[0]}anull{out_label}")
+        else:
+            fc_lines.append(
+                f"{''.join(processed_labels)}concat=n={len(processed_labels)}:v=0:a=1{out_label}"
+            )
+        return fc_lines, out_label
 
     def generate_filter_complex_script(
         self,
@@ -995,15 +1214,15 @@ class FFmpegRenderer:
 
         # Xử lý Audio: Input [1:a] là master_dubbed_audio.wav đã khớp 100% timeline mới
         if has_original_audio and self.original_audio_volume > 1e-4:
-            # Nếu muốn giữ nhạc nền gốc nhỏ phía dưới, kéo giãn [0:a] đồng bộ với tổng thời lượng mới
-            total_stretch = (
-                (video_duration + sum(iv.delta_t for iv in norm_intervals))
-                / max(0.1, video_duration)
+            # Kéo giãn audio nền đúng từng vùng, không dùng hệ số trung bình toàn phim.
+            audio_lines, bg_label = self.build_audio_stretch_filter_lines(
+                input_label="[0:a]",
+                intervals=norm_intervals,
+                video_duration=video_duration,
+                out_label="[abg_sync]",
             )
-            bg_atempo = AudioOptimizer.build_atempo_filter_chain(1.0 / total_stretch)
-            fc_lines.append(
-                f"[0:a]{bg_atempo},volume={self.original_audio_volume:.4f}[abg]"
-            )
+            fc_lines.extend(audio_lines)
+            fc_lines.append(f"{bg_label}volume={self.original_audio_volume:.4f}[abg]")
             fc_lines.append(f"[1:a]volume={self.dubbed_audio_volume:.4f}[adub]")
             fc_lines.append(
                 "[abg][adub]amix=inputs=2:duration=longest:dropout_transition=0[aout]"
