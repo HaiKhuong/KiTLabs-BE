@@ -1,3 +1,4 @@
+import { BullModule } from "@nestjs/bullmq";
 import { Module } from "@nestjs/common";
 import { JwtModule } from "@nestjs/jwt";
 import { PassportModule } from "@nestjs/passport";
@@ -31,6 +32,9 @@ import { FilmAnalyticsAdminService } from "./cms/analytics/film-analytics-admin.
 import { FilmAnalyticsScannerService } from "./cms/analytics/film-analytics-scanner.service";
 import { FilmSepayController } from "./sepay/film-sepay.controller";
 import { FilmSepayService } from "./sepay/film-sepay.service";
+import { FilmPushController } from "./push/film-push.controller";
+import { FilmPushProcessor } from "./push/film-push.processor";
+import { FILM_PUSH_QUEUE, FilmPushService } from "./push/film-push.service";
 
 @Module({
   imports: [
@@ -38,6 +42,7 @@ import { FilmSepayService } from "./sepay/film-sepay.service";
     TypeOrmModule.forFeature(FILM_DB_ENTITIES, "film"),
     PassportModule.register({ defaultStrategy: "film-jwt" }),
     JwtModule.register({}),
+    BullModule.registerQueue({ name: FILM_PUSH_QUEUE }),
   ],
   controllers: [
     FilmAuthController,
@@ -50,6 +55,7 @@ import { FilmSepayService } from "./sepay/film-sepay.service";
     FilmFacebookIntegrationController,
     FilmAnalyticsAdminController,
     FilmSepayController,
+    FilmPushController,
     ...FILM_CATALOG_ADMIN_CONTROLLERS,
     ...FILM_CONTENT_ADMIN_CONTROLLERS,
     ...FILM_OPERATIONS_ADMIN_CONTROLLERS,
@@ -70,6 +76,8 @@ import { FilmSepayService } from "./sepay/film-sepay.service";
     FilmChatGateway,
     FilmFacebookIntegrationService,
     FilmSepayService,
+    FilmPushService,
+    FilmPushProcessor,
   ],
   exports: [
     FilmCatalogService,
@@ -81,6 +89,7 @@ import { FilmSepayService } from "./sepay/film-sepay.service";
     FilmAnalyticsScannerService,
     FilmAnalyticsAdminService,
     FilmSepayService,
+    FilmPushService,
   ],
 })
 export class FilmModule {}

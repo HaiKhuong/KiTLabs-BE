@@ -208,7 +208,17 @@ export class FilmAccountService {
   notifications(userId: string) {
     return this.db
       .getRepository(FilmNotification)
-      .find({ where: [{ userId }, { userId: IsNull() }], order: { createdAt: "DESC" } });
+      .find({ where: [{ userId }, { userId: IsNull() }], order: { createdAt: "DESC" }, take: 50 });
+  }
+
+  async markAllNotificationsRead(userId: string) {
+    await this.db.getRepository(FilmNotification).update({ userId, isRead: false }, { isRead: true });
+    return { updated: true };
+  }
+
+  async markNotificationRead(userId: string, notificationId: string) {
+    await this.db.getRepository(FilmNotification).update({ id: notificationId, userId }, { isRead: true });
+    return { updated: true };
   }
 
   donations(userId: string) {

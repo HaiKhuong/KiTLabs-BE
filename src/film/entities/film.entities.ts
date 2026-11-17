@@ -114,6 +114,11 @@ export enum BannerDisplayMode {
   ONCE = "ONCE",
   SESSION = "SESSION",
 }
+export enum FilmPushPlatform {
+  WEB = "web",
+  PWA_IOS = "pwa_ios",
+  PWA_ANDROID = "pwa_android",
+}
 
 abstract class FilmBase {
   @PrimaryGeneratedColumn("uuid") id!: string;
@@ -529,9 +534,27 @@ export class FilmUserReferral extends FilmBase {
   rejectionReason!: string | null;
 }
 
+@Entity("push_tokens")
+export class FilmPushToken extends FilmBase {
+  @Index() @Column("uuid", { name: "user_id" }) userId!: string;
+  @Index() @Column("uuid", { name: "device_id", nullable: true }) deviceId!: string | null;
+  @Index({ unique: true }) @Column("text") token!: string;
+  @Column({
+    type: "enum",
+    enum: FilmPushPlatform,
+    enumName: "push_tokens_platform_enum",
+    default: FilmPushPlatform.WEB,
+  })
+  platform!: FilmPushPlatform;
+  @Column({ name: "user_agent", type: "text", nullable: true }) userAgent!: string | null;
+  @Column({ name: "is_active", default: true }) isActive!: boolean;
+  @Column({ name: "last_used_at", type: "timestamptz", default: () => "now()" }) lastUsedAt!: Date;
+}
+
 export const FILM_DB_ENTITIES = [
   FilmDevice,
   FilmUser,
+  FilmPushToken,
   FilmMovie,
   FilmGenre,
   FilmTag,

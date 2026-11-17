@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post, Put, Req, UseGuards } from "@nestjs/common";
+import { Body, Controller, Get, Param, Patch, Post, Put, Req, UseGuards } from "@nestjs/common";
 import { ApiBearerAuth, ApiOperation, ApiParam, ApiTags } from "@nestjs/swagger";
 import { Request } from "express";
 import { Public } from "../../../common/decorators/public.decorator";
@@ -75,6 +75,18 @@ export class FilmAccountController {
   @Get("notifications")
   notifications(@FilmCurrentUser() user: FilmPrincipal) {
     return this.service.notifications(user.userId);
+  }
+
+  @ApiOperation({ summary: "Mark all user notifications as read" })
+  @Patch("notifications/read-all")
+  markAllNotificationsRead(@FilmCurrentUser() user: FilmPrincipal) {
+    return this.service.markAllNotificationsRead(user.userId);
+  }
+
+  @ApiOperation({ summary: "Mark a notification as read" })
+  @Patch("notifications/:id/read")
+  markNotificationRead(@FilmCurrentUser() user: FilmPrincipal, @Param("id") id: string) {
+    return this.service.markNotificationRead(user.userId, id);
   }
 
   @ApiOperation({ summary: "Get user donation history" })

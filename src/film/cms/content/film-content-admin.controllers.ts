@@ -1,5 +1,7 @@
-import { Controller } from "@nestjs/common";
-import { ApiTags } from "@nestjs/swagger";
+import { Body, Controller, Post } from "@nestjs/common";
+import { ApiOperation, ApiTags } from "@nestjs/swagger";
+import { SendFilmPushNotificationDto } from "../../push/dto/push-token.dto";
+import { FilmPushService } from "../../push/film-push.service";
 import { FilmAdminService } from "../shared/film-admin.service";
 import { FilmCmsAccess } from "../shared/film-cms.decorators";
 import { FilmCrudController } from "../shared/film-crud.controller";
@@ -39,8 +41,24 @@ export class FilmAdvertisementsAdminController extends FilmCrudController {
 @Controller("film/admin/notifications")
 export class FilmNotificationsAdminController extends FilmCrudController {
   protected readonly resource = "notifications";
-  constructor(s: FilmAdminService) {
+  constructor(
+    s: FilmAdminService,
+    private readonly pushService: FilmPushService,
+  ) {
     super(s);
+  }
+
+  @ApiOperation({ summary: "Create notification and dispatch FCM web/PWA push" })
+  @Post("send")
+  sendNotification(@Body() dto: SendFilmPushNotificationDto) {
+    return this.pushService.createAndDispatchNotification({
+      title: dto.title,
+      content: dto.content,
+      type: dto.type,
+      actionUrl: dto.actionUrl,
+      userIds: dto.userIds,
+      sendPush: dto.sendPush,
+    });
   }
 }
 
