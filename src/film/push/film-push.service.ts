@@ -251,10 +251,6 @@ export class FilmPushService implements OnModuleInit {
 
       const response = await this.messaging.sendEachForMulticast({
         tokens: tokenStrings,
-        notification: {
-          title: data.payload.title,
-          body: data.payload.body,
-        },
         data: {
           title: data.payload.title,
           body: data.payload.body,
@@ -265,10 +261,6 @@ export class FilmPushService implements OnModuleInit {
         webpush: {
           fcmOptions: {
             link: data.payload.actionUrl || "/",
-          },
-          notification: {
-            icon: "/android-chrome-192x192.png",
-            badge: "/android-chrome-192x192.png",
           },
         },
       });
