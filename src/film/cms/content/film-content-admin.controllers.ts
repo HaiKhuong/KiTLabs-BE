@@ -1,10 +1,13 @@
-import { Body, Controller, Post } from "@nestjs/common";
+import { Body, Controller, Optional, Post } from "@nestjs/common";
 import { ApiOperation, ApiTags } from "@nestjs/swagger";
+import { FilmNotice } from "../../entities/film.entities";
+import { FilmChatGateway } from "../../film-chat.gateway";
+import { FilmChatService } from "../../guest/chat/film-chat.service";
 import { SendFilmPushNotificationDto } from "../../push/dto/push-token.dto";
 import { FilmPushService } from "../../push/film-push.service";
 import { FilmAdminService } from "../shared/film-admin.service";
 import { FilmCmsAccess } from "../shared/film-cms.decorators";
-import { FilmCrudController } from "../shared/film-crud.controller";
+import { FilmAdminPayloadDto, FilmCrudController } from "../shared/film-crud.controller";
 
 @FilmCmsAccess()
 @ApiTags("Film CMS - Items")
@@ -23,6 +26,35 @@ export class FilmBannersAdminController extends FilmCrudController {
   protected readonly resource = "banners";
   constructor(s: FilmAdminService) {
     super(s);
+  }
+}
+
+@FilmCmsAccess()
+@ApiTags("Film CMS - Notices")
+@Controller("film/admin/notices")
+export class FilmNoticesAdminController extends FilmCrudController {
+  protected readonly resource = "notices";
+  constructor(
+    s: FilmAdminService,
+    @Optional() private readonly chatService?: FilmChatService,
+    @Optional() private readonly chatGateway?: FilmChatGateway,
+  ) {
+    super(s);
+  }
+
+  @ApiOperation({ summary: "Create notice and broadcast to world chat once" })
+  @Post()
+  override async create(@Body() dto: FilmAdminPayloadDto) {
+    const created = (await this.service.adminCreate(this.resource, dto.data)) as FilmNotice;
+    if (created && created.isActive !== false && this.chatService) {
+      try {
+        const chatMsg = await this.chatService.createSystemNoticeMessage(created);
+        this.chatGateway?.broadcastMessage("WORLD_GENERAL", chatMsg);
+      } catch {
+        // Do not fail notice creation if chat broadcast fails
+      }
+    }
+    return created;
   }
 }
 
@@ -105,6 +137,7 @@ export class FilmMissionsAdminController extends FilmCrudController {
 export const FILM_CONTENT_ADMIN_CONTROLLERS = [
   FilmItemsAdminController,
   FilmBannersAdminController,
+  FilmNoticesAdminController,
   FilmAdvertisementsAdminController,
   FilmNotificationsAdminController,
   FilmSettingsAdminController,

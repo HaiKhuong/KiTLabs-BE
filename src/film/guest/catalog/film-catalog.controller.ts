@@ -61,6 +61,12 @@ export class FilmCatalogController {
     return this.service.popupBanner();
   }
 
+  @ApiOperation({ summary: "Get active marquee notices" })
+  @Get("notices")
+  notices() {
+    return this.service.notices();
+  }
+
   @ApiOperation({ summary: "Get active advertisements" })
   @Get("advertisements")
   advertisements() {

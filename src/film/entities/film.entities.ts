@@ -15,6 +15,15 @@ export enum UserMissionStatus {
   CLAIMABLE = "CLAIMABLE",
   CLAIMED = "CLAIMED",
 }
+export enum NoticeActionType {
+  NONE = "NONE",
+  LINK = "LINK",
+  MODAL_ADD_TO_HOMESCREEN = "MODAL_ADD_TO_HOMESCREEN",
+  MODAL_PUSH_NOTIFICATION = "MODAL_PUSH_NOTIFICATION",
+  MODAL_MISSION = "MODAL_MISSION",
+  MODAL_DONATE = "MODAL_DONATE",
+  MODAL_LEADERBOARD = "MODAL_LEADERBOARD",
+}
 export enum FilmUserRole {
   GUEST = "GUEST",
   USER = "USER",
@@ -416,6 +425,28 @@ export class FilmBanner extends FilmBase {
   @Column({ name: "start_time", type: "timestamptz", nullable: true }) startTime!: Date | null;
   @Column({ name: "end_time", type: "timestamptz", nullable: true }) endTime!: Date | null;
 }
+@Entity("notices")
+export class FilmNotice extends FilmBase {
+  @Column({ type: "varchar", nullable: true }) title!: string | null;
+  @Column("text") message!: string;
+  @Column({ name: "link_label", type: "varchar", nullable: true }) linkLabel!: string | null;
+  @Column({
+    name: "action_type",
+    type: "enum",
+    enum: NoticeActionType,
+    enumName: "notices_action_type_enum",
+    default: NoticeActionType.NONE,
+  })
+  actionType!: NoticeActionType;
+  @Column({ name: "action_url", type: "varchar", nullable: true }) actionUrl!: string | null;
+  @Column({ name: "open_in_new_tab", default: false }) openInNewTab!: boolean;
+  @Column({ name: "display_order", default: 0 }) displayOrder!: number;
+  @Column({ name: "repeat_interval_seconds", default: 180 }) repeatIntervalSeconds!: number;
+  @Column({ name: "display_duration_seconds", default: 20 }) displayDurationSeconds!: number;
+  @Column({ name: "is_active", default: true }) isActive!: boolean;
+  @Column({ name: "start_time", type: "timestamptz", nullable: true }) startTime!: Date | null;
+  @Column({ name: "end_time", type: "timestamptz", nullable: true }) endTime!: Date | null;
+}
 @Entity("advertisements")
 export class FilmAdvertisement extends FilmBase {
   @Column() name!: string;
@@ -575,6 +606,7 @@ export const FILM_DB_ENTITIES = [
   FilmChatMessage,
   FilmNotification,
   FilmBanner,
+  FilmNotice,
   FilmAdvertisement,
   FilmActivityLog,
   FilmImageUpload,

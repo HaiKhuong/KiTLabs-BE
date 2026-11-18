@@ -1,7 +1,9 @@
 import { Injectable, NotFoundException } from "@nestjs/common";
 import { InjectDataSource } from "@nestjs/typeorm";
 import { DataSource, EntityManager } from "typeorm";
-import { ChatType, FilmChatMessage } from "../../entities/film.entities";
+import { ChatType, FilmChatMessage, FilmNotice } from "../../entities/film.entities";
+
+const SYSTEM_NOTICE_USER_ID = "00000000-0000-0000-0000-000000000000";
 
 @Injectable()
 export class FilmChatService {
@@ -44,6 +46,30 @@ export class FilmChatService {
         }),
       );
     });
+  }
+
+  createSystemNoticeMessage(notice: FilmNotice) {
+    const repo = this.db.getRepository(FilmChatMessage);
+    const userSnapshot: Record<string, unknown> = {
+      name: notice.title?.trim() || "Thông báo hệ thống",
+      avatarUrl: "/effects/icon_notice_bell.webp",
+      isSystemNotice: true,
+      noticeId: notice.id,
+      title: notice.title ?? null,
+      linkLabel: notice.linkLabel ?? null,
+      actionType: notice.actionType,
+      actionUrl: notice.actionUrl ?? null,
+      openInNewTab: Boolean(notice.openInNewTab),
+    };
+    return repo.save(
+      repo.create({
+        userId: SYSTEM_NOTICE_USER_ID,
+        roomChannel: "WORLD_GENERAL",
+        message: notice.message,
+        type: ChatType.TEXT,
+        userSnapshot,
+      }),
+    );
   }
 
   private async currentChatUserSnapshots(userIds: string[], manager: EntityManager = this.db.manager) {

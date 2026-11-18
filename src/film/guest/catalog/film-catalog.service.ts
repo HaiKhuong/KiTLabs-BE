@@ -11,6 +11,7 @@ import {
   FilmGenre,
   FilmMovie,
   FilmMovieGenre,
+  FilmNotice,
   MovieStatus,
   FilmReport,
   FilmSetting,
@@ -206,6 +207,19 @@ export class FilmCatalogService {
       .orderBy("banner.displayOrder", "ASC")
       .addOrderBy("banner.createdAt", "DESC")
       .getOne();
+  }
+
+  notices() {
+    const now = new Date();
+    return this.db
+      .getRepository(FilmNotice)
+      .createQueryBuilder("notice")
+      .where("notice.isActive = :isActive", { isActive: true })
+      .andWhere("(notice.startTime IS NULL OR notice.startTime <= :now)", { now })
+      .andWhere("(notice.endTime IS NULL OR notice.endTime >= :now)", { now })
+      .orderBy("notice.displayOrder", "ASC")
+      .addOrderBy("notice.createdAt", "DESC")
+      .getMany();
   }
 
   private activeBannersQuery(now: Date) {

@@ -21,6 +21,7 @@ import {
   FilmMission,
   FilmMovie,
   FilmMovieGenre,
+  FilmNotice,
   FilmNotification,
   FilmRating,
   FilmTag,
@@ -47,6 +48,7 @@ const RESOURCES: Record<string, EntityTarget<object>> = {
   "episode-sources": FilmEpisodeSource,
   items: FilmItem,
   banners: FilmBanner,
+  notices: FilmNotice,
   advertisements: FilmAdvertisement,
   notifications: FilmNotification,
   users: FilmUser,
@@ -802,10 +804,11 @@ export class FilmAdminService {
   }
 
   async getMenuCounts(): Promise<Record<string, number>> {
-    const [movies, genres, banners, missions, comments, reports, users, settings, donates] = await Promise.all([
+    const [movies, genres, banners, notices, missions, comments, reports, users, settings, donates] = await Promise.all([
       this.db.getRepository(FilmMovie).count({ where: { deletedAt: IsNull() } }).catch(() => 0),
       this.db.getRepository(FilmGenre).count({ where: { deletedAt: IsNull() } }).catch(() => 0),
       this.db.getRepository(FilmBanner).count({ where: { deletedAt: IsNull() } }).catch(() => 0),
+      this.db.getRepository(FilmNotice).count({ where: { deletedAt: IsNull() } }).catch(() => 0),
       this.db.getRepository(FilmMission).count({ where: { deletedAt: IsNull() } }).catch(() => 0),
       this.db.getRepository(FilmComment).count({ where: { parentId: IsNull(), deletedAt: IsNull() } }).catch(() => 0),
       this.db.getRepository(FilmReport).count({ where: { deletedAt: IsNull() } }).catch(() => 0),
@@ -829,6 +832,7 @@ export class FilmAdminService {
       movies,
       genres,
       banners,
+      notices,
       missions,
       comments,
       reports,
@@ -841,6 +845,7 @@ export class FilmAdminService {
       "/movies": movies,
       "/genres": genres,
       "/banners": banners,
+      "/notices": notices,
       "/missions": missions,
       "/comments": comments,
       "/reports": reports,

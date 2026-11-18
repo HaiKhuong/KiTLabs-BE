@@ -130,6 +130,10 @@ export class FilmChatGateway implements OnGatewayConnection, OnGatewayDisconnect
     return onlineCount;
   }
 
+  broadcastMessage(room: string, message: unknown) {
+    this.server?.to(room).emit("message", message);
+  }
+
   private userRoom(userId: string): string {
     return `user:${userId}`;
   }
