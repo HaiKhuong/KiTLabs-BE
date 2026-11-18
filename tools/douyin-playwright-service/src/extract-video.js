@@ -1,19 +1,88 @@
 const {
   DOUYIN_ORIGIN,
+  MOBILE_USER_AGENT,
   mapAwemeToVideo,
   parseAwemeIdFromUrl,
+  getWarmDouyinPage,
+  setWarmDouyinPage,
   createDouyinPage,
+  releaseDouyinPage,
+  invalidateDouyinContext,
 } = require("./shared");
+const { cookiesToHeaderString } = require("./cookie-parser");
 
-function buildDetailApiUrl(awemeId) {
+function buildDetailApiPath(awemeId) {
   return (
-    `${DOUYIN_ORIGIN}/aweme/v1/web/aweme/detail/` +
+    `/aweme/v1/web/aweme/detail/` +
     `?device_platform=webapp&aid=6383&channel=channel_pc_web` +
-    `&aweme_id=${encodeURIComponent(awemeId)}`
+    `&aweme_id=${encodeURIComponent(awemeId)}` +
+    `&update_version_code=170400&pc_client_type=1&version_code=190500` +
+    `&version_name=19.5.0&cookie_enabled=true&platform=PC&downlink=10`
   );
 }
 
-async function resolveAwemeId(page, context, inputUrl) {
+async function fetchDetailViaWarmPage(page, awemeId) {
+  try {
+    const result = await page.evaluate(async (apiPath) => {
+      try {
+        const res = await fetch(apiPath, {
+          method: "GET",
+          credentials: "include",
+          headers: {
+            accept: "application/json, text/plain, */*",
+          },
+        });
+        const text = await res.text();
+        if (!text || !text.trim()) return null;
+        const data = JSON.parse(text);
+        return data?.aweme_detail || null;
+      } catch {
+        return null;
+      }
+    }, buildDetailApiPath(awemeId));
+    return result || null;
+  } catch {
+    return null;
+  }
+}
+
+async function resolveRedirectCleanly(inputUrl) {
+  let current = inputUrl;
+  for (let hop = 0; hop < 6; hop++) {
+    const direct = parseAwemeIdFromUrl(current);
+    if (direct) return direct;
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 8_000);
+    try {
+      const res = await fetch(current, {
+        method: "GET",
+        redirect: "manual",
+        signal: controller.signal,
+        headers: {
+          "User-Agent":
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+            "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        },
+      });
+      const location = res.headers.get("location");
+      if (location && res.status >= 300 && res.status < 400) {
+        current = new URL(location, current).toString();
+        const fromLoc = parseAwemeIdFromUrl(current);
+        if (fromLoc) return fromLoc;
+        continue;
+      }
+      break;
+    } catch {
+      break;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  return null;
+}
+
+async function resolveAwemeId(page, _context, inputUrl) {
   const directId = parseAwemeIdFromUrl(inputUrl);
   if (directId) return directId;
 
@@ -28,24 +97,14 @@ async function resolveAwemeId(page, context, inputUrl) {
     throw new Error("URL must be a douyin.com video link");
   }
 
-  let finalUrl = inputUrl;
-  try {
-    const response = await context.request.get(inputUrl, {
-      maxRedirects: 10,
-      timeout: 10_000,
-    });
-    finalUrl = response.url();
-    const fromFinalUrl = parseAwemeIdFromUrl(finalUrl);
-    if (fromFinalUrl) return fromFinalUrl;
-  } catch {
-    // Browser navigation below is the fallback for transient redirect failures.
-  }
+  const cleanResolved = await resolveRedirectCleanly(inputUrl);
+  if (cleanResolved) return cleanResolved;
 
-  await page.goto(finalUrl, {
+  await page.goto(inputUrl, {
     waitUntil: "domcontentloaded",
     timeout: 20_000,
   });
-  await page.waitForTimeout(500);
+  await page.waitForTimeout(800);
 
   const fromPage = await page.evaluate(() => {
     const href = window.location.href;
@@ -53,6 +112,8 @@ async function resolveAwemeId(page, context, inputUrl) {
       /\/video\/(\d+)/i,
       /[?&]modal_id=(\d+)/i,
       /[?&]aweme_id=(\d+)/i,
+      /\/share\/video\/(\d+)/i,
+      /\/note\/(\d+)/i,
     ];
 
     for (const pattern of patterns) {
@@ -123,6 +184,7 @@ async function parseAwemeDetailFromPage(page) {
     const globals = [
       window.__UNIVERSAL_DATA_FOR_REHYDRATION__,
       window._SSR_HYDRATED_DATA,
+      window._ROUTER_DATA,
     ];
     for (const value of globals) {
       if (value) {
@@ -135,80 +197,88 @@ async function parseAwemeDetailFromPage(page) {
   });
 }
 
-async function fetchAwemeDetailViaRequest(context, awemeId, videoPageUrl) {
-  const response = await context.request.get(buildDetailApiUrl(awemeId), {
-    headers: {
-      accept: "application/json, text/plain, */*",
-      "accept-language": "vi",
-      referer: videoPageUrl,
-    },
-    timeout: 8_000,
-  });
+async function detectPageBlockReason(page) {
+  return page
+    .evaluate(() => {
+      const title = document.title || "";
+      const text = document.body?.innerText || "";
+      const combined = `${title} ${text.slice(0, 800)}`;
+      if (/验证码|滑动验证|安全验证|verifycenter|captcha/i.test(combined)) {
+        return "captcha";
+      }
+      if (/登录|扫码登录/i.test(title) && !document.querySelector("video")) {
+        return "login";
+      }
+      return null;
+    })
+    .catch(() => null);
+}
 
-  const text = await response.text();
-  if (!text.trim()) return null;
+function findAwemeInObject(obj, depth = 0) {
+  if (!obj || typeof obj !== "object" || depth > 14) return null;
+  if (
+    (obj.aweme_id || obj.awemeId) &&
+    obj.video &&
+    typeof obj.video === "object" &&
+    (obj.video.play_addr || (Array.isArray(obj.video.bit_rate) && obj.video.bit_rate.length > 0))
+  ) {
+    return obj;
+  }
+  if (Array.isArray(obj.item_list) && obj.item_list.length > 0) {
+    const found = findAwemeInObject(obj.item_list[0], depth + 1);
+    if (found) return found;
+  }
+  for (const val of Object.values(obj)) {
+    if (val && typeof val === "object") {
+      const found = findAwemeInObject(val, depth + 1);
+      if (found) return found;
+    }
+  }
+  return null;
+}
 
+async function fetchIesDouyinShareDetail(awemeId, cookieContent) {
+  const shareUrl = `https://www.iesdouyin.com/share/video/${awemeId}/`;
+  const headers = {
+    "User-Agent": MOBILE_USER_AGENT,
+    Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+    Referer: "https://www.iesdouyin.com/",
+  };
+  const cookieHeader = cookiesToHeaderString(cookieContent);
+  if (cookieHeader) {
+    headers.Cookie = cookieHeader;
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 12_000);
   try {
-    const data = JSON.parse(text);
-    return data?.aweme_detail || null;
+    const res = await fetch(shareUrl, {
+      headers,
+      redirect: "follow",
+      signal: controller.signal,
+    });
+    if (!res.ok) return null;
+    const html = await res.text();
+    const match = html.match(/window\._ROUTER_DATA\s*=\s*({.+?})\s*<\/script>/s);
+    if (!match?.[1]) return null;
+    const routerData = JSON.parse(match[1]);
+    return findAwemeInObject(routerData);
   } catch {
     return null;
+  } finally {
+    clearTimeout(timer);
   }
 }
 
-async function fetchAwemeDetailFromBrowser(page, awemeId, videoPageUrl) {
-  return page.evaluate(
-    async ({ apiUrl, referer }) => {
-      const response = await fetch(apiUrl, {
-        headers: {
-          accept: "application/json, text/plain, */*",
-          "accept-language": "vi",
-          "sec-ch-ua":
-            '"Not?A_Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
-          "sec-ch-ua-mobile": "?0",
-          "sec-ch-ua-platform": '"Windows"',
-          "sec-fetch-dest": "empty",
-          "sec-fetch-mode": "cors",
-          "sec-fetch-site": "same-origin",
-        },
-        credentials: "include",
-        method: "GET",
-        mode: "cors",
-        referrer: referer,
-        referrerPolicy: "strict-origin-when-cross-origin",
-      });
+async function loadVideoDetail(page, awemeId, cookieContent, { isWarmPage = false } = {}) {
+  if (isWarmPage) {
+    const direct = await fetchDetailViaWarmPage(page, awemeId);
+    if (direct) return direct;
+  }
 
-      const text = await response.text();
-      if (!text.trim()) {
-        return {
-          error: `Douyin API returned empty body (HTTP ${response.status})`,
-        };
-      }
-
-      try {
-        const data = JSON.parse(text);
-        return { detail: data?.aweme_detail || null };
-      } catch {
-        return { error: "Douyin API returned invalid JSON" };
-      }
-    },
-    { apiUrl: buildDetailApiUrl(awemeId), referer: videoPageUrl },
-  );
-}
-
-async function loadVideoDetail(page, context, awemeId) {
   const videoPageUrl = `${DOUYIN_ORIGIN}/video/${awemeId}`;
   let interceptedDetail = null;
-  let lastError = null;
-
-  // Fast path: cookies are already installed in the context and the API often
-  // succeeds without paying the cost of a full browser navigation.
-  try {
-    const direct = await fetchAwemeDetailViaRequest(context, awemeId, videoPageUrl);
-    if (direct) return direct;
-  } catch (error) {
-    lastError = error;
-  }
 
   const onResponse = async (response) => {
     if (!response.url().includes("/aweme/v1/web/aweme/detail")) return;
@@ -226,51 +296,77 @@ async function loadVideoDetail(page, context, awemeId) {
 
   page.on("response", onResponse);
 
+  let blockReason = null;
+  let triedBrowserFetch = false;
   try {
     await page.goto(videoPageUrl, {
       waitUntil: "domcontentloaded",
       timeout: 20_000,
     });
 
-    await page.waitForTimeout(1_000);
+    // Wait up to 8s for intercepted detail API, SSR data, or bdms-signed fetch
+    const deadline = Date.now() + 8_000;
+    while (Date.now() < deadline) {
+      if (interceptedDetail) {
+        setWarmDouyinPage(cookieContent, page);
+        return interceptedDetail;
+      }
 
-    if (interceptedDetail) return interceptedDetail;
+      const fromSsr = await parseAwemeDetailFromPage(page);
+      if (fromSsr) {
+        setWarmDouyinPage(cookieContent, page);
+        return fromSsr;
+      }
 
-    const fromSsr = await parseAwemeDetailFromPage(page);
-    if (fromSsr) return fromSsr;
+      blockReason = await detectPageBlockReason(page);
+      if (blockReason === "captcha") break;
 
-    // Retry after navigation has warmed the Douyin session.
-    try {
-      const fromRequest = await fetchAwemeDetailViaRequest(
-        context,
-        awemeId,
-        videoPageUrl,
-      );
-      if (fromRequest) return fromRequest;
-    } catch (error) {
-      lastError = error;
+      if (!triedBrowserFetch && Date.now() > deadline - 5_500) {
+        const bdmsReady = await page
+          .evaluate(() => Boolean(window.bdms || window.byted_acrawler))
+          .catch(() => false);
+        if (bdmsReady) {
+          triedBrowserFetch = true;
+          const fetched = await fetchDetailViaWarmPage(page, awemeId);
+          if (fetched) {
+            setWarmDouyinPage(cookieContent, page);
+            return fetched;
+          }
+        }
+      }
+
+      await page.waitForTimeout(400);
     }
 
-    const apiResult = await fetchAwemeDetailFromBrowser(
-      page,
-      awemeId,
-      videoPageUrl,
-    );
-    if (apiResult?.detail) return apiResult.detail;
-    if (apiResult?.error) {
-      throw new Error(
-        `${apiResult.error}. Pass cookie_content (Netscape format from cookies.txt).`,
-      );
+    if (interceptedDetail) {
+      setWarmDouyinPage(cookieContent, page);
+      return interceptedDetail;
     }
 
-    if (lastError) {
-      const detail = lastError instanceof Error ? lastError.message : String(lastError);
-      throw new Error(`Douyin detail request failed: ${detail}`);
+    if (!triedBrowserFetch && blockReason !== "captcha") {
+      const fetched = await fetchDetailViaWarmPage(page, awemeId);
+      if (fetched) {
+        setWarmDouyinPage(cookieContent, page);
+        return fetched;
+      }
     }
-    return null;
+  } catch {
+    // Fallback to iesdouyin share page below
   } finally {
     page.off("response", onResponse);
   }
+
+  // Strategy 2: iesdouyin.com mobile share SSR (does not require a_bogus)
+  const shareDetail = await fetchIesDouyinShareDetail(awemeId, cookieContent);
+  if (shareDetail) return shareDetail;
+
+  if (blockReason === "captcha") {
+    throw new Error(
+      "Douyin triggered captcha verification (CAPTCHA_REQUIRED). Please refresh cookies in a real browser.",
+    );
+  }
+
+  return null;
 }
 
 function mapAwemeToExtractResponse(entry) {
@@ -294,10 +390,12 @@ async function extractVideo({ url, cookieContent }) {
   let lastError = null;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    const { context, page } = await createDouyinPage(cookieContent);
+    const warm = attempt === 1 ? getWarmDouyinPage(cookieContent) : null;
+    const isWarmPage = Boolean(warm);
+    const { context, page } = warm || (await createDouyinPage(cookieContent, { lightweight: true }));
     try {
       const awemeId = await resolveAwemeId(page, context, url);
-      const detail = await loadVideoDetail(page, context, awemeId);
+      const detail = await loadVideoDetail(page, awemeId, cookieContent, { isWarmPage });
       if (!detail) {
         throw new Error(
           "Douyin returned no video data. Cookies may be expired or the video is unavailable.",
@@ -307,11 +405,11 @@ async function extractVideo({ url, cookieContent }) {
     } catch (error) {
       lastError = error;
       if (attempt < maxAttempts) {
-        await new Promise((resolve) => setTimeout(resolve, 350));
+        await invalidateDouyinContext(cookieContent);
+        await new Promise((resolve) => setTimeout(resolve, 400));
       }
     } finally {
-      await page.close().catch(() => {});
-      await context.close().catch(() => {});
+      await releaseDouyinPage(page, cookieContent);
     }
   }
 

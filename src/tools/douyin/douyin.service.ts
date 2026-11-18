@@ -1,8 +1,11 @@
 import {
   BadGatewayException,
+  BadRequestException,
   GatewayTimeoutException,
   Injectable,
   Logger,
+  ServiceUnavailableException,
+  UnprocessableEntityException,
 } from "@nestjs/common";
 import axios, { AxiosResponse } from "axios";
 
@@ -181,21 +184,77 @@ export class DouyinService {
     return cookieContent;
   }
 
-  private throwPlaywrightError(error: unknown): never {
+  private cookiesToHeader(cookieContent: string | null): string | undefined {
+    if (!cookieContent) return undefined;
+    const trimmed = cookieContent.trim();
+    if (!trimmed) return undefined;
+
+    if (!trimmed.includes("\t") && trimmed.includes("=") && !trimmed.startsWith("[") && !trimmed.startsWith("{")) {
+      return trimmed.replace(/^cookie:\s*/i, "");
+    }
+
+    const pairs: string[] = [];
+    for (const rawLine of trimmed.replace(/\r\n/g, "\n").split("\n")) {
+      let line = rawLine.trim();
+      if (!line) continue;
+      if (line.startsWith("#HttpOnly_")) {
+        line = line.slice("#HttpOnly_".length);
+      } else if (line.startsWith("#")) {
+        continue;
+      }
+      const parts = line.split("\t");
+      if (parts.length < 7) continue;
+      const name = parts[5]?.trim();
+      const value = parts.slice(6).join("\t");
+      if (name) pairs.push(`${name}=${value}`);
+    }
+    return pairs.length > 0 ? pairs.join("; ") : undefined;
+  }
+
+  private throwSidecarError(provider: DouyinExtractProvider, error: unknown): never {
     if (axios.isAxiosError(error)) {
+      if (error.code === "ECONNREFUSED" || error.code === "ENOTFOUND") {
+        const label = provider === "playwright" ? "Playwright" : "yt-dlp";
+        throw new ServiceUnavailableException({
+          message: `${label} sidecar is not running or unreachable.`,
+          code: "SIDECAR_UNAVAILABLE",
+          retryable: true,
+        });
+      }
+
       const status = error.response?.status;
       const payload = error.response?.data as
         | { message?: string; detail?: string; code?: string; retryable?: boolean }
         | undefined;
-      const upstreamMessage = payload?.message || payload?.detail || error.message;
+      const upstreamMessage =
+        (typeof payload?.message === "string" && payload.message) ||
+        (typeof payload?.detail === "string" && payload.detail) ||
+        error.message;
+
+      const isCookieOrCaptcha =
+        status === 422 || /cookie|fresh cookies|captcha|sign in/i.test(upstreamMessage);
       const response = {
         message: upstreamMessage,
-        code: payload?.code || (status === 504 ? "DOUYIN_TIMEOUT" : "DOUYIN_UPSTREAM_ERROR"),
+        code:
+          payload?.code ||
+          (status === 504 || error.code === "ECONNABORTED"
+            ? "DOUYIN_TIMEOUT"
+            : isCookieOrCaptcha
+              ? "DOUYIN_COOKIE_OR_ACCESS"
+              : status === 400
+                ? "DOUYIN_INVALID_URL"
+                : "DOUYIN_UPSTREAM_ERROR"),
         retryable: payload?.retryable ?? status !== 400,
       };
 
       if (status === 504 || error.code === "ECONNABORTED") {
         throw new GatewayTimeoutException(response);
+      }
+      if (status === 400) {
+        throw new BadRequestException(response);
+      }
+      if (status === 422 || isCookieOrCaptcha) {
+        throw new UnprocessableEntityException(response);
       }
       throw new BadGatewayException(response);
     }
@@ -254,10 +313,19 @@ export class DouyinService {
 
   private async extractVideoViaYtDlp(url: string): Promise<ExtractedVideoInfo> {
     const cookieContent = this.resolveCookieContent();
-    const response = await axios.post<YtDlpExtractResponse>(`${this.ytdlpUrl()}/extract`, {
-      url,
-      cookie_content: cookieContent,
-    }, { timeout: 60_000 });
+    let response: AxiosResponse<YtDlpExtractResponse>;
+    try {
+      response = await axios.post<YtDlpExtractResponse>(
+        `${this.ytdlpUrl()}/extract`,
+        {
+          url,
+          cookie_content: cookieContent,
+        },
+        { timeout: 60_000 },
+      );
+    } catch (error) {
+      this.throwSidecarError("ytdlp", error);
+    }
 
     const data = response.data;
 
@@ -287,7 +355,7 @@ export class DouyinService {
         { timeout: 55_000 },
       );
     } catch (error) {
-      this.throwPlaywrightError(error);
+      this.throwSidecarError("playwright", error);
     }
 
     const data = response.data;
@@ -310,15 +378,20 @@ export class DouyinService {
     maxVideos = 10,
   ): Promise<ExtractedProfileInfo> {
     const cookieContent = this.resolveCookieContent();
-    const response = await axios.post<YtDlpProfileResponse>(
-      `${this.ytdlpUrl()}/extract-profile`,
-      {
-        url,
-        cookie_content: cookieContent,
-        max_videos: maxVideos,
-      },
-      { timeout: 180_000 },
-    );
+    let response: AxiosResponse<YtDlpProfileResponse>;
+    try {
+      response = await axios.post<YtDlpProfileResponse>(
+        `${this.ytdlpUrl()}/extract-profile`,
+        {
+          url,
+          cookie_content: cookieContent,
+          max_videos: maxVideos,
+        },
+        { timeout: 180_000 },
+      );
+    } catch (error) {
+      this.throwSidecarError("ytdlp", error);
+    }
 
     const data = response.data;
 
@@ -361,7 +434,7 @@ export class DouyinService {
         { timeout: 90_000 },
       );
     } catch (error) {
-      this.throwPlaywrightError(error);
+      this.throwSidecarError("playwright", error);
     }
 
     const data = response.data;
@@ -448,30 +521,43 @@ export class DouyinService {
     requestedProvider?: DouyinExtractProvider,
   ): Promise<AxiosResponse> {
     const provider = this.resolveProvider(requestedProvider, DOUYIN_VIDEO_EXTRACT_PROVIDER);
+    const cookieContent = this.resolveCookieContent();
+
     if (directUrl && provider !== "ytdlp") {
-      return axios.get(directUrl, {
-        timeout: 300_000,
-        responseType: "stream",
-        headers: {
-          Referer: "https://www.douyin.com/",
-          "User-Agent":
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
-            "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        },
-      });
+      const cookieHeader = this.cookiesToHeader(cookieContent);
+      try {
+        return await axios.get(directUrl, {
+          timeout: 300_000,
+          responseType: "stream",
+          headers: {
+            Referer: "https://www.douyin.com/",
+            "User-Agent":
+              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+              "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+            ...(cookieHeader ? { Cookie: cookieHeader } : {}),
+          },
+        });
+      } catch (error) {
+        this.throwSidecarError("playwright", error);
+      }
     }
 
-    const cookieContent = this.resolveCookieContent();
-    const response = await axios.post(`${this.ytdlpUrl()}/download`, {
-      url,
-      format_id: formatId || null,
-      cookie_content: cookieContent,
-    }, {
-      timeout: 300_000,
-      responseType: "stream",
-    });
-
-    return response;
+    try {
+      return await axios.post(
+        `${this.ytdlpUrl()}/download`,
+        {
+          url,
+          format_id: formatId || null,
+          cookie_content: cookieContent,
+        },
+        {
+          timeout: 300_000,
+          responseType: "stream",
+        },
+      );
+    } catch (error) {
+      this.throwSidecarError("ytdlp", error);
+    }
   }
 
   async downloadThumbnail(thumbnailUrl: string): Promise<AxiosResponse> {

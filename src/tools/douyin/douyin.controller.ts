@@ -1,4 +1,4 @@
-import { BadRequestException, Body, Controller, Post, Res } from "@nestjs/common";
+import { BadRequestException, Body, Controller, HttpException, Post, Res } from "@nestjs/common";
 import { ApiBody, ApiOperation, ApiTags } from "@nestjs/swagger";
 import { Response } from "express";
 
@@ -73,6 +73,7 @@ export class DouyinController {
 
       streamResponse.data.pipe(res);
     } catch (error) {
+      if (error instanceof HttpException) throw error;
       const message = error instanceof Error ? error.message : "Download failed";
       throw new BadRequestException(message);
     }

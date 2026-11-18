@@ -34,8 +34,65 @@ def _ytdlp_argv() -> list[str]:
     return [sys.executable, "-m", "yt_dlp"]
 
 
-def _youtube_extractor_args() -> list[str]:
-    return ["--extractor-args", "youtube:player_client=android,web_safari"]
+def _is_youtube_url(url: str) -> bool:
+    lower = (url or "").lower()
+    return "youtube.com" in lower or "youtu.be" in lower
+
+
+def _is_douyin_url(url: str) -> bool:
+    lower = (url or "").lower()
+    return "douyin.com" in lower or "iesdouyin.com" in lower
+
+
+def _platform_args(url: str) -> list[str]:
+    if _is_youtube_url(url):
+        return ["--extractor-args", "youtube:player_client=android,web_safari"]
+    if _is_douyin_url(url):
+        return [
+            "--add-header",
+            "Referer:https://www.douyin.com/",
+            "--user-agent",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        ]
+    return []
+
+
+def _http_error_from_exception(exc: Exception) -> HTTPException:
+    if isinstance(exc, subprocess.TimeoutExpired):
+        return HTTPException(status_code=504, detail="yt-dlp timed out while processing URL")
+
+    detail = str(exc).strip() or "yt-dlp failed"
+    lower = detail.lower()
+    if any(
+        token in lower
+        for token in (
+            "fresh cookies",
+            "sign in",
+            "cookies are needed",
+            "login required",
+            "cookie",
+        )
+    ):
+        return HTTPException(status_code=422, detail=detail)
+
+    if any(
+        token in lower
+        for token in (
+            "downloaderror",
+            "unsupported url",
+            "unable to extract",
+            "http error 400",
+            "http error 403",
+            "http error 404",
+            "not available",
+            "video unavailable",
+            "is not a valid url",
+        )
+    ):
+        return HTTPException(status_code=400, detail=detail)
+
+    return HTTPException(status_code=500, detail=detail)
 
 
 @asynccontextmanager
@@ -71,10 +128,53 @@ class PlaylistRequest(BaseModel):
     cookie_content: Optional[str] = None
 
 
+def _normalize_cookies_to_netscape(cookie_content: str) -> str:
+    stripped = cookie_content.strip()
+    if not stripped:
+        return ""
+    if stripped.startswith("# Netscape") or "\t" in stripped:
+        return stripped.replace("\r\n", "\n").replace("\r", "\n")
+
+    lines = ["# Netscape HTTP Cookie File"]
+    if stripped.startswith("[") or stripped.startswith("{"):
+        try:
+            parsed = json.loads(stripped)
+            items = parsed if isinstance(parsed, list) else parsed.get("cookies", [])
+            for c in items:
+                if not isinstance(c, dict) or not c.get("name"):
+                    continue
+                domain = str(c.get("domain") or ".douyin.com")
+                include_sub = "TRUE" if domain.startswith(".") else "FALSE"
+                path = str(c.get("path") or "/")
+                secure = "TRUE" if c.get("secure") else "FALSE"
+                expires = int(c.get("expirationDate") or c.get("expires") or 0)
+                lines.append(f"{domain}\t{include_sub}\t{path}\t{secure}\t{expires}\t{c['name']}\t{c.get('value', '')}")
+            if len(lines) > 1:
+                return "\n".join(lines) + "\n"
+        except Exception:
+            pass
+
+    if "=" in stripped and "\t" not in stripped:
+        raw = stripped[7:].strip() if stripped.lower().startswith("cookie:") else stripped
+        for part in raw.split(";"):
+            if "=" not in part:
+                continue
+            name, val = part.split("=", 1)
+            name = name.strip()
+            if name:
+                lines.append(f".douyin.com\tTRUE\t/\tTRUE\t0\t{name}\t{val.strip()}")
+        if len(lines) > 1:
+            return "\n".join(lines) + "\n"
+
+    return stripped.replace("\r\n", "\n").replace("\r", "\n")
+
+
 def _write_cookies_temp(cookie_content: Optional[str]) -> Optional[str]:
     if not cookie_content:
         return None
-    normalized = cookie_content.replace("\r\n", "\n").replace("\r", "\n")
+    normalized = _normalize_cookies_to_netscape(cookie_content)
+    if not normalized:
+        return None
     path = os.path.join(TEMP_DIR, f"cookies_{uuid.uuid4().hex}.txt")
     with open(path, "w", encoding="utf-8", newline="\n") as f:
         f.write(normalized)
@@ -93,7 +193,7 @@ def _cleanup(path: Optional[str]):
 def _extract_via_cli(url: str, cookie_path: Optional[str], extra: Optional[list] = None) -> dict:
     """Fallback: call yt-dlp CLI with --dump-json."""
     cmd = [*_ytdlp_argv(), "--dump-json", "--no-check-certificates", "--no-warnings", "--no-playlist"]
-    cmd += _youtube_extractor_args()
+    cmd += _platform_args(url)
     if extra:
         cmd += extra
     if cookie_path:
@@ -181,16 +281,7 @@ def extract_video(req: ExtractRequest):
         raise
     except Exception as e:
         logger.error("Extract error: %s\n%s", str(e), traceback.format_exc())
-        detail = str(e)
-        status = 500
-        if (
-            "Fresh cookies" in detail
-            or "DownloadError" in detail
-            or "HTTP Error 400" in detail
-            or "Unable to extract" in detail
-        ):
-            status = 400
-        raise HTTPException(status_code=status, detail=detail)
+        raise _http_error_from_exception(e)
     finally:
         _cleanup(cookie_path)
 
@@ -206,7 +297,7 @@ def extract_profile(req: ExtractProfileRequest):
             "--no-check-certificates", "--no-warnings",
             "--playlist-end", str(req.max_videos),
         ]
-        cmd += _youtube_extractor_args()
+        cmd += _platform_args(req.url)
         if cookie_path:
             cmd += ["--cookies", cookie_path]
         cmd.append(req.url)
@@ -272,11 +363,7 @@ def extract_profile(req: ExtractProfileRequest):
         raise
     except Exception as e:
         logger.error("Profile error: %s\n%s", str(e), traceback.format_exc())
-        detail = str(e)
-        status = 500
-        if "Fresh cookies" in detail:
-            status = 400
-        raise HTTPException(status_code=status, detail=detail)
+        raise _http_error_from_exception(e)
     finally:
         _cleanup(cookie_path)
 
@@ -293,7 +380,7 @@ def extract_playlist(req: PlaylistRequest):
             "--no-check-certificates",
             "--no-warnings",
         ]
-        cmd += _youtube_extractor_args()
+        cmd += _platform_args(req.url)
         if cookie_path:
             cmd += ["--cookies", cookie_path]
         cmd.append(req.url)
@@ -323,9 +410,7 @@ def extract_playlist(req: PlaylistRequest):
         raise
     except Exception as e:
         logger.error("Playlist error: %s\n%s", str(e), traceback.format_exc())
-        detail = str(e)
-        status = 400 if "Unsupported URL" in detail else 500
-        raise HTTPException(status_code=status, detail=detail)
+        raise _http_error_from_exception(e)
     finally:
         _cleanup(cookie_path)
 
@@ -351,7 +436,7 @@ def download_video(req: DownloadRequest):
             "--no-playlist",
             "-o", os.path.join(out_dir, "%(title).80s.%(ext)s"),
         ]
-        cmd += _youtube_extractor_args()
+        cmd += _platform_args(req.url)
         if media_format == "audio":
             cmd += ["-x", "--audio-format", "mp3", "-f", "bestaudio/best"]
         else:
@@ -404,11 +489,7 @@ def download_video(req: DownloadRequest):
     except Exception as e:
         logger.error("Download error: %s\n%s", str(e), traceback.format_exc())
         _cleanup_dir(out_dir)
-        detail = str(e)
-        status = 500
-        if "Fresh cookies" in detail:
-            status = 400
-        raise HTTPException(status_code=status, detail=detail)
+        raise _http_error_from_exception(e)
     finally:
         _cleanup(cookie_path)
 

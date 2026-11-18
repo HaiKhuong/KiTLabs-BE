@@ -1,17 +1,53 @@
+const crypto = require("crypto");
 const { chromium } = require("playwright");
 const { parseNetscapeCookies } = require("./cookie-parser");
 
 const DOUYIN_ORIGIN = "https://www.douyin.com";
+const DESKTOP_USER_AGENT =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+  "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+const MOBILE_USER_AGENT =
+  "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 " +
+  "(KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1";
+
+const CONTEXT_TTL_MS = 15 * 60 * 1000;
 
 let browserPromise = null;
+const contextCache = new Map();
 
 async function getBrowser() {
-  if (!browserPromise) {
-    browserPromise = chromium.launch({
-      headless: true,
-      args: ["--no-sandbox", "--disable-setuid-sandbox"],
-    });
+  if (browserPromise) {
+    try {
+      const existing = await browserPromise;
+      if (existing.isConnected()) return existing;
+    } catch {
+      // relaunch below
+    }
+    browserPromise = null;
   }
+
+  browserPromise = chromium
+    .launch({
+      headless: true,
+      args: [
+        "--no-sandbox",
+        "--disable-setuid-sandbox",
+        "--disable-blink-features=AutomationControlled",
+        "--disable-dev-shm-usage",
+      ],
+    })
+    .then((browser) => {
+      browser.on("disconnected", () => {
+        browserPromise = null;
+        contextCache.clear();
+      });
+      return browser;
+    })
+    .catch((err) => {
+      browserPromise = null;
+      throw err;
+    });
+
   return browserPromise;
 }
 
@@ -95,6 +131,22 @@ function extractFormats(video) {
     }
   }
 
+  if (candidates.length === 0 && video?.play_addr?.url_list?.length) {
+    const rawPlay = normalizeUrl(video.play_addr.url_list[0]);
+    if (rawPlay) {
+      const noWmUrl = rawPlay.replace("/playwm/", "/play/");
+      candidates.push({
+        gearName: "default",
+        height: Number(video?.play_addr?.height || video?.height) || null,
+        width: Number(video?.play_addr?.width || video?.width) || null,
+        ext: "mp4",
+        filesize: Number(video?.play_addr?.data_size) || null,
+        fps: null,
+        play_url: noWmUrl,
+      });
+    }
+  }
+
   const bestByKey = new Map();
   for (const item of candidates) {
     const key = [item.fps || 0, item.height || 0, item.width || 0, item.gearName].join("|");
@@ -160,32 +212,136 @@ function parseAwemeIdFromUrl(url) {
   return null;
 }
 
-async function createDouyinPage(cookieContent) {
+function hashCookieContent(cookieContent) {
+  return crypto
+    .createHash("sha256")
+    .update(String(cookieContent || ""))
+    .digest("hex")
+    .slice(0, 16);
+}
+
+async function getOrCreateContext(cookieContent) {
+  const key = hashCookieContent(cookieContent);
+  const cached = contextCache.get(key);
+  if (cached && Date.now() - cached.createdAt < CONTEXT_TTL_MS) {
+    try {
+      // Probe context liveness
+      cached.context.pages();
+      return { context: cached.context, cacheKey: key };
+    } catch {
+      contextCache.delete(key);
+    }
+  } else if (cached) {
+    contextCache.delete(key);
+    await cached.context.close().catch(() => {});
+  }
+
   const browser = await getBrowser();
   const context = await browser.newContext({
-    locale: "vi-VN",
+    locale: "zh-CN",
     viewport: { width: 1920, height: 1080 },
-    userAgent:
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
-      "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    userAgent: DESKTOP_USER_AGENT,
+    extraHTTPHeaders: {
+      "Accept-Language": "zh-CN,zh;q=0.9,vi;q=0.8,en;q=0.7",
+    },
+  });
+
+  await context.addInitScript(() => {
+    Object.defineProperty(navigator, "webdriver", { get: () => undefined });
+    window.chrome = window.chrome || { runtime: {} };
   });
 
   const cookies = parseNetscapeCookies(cookieContent);
-  const page = await context.newPage();
-
-  // Hide webdriver flag
-  await page.addInitScript(() => {
-    Object.defineProperty(navigator, "webdriver", { get: () => false });
-  });
-
   if (cookies.length > 0) {
     await context.addCookies(cookies);
   }
 
-  return { context, page };
+  // Keep cache bounded
+  if (contextCache.size >= 5) {
+    const oldestKey = contextCache.keys().next().value;
+    const oldest = contextCache.get(oldestKey);
+    contextCache.delete(oldestKey);
+    if (oldest) await oldest.context.close().catch(() => {});
+  }
+
+  contextCache.set(key, { context, createdAt: Date.now(), warmPage: null });
+  return { context, cacheKey: key };
+}
+
+async function attachLightweightRoute(page) {
+  await page.route("**/*", (route) => {
+    const type = route.request().resourceType();
+    if (type === "media" || type === "image" || type === "font") {
+      return route.abort();
+    }
+    return route.continue();
+  });
+}
+
+function getWarmDouyinPage(cookieContent) {
+  const key = hashCookieContent(cookieContent);
+  const cached = contextCache.get(key);
+  if (!cached || Date.now() - cached.createdAt >= CONTEXT_TTL_MS) return null;
+  const page = cached.warmPage;
+  if (!page || page.isClosed()) {
+    cached.warmPage = null;
+    return null;
+  }
+  try {
+    if (page.url().includes("douyin.com")) {
+      return { context: cached.context, page };
+    }
+  } catch {
+    cached.warmPage = null;
+  }
+  return null;
+}
+
+function setWarmDouyinPage(cookieContent, page) {
+  const key = hashCookieContent(cookieContent);
+  const cached = contextCache.get(key);
+  if (!cached || !page || page.isClosed()) return;
+  if (cached.warmPage && cached.warmPage !== page && !cached.warmPage.isClosed()) {
+    cached.warmPage.close().catch(() => {});
+  }
+  cached.warmPage = page;
+}
+
+async function createDouyinPage(cookieContent, { lightweight = false } = {}) {
+  const { context, cacheKey } = await getOrCreateContext(cookieContent);
+  const page = await context.newPage();
+  if (lightweight) {
+    await attachLightweightRoute(page);
+  }
+  return { context, page, cacheKey };
+}
+
+async function releaseDouyinPage(page, cookieContent) {
+  if (!page) return;
+  if (cookieContent !== undefined) {
+    const key = hashCookieContent(cookieContent);
+    const cached = contextCache.get(key);
+    if (cached && cached.warmPage === page) {
+      return;
+    }
+  }
+  await page.close().catch(() => {});
+}
+
+async function invalidateDouyinContext(cookieContent) {
+  const key = hashCookieContent(cookieContent);
+  const cached = contextCache.get(key);
+  if (cached) {
+    contextCache.delete(key);
+    await cached.context.close().catch(() => {});
+  }
 }
 
 async function closeBrowser() {
+  for (const [, entry] of contextCache) {
+    await entry.context.close().catch(() => {});
+  }
+  contextCache.clear();
   if (browserPromise) {
     const browser = await browserPromise;
     await browser.close().catch(() => {});
@@ -195,11 +351,18 @@ async function closeBrowser() {
 
 module.exports = {
   DOUYIN_ORIGIN,
+  DESKTOP_USER_AGENT,
+  MOBILE_USER_AGENT,
   getBrowser,
   normalizeUrl,
   extractFormats,
   mapAwemeToVideo,
   parseAwemeIdFromUrl,
+  attachLightweightRoute,
+  getWarmDouyinPage,
+  setWarmDouyinPage,
   createDouyinPage,
+  releaseDouyinPage,
+  invalidateDouyinContext,
   closeBrowser,
 };

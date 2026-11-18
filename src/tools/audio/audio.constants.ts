@@ -134,15 +134,48 @@ export const AUDIO_PRESET_VOICES: AudioPresetVoice[] = [
       "Chào bạn, tôi đang thực hiện một thử nghiệm để tạo ra bản sao kỹ thuật số cho giọng nói của mình. Quá trình này đòi hỏi sự rõ ràng, nhịp điệu tự nhiên và một chút cảm xúc trong từng câu chữ.",
   },
   {
+    id: "nu-ngot-ngao",
+    name: "Nữ Ngọt Ngào",
+    tags: ["Nữ", "WAV"],
+    language: "vi",
+    gender: "female",
+    avatar: "👩",
+    refWav: "Nu_Ngot_Ngao.wav",
+    refText:
+      "xin chào, tôi là một trợ lí AI có khả năng trò chuyện với bạn bằng giọng nói tự nhiên được phát triển bởi nhóm nón lá. Tôi có thể hổ trợ người khiếm thị đọc sách nói, làm trợ lý ảo, review phim, làm waifu để an ủi bạn và phục vụ nhiều mục đích khác",
+  },
+  {
+    id: "tm-hay",
+    name: "TM Hay",
+    tags: ["Thuyết minh", "WAV"],
+    language: "vi",
+    gender: "male",
+    avatar: "🎙️",
+    refWav: "TM_Hay.wav",
+    refText:
+      "Cháu thấy cung ấn đường của ông tối sầm, chắc chắn sắp gặp họa đổ máu rồi. Thế này đi, hôm nay là ngày lành tháng tốt, cháu để giá giảm kịch sàn cho ông luôn. Cô bé à, nghe lời ông già này khuyên này, rảnh rỗi thì chăm đọc sách vào. Mấy bài văn vở này xưa như trái đất rồi.",
+  },
+  {
     id: "minh-quan",
     name: "Minh Quân",
-    tags: ["Nam", "MP3"],
+    tags: ["Nam", "WAV"],
     language: "vi",
     gender: "male",
     avatar: "👨",
-    refWav: "Minh_Quan.mp3",
+    refWav: "Minh_Quan.wav",
     refText:
-      "Chào bạn, tôi đang thực hiện một thử nghiệm để tạo ra bản sao kỹ thuật số cho giọng nói của mình. Quá trình này đòi hỏi sự rõ ràng, nhịp điệu tự nhiên và một chút cảm xúc trong từng câu chữ.",
+      "Trong tập phát sóng hôm nay, chúng ta sẽ cùng khám phá những bí ẩn chưa từng được tiết lộ đằng sau cuộc chiến khốc liệt này. Trò chơi thực sự bây giờ mới chính thức bắt đầu, và kẻ cười cuối cùng chắc chắn không phải là ngươi đâu!",
+  },
+  {
+    id: "adam-vn",
+    name: "Adam",
+    tags: ["Nam", "WAV"],
+    language: "vi",
+    gender: "male",
+    avatar: "👨",
+    refWav: "Adam_VN.wav",
+    refText:
+      "Xin chào mọi người! Như bạn đang nghe thấy đấy, tốc độ xử lý của mình cực kỳ nhanh và mượt mà, giúp phản hồi gần như ngay lập tức theo thời gian thực.",
   },
 ];
 

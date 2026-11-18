@@ -1,4 +1,9 @@
-const { DOUYIN_ORIGIN, mapAwemeToVideo, createDouyinPage } = require("./shared");
+const {
+  DOUYIN_ORIGIN,
+  mapAwemeToVideo,
+  createDouyinPage,
+  releaseDouyinPage,
+} = require("./shared");
 
 function extractSecUserId(profileUrl) {
   let parsed;
@@ -14,130 +19,110 @@ function extractSecUserId(profileUrl) {
 
   const match = parsed.pathname.match(/\/user\/([^/]+)/i);
   if (!match?.[1]) {
-    throw new Error("Could not parse sec_user_id from profile URL");
+    return null;
   }
 
   return decodeURIComponent(match[1]);
 }
 
-function buildPostsApiUrl(secUserId, cursor) {
-  return (
-    `${DOUYIN_ORIGIN}/aweme/v1/web/aweme/post/` +
-    `?device_platform=webapp&aid=6383&channel=channel_pc_web` +
-    `&sec_user_id=${encodeURIComponent(secUserId)}` +
-    `&max_cursor=${cursor}`
-  );
+async function resolveSecUserId(context, profileUrl) {
+  const direct = extractSecUserId(profileUrl);
+  if (direct) return direct;
+
+  try {
+    const response = await context.request.get(profileUrl, {
+      maxRedirects: 10,
+      timeout: 10_000,
+    });
+    const resolved = extractSecUserId(response.url());
+    if (resolved) return resolved;
+  } catch {
+    // ignore
+  }
+
+  throw new Error("Could not parse sec_user_id from profile URL");
 }
 
-async function extractProfile({ url, cookieContent }) {
-  const secUserId = extractSecUserId(url);
-  const MAX_PAGES = 30;
-
+async function extractProfile({ url, cookieContent, maxVideos = 20, cursor = 0 }) {
+  const limit = Math.max(1, Math.min(Number(maxVideos) || 20, 50));
   const { context, page } = await createDouyinPage(cookieContent);
 
   try {
-    // Navigate to profile to warm up session
-    console.log(`[profile] warming up: ${secUserId}`);
-    await page.goto(`${DOUYIN_ORIGIN}/user/${secUserId}`, {
-      waitUntil: "domcontentloaded",
-      timeout: 60_000,
-    });
-    await page.waitForTimeout(2_000);
-
-    // Use Playwright's built-in HTTP client (context.request)
-    // It sends cookies from context, handles compression, bypasses browser anti-bot
+    const secUserId = await resolveSecUserId(context, url);
     const allAweme = [];
     const seenIds = new Set();
-    let currentCursor = 0;
+    let hasMore = false;
+    let nextCursor = cursor || 0;
 
-    for (let pageNum = 0; pageNum < MAX_PAGES; pageNum++) {
-      const apiUrl = buildPostsApiUrl(secUserId, currentCursor);
-      console.log(`[profile] page ${pageNum + 1}: cursor=${currentCursor}`);
+    const onResponse = async (response) => {
+      if (!response.url().includes("/aweme/v1/web/aweme/post")) return;
+      try {
+        const text = await response.text();
+        if (!text.trim()) return;
+        const data = JSON.parse(text);
+        const list = Array.isArray(data?.aweme_list) ? data.aweme_list : [];
+        for (const item of list) {
+          const id = item.aweme_id || item.awemeId;
+          if (id && !seenIds.has(id)) {
+            seenIds.add(id);
+            allAweme.push(item);
+          }
+        }
+        hasMore = data.has_more == 1 || data.has_more === true;
+        if (data.max_cursor) {
+          nextCursor = Number(data.max_cursor) || nextCursor;
+        }
+      } catch {
+        // ignore
+      }
+    };
 
-      const response = await context.request.get(apiUrl, {
-        headers: {
-          accept: "application/json, text/plain, */*",
-          "accept-language": "vi",
-          referer: `${DOUYIN_ORIGIN}/user/${secUserId}`,
-        },
+    page.on("response", onResponse);
+
+    try {
+      await page.goto(`${DOUYIN_ORIGIN}/user/${secUserId}`, {
+        waitUntil: "domcontentloaded",
         timeout: 30_000,
       });
 
-      const text = await response.text();
-
-      if (!text.trim()) {
-        console.log(`[profile] page ${pageNum + 1}: empty response (HTTP ${response.status()})`);
-        break;
+      const deadline = Date.now() + 12_000;
+      while (Date.now() < deadline && allAweme.length === 0) {
+        await page.waitForTimeout(500);
       }
 
-      let data;
-      try {
-        data = JSON.parse(text);
-      } catch {
-        console.log(`[profile] page ${pageNum + 1}: invalid JSON, len=${text.length}`);
-        console.log(`[profile] preview: ${text.slice(0, 200)}`);
-        break;
+      // Scroll to load more if needed up to limit
+      let scrollRounds = 0;
+      while (allAweme.length < limit && hasMore && scrollRounds < 6) {
+        const prevCount = allAweme.length;
+        await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+        await page.waitForTimeout(1_500);
+        if (allAweme.length === prevCount) break;
+        scrollRounds += 1;
       }
-
-      const list = data.aweme_list || [];
-      console.log(
-        `[profile] page ${pageNum + 1}: aweme_list=${list.length}, ` +
-        `has_more=${data.has_more}, max_cursor=${data.max_cursor}, ` +
-        `status=${data.status_code}, keys=[${Object.keys(data).join(",")}]`,
-      );
-
-      if (list.length === 0) {
-        console.log(`[profile] empty list, stopping. total=${allAweme.length}`);
-        break;
-      }
-
-      for (const item of list) {
-        const id = item.aweme_id || item.awemeId;
-        if (id && !seenIds.has(id)) {
-          seenIds.add(id);
-          allAweme.push(item);
-        }
-      }
-
-      const hasMore = data.has_more == 1 || data.has_more === true;
-      const nextCursor = data.max_cursor;
-
-      if (!hasMore) {
-        console.log(`[profile] no more pages. total=${allAweme.length}`);
-        break;
-      }
-
-      if (!nextCursor || nextCursor === currentCursor) {
-        console.log(`[profile] cursor stuck. total=${allAweme.length}`);
-        break;
-      }
-
-      currentCursor = nextCursor;
-      await new Promise((r) => setTimeout(r, 800));
+    } finally {
+      page.off("response", onResponse);
     }
 
     if (!allAweme.length) {
       throw new Error("No videos found in profile. Cookies may be required.");
     }
 
-    const videos = allAweme
+    const sliced = allAweme.slice(0, limit);
+    const videos = sliced
       .map(mapAwemeToVideo)
       .sort((a, b) => (b.create_time || 0) - (a.create_time || 0));
 
-    const first = allAweme[0] || {};
-    console.log(`[profile] done: ${videos.length} videos loaded`);
-
+    const first = sliced[0] || {};
     return {
       uploader: first.author?.nickname || first.nickname || null,
       uploader_id: first.author?.sec_uid || secUserId,
       videos,
-      has_more: false,
-      next_cursor: 0,
-      cursor: 0,
+      has_more: hasMore || allAweme.length > limit,
+      next_cursor: nextCursor,
+      cursor,
     };
   } finally {
-    await page.close().catch(() => {});
-    await context.close().catch(() => {});
+    await releaseDouyinPage(page);
   }
 }
 
