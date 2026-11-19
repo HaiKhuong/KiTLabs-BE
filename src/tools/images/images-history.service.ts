@@ -38,6 +38,7 @@ export class ImagesHistoryService {
       style: (dto.style ?? "anime").trim() || "anime",
       aspectRatio: (dto.aspectRatio ?? "9:16").trim() || "9:16",
       model: (dto.model ?? "z-image-turbo").trim() || "z-image-turbo",
+      provider: dto.provider ?? "comfyui",
       numInferenceSteps: dto.numInferenceSteps ?? null,
       seed: dto.seed ?? null,
       status: QueueJobStatus.RUNNING,

@@ -22,9 +22,14 @@ export const VEO_MODELS = [
   "veo-3.1-lite-generate-preview",
 ] as const;
 
+export const GFLOW_VIDEO_MODELS = ["omni-flash", "veo-lite", "veo-quality"] as const;
+export const ALL_VIDEO_MODELS = [...VEO_MODELS, ...GFLOW_VIDEO_MODELS] as const;
+
 export type VeoModel = (typeof VEO_MODELS)[number];
-export type VeoAspectRatio = "16:9" | "9:16";
-export type VeoResolution = "720p" | "1080p" | "4k";
+export type GFlowVideoModel = (typeof GFLOW_VIDEO_MODELS)[number];
+export type VideoModel = (typeof ALL_VIDEO_MODELS)[number];
+export type VeoAspectRatio = "16:9" | "9:16" | "1:1";
+export type VeoResolution = "360p" | "720p" | "1080p" | "4k";
 export type VeoPersonGeneration = "allow_all" | "allow_adult" | "dont_allow";
 
 export class VeoInlineImageDto {
@@ -72,25 +77,25 @@ export class GenerateVeoVideoDto {
   @IsNotEmpty()
   prompt!: string;
 
-  @ApiPropertyOptional({ enum: VEO_MODELS, default: "veo-3.1-generate-preview" })
+  @ApiPropertyOptional({ enum: ALL_VIDEO_MODELS, default: "veo-3.1-generate-preview" })
   @IsOptional()
-  @IsIn(VEO_MODELS)
-  model?: VeoModel;
+  @IsIn(ALL_VIDEO_MODELS)
+  model?: VideoModel;
 
-  @ApiPropertyOptional({ enum: ["16:9", "9:16"], default: "16:9" })
+  @ApiPropertyOptional({ enum: ["16:9", "9:16", "1:1"], default: "16:9" })
   @IsOptional()
-  @IsIn(["16:9", "9:16"])
+  @IsIn(["16:9", "9:16", "1:1"])
   aspectRatio?: VeoAspectRatio;
 
-  @ApiPropertyOptional({ enum: [4, 6, 8], default: 8 })
+  @ApiPropertyOptional({ enum: [4, 6, 8, 10], default: 8 })
   @IsOptional()
   @IsInt()
-  @IsIn([4, 6, 8])
-  durationSeconds?: 4 | 6 | 8;
+  @IsIn([4, 6, 8, 10])
+  durationSeconds?: 4 | 6 | 8 | 10;
 
-  @ApiPropertyOptional({ enum: ["720p", "1080p", "4k"], default: "720p" })
+  @ApiPropertyOptional({ enum: ["360p", "720p", "1080p", "4k"], default: "720p" })
   @IsOptional()
-  @IsIn(["720p", "1080p", "4k"])
+  @IsIn(["360p", "720p", "1080p", "4k"])
   resolution?: VeoResolution;
 
   @ApiPropertyOptional({ enum: ["allow_all", "allow_adult", "dont_allow"] })
@@ -153,4 +158,14 @@ export class GenerateVeoVideoDto {
   @IsOptional()
   @IsIn(["normal", "vip"])
   apiKeyTier?: "normal" | "vip";
+
+  @ApiPropertyOptional({ enum: ["veo-api", "gflow"], default: "veo-api" })
+  @IsOptional()
+  @IsIn(["veo-api", "gflow"])
+  provider?: "veo-api" | "gflow";
+
+  @ApiPropertyOptional({ description: "Optional voice name for GFlow video generation" })
+  @IsOptional()
+  @IsString()
+  voice?: string;
 }

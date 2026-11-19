@@ -62,6 +62,18 @@ export class VideoHistory extends BaseEntity {
   @Column({ name: "result_mime_type", type: "varchar", length: 128, nullable: true })
   resultMimeType!: string | null;
 
+  @Column({ type: "varchar", length: 32, default: "veo-api" })
+  provider!: string;
+
+  @Column({ name: "result_path", type: "varchar", nullable: true })
+  resultPath!: string | null;
+
+  @Column({ name: "result_file_name", type: "varchar", nullable: true })
+  resultFileName!: string | null;
+
+  @Column({ name: "gflow_profile", type: "varchar", length: 64, nullable: true })
+  gflowProfile!: string | null;
+
   @Column({ name: "error_message", type: "text", nullable: true })
   errorMessage!: string | null;
 }

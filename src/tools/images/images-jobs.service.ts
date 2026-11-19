@@ -1,7 +1,9 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { randomUUID } from "crypto";
-import { join } from "path";
+import { mkdir, rm, writeFile } from "fs/promises";
+import { dirname, join } from "path";
 
+import { GFlowRunnerService } from "../gflow/gflow-runner.service";
 import { NotificationsService } from "../notifications/notifications.service";
 import { ToolsRealtimeGateway } from "../realtime/tools-realtime.gateway";
 import { STUDIO_IMAGE_FILENAME, resolveWorkflowImagesOutputDir } from "../workflow/workflow-image.constants";
@@ -16,6 +18,7 @@ export class ImagesJobsService {
 
   constructor(
     private readonly workflowImageService: WorkflowImageService,
+    private readonly gflowRunner: GFlowRunnerService,
     private readonly imagesHistoryService: ImagesHistoryService,
     private readonly realtimeGateway: ToolsRealtimeGateway,
     private readonly notificationsService: NotificationsService,
@@ -32,11 +35,42 @@ export class ImagesJobsService {
 
   private async runStudioImage(jobId: string, userId: string, dto: GenerateStudioImageDto): Promise<void> {
     const resultPath = join(resolveWorkflowImagesOutputDir(), userId, jobId, STUDIO_IMAGE_FILENAME);
+    let tempRefPath: string | null = null;
     try {
-      const result = await this.workflowImageService.generateStudioImage(dto, jobId);
+      let result: Record<string, unknown>;
+      if (dto.provider === "gflow") {
+        await mkdir(dirname(resultPath), { recursive: true });
+        if (dto.referenceImage?.data) {
+          const ext = dto.referenceImage.mimeType === "image/png" ? ".png" : dto.referenceImage.mimeType === "image/webp" ? ".webp" : ".jpg";
+          tempRefPath = join(dirname(resultPath), `_ref_${jobId}${ext}`);
+          await writeFile(tempRefPath, Buffer.from(dto.referenceImage.data, "base64"));
+        }
+        await this.gflowRunner.generateImage({
+          prompt: dto.prompt.trim(),
+          outputFile: resultPath,
+          referenceImage: tempRefPath,
+          aspect: dto.aspectRatio ?? "16:9",
+          model: dto.model,
+        });
+        const imageUrl = `/api/tools/images/${encodeURIComponent(userId)}/${encodeURIComponent(jobId)}/${STUDIO_IMAGE_FILENAME}`;
+        result = {
+          jobId,
+          imageUrl,
+          downloadUrl: imageUrl,
+          model: dto.model ?? "gflow-imagen",
+          style: dto.style ?? "gflow",
+          aspectRatio: dto.aspectRatio ?? "16:9",
+          prompt: dto.prompt.trim(),
+        };
+      } else {
+        result = await this.workflowImageService.generateStudioImage(dto, jobId);
+      }
       await this.imagesHistoryService.markCompleted(jobId, resultPath, {
-        enrichedPrompt: result.enrichedPrompt,
-        geminiAnalysis: result.geminiAnalysis,
+        enrichedPrompt: typeof result.enrichedPrompt === "string" ? result.enrichedPrompt : undefined,
+        geminiAnalysis:
+          result.geminiAnalysis && typeof result.geminiAnalysis === "object"
+            ? (result.geminiAnalysis as Record<string, unknown>)
+            : undefined,
       });
       this.realtimeGateway.notifyUser(userId, "images.studio.completed", {
         jobId,
@@ -66,6 +100,10 @@ export class ImagesJobsService {
         "Không tạo được ảnh. Kiểm tra prompt / cấu hình và thử lại.",
       );
       this.logger.warn(`[Image Studio] Socket gửi images.studio.failed jobId=${jobId} — ${errorMessage}`);
+    } finally {
+      if (tempRefPath) {
+        await rm(tempRefPath, { force: true }).catch(() => undefined);
+      }
     }
   }
 }

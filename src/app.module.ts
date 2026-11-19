@@ -41,6 +41,7 @@ import { WorkflowModule } from "./tools/workflow/workflow.module";
 import { ImagesModule } from "./tools/images/images.module";
 import { ImageEditModule } from "./tools/image-edit/image-edit.module";
 import { VideosModule } from "./tools/videos/videos.module";
+import { GFlowModule } from "./tools/gflow/gflow.module";
 import { ModelsModule } from "./tools/models/models.module";
 import { HistoriesModule } from "./tools/histories/histories.module";
 import { TikTokModule } from "./tools/tiktok/tiktok.module";
@@ -170,6 +171,7 @@ if (!isDesktop) {
     ImagesModule,
     ImageEditModule,
     VideosModule,
+    GFlowModule,
     HistoriesModule,
     TikTokModule,
     FacebookModule,

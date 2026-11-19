@@ -1,5 +1,19 @@
 import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
-import { IsInt, IsNotEmpty, IsOptional, IsString, IsUUID, Max, Min } from "class-validator";
+import { Type } from "class-transformer";
+import { IsBase64, IsIn, IsInt, IsNotEmpty, IsOptional, IsString, IsUUID, Max, Min, ValidateNested } from "class-validator";
+
+export class StudioReferenceImageDto {
+  @ApiProperty({ example: "image/png", enum: ["image/png", "image/jpeg", "image/webp"] })
+  @IsString()
+  @IsIn(["image/png", "image/jpeg", "image/webp"])
+  mimeType!: "image/png" | "image/jpeg" | "image/webp";
+
+  @ApiProperty({ description: "Raw base64 image data without data-URL prefix" })
+  @IsString()
+  @IsNotEmpty()
+  @IsBase64()
+  data!: string;
+}
 
 export class GenerateStudioImageDto {
   @ApiProperty({ description: "Owner user UUID" })
@@ -47,4 +61,15 @@ export class GenerateStudioImageDto {
   @IsOptional()
   @IsInt()
   seed?: number;
+
+  @ApiPropertyOptional({ enum: ["comfyui", "gflow"], default: "comfyui" })
+  @IsOptional()
+  @IsIn(["comfyui", "gflow"])
+  provider?: "comfyui" | "gflow";
+
+  @ApiPropertyOptional({ type: StudioReferenceImageDto, description: "Optional reference image for GFlow i2i" })
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => StudioReferenceImageDto)
+  referenceImage?: StudioReferenceImageDto;
 }

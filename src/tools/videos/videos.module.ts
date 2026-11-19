@@ -1,6 +1,7 @@
 import { Module } from "@nestjs/common";
 import { TypeOrmModule } from "@nestjs/typeorm";
 
+import { GFlowModule } from "../gflow/gflow.module";
 import { LogsModule } from "../logs/logs.module";
 import { GeminiVeoService } from "./gemini-veo.service";
 import { VideoHistory } from "./video-history.entity";
@@ -8,7 +9,7 @@ import { VideoHistoryService } from "./video-history.service";
 import { VideosController } from "./videos.controller";
 
 @Module({
-  imports: [LogsModule, TypeOrmModule.forFeature([VideoHistory], "tool")],
+  imports: [LogsModule, GFlowModule, TypeOrmModule.forFeature([VideoHistory], "tool")],
   controllers: [VideosController],
   providers: [GeminiVeoService, VideoHistoryService],
   exports: [GeminiVeoService],

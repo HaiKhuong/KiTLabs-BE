@@ -17,7 +17,7 @@ export class VideoHistoryService {
     private readonly logsService: LogsService,
   ) {}
 
-  async createPending(dto: GenerateVeoVideoDto, resolvedModel: VeoModel): Promise<VideoHistory> {
+  async createPending(dto: GenerateVeoVideoDto, resolvedModel: string): Promise<VideoHistory> {
     const prompt = dto.prompt.trim();
     const saved = await this.repository.save(
       this.repository.create({
@@ -31,10 +31,14 @@ export class VideoHistoryService {
         personGeneration: dto.personGeneration ?? null,
         seed: dto.seed == null ? null : String(dto.seed),
         apiKeyTier: dto.apiKeyTier ?? "normal",
+        provider: dto.provider ?? "veo-api",
         operationName: null,
         status: QueueJobStatus.PENDING,
         geminiVideoUri: null,
         resultMimeType: null,
+        resultPath: null,
+        resultFileName: null,
+        gflowProfile: null,
         errorMessage: null,
       }),
     );
@@ -95,6 +99,37 @@ export class VideoHistoryService {
     );
   }
 
+  async markRunningLocal(id: string): Promise<void> {
+    await this.repository.update(
+      { id },
+      {
+        status: QueueJobStatus.RUNNING,
+        errorMessage: null,
+      },
+    );
+  }
+
+  async markCompletedLocal(
+    id: string,
+    result: { resultPath: string; resultFileName: string; gflowProfile?: string | null },
+  ): Promise<void> {
+    await this.repository.update(
+      { id },
+      {
+        status: QueueJobStatus.COMPLETED,
+        resultPath: result.resultPath,
+        resultFileName: result.resultFileName,
+        gflowProfile: result.gflowProfile ?? null,
+        resultMimeType: "video/mp4",
+        errorMessage: null,
+      },
+    );
+  }
+
+  async getById(id: string): Promise<VideoHistory | null> {
+    return this.repository.findOne({ where: { id } });
+  }
+
   async markFailed(id: string, error: unknown): Promise<void> {
     await this.repository.update(
       { id },
@@ -152,16 +187,22 @@ export class VideoHistoryService {
   }
 
   mapForClient(row: VideoHistory) {
-    const downloadUrl =
-      row.status === QueueJobStatus.COMPLETED && row.operationName
-        ? this.buildDownloadUrl(row.operationName, row.apiKeyTier)
-        : null;
+    let downloadUrl: string | null = null;
+    if (row.status === QueueJobStatus.COMPLETED) {
+      if (row.provider === "gflow" && row.resultFileName) {
+        downloadUrl = `/api/tools/videos/veo/files/${encodeURIComponent(row.userId)}/${encodeURIComponent(row.id)}/${encodeURIComponent(row.resultFileName)}`;
+      } else if (row.operationName) {
+        downloadUrl = this.buildDownloadUrl(row.operationName, row.apiKeyTier);
+      }
+    }
     return {
       id: row.id,
       userId: row.userId,
       name: row.displayName,
       prompt: row.prompt,
       model: row.model,
+      provider: row.provider || "veo-api",
+      gflowProfile: row.gflowProfile ?? null,
       aspectRatio: row.aspectRatio,
       durationSeconds: row.durationSeconds,
       resolution: row.resolution,

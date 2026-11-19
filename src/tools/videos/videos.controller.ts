@@ -1,19 +1,28 @@
-import { BadRequestException, Body, Controller, Delete, Get, Param, Post, Query, Res } from "@nestjs/common";
+import { BadRequestException, Body, Controller, Delete, Get, Logger, NotFoundException, Param, Post, Query, Res } from "@nestjs/common";
 import { ApiBearerAuth, ApiOperation, ApiProduces, ApiQuery, ApiTags } from "@nestjs/swagger";
 import type { Response } from "express";
+import { existsSync } from "fs";
+import { mkdir, rm, writeFile } from "fs/promises";
+import { join, resolve } from "path";
 
 import { Public } from "../../common/decorators/public.decorator";
+import { GFlowRunnerService } from "../gflow/gflow-runner.service";
 import { GenerateVeoVideoDto } from "./dto/generate-veo-video.dto";
 import { GeminiVeoService } from "./gemini-veo.service";
 import { VideoHistoryService } from "./video-history.service";
+
+const GFLOW_VIDEO_FILENAME = "output.mp4";
 
 @ApiTags("Videos")
 @ApiBearerAuth("bearer")
 @Controller("tools/videos/veo")
 export class VideosController {
+  private readonly logger = new Logger(VideosController.name);
+
   constructor(
     private readonly geminiVeoService: GeminiVeoService,
     private readonly videoHistoryService: VideoHistoryService,
+    private readonly gflowRunner: GFlowRunnerService,
   ) {}
 
   @ApiOperation({ summary: "Gemini Veo parameter capabilities and constraints for UI" })
@@ -24,12 +33,63 @@ export class VideosController {
   }
 
   @ApiOperation({
-    summary: "Start a Gemini Veo text/image/reference-image video generation operation",
+    summary: "Start a Gemini Veo or Google Flow text/image/reference-image video generation operation",
   })
   @Public()
   @Post("generate")
-  generate(@Body() dto: GenerateVeoVideoDto) {
+  async generate(@Body() dto: GenerateVeoVideoDto) {
+    if (dto.provider === "gflow") {
+      const model = dto.model ?? "omni-flash";
+      const history = await this.videoHistoryService.createPending(dto, model);
+      void this.runGFlowVideo(history.id, dto);
+      return {
+        historyId: history.id,
+        operationName: null,
+        done: false,
+        model,
+        apiKeyTier: dto.apiKeyTier ?? "normal",
+        provider: "gflow",
+      };
+    }
     return this.geminiVeoService.generate(dto);
+  }
+
+  private async runGFlowVideo(historyId: string, dto: GenerateVeoVideoDto): Promise<void> {
+    const outDir = resolve(process.cwd(), "uploads", "tools", "videos", dto.userId.trim(), historyId);
+    const outPath = join(outDir, GFLOW_VIDEO_FILENAME);
+    let tempRefPath: string | null = null;
+    try {
+      await this.videoHistoryService.markRunningLocal(historyId);
+      await mkdir(outDir, { recursive: true });
+      const refImage = dto.firstFrame ?? dto.referenceImages?.[0];
+      if (refImage?.data) {
+        const ext = refImage.mimeType === "image/png" ? ".png" : refImage.mimeType === "image/webp" ? ".webp" : ".jpg";
+        tempRefPath = join(outDir, `_ref_${historyId}${ext}`);
+        await writeFile(tempRefPath, Buffer.from(refImage.data, "base64"));
+      }
+      const res = await this.gflowRunner.generateVideo({
+        prompt: dto.prompt.trim(),
+        outputFile: outPath,
+        referenceImage: tempRefPath,
+        aspect: dto.aspectRatio ?? "16:9",
+        model: dto.model ?? "omni-flash",
+        resolution: dto.resolution === "360p" ? "360p" : "720p",
+        duration: dto.durationSeconds ?? 8,
+        voice: dto.voice,
+      });
+      await this.videoHistoryService.markCompletedLocal(historyId, {
+        resultPath: res.outputPath,
+        resultFileName: GFLOW_VIDEO_FILENAME,
+        gflowProfile: res.profile ?? null,
+      });
+    } catch (error) {
+      this.logger.warn(`[GFlow Video] Failed historyId=${historyId}: ${error instanceof Error ? error.message : String(error)}`);
+      await this.videoHistoryService.markFailed(historyId, error);
+    } finally {
+      if (tempRefPath) {
+        await rm(tempRefPath, { force: true }).catch(() => undefined);
+      }
+    }
   }
 
   @ApiOperation({ summary: "List a user's Gemini Veo generation history" })
@@ -96,5 +156,26 @@ export class VideosController {
       response.setHeader("Content-Length", result.contentLength);
     }
     return result.stream.pipe(response);
+  }
+
+  @ApiOperation({ summary: "Serve locally generated GFlow MP4 video" })
+  @ApiProduces("video/mp4")
+  @Public()
+  @Get("files/:userId/:historyId/:filename")
+  async serveLocalVideo(
+    @Param("userId") userId: string,
+    @Param("historyId") historyId: string,
+    @Param("filename") filename: string,
+    @Res() response: Response,
+  ) {
+    const row = await this.videoHistoryService.getById(historyId);
+    if (!row || row.userId !== userId || !row.resultPath || row.resultFileName !== filename) {
+      throw new NotFoundException("Video file not found");
+    }
+    const absPath = resolve(row.resultPath);
+    if (!existsSync(absPath)) {
+      throw new NotFoundException("Video file missing on disk");
+    }
+    return response.sendFile(absPath);
   }
 }
