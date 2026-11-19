@@ -146,12 +146,16 @@ def _spawn_daemon() -> Optional[Dict[str, Any]]:
     env["PYTHONIOENCODING"] = "utf-8"
 
     creationflags = 0
+    startupinfo = None
     if sys.platform == "win32":
+        # Do NOT combine CREATE_NO_WINDOW with DETACHED_PROCESS (mutually exclusive in Win32).
         creationflags = (
             getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
-            | getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
             | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
         )
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startupinfo.wShowWindow = 0  # SW_HIDE
     breakaway_flag = 0x01000000 if sys.platform == "win32" else 0
 
     try:
@@ -165,6 +169,7 @@ def _spawn_daemon() -> Optional[Dict[str, Any]]:
                     stdout=devnull_out,
                     stderr=devnull_out,
                     creationflags=creationflags | breakaway_flag,
+                    startupinfo=startupinfo,
                     close_fds=(sys.platform != "win32"),
                 )
             except OSError:
@@ -176,6 +181,7 @@ def _spawn_daemon() -> Optional[Dict[str, Any]]:
                     stdout=devnull_out,
                     stderr=devnull_out,
                     creationflags=creationflags,
+                    startupinfo=startupinfo,
                     close_fds=(sys.platform != "win32"),
                 )
     except Exception:

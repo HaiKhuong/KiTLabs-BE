@@ -197,9 +197,12 @@ def _tokenize_with_pauses(
     return chunks
 
 
+_WIN_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000) if sys.platform == "win32" else 0
+
+
 def _run_command(args: List[str], label: str) -> None:
     """Tương thích signature run_command của auto_vietsub / step3_edge."""
-    proc = subprocess.run(args, capture_output=True, text=True)
+    proc = subprocess.run(args, capture_output=True, text=True, creationflags=_WIN_NO_WINDOW)
     if proc.returncode != 0:
         err = (proc.stderr or proc.stdout or "").strip()
         raise RuntimeError(f"{label} failed: {err[:2000]}")
@@ -257,7 +260,7 @@ def _resolve_omnivoice_seed(seed: Optional[int]) -> Optional[int]:
 
 def _run_ffmpeg(args: List[str], label: str) -> None:
     cmd = [FFMPEG_BIN, "-y", *args]
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+    proc = subprocess.run(cmd, capture_output=True, text=True, creationflags=_WIN_NO_WINDOW)
     if proc.returncode != 0:
         err = (proc.stderr or proc.stdout or "").strip()
         raise RuntimeError(f"{label} failed: {err[:2000]}")

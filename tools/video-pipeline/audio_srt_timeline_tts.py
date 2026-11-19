@@ -39,8 +39,11 @@ FFPROBE_BIN = (os.getenv("FFPROBE_BIN") or "ffprobe").strip() or "ffprobe"
 SAMPLE_RATE = 24000
 
 
+_WIN_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000) if sys.platform == "win32" else 0
+
+
 def _run_ffmpeg(args: list[str], label: str) -> None:
-    proc = subprocess.run([FFMPEG_BIN, "-y", *args], capture_output=True, text=True)
+    proc = subprocess.run([FFMPEG_BIN, "-y", *args], capture_output=True, text=True, creationflags=_WIN_NO_WINDOW)
     if proc.returncode != 0:
         err = (proc.stderr or proc.stdout or "").strip()
         raise RuntimeError(f"{label} failed: {err[:2000]}")
@@ -56,6 +59,7 @@ def _probe_duration_sec(path: Path) -> float:
         ],
         capture_output=True,
         text=True,
+        creationflags=_WIN_NO_WINDOW,
     )
     if proc.returncode != 0:
         return 0.0
