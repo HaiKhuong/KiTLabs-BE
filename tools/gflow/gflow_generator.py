@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import shutil
@@ -22,20 +23,76 @@ DEFAULT_VIDEO_TIMEOUT_SEC = 300
 DEFAULT_IMAGE_TIMEOUT_SEC = 120
 
 
+def resolve_chromium_browser() -> Optional[str]:
+    """Resolves the user's default Chromium browser (Chrome/Edge/CocCoc/Opera/Brave) on Windows."""
+    if os.environ.get("CHROME_BINARY") and os.path.exists(os.environ["CHROME_BINARY"]):
+        return os.environ["CHROME_BINARY"]
+
+    # Only browsers compatible with Chromium --password-store=basic cookie sharing
+    chromium_exes = {"chrome.exe", "msedge.exe", "brave.exe"}
+    if os.name == "nt":
+        try:
+            import winreg
+
+            with winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                r"Software\Microsoft\Windows\Shell\Associations\UrlAssociations\https\UserChoice",
+            ) as key:
+                prog_id, _ = winreg.QueryValueEx(key, "ProgId")
+            with winreg.OpenKey(winreg.HKEY_CLASSES_ROOT, rf"{prog_id}\shell\open\command") as cmd_key:
+                raw_cmd, _ = winreg.QueryValueEx(cmd_key, None)
+            exe_part = raw_cmd.strip()
+            if exe_part.startswith('"'):
+                exe_part = exe_part.split('"', 2)[1]
+            else:
+                exe_part = exe_part.split()[0]
+            if exe_part and os.path.exists(exe_part) and Path(exe_part).name.lower() in chromium_exes:
+                return exe_part
+        except Exception:
+            pass
+
+        local = os.environ.get("LOCALAPPDATA", "")
+        pf = os.environ.get("PROGRAMFILES", r"C:\Program Files")
+        pf86 = os.environ.get("PROGRAMFILES(X86)", r"C:\Program Files (x86)")
+        fallbacks = [
+            os.path.join(pf, r"Google\Chrome\Application\chrome.exe"),
+            os.path.join(pf86, r"Google\Chrome\Application\chrome.exe"),
+            os.path.join(local, r"Google\Chrome\Application\chrome.exe"),
+            os.path.join(pf86, r"Microsoft\Edge\Application\msedge.exe"),
+            os.path.join(pf, r"Microsoft\Edge\Application\msedge.exe"),
+            os.path.join(pf, r"BraveSoftware\Brave-Browser\Application\brave.exe"),
+        ]
+        for path in fallbacks:
+            if path and os.path.exists(path):
+                return path
+    return None
+
+
 def get_gflow_bin() -> str:
     """Finds gflow CLI binary across common Python environments."""
     exe = "gflow.exe" if os.name == "nt" else "gflow"
     scripts_dir = "Scripts" if os.name == "nt" else "bin"
+    data_root = os.environ.get("KITLABS_DATA_ROOT", "").strip()
     candidates = [
         Path(sys.executable).parent / exe,
+        Path(sys.executable).parent / scripts_dir / exe,
         CURRENT_DIR / ".venv" / scripts_dir / exe,
         CURRENT_DIR.parent / ".venv" / scripts_dir / exe,
         CURRENT_DIR.parent.parent / ".venv" / scripts_dir / exe,
     ]
+    if data_root:
+        candidates.append(Path(data_root) / "sidecars" / "python" / scripts_dir / exe)
+    if os.name == "nt":
+        candidates.append(Path(r"D:\KiTLabs\data\sidecars\python\Scripts\gflow.exe"))
     for candidate in candidates:
         if candidate.exists():
             return str(candidate)
-    return shutil.which("gflow") or exe
+    which_bin = shutil.which("gflow")
+    if which_bin:
+        return which_bin
+    raise FileNotFoundError(
+        "Không tìm thấy gflow.exe. Vui lòng cài đặt: pip install gflow-cli pillow python-dotenv"
+    )
 
 
 def strip_image_metadata(input_path: str, output_path: str) -> str:
@@ -79,14 +136,70 @@ async def _run_subprocess(cmd: list[str], env: dict[str, str], timeout_sec: int)
     )
 
 
-def _build_env(voice: Optional[str] = None) -> dict[str, str]:
+def _resolve_playwright_browsers_path() -> Optional[str]:
+    if os.environ.get("PLAYWRIGHT_BROWSERS_PATH") and os.path.exists(os.environ["PLAYWRIGHT_BROWSERS_PATH"]):
+        return os.environ["PLAYWRIGHT_BROWSERS_PATH"]
+    candidates = [
+        CURRENT_DIR.parent.parent.parent / "ms-playwright",  # D:\KiTLabs\app\resources\ms-playwright
+        CURRENT_DIR.parent.parent / "ms-playwright",
+        Path(r"D:\KiTLabs\app\resources\ms-playwright"),
+        Path(os.environ.get("LOCALAPPDATA", "")) / "ms-playwright",
+    ]
+    for c in candidates:
+        if c.exists() and any(c.glob("chromium-*")):
+            return str(c)
+    return None
+
+
+def _build_env(voice: Optional[str] = None, include_browser_override: bool = False) -> dict[str, str]:
     env = os.environ.copy()
     env["PYTHONUTF8"] = "1"
     env["GFLOW_CLI_UPDATE_CHECK"] = "0"
     env["GFLOW_CLI_FLOW_HOST"] = "flow.google.com"
+    pw_path = _resolve_playwright_browsers_path()
+    if pw_path and not env.get("PLAYWRIGHT_BROWSERS_PATH"):
+        env["PLAYWRIGHT_BROWSERS_PATH"] = pw_path
+    if include_browser_override:
+        browser_bin = resolve_chromium_browser()
+        if browser_bin and not env.get("CHROME_BINARY"):
+            env["CHROME_BINARY"] = browser_bin
     if voice:
         env["GFLOW_CLI_VOICE"] = str(voice).strip()
     return env
+
+
+def _extract_error_message(stdout: str, stderr: str) -> str:
+    for raw in (stdout, stderr):
+        stripped = raw.strip()
+        if stripped.startswith("{"):
+            try:
+                obj = json.loads(stripped)
+                parts = [
+                    obj.get("message") or obj.get("detail") or obj.get("error"),
+                    obj.get("remediation_hint"),
+                ]
+                msg = " — ".join(str(p).strip() for p in parts if p)
+                if msg:
+                    return msg[:600]
+            except Exception:
+                pass
+        for line in reversed(raw.splitlines()):
+            line = line.strip()
+            if not line.startswith("{"):
+                continue
+            try:
+                obj = json.loads(line)
+                parts = [
+                    obj.get("message") or obj.get("detail") or obj.get("error"),
+                    obj.get("remediation_hint"),
+                ]
+                msg = " — ".join(str(p).strip() for p in parts if p)
+                if msg:
+                    return msg[:600]
+            except Exception:
+                pass
+    combined = f"{stderr}\n{stdout}".strip()
+    return combined[:600]
 
 
 def _classify_and_mark_failure(profile: Optional[str], combined_out: str) -> bool:
@@ -114,6 +227,7 @@ class GFlowGenerator:
         prompt: str,
         output_file: str | Path,
         reference_image: Optional[str | Path] = None,
+        reference_images: Optional[list[str | Path]] = None,
         aspect: str = "16:9",
         model: str = "omni-flash",
         resolution: str = "720p",
@@ -124,6 +238,12 @@ class GFlowGenerator:
     ) -> tuple[Path, Optional[str]]:
         out_path = Path(output_file).resolve()
         out_path.parent.mkdir(parents=True, exist_ok=True)
+
+        raw_refs: list[str | Path] = []
+        if reference_images:
+            raw_refs.extend(reference_images)
+        elif reference_image:
+            raw_refs.append(reference_image)
 
         available_count = gflow_account_pool.get_available_profiles_count()
         attempts = max_attempts or max(1, available_count)
@@ -140,20 +260,27 @@ class GFlowGenerator:
             tmp_dir.mkdir(parents=True, exist_ok=True)
 
             try:
-                ref_img = None
-                if reference_image and Path(reference_image).exists():
-                    ref_img = strip_image_metadata(str(reference_image), str(tmp_dir / f"clean_{Path(reference_image).name}"))
+                clean_refs: list[str] = []
+                for idx, ref_item in enumerate(raw_refs):
+                    if ref_item and Path(ref_item).exists():
+                        clean_dest = tmp_dir / f"clean_{idx}_{Path(ref_item).name}"
+                        clean_refs.append(strip_image_metadata(str(ref_item), str(clean_dest)))
 
                 cmd = [self.gflow_bin, "video"]
-                if ref_img and Path(ref_img).exists():
-                    cmd.extend(["i2v", "-i", str(ref_img), prompt])
+                if len(clean_refs) >= 2:
+                    cmd.extend(["r2v", prompt])
+                    for ref_path in clean_refs:
+                        cmd.extend(["--ref", ref_path])
+                elif len(clean_refs) == 1:
+                    cmd.extend(["i2v", "-i", clean_refs[0], prompt])
                 else:
                     cmd.extend(["t2v", prompt])
 
+                valid_video_aspect = aspect if aspect in ("9:16", "16:9") else "16:9"
                 cmd.extend(
                     [
                         "--aspect",
-                        aspect,
+                        valid_video_aspect,
                         "--model",
                         model.replace("_", "-"),
                         "--out-dir",
@@ -163,7 +290,7 @@ class GFlowGenerator:
                         "--json",
                     ]
                 )
-                if model == "omni-flash":
+                if model in ("omni-flash", "omni-1.2-flash"):
                     cmd.extend(["--resolution", "360p" if resolution == "360p" else "720p"])
                 if leased_profile:
                     cmd.extend(["--profile", leased_profile])
@@ -174,7 +301,7 @@ class GFlowGenerator:
                 if returncode != 0:
                     if _classify_and_mark_failure(leased_profile, combined):
                         continue
-                    raise RuntimeError(f"Google Flow video lỗi: {combined[:500]}")
+                    raise RuntimeError(f"Google Flow video lỗi: {_extract_error_message(stdout, stderr)}")
 
                 mp4_files = [f for f in tmp_dir.glob("*.mp4") if f.stat().st_size > 1024]
                 if not mp4_files:
@@ -196,6 +323,7 @@ class GFlowGenerator:
         prompt: str,
         output_file: str | Path,
         reference_image: Optional[str | Path] = None,
+        reference_images: Optional[list[str | Path]] = None,
         aspect: str = "16:9",
         model: Optional[str] = None,
         max_attempts: Optional[int] = None,
@@ -203,6 +331,12 @@ class GFlowGenerator:
     ) -> tuple[Path, Optional[str]]:
         out_path = Path(output_file).resolve()
         out_path.parent.mkdir(parents=True, exist_ok=True)
+
+        raw_refs: list[str | Path] = []
+        if reference_images:
+            raw_refs.extend(reference_images)
+        elif reference_image:
+            raw_refs.append(reference_image)
 
         available_count = gflow_account_pool.get_available_profiles_count()
         attempts = max_attempts or max(1, available_count)
@@ -219,19 +353,32 @@ class GFlowGenerator:
             tmp_dir.mkdir(parents=True, exist_ok=True)
 
             try:
-                ref_img = None
-                if reference_image and Path(reference_image).exists():
-                    ref_img = strip_image_metadata(str(reference_image), str(tmp_dir / f"clean_{Path(reference_image).name}"))
+                clean_refs: list[str] = []
+                for idx, ref_item in enumerate(raw_refs):
+                    if ref_item and Path(ref_item).exists():
+                        clean_dest = tmp_dir / f"clean_{idx}_{Path(ref_item).name}"
+                        clean_refs.append(strip_image_metadata(str(ref_item), str(clean_dest)))
 
                 cmd = [self.gflow_bin, "image"]
-                if ref_img and Path(ref_img).exists():
-                    cmd.extend(["i2i", prompt, "--ref", str(ref_img)])
+                if clean_refs:
+                    cmd.extend(["i2i", prompt])
+                    for ref_path in clean_refs:
+                        cmd.extend(["--ref", ref_path])
                 else:
                     cmd.extend(["t2i", prompt])
 
-                cmd.extend(["--aspect", aspect, "--out-dir", str(tmp_dir), "--json"])
-                if model and model != "gflow-imagen":
-                    cmd.extend(["--model", model.replace("_", "-")])
+                valid_img_aspect = aspect if aspect in ("9:16", "16:9", "1:1", "4:3", "3:4") else "3:4" if aspect == "4:5" else "16:9"
+                cmd.extend(["--aspect", valid_img_aspect, "--out", str(tmp_dir), "--json"])
+                model_map = {
+                    "nano-banana-2": "nano2",
+                    "gflow-imagen": "nano2",
+                    "imagen4": "imagen4",
+                    "nano-pro": "nano-pro",
+                    "nano2": "nano2",
+                }
+                resolved_model = model_map.get(model or "", "")
+                if resolved_model:
+                    cmd.extend(["--model", resolved_model])
                 if leased_profile:
                     cmd.extend(["--profile", leased_profile])
 
@@ -241,7 +388,7 @@ class GFlowGenerator:
                 if returncode != 0:
                     if _classify_and_mark_failure(leased_profile, combined):
                         continue
-                    raise RuntimeError(f"Google Flow image lỗi: {combined[:500]}")
+                    raise RuntimeError(f"Google Flow image lỗi: {_extract_error_message(stdout, stderr)}")
 
                 img_files = [
                     f

@@ -1,6 +1,19 @@
 import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
 import { Type } from "class-transformer";
-import { IsBase64, IsIn, IsInt, IsNotEmpty, IsOptional, IsString, IsUUID, Max, Min, ValidateNested } from "class-validator";
+import {
+  ArrayMaxSize,
+  IsArray,
+  IsBase64,
+  IsIn,
+  IsInt,
+  IsNotEmpty,
+  IsOptional,
+  IsString,
+  IsUUID,
+  Max,
+  Min,
+  ValidateNested,
+} from "class-validator";
 
 export class StudioReferenceImageDto {
   @ApiProperty({ example: "image/png", enum: ["image/png", "image/jpeg", "image/webp"] })
@@ -67,9 +80,21 @@ export class GenerateStudioImageDto {
   @IsIn(["comfyui", "gflow"])
   provider?: "comfyui" | "gflow";
 
-  @ApiPropertyOptional({ type: StudioReferenceImageDto, description: "Optional reference image for GFlow i2i" })
+  @ApiPropertyOptional({ type: StudioReferenceImageDto, description: "Optional single reference image for GFlow i2i" })
   @IsOptional()
   @ValidateNested()
   @Type(() => StudioReferenceImageDto)
   referenceImage?: StudioReferenceImageDto;
+
+  @ApiPropertyOptional({
+    type: [StudioReferenceImageDto],
+    maxItems: 10,
+    description: "Optional multiple reference images for GFlow i2i (max 10)",
+  })
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(10)
+  @ValidateNested({ each: true })
+  @Type(() => StudioReferenceImageDto)
+  referenceImages?: StudioReferenceImageDto[];
 }

@@ -31,6 +31,7 @@ export type GFlowGenerateVideoInput = {
   prompt: string;
   outputFile: string;
   referenceImage?: string | null;
+  referenceImages?: string[];
   aspect?: string;
   model?: string;
   resolution?: string;
@@ -42,6 +43,7 @@ export type GFlowGenerateImageInput = {
   prompt: string;
   outputFile: string;
   referenceImage?: string | null;
+  referenceImages?: string[];
   aspect?: string;
   model?: string;
 };

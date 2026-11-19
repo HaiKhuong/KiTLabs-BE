@@ -11,6 +11,7 @@ import {
   IsString,
   IsUrl,
   IsUUID,
+  Max,
   Min,
   ValidateIf,
   ValidateNested,
@@ -22,7 +23,14 @@ export const VEO_MODELS = [
   "veo-3.1-lite-generate-preview",
 ] as const;
 
-export const GFLOW_VIDEO_MODELS = ["omni-flash", "veo-lite", "veo-quality"] as const;
+export const GFLOW_VIDEO_MODELS = [
+  "omni-flash",
+  "omni-1.2-flash",
+  "omni-1.2",
+  "veo-lite",
+  "veo-fast",
+  "veo-quality",
+] as const;
 export const ALL_VIDEO_MODELS = [...VEO_MODELS, ...GFLOW_VIDEO_MODELS] as const;
 
 export type VeoModel = (typeof VEO_MODELS)[number];
@@ -87,11 +95,12 @@ export class GenerateVeoVideoDto {
   @IsIn(["16:9", "9:16", "1:1"])
   aspectRatio?: VeoAspectRatio;
 
-  @ApiPropertyOptional({ enum: [4, 6, 8, 10], default: 8 })
+  @ApiPropertyOptional({ default: 8 })
   @IsOptional()
   @IsInt()
-  @IsIn([4, 6, 8, 10])
-  durationSeconds?: 4 | 6 | 8 | 10;
+  @Min(3)
+  @Max(15)
+  durationSeconds?: number;
 
   @ApiPropertyOptional({ enum: ["360p", "720p", "1080p", "4k"], default: "720p" })
   @IsOptional()
@@ -131,12 +140,12 @@ export class GenerateVeoVideoDto {
 
   @ApiPropertyOptional({
     type: [VeoReferenceImageDto],
-    maxItems: 3,
-    description: "Up to three subject/style reference images",
+    maxItems: 7,
+    description: "Up to 7 subject/style reference images (GFlow Omni Flash max=7, Veo=3)",
   })
   @IsOptional()
   @IsArray()
-  @ArrayMaxSize(3)
+  @ArrayMaxSize(7)
   @ValidateNested({ each: true })
   @Type(() => VeoReferenceImageDto)
   referenceImages?: VeoReferenceImageDto[];

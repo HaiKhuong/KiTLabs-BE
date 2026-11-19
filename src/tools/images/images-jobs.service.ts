@@ -35,20 +35,28 @@ export class ImagesJobsService {
 
   private async runStudioImage(jobId: string, userId: string, dto: GenerateStudioImageDto): Promise<void> {
     const resultPath = join(resolveWorkflowImagesOutputDir(), userId, jobId, STUDIO_IMAGE_FILENAME);
-    let tempRefPath: string | null = null;
+    const tempRefPaths: string[] = [];
     try {
       let result: Record<string, unknown>;
       if (dto.provider === "gflow") {
         await mkdir(dirname(resultPath), { recursive: true });
-        if (dto.referenceImage?.data) {
-          const ext = dto.referenceImage.mimeType === "image/png" ? ".png" : dto.referenceImage.mimeType === "image/webp" ? ".webp" : ".jpg";
-          tempRefPath = join(dirname(resultPath), `_ref_${jobId}${ext}`);
-          await writeFile(tempRefPath, Buffer.from(dto.referenceImage.data, "base64"));
+        const refs = dto.referenceImages?.length
+          ? dto.referenceImages
+          : dto.referenceImage
+            ? [dto.referenceImage]
+            : [];
+        for (let idx = 0; idx < refs.length; idx++) {
+          const ref = refs[idx];
+          if (!ref?.data) continue;
+          const ext = ref.mimeType === "image/png" ? ".png" : ref.mimeType === "image/webp" ? ".webp" : ".jpg";
+          const refPath = join(dirname(resultPath), `_ref_${jobId}_${idx}${ext}`);
+          await writeFile(refPath, Buffer.from(ref.data, "base64"));
+          tempRefPaths.push(refPath);
         }
         await this.gflowRunner.generateImage({
           prompt: dto.prompt.trim(),
           outputFile: resultPath,
-          referenceImage: tempRefPath,
+          referenceImages: tempRefPaths,
           aspect: dto.aspectRatio ?? "16:9",
           model: dto.model,
         });
@@ -101,8 +109,8 @@ export class ImagesJobsService {
       );
       this.logger.warn(`[Image Studio] Socket gửi images.studio.failed jobId=${jobId} — ${errorMessage}`);
     } finally {
-      if (tempRefPath) {
-        await rm(tempRefPath, { force: true }).catch(() => undefined);
+      for (const p of tempRefPaths) {
+        await rm(p, { force: true }).catch(() => undefined);
       }
     }
   }

@@ -951,38 +951,9 @@ export class AudioService {
    */
   async ensureVoicePreview(voiceId: string): Promise<{ filePath: string; contentType: string }> {
     const voice = this.getPresetVoice(voiceId);
-    const cachePath = this.getPreviewCachePath(voiceId);
     const refPath = this.resolvePresetRefAudioPath(voice.refWav);
     const refMime = this.guessAudioMimeFromPath(refPath);
-
-    if (existsSync(cachePath)) {
-      const cacheStat = statSync(cachePath);
-      const refStat = statSync(refPath);
-      if (cacheStat.mtimeMs >= refStat.mtimeMs) {
-        return { filePath: cachePath, contentType: "audio/wav" };
-      }
-    }
-
-    mkdirSync(resolve(cachePath, ".."), { recursive: true });
-    const previewText = resolvePreviewTtsText(voice);
-    const omnivoiceLang = resolveOmnivoiceLanguage(voice);
-
-    try {
-      await this.spawnOmnivoiceTts({
-        text: previewText,
-        outWav: cachePath,
-        refAudio: refPath,
-        refText: voice.refText,
-        language: omnivoiceLang,
-      });
-      return { filePath: cachePath, contentType: "audio/wav" };
-    } catch (err) {
-      this.logger.warn(
-        `OmniVoice preview failed for preset "${voiceId}", falling back to reference clip (${voice.refWav})`,
-        err instanceof Error ? err.stack : String(err),
-      );
-      return { filePath: refPath, contentType: refMime };
-    }
+    return { filePath: refPath, contentType: refMime };
   }
 
   async enqueue(dto: CreateAudioJobDto): Promise<AudioHistory> {

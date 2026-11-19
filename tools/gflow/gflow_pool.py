@@ -157,6 +157,8 @@ class GFlowAccountPool:
             return []
 
         with self._get_conn() as conn:
+            placeholders = ",".join("?" * len(profile_names))
+            conn.execute(f"DELETE FROM gflow_accounts WHERE name NOT IN ({placeholders})", profile_names)
             for p in discovered:
                 priority = get_account_priority(p.name)
                 conn.execute(

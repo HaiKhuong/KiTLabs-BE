@@ -57,20 +57,27 @@ export class VideosController {
   private async runGFlowVideo(historyId: string, dto: GenerateVeoVideoDto): Promise<void> {
     const outDir = resolve(process.cwd(), "uploads", "tools", "videos", dto.userId.trim(), historyId);
     const outPath = join(outDir, GFLOW_VIDEO_FILENAME);
-    let tempRefPath: string | null = null;
+    const tempRefPaths: string[] = [];
     try {
       await this.videoHistoryService.markRunningLocal(historyId);
       await mkdir(outDir, { recursive: true });
-      const refImage = dto.firstFrame ?? dto.referenceImages?.[0];
-      if (refImage?.data) {
+      const refs = dto.referenceImages?.length
+        ? dto.referenceImages
+        : dto.firstFrame
+          ? [dto.firstFrame]
+          : [];
+      for (let idx = 0; idx < refs.length; idx++) {
+        const refImage = refs[idx];
+        if (!refImage?.data) continue;
         const ext = refImage.mimeType === "image/png" ? ".png" : refImage.mimeType === "image/webp" ? ".webp" : ".jpg";
-        tempRefPath = join(outDir, `_ref_${historyId}${ext}`);
-        await writeFile(tempRefPath, Buffer.from(refImage.data, "base64"));
+        const refPath = join(outDir, `_ref_${historyId}_${idx}${ext}`);
+        await writeFile(refPath, Buffer.from(refImage.data, "base64"));
+        tempRefPaths.push(refPath);
       }
       const res = await this.gflowRunner.generateVideo({
         prompt: dto.prompt.trim(),
         outputFile: outPath,
-        referenceImage: tempRefPath,
+        referenceImages: tempRefPaths,
         aspect: dto.aspectRatio ?? "16:9",
         model: dto.model ?? "omni-flash",
         resolution: dto.resolution === "360p" ? "360p" : "720p",
@@ -86,8 +93,8 @@ export class VideosController {
       this.logger.warn(`[GFlow Video] Failed historyId=${historyId}: ${error instanceof Error ? error.message : String(error)}`);
       await this.videoHistoryService.markFailed(historyId, error);
     } finally {
-      if (tempRefPath) {
-        await rm(tempRefPath, { force: true }).catch(() => undefined);
+      for (const p of tempRefPaths) {
+        await rm(p, { force: true }).catch(() => undefined);
       }
     }
   }
