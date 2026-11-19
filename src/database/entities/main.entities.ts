@@ -4,6 +4,7 @@ import { PlatformFacebookPage } from "../../platform/entities/platform-facebook-
 import { PlatformUser } from "../../platform/entities/platform-user.entity";
 import { PlatformAdminRole } from "../../platform/entities/platform-admin-role.entity";
 import { PlatformAdminUser } from "../../platform/entities/platform-admin-user.entity";
+import { PlatformDesktopDevice } from "../../platform/entities/desktop-device.entity";
 
 export const MAIN_DB_ENTITIES = [
   PlatformUser,
@@ -12,4 +13,5 @@ export const MAIN_DB_ENTITIES = [
   PlatformFacebookPage,
   PlatformAdminRole,
   PlatformAdminUser,
+  PlatformDesktopDevice,
 ];

@@ -9,9 +9,13 @@ import { PlatformCredential } from "./entities/platform-credential.entity";
 import { PlatformFacebookPage } from "./entities/platform-facebook-page.entity";
 import { PlatformAdminRole } from "./entities/platform-admin-role.entity";
 import { PlatformAdminUser } from "./entities/platform-admin-user.entity";
+import { PlatformDesktopDevice } from "./entities/desktop-device.entity";
 import { PlatformAdminService } from "./admin/platform-admin.service";
 import { PlatformAdminUsersController } from "./admin/platform-admin-users.controller";
 import { PlatformAdminRolesController } from "./admin/platform-admin-roles.controller";
+import { PlatformAdminDesktopDevicesController } from "./admin/platform-admin-desktop-devices.controller";
+import { PlatformDesktopController } from "./desktop/platform-desktop.controller";
+import { PlatformDesktopService } from "./desktop/platform-desktop.service";
 import { FacebookGraphClient } from "./facebook/facebook-graph.client";
 import { PlatformFacebookController } from "./facebook/platform-facebook.controller";
 import { PlatformFacebookService } from "./facebook/platform-facebook.service";
@@ -28,6 +32,7 @@ import { TikTokApiClient } from "./tiktok/tiktok-api.client";
       PlatformFacebookPage,
       PlatformAdminRole,
       PlatformAdminUser,
+      PlatformDesktopDevice,
     ]),
   ],
   controllers: [
@@ -36,6 +41,8 @@ import { TikTokApiClient } from "./tiktok/tiktok-api.client";
     PlatformTikTokController,
     PlatformAdminUsersController,
     PlatformAdminRolesController,
+    PlatformAdminDesktopDevicesController,
+    PlatformDesktopController,
   ],
   providers: [
     PlatformCredentialsService,
@@ -46,6 +53,7 @@ import { TikTokApiClient } from "./tiktok/tiktok-api.client";
     TikTokApiClient,
     PlatformTikTokService,
     PlatformAdminService,
+    PlatformDesktopService,
   ],
   exports: [
     PlatformCredentialsService,
@@ -54,6 +62,7 @@ import { TikTokApiClient } from "./tiktok/tiktok-api.client";
     FacebookGraphClient,
     TikTokApiClient,
     PlatformAdminService,
+    PlatformDesktopService,
   ],
 })
 export class PlatformModule {}
