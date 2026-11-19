@@ -17,6 +17,7 @@ export class PlatformDesktopController {
   access(
     @Query("deviceId") deviceId: string | undefined,
     @Query("appVersion") appVersion: string | undefined,
+    @Query("hostname") hostname: string | undefined,
     @Req() req: Request,
   ) {
     const forwarded = req.headers["x-forwarded-for"];
@@ -24,6 +25,6 @@ export class PlatformDesktopController {
       (Array.isArray(forwarded) ? forwarded[0] : forwarded)?.split(",")[0]?.trim() ||
       req.ip ||
       undefined;
-    return this.service.getAccessByDeviceId(deviceId, { appVersion, ip });
+    return this.service.getAccessByDeviceId(deviceId, { appVersion, ip, hostname });
   }
 }

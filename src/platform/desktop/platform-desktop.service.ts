@@ -7,6 +7,7 @@ import {
 import { InjectDataSource } from "@nestjs/typeorm";
 import { DataSource, IsNull, Not } from "typeorm";
 import { PlatformDesktopDevice } from "../entities/desktop-device.entity";
+import { PlatformUser } from "../entities/platform-user.entity";
 import { DESKTOP_MENU_CATALOG, normalizeAllowedMenus } from "./desktop-menu.catalog";
 
 export type DesktopDeviceAccessResponse = {
@@ -15,6 +16,16 @@ export type DesktopDeviceAccessResponse = {
   isActive: boolean;
   label: string | null;
   allowedMenus: string[] | null;
+};
+
+export type DiscoveredDesktopDeviceItem = {
+  deviceId: string;
+  hostname: string | null;
+  label: string | null;
+  appVersion: string | null;
+  lastIp: string | null;
+  lastSeenAt: string | null;
+  source: "desktop" | "user";
 };
 
 @Injectable()
@@ -27,24 +38,41 @@ export class PlatformDesktopService {
 
   async getAccessByDeviceId(
     rawDeviceId?: string,
-    opts?: { appVersion?: string; ip?: string },
+    opts?: { appVersion?: string; ip?: string; hostname?: string },
   ): Promise<DesktopDeviceAccessResponse> {
     const deviceId = String(rawDeviceId || "").trim().toLowerCase();
     if (!deviceId) {
       throw new BadRequestException("deviceId is required");
     }
 
+    const hostname = opts?.hostname?.trim().slice(0, 150) || null;
+    const ip = opts?.ip?.trim().slice(0, 64) || null;
+    const appVersion = opts?.appVersion?.trim().slice(0, 64) || null;
+
     const repo = this.db.getRepository(PlatformDesktopDevice);
     const device = await repo.findOne({
-      where: { deviceId, deletedAt: IsNull() },
+      where: { deviceId },
+      withDeleted: true,
     });
 
     if (!device) {
+      const created = repo.create({
+        deviceId,
+        label: hostname || "",
+        hostname,
+        isActive: true,
+        isConfigured: false,
+        allowedMenus: [],
+        appVersion,
+        lastIp: ip,
+        lastSeenAt: new Date(),
+      });
+      await repo.save(created).catch(() => {});
       return {
         deviceId,
         registered: false,
         isActive: true,
-        label: null,
+        label: hostname,
         allowedMenus: null,
       };
     }
@@ -52,18 +80,87 @@ export class PlatformDesktopService {
     await repo
       .update(device.id, {
         lastSeenAt: new Date(),
-        ...(opts?.ip ? { lastIp: opts.ip.slice(0, 64) } : {}),
-        ...(opts?.appVersion ? { appVersion: opts.appVersion.slice(0, 64) } : {}),
+        ...(ip ? { lastIp: ip } : {}),
+        ...(appVersion ? { appVersion } : {}),
+        ...(hostname ? { hostname, ...(!device.label ? { label: hostname } : {}) } : {}),
       })
       .catch(() => {});
 
+    if (device.deletedAt || !device.isActive) {
+      return {
+        deviceId,
+        registered: Boolean(device.isConfigured),
+        isActive: device.isActive,
+        label: device.label || hostname || null,
+        allowedMenus: device.deletedAt ? null : [],
+      };
+    }
+
+    const normalized = normalizeAllowedMenus(device.allowedMenus);
+    const hasRestrictedMenus = device.isConfigured && normalized.length > 0;
+
     return {
       deviceId,
-      registered: true,
-      isActive: device.isActive,
-      label: device.label || null,
-      allowedMenus: device.isActive ? normalizeAllowedMenus(device.allowedMenus) : [],
+      registered: device.isConfigured,
+      isActive: true,
+      label: device.label || hostname || null,
+      allowedMenus: hasRestrictedMenus ? normalized : null,
     };
+  }
+
+  async listDiscoveredDevices(): Promise<DiscoveredDesktopDeviceItem[]> {
+    const deviceRepo = this.db.getRepository(PlatformDesktopDevice);
+    const userRepo = this.db.getRepository(PlatformUser);
+
+    const allDevices = await deviceRepo
+      .createQueryBuilder("d")
+      .where("d.deleted_at IS NULL")
+      .orderBy("d.lastSeenAt", "DESC", "NULLS LAST")
+      .addOrderBy("d.updatedAt", "DESC")
+      .take(200)
+      .getMany();
+
+    const configuredIds = new Set(
+      allDevices.filter((d) => d.isConfigured).map((d) => d.deviceId.toLowerCase()),
+    );
+
+    const resultMap = new Map<string, DiscoveredDesktopDeviceItem>();
+    for (const d of allDevices) {
+      if (d.isConfigured) continue;
+      const key = d.deviceId.toLowerCase();
+      resultMap.set(key, {
+        deviceId: d.deviceId,
+        hostname: d.hostname || null,
+        label: d.label || d.hostname || null,
+        appVersion: d.appVersion || null,
+        lastIp: d.lastIp || null,
+        lastSeenAt: d.lastSeenAt ? d.lastSeenAt.toISOString() : d.updatedAt?.toISOString() || null,
+        source: "desktop",
+      });
+    }
+
+    const users = await userRepo
+      .createQueryBuilder("u")
+      .where("u.device_id IS NOT NULL AND TRIM(u.device_id) <> ''")
+      .orderBy("u.updatedAt", "DESC")
+      .take(200)
+      .getMany();
+
+    for (const u of users) {
+      const key = String(u.deviceId || "").trim().toLowerCase();
+      if (!key || configuredIds.has(key) || resultMap.has(key)) continue;
+      resultMap.set(key, {
+        deviceId: key,
+        hostname: u.userName || null,
+        label: u.userName || null,
+        appVersion: null,
+        lastIp: u.ip || null,
+        lastSeenAt: u.updatedAt ? u.updatedAt.toISOString() : null,
+        source: "user",
+      });
+    }
+
+    return Array.from(resultMap.values());
   }
 
   async listDevices(
@@ -83,7 +180,10 @@ export class PlatformDesktopService {
 
     if (filter?.search?.trim()) {
       const q = `%${filter.search.trim().toLowerCase()}%`;
-      qb.andWhere("(LOWER(d.device_id) LIKE :q OR LOWER(d.label) LIKE :q)", { q });
+      qb.andWhere(
+        "(LOWER(d.device_id) LIKE :q OR LOWER(d.label) LIKE :q OR LOWER(COALESCE(d.hostname, '')) LIKE :q)",
+        { q },
+      );
     }
 
     if (filter?.isActive === "true") {
@@ -92,7 +192,10 @@ export class PlatformDesktopService {
       qb.andWhere("d.is_active = false");
     }
 
-    qb.orderBy("d.createdAt", "DESC").skip(skip).take(take);
+    qb.orderBy("d.lastSeenAt", "DESC", "NULLS LAST")
+      .addOrderBy("d.createdAt", "DESC")
+      .skip(skip)
+      .take(take);
     const [items, total] = await qb.getManyAndCount();
     return { items, total, page, limit: take };
   }
@@ -116,11 +219,21 @@ export class PlatformDesktopService {
       withDeleted: true,
     });
     if (existing) {
-      throw new ConflictException(
-        existing.deletedAt
-          ? "Device ID này đã tồn tại trong thùng rác, hãy khôi phục thay vì tạo mới."
-          : "Device ID này đã tồn tại.",
-      );
+      if (existing.isConfigured) {
+        throw new ConflictException(
+          existing.deletedAt
+            ? "Device ID này đã tồn tại trong thùng rác, hãy khôi phục thay vì tạo mới."
+            : "Device ID này đã tồn tại.",
+        );
+      }
+      // Upgrade auto-discovered device into configured Admin rule
+      existing.deletedAt = null;
+      existing.isConfigured = true;
+      existing.label = String(data.label ?? existing.label ?? "").trim();
+      existing.note = data.note ? String(data.note).trim() : null;
+      existing.isActive = data.isActive !== undefined ? Boolean(data.isActive) : true;
+      existing.allowedMenus = normalizeAllowedMenus(data.allowedMenus);
+      return repo.save(existing);
     }
 
     const entity = repo.create({
@@ -128,6 +241,7 @@ export class PlatformDesktopService {
       label: String(data.label || "").trim(),
       note: data.note ? String(data.note).trim() : null,
       isActive: data.isActive !== undefined ? Boolean(data.isActive) : true,
+      isConfigured: true,
       allowedMenus: normalizeAllowedMenus(data.allowedMenus),
     });
 
@@ -160,6 +274,7 @@ export class PlatformDesktopService {
     if (data.allowedMenus !== undefined) {
       entity.allowedMenus = normalizeAllowedMenus(data.allowedMenus);
     }
+    entity.isConfigured = true;
 
     return repo.save(entity);
   }

@@ -24,6 +24,12 @@ export class PlatformAdminDesktopDevicesController {
     return this.service.getCatalog();
   }
 
+  @ApiOperation({ summary: "Get discovered desktop devices not yet configured" })
+  @Get("discovered")
+  discovered() {
+    return this.service.listDiscoveredDevices();
+  }
+
   @ApiOperation({ summary: "Get paginated list of desktop devices" })
   @Get()
   list(

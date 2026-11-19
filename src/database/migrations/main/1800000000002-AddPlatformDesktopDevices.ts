@@ -13,6 +13,8 @@ export class AddPlatformDesktopDevices1800000000002 implements MigrationInterfac
         "deleted_at" TIMESTAMP WITH TIME ZONE,
         "device_id" character varying(128) NOT NULL,
         "label" character varying(150) NOT NULL DEFAULT '',
+        "hostname" character varying(150),
+        "is_configured" boolean NOT NULL DEFAULT true,
         "note" text,
         "is_active" boolean NOT NULL DEFAULT true,
         "allowed_menus" jsonb NOT NULL DEFAULT '[]'::jsonb,

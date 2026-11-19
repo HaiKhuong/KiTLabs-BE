@@ -11,6 +11,12 @@ export class PlatformDesktopDevice extends BaseEntity {
   @Column({ type: "varchar", length: 150, default: "" })
   label!: string;
 
+  @Column({ type: "varchar", length: 150, nullable: true })
+  hostname!: string | null;
+
+  @Column({ name: "is_configured", type: "boolean", default: true })
+  isConfigured!: boolean;
+
   @Column({ type: "text", nullable: true })
   note!: string | null;
 
