@@ -158,6 +158,7 @@ def _spawn_daemon() -> Optional[Dict[str, Any]]:
         startupinfo.wShowWindow = 0  # SW_HIDE
     breakaway_flag = 0x01000000 if sys.platform == "win32" else 0
 
+    close_fds = sys.platform != "win32" or sys.version_info >= (3, 7)
     try:
         with open(os.devnull, "rb") as devnull_in, open(os.devnull, "ab") as devnull_out:
             try:
@@ -170,7 +171,7 @@ def _spawn_daemon() -> Optional[Dict[str, Any]]:
                     stderr=devnull_out,
                     creationflags=creationflags | breakaway_flag,
                     startupinfo=startupinfo,
-                    close_fds=(sys.platform != "win32"),
+                    close_fds=close_fds,
                 )
             except OSError:
                 subprocess.Popen(
@@ -182,7 +183,7 @@ def _spawn_daemon() -> Optional[Dict[str, Any]]:
                     stderr=devnull_out,
                     creationflags=creationflags,
                     startupinfo=startupinfo,
-                    close_fds=(sys.platform != "win32"),
+                    close_fds=close_fds,
                 )
     except Exception:
         return None

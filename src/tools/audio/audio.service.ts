@@ -295,17 +295,16 @@ export class AudioService {
       }
 
       let stderr = "";
+      let settled = false;
+      let exitFallbackTimer: NodeJS.Timeout | null = null;
 
-      child.stderr?.on("data", (buf: Buffer) => {
-        stderr += buf.toString("utf8");
-        if (stderr.length > AudioService.MAX_LOG_BUFFER) {
-          stderr = stderr.slice(-AudioService.MAX_LOG_BUFFER);
+      const finish = (code: number | null, signal: NodeJS.Signals | null) => {
+        if (settled) return;
+        settled = true;
+        if (exitFallbackTimer) {
+          clearTimeout(exitFallbackTimer);
+          exitFallbackTimer = null;
         }
-      });
-      child.on("error", (err) => {
-        rejectPromise(err);
-      });
-      child.on("close", (code, signal) => {
         if (key && this.renderProcessRegistry.isCancelled(key)) {
           rejectPromise(new RenderCancelledError());
           return;
@@ -316,6 +315,34 @@ export class AudioService {
           return;
         }
         resolvePromise();
+      };
+
+      child.stderr?.on("data", (buf: Buffer) => {
+        stderr += buf.toString("utf8");
+        if (stderr.length > AudioService.MAX_LOG_BUFFER) {
+          stderr = stderr.slice(-AudioService.MAX_LOG_BUFFER);
+        }
+      });
+      child.on("error", (err) => {
+        if (settled) return;
+        settled = true;
+        if (exitFallbackTimer) {
+          clearTimeout(exitFallbackTimer);
+          exitFallbackTimer = null;
+        }
+        rejectPromise(err);
+      });
+      child.on("exit", (code, signal) => {
+        if (settled || exitFallbackTimer) return;
+        // Fallback in case a detached grandchild (e.g. warm worker) keeps stdio pipes open on Windows.
+        exitFallbackTimer = setTimeout(() => {
+          child.stdout?.destroy();
+          child.stderr?.destroy();
+          finish(code, signal);
+        }, 500);
+      });
+      child.on("close", (code, signal) => {
+        finish(code, signal);
       });
 
       child.stdin?.write(Buffer.from(JSON.stringify(payload), "utf8"));
@@ -421,6 +448,27 @@ export class AudioService {
       }
 
       let stderr = "";
+      let settled = false;
+      let exitFallbackTimer: NodeJS.Timeout | null = null;
+
+      const finish = (code: number | null, signal: NodeJS.Signals | null) => {
+        if (settled) return;
+        settled = true;
+        if (exitFallbackTimer) {
+          clearTimeout(exitFallbackTimer);
+          exitFallbackTimer = null;
+        }
+        if (key && this.renderProcessRegistry.isCancelled(key)) {
+          rejectPromise(new RenderCancelledError());
+          return;
+        }
+        if (code !== 0) {
+          const suffix = signal ? ` (signal ${signal})` : "";
+          rejectPromise(new Error(stderr.trim() || `SRT timeline exited with code ${code}${suffix}`));
+          return;
+        }
+        resolvePromise();
+      };
 
       child.stdout?.on("data", (buf: Buffer) => {
         stdout += buf.toString("utf8");
@@ -435,19 +483,25 @@ export class AudioService {
         }
       });
       child.on("error", (err) => {
+        if (settled) return;
+        settled = true;
+        if (exitFallbackTimer) {
+          clearTimeout(exitFallbackTimer);
+          exitFallbackTimer = null;
+        }
         rejectPromise(err);
       });
+      child.on("exit", (code, signal) => {
+        if (settled || exitFallbackTimer) return;
+        // Fallback in case a detached grandchild (e.g. warm worker) keeps stdio pipes open on Windows.
+        exitFallbackTimer = setTimeout(() => {
+          child.stdout?.destroy();
+          child.stderr?.destroy();
+          finish(code, signal);
+        }, 500);
+      });
       child.on("close", (code, signal) => {
-        if (key && this.renderProcessRegistry.isCancelled(key)) {
-          rejectPromise(new RenderCancelledError());
-          return;
-        }
-        if (code !== 0) {
-          const suffix = signal ? ` (signal ${signal})` : "";
-          rejectPromise(new Error(stderr.trim() || `SRT timeline exited with code ${code}${suffix}`));
-          return;
-        }
-        resolvePromise();
+        finish(code, signal);
       });
 
       child.stdin?.write(Buffer.from(JSON.stringify(payload), "utf8"));

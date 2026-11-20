@@ -14,6 +14,7 @@ export const DESKTOP_MENU_CATALOG: DesktopMenuCatalogItem[] = [
   { key: "queues", label: "Queues", group: "primary", category: "basic" },
   { key: "download", label: "Download", group: "primary", category: "basic" },
   { key: "histories", label: "Histories", group: "primary", category: "basic" },
+  { key: "hongguo", label: "Hongguo", group: "primary", category: "basic" },
   { key: "tiktok", label: "TikTok", group: "more-tools", category: "basic" },
   { key: "facebook", label: "Facebook", group: "more-tools", category: "basic" },
   { key: "workflow", label: "Workflow", group: "more-tools", category: "ai" },
