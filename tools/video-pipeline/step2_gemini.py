@@ -294,14 +294,14 @@ def _build_translate_prompt(batch: list, payload_text: str, translation_context:
     line_count = len(batch)
     last_id = line_count - 1
     prompt_parts = [
-        "Translate the source subtitles into natural, idiomatic Vietnamese.\n",
-        "Write very concise, subtitle-friendly Vietnamese suitable for video dubbing and reading.\n",
-        "Keep original meaning, context, and emotional tone, but simplify phrasing.\n",
+        "Translate the source subtitles into natural, idiomatic, smooth-flowing Vietnamese.\n",
+        "Write clear, conversational Vietnamese suitable for video dubbing and reading — keep phrasing fluid and natural within each cue rather than choppy, clipped, or overly terse.\n",
+        "Preserve the full original meaning, context, nuance, and emotional tone with natural phrasing.\n",
         "Preserve proper nouns, titles, names, character relationships, and appropriate honorifics according to context.\n",
-        "Drop leftover filler/junk that repeats and does not help the sentence (ASR artifacts). "
+        "Drop only obvious leftover ASR filler/junk that repeats and adds no meaning to the sentence. "
         'Example: a trailing "Đây." with no role in the line — omit it in Vietnamese. '
         "Still return every line id; never drop a whole cue.\n",
-        "If a cue is unusually long, translate more compactly than usual: short spoken Vietnamese, same meaning, no padding.\n",
+        "If a cue is long, keep the Vietnamese natural and easy to speak aloud without unnecessary wordiness, but do not cut subjects, connectors, or emotional phrasing to the point of sounding abrupt.\n",
         "NUMBERS: Format numbers in Vietnamese style. Under 1 million, use dot (.) as thousands separator (never comma): 3000, 3,000, 三千 → 3.000; 15000 → 15.000. Numbers below 1000 stay plain digits (12, 999).\n",
         "For numbers from millions or billions upwards, write with 'triệu' or 'tỉ': 1.000.000, 1000000, 一百万 → 1 triệu; 1.576.000 → 1 triệu 576; 100.000.000, 一亿 → 100 triệu; 100.567.000 → 100 triệu 567 nghìn; 1.000.000.000, 十亿 → 1 tỉ.\n",
         "Decimal separator is a comma: 3.5 → 3,5; 12.25 → 12,25.\n",
@@ -319,24 +319,26 @@ def _build_translate_prompt(batch: list, payload_text: str, translation_context:
         f"- Return exactly {line_count} lines with ids 0 to {last_id}, same order as input.\n"
         "- ONE INPUT LINE = ONE OUTPUT LINE. Translate only the words on that line.\n"
         "- NEVER merge lines. NEVER fold two or more source lines into one Vietnamese sentence.\n"
-        "- If a sentence is split across cues, keep the split. Leave each Vietnamese line incomplete if the source line is incomplete. Continue on the next id.\n"
+        "- If a long sentence is split across 2 cues (id and id+1), keep both cues separate: translate only the first half on id (leave it mid-sentence) and only the second half on id+1. Never pull id+1 into id, and never shift id+2 up into id+1.\n"
         "- Do NOT pull words from the next or previous line into the current line.\n"
         "- Do NOT skip, drop, split, or reorder lines. Do not summarize across lines.\n"
-        "- Dropping filler words inside a single line is allowed; compressing a long line is allowed. Combining lines is not.\n"
+        "- Dropping meaningless ASR filler inside a single line is allowed; keep the phrasing natural and smooth. Combining lines is not allowed.\n"
         "- Format each output line: id:|Vietnamese translation\n"
         "- Output ONLY translated lines. No notes, no markdown, no extra text.\n"
         "LINE LOCK EXAMPLE (pattern only — do not copy these ids; use the INPUT ids above):\n"
         "Source stays split. Each id translates only itself.\n"
-        "436:|...(cue before)\n"
-        "437:|最空旷的地方了 (or English clause)\n"
-        "438:|而且谁说容不下的 (or next clause)\n"
-        "WRONG — several cues fused into one line, later words pulled upward:\n"
-        "436:|không gian này cũng không chứa nổi Hỗn Độn thế giới của chúng ta.\n"
+        "436:|我们已经在最空旷的地方\n"
+        "437:|这个界海里了。\n"
+        "438:|而且谁说容不下的。\n"
+        "WRONG — 436 and 437 merged into 436, shifting 438 and 439 upward:\n"
+        "436:|Chúng ta đang ở nơi rộng rãi nhất của Biển Giới này rồi.\n"
+        "437:|Mà ai bảo là không chứa nổi.\n"
+        "438:|(next cue 439 shifted up here)\n"
         "REQUIRED — same split, one Vietnamese line per source line:\n"
         "436:|Chúng ta đang ở nơi rộng rãi nhất\n"
         "437:|của Biển Giới này rồi.\n"
         "438:|Mà ai bảo là không chứa nổi.\n"
-        "437 must not contain words from 438. 438 must not be swallowed into 436 or 437.\n"
+        "436 must not contain words from 437. 438 must stay on 438 and never shift up to 437.\n"
     )
     return "".join(prompt_parts)
 
