@@ -759,6 +759,7 @@ export class FilmAdminService {
   private async withCommentMeta(comments: FilmComment[]) {
     if (!comments.length) return [];
 
+    const commentIds = comments.map((c) => c.id);
     const userIds = Array.from(new Set(comments.map((c) => c.userId).filter(Boolean)));
     const movieIds = Array.from(new Set(comments.map((c) => c.movieId).filter(Boolean)));
     const episodeIds = Array.from(
@@ -795,12 +796,39 @@ export class FilmAdminService {
       episodes.forEach((e) => episodeMap.set(e.id, e));
     }
 
-    return comments.map((c) => ({
-      ...c,
-      user: userMap.get(c.userId) || null,
-      movie: movieMap.get(c.movieId) || null,
-      episode: c.episodeId ? episodeMap.get(c.episodeId) || null : null,
-    }));
+    const adminReplyMap = new Map<string, { count: number; lastReplyAt: Date | null }>();
+    const adminReplies = await this.db
+      .getRepository(FilmComment)
+      .createQueryBuilder("reply")
+      .innerJoin(FilmUser, "replyUser", "replyUser.id = reply.userId")
+      .select("reply.parentId", "parentId")
+      .addSelect("COUNT(reply.id)", "count")
+      .addSelect("MAX(reply.createdAt)", "lastReplyAt")
+      .where("reply.parentId IN (:...commentIds)", { commentIds })
+      .andWhere("reply.deletedAt IS NULL")
+      .andWhere("replyUser.role = :adminRole", { adminRole: FilmUserRole.ADMIN })
+      .groupBy("reply.parentId")
+      .getRawMany<{ parentId: string; count: string; lastReplyAt: Date | string | null }>();
+
+    adminReplies.forEach((reply) => {
+      adminReplyMap.set(reply.parentId, {
+        count: Number(reply.count),
+        lastReplyAt: reply.lastReplyAt ? new Date(reply.lastReplyAt) : null,
+      });
+    });
+
+    return comments.map((c) => {
+      const adminReply = adminReplyMap.get(c.id);
+      return {
+        ...c,
+        user: userMap.get(c.userId) || null,
+        movie: movieMap.get(c.movieId) || null,
+        episode: c.episodeId ? episodeMap.get(c.episodeId) || null : null,
+        hasAdminReply: Boolean(adminReply),
+        adminReplyCount: adminReply?.count || 0,
+        lastAdminReplyAt: adminReply?.lastReplyAt || null,
+      };
+    });
   }
 
   async getMenuCounts(): Promise<Record<string, number>> {

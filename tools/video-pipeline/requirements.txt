@@ -35,6 +35,9 @@ omnivoice>=0.2.1
 
 # ─── Step3: VoxCPM2 (optional: --step3-tts-engine voxcpm2) ───
 # PyTorch ≥2.5 khuyến nghị theo upstream; pin torch ở trên vẫn dùng được nếu CUDA ok.
+# wetext (dependency của VoxCPM) cần kaldifst. 1.9.2 có wheel CPython 3.12
+# cho Windows; các source distribution cũ yêu cầu CMake + MSVC.
+kaldifst>=1.9.2
 voxcpm>=2.0.0
 
 # VieNeu-TTS v3 Turbo (48 kHz; ONNX/CPU or PyTorch/CUDA).
