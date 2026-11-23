@@ -108,7 +108,7 @@ export class AppConfigService implements OnModuleInit {
   }
 
   private maskSecret(code: string, plain: string): { configured: boolean; keyCount: number; masked: string } {
-    if (code === "DOUYIN_COOKIE_CONTENT") {
+    if (code === "DOUYIN_COOKIE_CONTENT" || code === "MUSE_COOKIE_CONTENT") {
       const trimmed = plain.trim();
       if (!trimmed) {
         return { configured: false, keyCount: 0, masked: "" };

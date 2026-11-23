@@ -31,7 +31,8 @@ export const GFLOW_VIDEO_MODELS = [
   "veo-fast",
   "veo-quality",
 ] as const;
-export const ALL_VIDEO_MODELS = [...VEO_MODELS, ...GFLOW_VIDEO_MODELS] as const;
+export const MUSE_VIDEO_MODELS = ["muse-agent"] as const;
+export const ALL_VIDEO_MODELS = [...VEO_MODELS, ...GFLOW_VIDEO_MODELS, ...MUSE_VIDEO_MODELS] as const;
 
 export type VeoModel = (typeof VEO_MODELS)[number];
 export type GFlowVideoModel = (typeof GFLOW_VIDEO_MODELS)[number];
@@ -168,10 +169,10 @@ export class GenerateVeoVideoDto {
   @IsIn(["normal", "vip"])
   apiKeyTier?: "normal" | "vip";
 
-  @ApiPropertyOptional({ enum: ["veo-api", "gflow"], default: "veo-api" })
+  @ApiPropertyOptional({ enum: ["veo-api", "gflow", "muse"], default: "veo-api" })
   @IsOptional()
-  @IsIn(["veo-api", "gflow"])
-  provider?: "veo-api" | "gflow";
+  @IsIn(["veo-api", "gflow", "muse"])
+  provider?: "veo-api" | "gflow" | "muse";
 
   @ApiPropertyOptional({ description: "Optional voice name for GFlow video generation" })
   @IsOptional()

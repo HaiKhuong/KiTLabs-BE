@@ -1,0 +1,4 @@
+muse-cli>=0.3.15
+curl_cffi>=0.17
+noiseprotocol>=0.3
+protobuf>=5.0

@@ -75,10 +75,10 @@ export class GenerateStudioImageDto {
   @IsInt()
   seed?: number;
 
-  @ApiPropertyOptional({ enum: ["comfyui", "gflow"], default: "comfyui" })
+  @ApiPropertyOptional({ enum: ["comfyui", "gflow", "muse"], default: "comfyui" })
   @IsOptional()
-  @IsIn(["comfyui", "gflow"])
-  provider?: "comfyui" | "gflow";
+  @IsIn(["comfyui", "gflow", "muse"])
+  provider?: "comfyui" | "gflow" | "muse";
 
   @ApiPropertyOptional({ type: StudioReferenceImageDto, description: "Optional single reference image for GFlow i2i" })
   @IsOptional()

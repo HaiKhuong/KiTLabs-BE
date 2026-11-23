@@ -4,6 +4,7 @@ import { mkdir, rm, writeFile } from "fs/promises";
 import { dirname, join } from "path";
 
 import { GFlowRunnerService } from "../gflow/gflow-runner.service";
+import { MuseRunnerService } from "../muse/muse-runner.service";
 import { NotificationsService } from "../notifications/notifications.service";
 import { ToolsRealtimeGateway } from "../realtime/tools-realtime.gateway";
 import { STUDIO_IMAGE_FILENAME, resolveWorkflowImagesOutputDir } from "../workflow/workflow-image.constants";
@@ -19,6 +20,7 @@ export class ImagesJobsService {
   constructor(
     private readonly workflowImageService: WorkflowImageService,
     private readonly gflowRunner: GFlowRunnerService,
+    private readonly museRunner: MuseRunnerService,
     private readonly imagesHistoryService: ImagesHistoryService,
     private readonly realtimeGateway: ToolsRealtimeGateway,
     private readonly notificationsService: NotificationsService,
@@ -38,7 +40,26 @@ export class ImagesJobsService {
     const tempRefPaths: string[] = [];
     try {
       let result: Record<string, unknown>;
-      if (dto.provider === "gflow") {
+      if (dto.provider === "muse") {
+        await mkdir(dirname(resultPath), { recursive: true });
+        await this.museRunner.generateImage({
+          prompt: dto.prompt.trim(),
+          outputFile: resultPath,
+          aspect: dto.aspectRatio ?? "16:9",
+          style: dto.style,
+          negativePrompt: dto.negativePrompt,
+        });
+        const imageUrl = `/api/tools/images/${encodeURIComponent(userId)}/${encodeURIComponent(jobId)}/${STUDIO_IMAGE_FILENAME}`;
+        result = {
+          jobId,
+          imageUrl,
+          downloadUrl: imageUrl,
+          model: dto.model ?? "muse-agent",
+          style: dto.style ?? "muse",
+          aspectRatio: dto.aspectRatio ?? "16:9",
+          prompt: dto.prompt.trim(),
+        };
+      } else if (dto.provider === "gflow") {
         await mkdir(dirname(resultPath), { recursive: true });
         const refs = dto.referenceImages?.length
           ? dto.referenceImages

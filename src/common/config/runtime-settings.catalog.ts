@@ -15,6 +15,7 @@ export const SECRET_SETTING_CODES = new Set([
   "GEMINI_API_KEY_VIP",
   "HF_TOKEN",
   "DOUYIN_COOKIE_CONTENT",
+  "MUSE_COOKIE_CONTENT",
   "TELEGRAM_BOT_TOKEN",
   "INTEGRATION_SERVICE_KEY",
 ]);
@@ -71,6 +72,8 @@ export const RUNTIME_SETTING_FIELDS: RuntimeSettingField[] = [
   { code: "YTDLP_SERVICE_URL", group: "services", kind: "string", label: "yt-dlp service URL", defaultValue: "http://localhost:8100" },
   { code: "DOUYIN_PLAYWRIGHT_SERVICE_URL", group: "services", kind: "string", label: "Playwright service URL", defaultValue: "http://localhost:8101" },
   { code: "DOUYIN_COOKIE_CONTENT", group: "douyin", kind: "secret", label: "Douyin cookies", defaultValue: "" },
+  { code: "MUSE_COOKIE_CONTENT", group: "muse", kind: "secret", label: "Muse.ai cookies (hatch_sess)", defaultValue: "" },
+  { code: "MUSE_THREAD_ID", group: "muse", kind: "string", label: "Muse.ai studio thread ID", defaultValue: "" },
   {
     code: "SOCIAL_AUTH_API_SERVER_URL",
     group: "social-auth",

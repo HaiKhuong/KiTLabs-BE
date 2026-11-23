@@ -7,6 +7,7 @@ import { join, resolve } from "path";
 
 import { Public } from "../../common/decorators/public.decorator";
 import { GFlowRunnerService } from "../gflow/gflow-runner.service";
+import { MuseRunnerService } from "../muse/muse-runner.service";
 import { GenerateVeoVideoDto } from "./dto/generate-veo-video.dto";
 import { GeminiVeoService } from "./gemini-veo.service";
 import { VideoHistoryService } from "./video-history.service";
@@ -23,6 +24,7 @@ export class VideosController {
     private readonly geminiVeoService: GeminiVeoService,
     private readonly videoHistoryService: VideoHistoryService,
     private readonly gflowRunner: GFlowRunnerService,
+    private readonly museRunner: MuseRunnerService,
   ) {}
 
   @ApiOperation({ summary: "Gemini Veo parameter capabilities and constraints for UI" })
@@ -38,6 +40,19 @@ export class VideosController {
   @Public()
   @Post("generate")
   async generate(@Body() dto: GenerateVeoVideoDto) {
+    if (dto.provider === "muse") {
+      const model = dto.model ?? "muse-agent";
+      const history = await this.videoHistoryService.createPending(dto, model);
+      void this.runMuseVideo(history.id, dto);
+      return {
+        historyId: history.id,
+        operationName: null,
+        done: false,
+        model,
+        apiKeyTier: dto.apiKeyTier ?? "normal",
+        provider: "muse",
+      };
+    }
     if (dto.provider === "gflow") {
       const model = dto.model ?? "omni-flash";
       const history = await this.videoHistoryService.createPending(dto, model);
@@ -52,6 +67,29 @@ export class VideosController {
       };
     }
     return this.geminiVeoService.generate(dto);
+  }
+
+  private async runMuseVideo(historyId: string, dto: GenerateVeoVideoDto): Promise<void> {
+    const outDir = resolve(process.cwd(), "uploads", "tools", "videos", dto.userId.trim(), historyId);
+    const outPath = join(outDir, GFLOW_VIDEO_FILENAME);
+    try {
+      await this.videoHistoryService.markRunningLocal(historyId);
+      await mkdir(outDir, { recursive: true });
+      const res = await this.museRunner.generateVideo({
+        prompt: dto.prompt.trim(),
+        outputFile: outPath,
+        aspect: dto.aspectRatio ?? "16:9",
+        duration: dto.durationSeconds ?? 8,
+      });
+      await this.videoHistoryService.markCompletedLocal(historyId, {
+        resultPath: res.outputPath,
+        resultFileName: GFLOW_VIDEO_FILENAME,
+        gflowProfile: res.threadId ? `muse:${res.threadId}` : "muse",
+      });
+    } catch (error) {
+      this.logger.warn(`[Muse Video] Failed historyId=${historyId}: ${error instanceof Error ? error.message : String(error)}`);
+      await this.videoHistoryService.markFailed(historyId, error);
+    }
   }
 
   private async runGFlowVideo(historyId: string, dto: GenerateVeoVideoDto): Promise<void> {
