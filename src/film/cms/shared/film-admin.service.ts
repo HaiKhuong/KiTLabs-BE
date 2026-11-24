@@ -32,6 +32,7 @@ import {
   FilmWatchHistory,
   FilmImageUpload,
   FilmReport,
+  ReportStatus,
   FilmSepayTransaction,
   FilmSetting,
   ItemType,
@@ -537,8 +538,17 @@ export class FilmAdminService {
 
     if (!row) throw new NotFoundException();
 
+    const previousReportStatus = resource === "reports" ? (row as FilmReport).status : null;
     Object.assign(row, cleanData, { id });
     const saved = await repo.save(row);
+
+    if (resource === "reports") {
+      await this.notifyReportStatusUpdated(
+        saved as FilmReport,
+        previousReportStatus,
+        typeof cleanData.resolutionNote === "string" ? cleanData.resolutionNote.trim() : "",
+      );
+    }
 
     if (resource === "users" && titleItemId) {
       return this.equipUserTitle(id, titleItemId);
@@ -551,6 +561,52 @@ export class FilmAdminService {
     }
 
     return saved;
+  }
+
+  private async notifyReportStatusUpdated(
+    report: FilmReport,
+    previousStatus: ReportStatus | null,
+    resolutionNote: string,
+  ): Promise<void> {
+    if (!this.pushService || !report.userId || previousStatus === report.status) {
+      return;
+    }
+
+    const statusLabels: Record<ReportStatus, string> = {
+      [ReportStatus.PENDING]: "Chờ xử lý",
+      [ReportStatus.IN_REVIEW]: "Đang kiểm tra",
+      [ReportStatus.RESOLVED]: "Đã giải quyết",
+      [ReportStatus.DISMISSED]: "Bỏ qua / Từ chối",
+    };
+
+    try {
+      const hasToken = await this.pushService.hasActiveTokenForUser(report.userId);
+      if (!hasToken) {
+        return;
+      }
+
+      const statusLabel = statusLabels[report.status] || report.status;
+      const movieTitle = report.movieTitle || "Phim bạn đã báo lỗi";
+      const episodeSuffix = report.episodeTitle
+        ? ` (${report.episodeTitle})`
+        : report.episodeNumber != null
+          ? ` (Tập ${report.episodeNumber})`
+          : "";
+      const noteSuffix = resolutionNote ? ` Ghi chú: ${resolutionNote}` : "";
+
+      await this.pushService.createAndDispatchNotification({
+        title: `Cập nhật báo lỗi: ${statusLabel}`,
+        content: `Báo lỗi cho "${movieTitle}${episodeSuffix}" đã chuyển sang trạng thái "${statusLabel}".${noteSuffix}`,
+        type: "REPORT_STATUS",
+        actionUrl: report.pageUrl || "/",
+        userIds: [report.userId],
+        sendPush: true,
+      });
+    } catch (error) {
+      this.logger.warn(
+        `Failed to send report status FCM notification for report=${report.id}: ${(error as Error).message}`,
+      );
+    }
   }
 
   private async equipUserTitle(userId: string, itemId: string) {

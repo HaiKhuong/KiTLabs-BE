@@ -139,6 +139,15 @@ export class FilmPushService implements OnModuleInit {
     return { updated: true };
   }
 
+  async hasActiveTokenForUser(userId: string): Promise<boolean> {
+    const trimmed = String(userId || "").trim();
+    if (!trimmed) return false;
+    const count = await this.db.getRepository(FilmPushToken).count({
+      where: { userId: trimmed, isActive: true },
+    });
+    return count > 0;
+  }
+
   async enqueueBroadcast(payload: FilmPushPayload) {
     return this.pushQueue.add(
       "broadcast",

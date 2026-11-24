@@ -112,7 +112,13 @@ def _ensure_studio_thread(gw: Gateway, preferred_thread_id: Optional[str] = None
             sid = s.get("session_id")
             if sid:
                 return str(sid)
-    created = gw.call_json("session.start", body={"origin": "fresh", "lifecycle": "persistent"})
+    created = gw.call_json(
+        "session.start",
+        body={
+            "method": "/api/session/start",
+            "params": {"origin": "fresh", "lifecycle": "persistent"},
+        },
+    )
     sid = created.get("session_id") or (created.get("session") or {}).get("session_id")
     if not sid:
         raise GatewayError(-1, "Không thể tạo side chat KiTLabs Studio trên Muse.ai")
